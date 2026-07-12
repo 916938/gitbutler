@@ -1,8 +1,5 @@
 use but_core::Commit;
-use but_rebase::graph_rebase::{
-    Editor, LookupStep as _,
-    mutate::{InsertSide, RelativeTo},
-};
+use but_rebase::graph_rebase::{Editor, anchor::Anchor, mutate::InsertSide};
 use but_testsupport::visualize_commit_graph_all;
 use gix::prelude::ObjectIdExt as _;
 use snapbox::IntoData;
@@ -13,7 +10,7 @@ use crate::ref_info::with_workspace_commit::utils::named_writable_scenario_with_
 fn insert_below_commit() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("reword-three-commits", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let one = repo.rev_parse_single("one")?.detach();
     let two = repo.rev_parse_single("two")?.detach();
 
@@ -27,11 +24,16 @@ fn insert_below_commit() -> anyhow::Result<()> {
 "#]]
     );
 
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
     but_workspace::commit::cherry_pick_commits(
         editor,
         [one],
-        RelativeTo::Commit(two),
+        Anchor::Commit(two),
         InsertSide::Below,
     )?
     .0
@@ -57,7 +59,7 @@ fn insert_below_commit() -> anyhow::Result<()> {
 fn insert_above_commit() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("reword-three-commits", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let one = repo.rev_parse_single("one")?.detach();
     let two = repo.rev_parse_single("two")?.detach();
 
@@ -71,11 +73,16 @@ fn insert_above_commit() -> anyhow::Result<()> {
 "#]]
     );
 
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
     but_workspace::commit::cherry_pick_commits(
         editor,
         [one],
-        RelativeTo::Commit(two),
+        Anchor::Commit(two),
         InsertSide::Above,
     )?
     .0
@@ -99,7 +106,7 @@ fn insert_above_commit() -> anyhow::Result<()> {
 fn insert_below_reference() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("reword-three-commits", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let one = repo.rev_parse_single("one")?.detach();
     let two_ref: gix::refs::FullName = "refs/heads/two".try_into()?;
 
@@ -113,11 +120,16 @@ fn insert_below_reference() -> anyhow::Result<()> {
 "#]]
     );
 
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
     but_workspace::commit::cherry_pick_commits(
         editor,
         [one],
-        RelativeTo::Reference(two_ref),
+        Anchor::Reference(two_ref),
         InsertSide::Below,
     )?
     .0
@@ -141,7 +153,7 @@ fn insert_below_reference() -> anyhow::Result<()> {
 fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let b = repo.rev_parse_single("B")?.detach();
     let c = repo.rev_parse_single("C")?.detach();
     let a_ref: gix::refs::FullName = "refs/heads/A".try_into()?;
@@ -161,11 +173,16 @@ fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
         .raw()
     );
 
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
     let (rebase, _) = but_workspace::commit::cherry_pick_commits(
         editor,
         [b, c],
-        RelativeTo::Reference(a_ref),
+        Anchor::Reference(a_ref),
         InsertSide::Below,
     )?;
     rebase.materialize()?;
@@ -194,7 +211,7 @@ fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
 fn sources_are_deduped() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let b = repo.rev_parse_single("B")?.detach();
     let a_ref: gix::refs::FullName = "refs/heads/A".try_into()?;
 
@@ -213,16 +230,21 @@ fn sources_are_deduped() -> anyhow::Result<()> {
         .raw()
     );
 
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
-    let (rebase, inserted_selectors) = but_workspace::commit::cherry_pick_commits(
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
+    let (rebase, inserted_handles) = but_workspace::commit::cherry_pick_commits(
         editor,
         [b, b],
-        RelativeTo::Reference(a_ref),
+        Anchor::Reference(a_ref),
         InsertSide::Below,
     )?;
 
     assert_eq!(
-        inserted_selectors.len(),
+        inserted_handles.len(),
         1,
         "duplicate B should produce only one copy"
     );
@@ -251,18 +273,23 @@ fn sources_are_deduped() -> anyhow::Result<()> {
 fn copies_get_new_change_ids() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let source = repo.rev_parse_single("B")?.detach();
     let target_ref: gix::refs::FullName = "refs/heads/A".try_into()?;
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
 
-    let (rebase, inserted_selectors) = but_workspace::commit::cherry_pick_commits(
+    let (rebase, inserted_handles) = but_workspace::commit::cherry_pick_commits(
         editor,
         [source],
-        RelativeTo::Reference(target_ref),
+        Anchor::Reference(target_ref),
         InsertSide::Below,
     )?;
-    let copy = rebase.lookup_pick(inserted_selectors[0])?;
+    let copy = rebase.id_of(inserted_handles[0])?;
     rebase.materialize()?;
 
     assert_ne!(
@@ -278,18 +305,23 @@ fn copies_get_new_change_ids() -> anyhow::Result<()> {
 fn copies_commit_contents() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack-files", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let source = repo.rev_parse_single("B")?.detach();
     let target_ref: gix::refs::FullName = "refs/heads/A".try_into()?;
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
 
-    let (rebase, inserted_selectors) = but_workspace::commit::cherry_pick_commits(
+    let (rebase, inserted_handles) = but_workspace::commit::cherry_pick_commits(
         editor,
         [source],
-        RelativeTo::Reference(target_ref),
+        Anchor::Reference(target_ref),
         InsertSide::Below,
     )?;
-    let copy = rebase.lookup_pick(inserted_selectors[0])?;
+    let copy = rebase.id_of(inserted_handles[0])?;
     rebase.materialize()?;
 
     assert_eq!(
@@ -319,15 +351,20 @@ fn copies_commit_contents() -> anyhow::Result<()> {
 fn rebased_children_keep_contents() -> anyhow::Result<()> {
     let (_tmp, graph, repo, mut meta, _description) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack-files", |_| {})?;
-    let mut workspace = graph.into_workspace()?;
+    let workspace = graph;
     let source = repo.rev_parse_single("B")?.detach();
     let target = repo.rev_parse_single("A")?.detach();
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(
+        workspace.commit_graph(),
+        workspace.project_meta(),
+        &mut meta,
+        &repo,
+    )?;
 
     but_workspace::commit::cherry_pick_commits(
         editor,
         [source],
-        RelativeTo::Commit(target),
+        Anchor::Commit(target),
         InsertSide::Below,
     )?
     .0

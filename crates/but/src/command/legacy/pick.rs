@@ -5,7 +5,7 @@ use but_core::{
     sync::{RepoExclusive, RepoShared},
 };
 use but_ctx::Context;
-use but_rebase::graph_rebase::mutate::{InsertSide, RelativeTo};
+use but_rebase::graph_rebase::{anchor::Anchor, mutate::InsertSide};
 use but_workspace::RefInfo;
 use gitbutler_oplog::entry::{OperationKind, SnapshotDetails};
 use gix::ObjectId;
@@ -259,7 +259,7 @@ fn run(
 
                     let new_commits = tx.cherry_pick_commits(
                         sources.iter().copied(),
-                        RelativeTo::Reference(branch_name.clone()),
+                        Anchor::Reference(branch_name.clone()),
                         InsertSide::Below,
                     )?;
 

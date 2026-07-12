@@ -12,7 +12,7 @@ use gix::{
     },
 };
 
-use crate::graph_rebase::{Checkout, MaterializeOutcome, SuccessfulRebase};
+use crate::graph_rebase::{Checkout, RebasedEditor};
 
 pub(super) struct LinkedCheckoutSpec {
     pub(super) name: BString,
@@ -117,7 +117,7 @@ fn open_linked_checkout_repos(
         .collect()
 }
 
-impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
+impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
     /// The linked worktrees this edit has to move, with where the rewrite put each
     /// one, validated against the shape recorded at editor creation.
     pub(super) fn linked_checkout_specs(&self) -> Result<Vec<LinkedCheckoutSpec>> {
@@ -125,7 +125,7 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
         for checkout in &self.checkouts {
             let Checkout::Worktree {
                 worktree_name,
-                selector,
+                entry,
                 ref_name: expected_ref,
                 initial_head,
                 merge_base_override,
@@ -134,7 +134,7 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
                 continue;
             };
             let (target, actual_ref) = self
-                .checkout_target(*selector)?
+                .checkout_target(*entry)?
                 .with_context(|| format!("Visible worktree {worktree_name} HEAD was removed"))?;
             if actual_ref.as_ref() != expected_ref.as_ref() {
                 bail!(
@@ -162,20 +162,20 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
     /// The editor's own `HEAD` checkout, or `None` when `HEAD` wasn't on a ref
     /// at editor creation and thus has nothing to follow.
     fn head_checkout(&self) -> Result<Option<HeadCheckout>> {
-        let Some((selector, merge_base_override)) =
+        let Some((entry, merge_base_override)) =
             self.checkouts.iter().find_map(|checkout| match checkout {
                 Checkout::Head {
-                    selector,
+                    entry,
                     merge_base_override,
-                } => Some((*selector, *merge_base_override)),
+                } => Some((*entry, *merge_base_override)),
                 Checkout::Worktree { .. } => None,
             })
         else {
             return Ok(None);
         };
         let (target, ref_name) = self
-            .checkout_target(selector)?
-            .context("Checkout selector is pointing to none")?;
+            .checkout_target(entry)?
+            .context("Checkout entry resolves to nothing")?;
         Ok(Some(HeadCheckout {
             target,
             ref_name,
@@ -183,10 +183,11 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
         }))
     }
 
-    /// Materializes a history rewrite.
-    pub fn materialize(mut self) -> Result<MaterializeOutcome<'ws, 'graph, M>> {
+    /// Materializes a history rewrite
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    pub fn materialize(mut self) -> Result<(but_graph::CommitGraph, &'meta mut M)> {
         let repo = self.repo.clone();
-        if let Some(memory) = self.repo.objects.take_object_memory() {
+        if let Some(memory) = self.editor.repo.objects.take_object_memory() {
             memory.persist(&self.repo)?;
         }
 
@@ -218,10 +219,10 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
             )?;
         }
 
-        let mut ref_edits = self.ref_edits.clone();
+        let mut ref_edits = std::mem::take(&mut self.ref_edits);
         ref_edits.extend(detached_head_edits);
         if let Some(refname) = head.and_then(|head| head.ref_name)
-            && repo.head_name()?.as_ref() != Some(&refname)
+            && self.repo.head_name()?.as_ref() != Some(&refname)
         {
             let ref_short_name = refname.shorten().to_owned();
             ref_edits.push(RefEdit {
@@ -242,47 +243,48 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
                 deref: false,
             });
         }
-
-        repo.edit_references(ref_edits)?;
-
-        let project_meta = self.workspace.graph.project_meta.clone();
-        self.workspace
-            .refresh_from_head(&repo, &*self.meta, project_meta)?;
-
-        Ok(MaterializeOutcome {
-            graph: self.graph,
-            history: self.history,
-            workspace: self.workspace,
-            meta: self.meta,
-        })
+        self.finish(ref_edits)
     }
 
     /// Materializes a rebase without checking out the editor's own worktree.
     ///
+    /// For the vast majority of operations you want to use
+    /// [`Self::materialize`]. This is intended to be used in niche cases like
+    /// `uncommit`.
+    ///
+    /// Skipping the checkout means the uncommitted changes are not carried from
+    /// the old head to the new one. If you drop a commit from history, this
+    /// leaves its changes in your working directory; [`Self::materialize`]
+    /// would remove them from disk.
+    ///
     /// Linked worktrees aren't checked out either, but their `HEAD`s still follow the
     /// rewrite, so what they had checked out surfaces as uncommitted changes there -
     /// exactly like the editor's own worktree.
-    pub fn materialize_without_checkout(mut self) -> Result<MaterializeOutcome<'ws, 'graph, M>> {
-        let repo = self.repo.clone();
-        if let Some(memory) = self.repo.objects.take_object_memory() {
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    pub fn materialize_without_checkout(
+        mut self,
+    ) -> Result<(but_graph::CommitGraph, &'meta mut M)> {
+        if let Some(memory) = self.editor.repo.objects.take_object_memory() {
             memory.persist(&self.repo)?;
         }
 
-        let mut ref_edits = self.ref_edits.clone();
+        let mut ref_edits = std::mem::take(&mut self.ref_edits);
         ref_edits.extend(detached_worktree_head_edits(
             &self.linked_checkout_specs()?,
         )?);
-        repo.edit_references(ref_edits)?;
+        self.finish(ref_edits)
+    }
 
-        let project_meta = self.workspace.graph.project_meta.clone();
-        self.workspace
-            .refresh_from_head(&repo, &*self.meta, project_meta)?;
+    /// Apply the reference edits and surrender the materialized commit graph — the next
+    /// workspace state. Materialization adds no information (ids and mappings were
+    /// computed at rebase time and are readable on [`RebasedEditor`] before this call);
+    /// its products are the side effects, plus this graph for
+    /// `Workspace::refresh_from_commit_graph`. The metadata handle rides along because
+    /// consuming the editor is what releases the borrow it took at construction —
+    /// callers that persist metadata after the refs land reclaim it here.
+    fn finish(self, ref_edits: Vec<RefEdit>) -> Result<(but_graph::CommitGraph, &'meta mut M)> {
+        self.repo.edit_references(ref_edits)?;
 
-        Ok(MaterializeOutcome {
-            graph: self.graph,
-            history: self.history,
-            workspace: self.workspace,
-            meta: self.meta,
-        })
+        Ok((self.editor.graph.into_arena(), self.editor.meta))
     }
 }

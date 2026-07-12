@@ -13,7 +13,8 @@ use but_api::{
 };
 use but_core::{DryRun, diff::CommitDetails, ref_metadata::StackId};
 use but_ctx::Context;
-use but_rebase::graph_rebase::mutate::{InsertSide, RelativeTo};
+use but_rebase::graph_rebase::anchor::Anchor;
+use but_rebase::graph_rebase::mutate::InsertSide;
 use gitbutler_operating_modes::OperatingMode;
 use gitbutler_oplog::entry::Snapshot;
 use gix::prelude::ObjectIdExt;
@@ -87,7 +88,7 @@ pub fn create_empty_commit_relative_to_branch(
     };
     but_api::commit::insert_blank::commit_insert_blank(
         ctx,
-        RelativeTo::Reference(full_name),
+        Anchor::Reference(full_name),
         InsertSide::Below,
         DryRun::No,
     )
@@ -99,7 +100,7 @@ pub fn create_empty_commit_relative_to_commit(
 ) -> anyhow::Result<CommitInsertBlankResult> {
     but_api::commit::insert_blank::commit_insert_blank(
         ctx,
-        RelativeTo::Commit(commit_id),
+        Anchor::Commit(commit_id),
         InsertSide::Above,
         DryRun::No,
     )
