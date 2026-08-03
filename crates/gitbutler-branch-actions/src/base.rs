@@ -19,7 +19,6 @@ use tracing::instrument;
 
 use crate::{
     VirtualBranchesExt,
-    integration::update_workspace_commit,
     remote::{RemoteCommit, commit_to_remote_commit},
 };
 
@@ -129,8 +128,9 @@ pub fn bootstrap_default_target_if_missing(ctx: &Context) -> Result<bool> {
 fn go_back_to_integration(ctx: &Context, perm: &RepoShared) -> Result<BaseBranch> {
     {
         let repo = ctx.repo.get()?;
+        let workspace = ctx.workspace_from_head_uncached(perm)?;
         let workspace_commit_to_checkout =
-            but_workspace::legacy::remerged_workspace_commit_v2(ctx)?;
+            but_workspace::legacy::remerged_workspace_commit_v2(ctx, &workspace)?;
         let tree_to_checkout_to_avoid_ref_update =
             repo.find_commit(workspace_commit_to_checkout)?.tree_id()?;
         but_core::worktree::safe_checkout_from_head(
@@ -143,7 +143,7 @@ fn go_back_to_integration(ctx: &Context, perm: &RepoShared) -> Result<BaseBranch
         )?;
     }
 
-    update_workspace_commit(ctx, false)?;
+    crate::integration::update_workspace_commit_with_perm(ctx, false, perm)?;
     get_base_branch_data(ctx, perm)
 }
 
@@ -265,7 +265,7 @@ pub(crate) fn set_base_branch(
 
     set_exclude_decoration(ctx)?;
 
-    crate::integration::update_workspace_commit_with_vb_state(&vb_state, ctx, true)?;
+    crate::integration::update_workspace_commit_with_perm(ctx, true, perm)?;
 
     get_base_branch_data(ctx, perm)
 }
