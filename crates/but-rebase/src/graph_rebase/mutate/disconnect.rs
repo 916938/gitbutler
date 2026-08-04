@@ -1,7 +1,8 @@
 //! Disconnect surgery: cutting a range out of its surroundings and healing the wound.
 use std::collections::{HashMap, HashSet};
 
-use crate::graph_rebase::graph_editor::{CommitIndex, ParentEntry, RefIndex};
+use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
+use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::ref_ops::{
     carry_stack_above, land_stack_above, readopt_dangling_refs, transfer_stack, unhook_ref,
 };

@@ -20,6 +20,7 @@
 //! from its position in one loop. "Rewrote the graph but forgot to move the branch"
 //! is not a bug this engine can have; there is no such step to forget.
 
+mod arena;
 mod creation;
 mod graph_editor;
 mod positions;
@@ -39,8 +40,9 @@ pub mod testing;
 pub mod traverse;
 pub mod workspace;
 
+pub use arena::CommitIndex;
 pub use creation::GraphEditorOptions;
-pub use graph_editor::{CommitIndex, EditorIndex, RefIndex};
+pub use graph_editor::{EditorIndex, RefIndex};
 pub use workspace::{GraphWorkspace, Subgraph};
 
 pub(crate) use graph_editor::GraphEditor;

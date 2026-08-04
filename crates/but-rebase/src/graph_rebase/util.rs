@@ -1,9 +1,9 @@
 //! Utilities around the commit graph for internal use.
 
-use crate::graph_rebase::graph_editor::ParentEntry;
+use crate::graph_rebase::arena::ParentEntry;
 use std::collections::HashSet;
 
-use crate::graph_rebase::graph_editor::CommitIndex;
+use crate::graph_rebase::arena::CommitIndex;
 use crate::graph_rebase::{EditorIndex, GraphEditor};
 
 /// Pruned depth-first search for `target`'s commit parents in parent order, descending through

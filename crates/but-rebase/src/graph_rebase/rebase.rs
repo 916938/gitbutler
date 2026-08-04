@@ -1,6 +1,6 @@
 //! Perform the actual rebase operations
 
-use crate::graph_rebase::graph_editor::ParentEntry;
+use crate::graph_rebase::arena::ParentEntry;
 use std::{
     collections::{HashSet, VecDeque},
     fmt::Write as _,
@@ -14,7 +14,8 @@ use gix::refs::{
     transaction::{Change, LogChange, PreviousValue, RefEdit},
 };
 
-use crate::graph_rebase::graph_editor::{CommitIndex, WsParentKind};
+use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::graph_editor::WsParentKind;
 use crate::graph_rebase::{
     CommitSpec, Editor, GraphEditor, RebasedEditor,
     cherry_pick::{CherryPickOutcome, cherry_pick, merge_base},

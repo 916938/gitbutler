@@ -9,7 +9,8 @@
 //! commits are rewritten around it.
 
 use crate::graph_rebase::GraphEditor;
-use crate::graph_rebase::graph_editor::{CommitIndex, ParentEntry, RefIndex};
+use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
+use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::positions;
 
 /// A destination for a reference among the groups on a commit, named by intent.

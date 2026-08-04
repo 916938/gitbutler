@@ -8,13 +8,14 @@
 //! reference table is a straight copy of the stored layout with commit ids mapped to commit
 //! indices; nothing is re-derived on the way in.
 
-use crate::graph_rebase::graph_editor::ParentEntry;
+use crate::graph_rebase::arena::ParentEntry;
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use but_core::{RefMetadata, commit::SignCommit, ref_metadata::ProjectMeta};
 
-use crate::graph_rebase::graph_editor::{CommitIndex, EditorIndex, GroupCarry, RefGroup, RefIndex};
+use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::graph_editor::{EditorIndex, GroupCarry, RefGroup, RefIndex};
 use crate::graph_rebase::{
     Checkout, CommitSpec, Editor, GraphEditor, RebasedEditor, RevisionHistory,
 };

@@ -38,8 +38,9 @@
 //! - **mint** — a workspace-parent entry that exists only in the stack declaration (an
 //!   empty lane), never written as real ancestry; see `GraphEditor::ws_minted_parents`.
 
+use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
 use crate::graph_rebase::graph_editor::GroupCarry;
-use crate::graph_rebase::graph_editor::{CommitIndex, ParentEntry, RefIndex};
+use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::{EditorIndex, GraphEditor};
 
 /// Resolve `entry` to the commit it stands for: a commit is itself, a tombstone follows its

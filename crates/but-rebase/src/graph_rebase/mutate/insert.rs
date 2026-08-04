@@ -1,6 +1,7 @@
 //! Insertion: placing ranges, commits, and references relative to an anchor.
 
-use crate::graph_rebase::graph_editor::{CommitIndex, ParentEntry, RefIndex};
+use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
+use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::ref_ops::{
     RefPlace, SplitBoundary, move_ref, place_ref, redirect_entries, rehang_split_boundary,
     settle_group_lower, split_group,
@@ -24,7 +25,7 @@ struct BelowParents {
     /// joins once that parent's final number is known.
     ref_joins: Vec<(usize, RefIndex)>,
     /// Drained parent entry ids awaiting re-statement onto the range's parent-most.
-    moved_entry_ids: Vec<crate::graph_rebase::graph_editor::ParentEntryId>,
+    moved_entry_ids: Vec<crate::graph_rebase::arena::ParentEntryId>,
 }
 
 impl<M: RefMetadata> Editor<'_, M> {

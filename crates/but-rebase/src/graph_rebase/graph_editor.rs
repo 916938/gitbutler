@@ -1,21 +1,16 @@
-//! An owned arena graph for the editor. Each arena node holds a commit (a removed one is
-//! tombstoned in place and has no commit id) with its settings in a parallel table, and an
-//! ordered parent array — a parent's position in the array is its parent order, with no
-//! gaps. References live in the ref table and hold positions. Children are derived from
-//! the parent arrays (a maintained reverse index, never independent truth). Nothing is
-//! ever deleted (a removed commit is tombstoned, a removed reference too, records
-//! retained), so ids stay stable. [`CommitSpec`] exists only at the API boundary:
-//! [`GraphEditor::commit_spec`] assembles it from the commit and settings columns,
-//! [`GraphEditor::set_commit`] splits it back into them.
+//! The editor's store, in two halves. The COMMIT half lives in [`CommitArena`]
+//! (`arena.rs`): the owned commit graph with ordered parent arrays, settings, the
+//! children index, and stable parent-entry ids — no reference knowledge at all. This
+//! module holds the REFERENCE half — the ref table and the position layout — plus
+//! [`GraphEditor`], which composes the two and owns every method that must read across
+//! them (classification, workspace-parent provenance, the [`EditorIndex`] dispatchers).
+//! Nothing is ever deleted on either side (commits and references tombstone in place),
+//! so ids stay stable. [`CommitSpec`] exists only at the API boundary.
 
 use std::collections::{HashMap, HashSet};
 
-use but_core::commit::SignCommit;
-
-use crate::graph_rebase::{
-    CommitSpec,
-    cherry_pick::{PickMode, TreeMergeMode},
-};
+use crate::graph_rebase::CommitSpec;
+use crate::graph_rebase::arena::{CommitArena, CommitIndex, ParentEntry, ParentEntryId};
 
 /// The stable identifier of an editor-graph entry — the editor's one union token, and
 /// the only currency callers ever hold. Two namespaces: `Commit` points into the commit
@@ -67,20 +62,9 @@ impl std::fmt::Display for EditorIndex {
     }
 }
 
-/// A node in the commit arena — a commit or its tombstone. Nodes are the ONLY entities that
-/// carry parent entries: parent arrays connect nodes, never references.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct CommitIndex(pub(crate) usize);
-
 impl From<CommitIndex> for EditorIndex {
     fn from(n: CommitIndex) -> Self {
         EditorIndex::Commit(n)
-    }
-}
-
-impl std::fmt::Display for CommitIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "c{}", self.0)
     }
 }
 
@@ -99,19 +83,6 @@ impl std::fmt::Display for RefIndex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "r{}", self.0)
     }
-}
-
-/// One incoming child parent entry of a commit, named POSITIONALLY as `(source node, parent number)` —
-/// the coordinate the children index and carry intents are expressed in. Carry statements
-/// resolve these coordinates to a stable [`ParentEntryId`] when authored, so a parent entry removed and
-/// re-created at the same coordinates is a DIFFERENT parent entry that no statement follows — see
-/// [`GroupCarry::Entries`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct ParentEntry {
-    /// The commit whose parent list holds the entry.
-    pub child: CommitIndex,
-    /// The parent number: the entry's position in `child`'s parent list.
-    pub number: usize,
 }
 
 /// One reference's editor state: name, mutability, liveness, convergence flag. Deletion
@@ -140,76 +111,6 @@ pub(crate) struct RefState {
     pub ambiguous: bool,
 }
 
-/// Everything a [`CommitSpec`] carries except the commit id — the id lives on the arena commit itself,
-/// so the options live beside it. Stale for tombstones (never read; a revival overwrites).
-#[derive(Debug, Clone)]
-pub(crate) struct CommitSettings {
-    pub preserved_parents: Option<Vec<gix::ObjectId>>,
-    pub pick_mode: PickMode,
-    pub sign_commit: SignCommit,
-    pub exclude_from_tracking: bool,
-    pub conflictable: bool,
-    pub tree_merge_mode: TreeMergeMode,
-    pub mutable: bool,
-}
-
-impl CommitSettings {
-    fn split(spec: CommitSpec) -> (gix::ObjectId, Self) {
-        let CommitSpec {
-            id,
-            preserved_parents,
-            pick_mode,
-            sign_commit,
-            exclude_from_tracking,
-            conflictable,
-            tree_merge_mode,
-            mutable,
-        } = spec;
-        (
-            id,
-            Self {
-                preserved_parents,
-                pick_mode,
-                sign_commit,
-                exclude_from_tracking,
-                conflictable,
-                tree_merge_mode,
-                mutable,
-            },
-        )
-    }
-
-    fn spec(&self, id: gix::ObjectId) -> CommitSpec {
-        CommitSpec {
-            id,
-            preserved_parents: self.preserved_parents.clone(),
-            pick_mode: self.pick_mode,
-            sign_commit: self.sign_commit,
-            exclude_from_tracking: self.exclude_from_tracking,
-            conflictable: self.conflictable,
-            tree_merge_mode: self.tree_merge_mode,
-            mutable: self.mutable,
-        }
-    }
-}
-
-impl Default for CommitSettings {
-    fn default() -> Self {
-        let (_, settings) =
-            Self::split(CommitSpec::new(gix::ObjectId::null(gix::hash::Kind::Sha1)));
-        settings
-    }
-}
-
-/// A STABLE PARENT-ENTRY IDENTITY: allocated once per parent-list entry — at ingest or when a
-/// mutation creates the parent entry — and immune to parent-number renumbering. Re-pointing a parent entry
-/// (`replace_parent`, `redirect_children`) keeps its id, so statements follow the parent entry to its
-/// new target; deleting a parent retires the id for good. Because carry statements name parent entries
-/// by id rather than by position, renumbering a parent array cannot invalidate them, and no
-/// rename maintenance is needed to keep them pointing at the right parent entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ParentEntryId(u64);
-
 /// The editor's carry: [`but_graph::ref_layout::GroupCarry`] over STABLE PARENT-ENTRY IDS — the
 /// same shape the display side stores positionally, with stored `(child, parent number)`
 /// coordinates resolved to ids at creation. Listed parent entries are always read against the
@@ -232,24 +133,8 @@ pub(crate) type RefGroup = but_graph::ref_layout::RefGroup<ParentEntryId>;
 /// [`RefLayout`](but_graph::ref_layout::RefLayout).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GraphEditor {
-    // ── The commit table: the arena plus its lockstep columns. One row per commit,
-    // all indexed by the same `CommitIndex`; appends flow through `push_rows`, which
-    // asserts the columns never drift apart. ──
-    /// THE arena: `EditorIndex::Commit(i)` IS the commit-graph index `i`. Commit ids are
-    /// the commit (tombstoning flags a commit in place, its index survives every
-    /// rewrite); the parent arrays are the ordered structure.
-    arena: but_graph::CommitGraph,
-    /// Each commit's options.
-    settings: Vec<CommitSettings>,
-    /// The derived children index: `children[p]` holds every `(child, parent number)`
-    /// parent entry naming commit `p`, sorted. Maintained through [`Self::update_parents`] — the
-    /// single seam every parent mutation flows through — so [`Self::children_of`] is a
-    /// lookup, not an arena scan.
-    children: Vec<Vec<ParentEntry>>,
-    /// Each commit's parent-array parent entry ids — an INNER parallel array, one id per parent
-    /// entry: `parent_entry_ids[child][parent_number]` is the stable identity of that parent entry.
-    /// Maintained by the named parent mutators, never by renumbering.
-    parent_entry_ids: Vec<Vec<ParentEntryId>>,
+    /// The commit table — the vanilla half of the store; see [`CommitArena`].
+    commits: CommitArena,
 
     // ── The reference table and its lookup. ──
     refs: Vec<RefState>,
@@ -271,9 +156,6 @@ pub(crate) struct GraphEditor {
     /// entering parent entries) is all list structure there, read via [`Self::positioned_on`],
     /// [`Self::below_of`], `positions::ref_depth` and `positions::entering`.
     layout: but_graph::ref_layout::RefGroups<CommitIndex, ParentEntryId>,
-    /// The parent entry-id allocator — monotonically increasing, never reused.
-    next_parent_entry_id: u64,
-
     // ── Workspace-parent provenance (see [`WsParentKind`]). ──
     /// The workspace commit's REAL parents as ingested: `(parent entry, target)` per entry backed by
     /// an on-disk parent of the managed workspace commit. An entry stays faithful while its parent entry
@@ -308,37 +190,11 @@ impl GraphEditor {
     /// parent entry must already point at a node in the graph — the editor's standing requirement —
     /// and the caller follows up with per-node settings via [`Self::set_step`].
     pub(crate) fn adopt(arena: but_graph::CommitGraph) -> Self {
-        let settings = vec![CommitSettings::default(); arena.commit_count()];
-        let mut children: Vec<Vec<ParentEntry>> = vec![Vec::new(); arena.commit_count()];
-        for i in 0..arena.commit_count() {
-            for (parent_number, parent) in arena.parent_indices(i).into_iter().enumerate() {
-                children[parent].push(ParentEntry {
-                    child: CommitIndex(i),
-                    number: parent_number,
-                });
-            }
-        }
-        let mut next_parent_entry_id = 0u64;
-        let parent_entry_ids = (0..arena.commit_count())
-            .map(|i| {
-                (0..arena.parent_indices(i).len())
-                    .map(|_| {
-                        let id = ParentEntryId(next_parent_entry_id);
-                        next_parent_entry_id += 1;
-                        id
-                    })
-                    .collect()
-            })
-            .collect();
         Self {
-            arena,
-            settings,
+            commits: CommitArena::adopt(arena),
             refs: Vec::new(),
             by_name: HashMap::new(),
             layout: Default::default(),
-            children,
-            parent_entry_ids,
-            next_parent_entry_id,
             ws_real_parents: Vec::new(),
             ws_minted_parents: Vec::new(),
         }
@@ -371,82 +227,55 @@ impl GraphEditor {
             .collect()
     }
 
-    fn alloc_edge_id(&mut self) -> ParentEntryId {
-        let id = ParentEntryId(self.next_parent_entry_id);
-        self.next_parent_entry_id += 1;
-        id
-    }
-
     /// The stable identity of the live parent entry at `(child, parent_number)`, if it exists.
     pub(crate) fn entry_id_at(
         &self,
         child: CommitIndex,
         parent_number: usize,
     ) -> Option<ParentEntryId> {
-        self.parent_entry_ids
-            .get(child.0)?
-            .get(parent_number)
-            .copied()
+        self.commits.entry_id_at(child, parent_number)
     }
 
     /// THE arena, read-only — the write-through seam projects it after a rebase.
     pub(crate) fn arena(&self) -> &but_graph::CommitGraph {
-        &self.arena
+        self.commits.graph()
     }
 
     /// Surrender the arena — the materialized commit graph, the editor's final product.
     pub(crate) fn into_arena(self) -> but_graph::CommitGraph {
-        self.arena
+        self.commits.into_graph()
     }
 
     /// Add the commit `spec` describes to the node arena and return its stable id.
     /// References do not belong here — use [`Self::add_reference`].
     pub(crate) fn add_commit(&mut self, spec: CommitSpec) -> CommitIndex {
-        let (id, settings) = CommitSettings::split(spec);
-        let i = self.arena.add_commit(id);
-        self.push_rows(settings, i)
+        self.commits.add_commit(spec)
     }
 
     /// Add an entry born tombstoned: a placeholder that holds no commit. Only unit-test
     /// graph builders construct these; real removal tombstones an existing commit.
     #[cfg(test)]
     pub(crate) fn add_tombstone(&mut self) -> CommitIndex {
-        let i = self.arena.add_tombstone();
-        self.push_rows(CommitSettings::default(), i)
-    }
-
-    fn push_rows(&mut self, settings: CommitSettings, i: usize) -> CommitIndex {
-        self.settings.push(settings);
-        self.children.push(Vec::new());
-        self.parent_entry_ids.push(Vec::new());
-        debug_assert_eq!(
-            self.settings.len(),
-            self.arena.commit_count(),
-            "settings table fell out of step with the arena"
-        );
-        CommitIndex(i)
+        self.commits.add_tombstone()
     }
 
     /// Overwrite the commit at `entry` per `spec` — id and settings both; revives a
     /// tombstone.
     pub(crate) fn set_commit(&mut self, entry: CommitIndex, spec: CommitSpec) {
-        let (id, settings) = CommitSettings::split(spec);
-        self.arena.revive_commit(entry.0, id);
-        self.settings[entry.0] = settings;
+        self.commits.set_commit(entry, spec);
     }
 
     /// Tombstone the node at `entry`: it stops holding a commit (settings go stale, not
     /// cleared).
     pub(crate) fn tombstone_commit(&mut self, entry: CommitIndex) {
-        self.arena.tombstone_commit(entry.0);
+        self.commits.tombstone_commit(entry);
     }
 
     /// The commit id of the commit at `entry` — `None` for tombstones and references. The
     /// cheap way to read just the id; use [`Self::commit_spec`] for the full spec.
     pub(crate) fn commit_id(&self, entry: impl Into<EditorIndex>) -> Option<gix::ObjectId> {
-        let entry = entry.into();
-        match entry {
-            EditorIndex::Commit(i) => self.arena.commit_id(i.0),
+        match entry.into() {
+            EditorIndex::Commit(i) => self.commits.commit_id(i),
             EditorIndex::Ref(_) => None,
         }
     }
@@ -454,19 +283,13 @@ impl GraphEditor {
     /// The spec of the commit at `entry`, assembled from the arena commit and its
     /// settings column; `None` for a tombstone.
     pub(crate) fn commit_spec(&self, entry: CommitIndex) -> Option<CommitSpec> {
-        self.arena
-            .commit_id(entry.0)
-            .map(|id| self.settings[entry.0].spec(id))
+        self.commits.commit_spec(entry)
     }
 
     /// Rewrite the commit id of the commit at `entry` IN PLACE — THE rebase write: the node id,
     /// its parent array, its settings, and every position naming it all survive unchanged.
     pub(crate) fn set_commit_id(&mut self, entry: CommitIndex, id: gix::ObjectId) {
-        debug_assert!(
-            self.arena.commit_id(entry.0).is_some(),
-            "tombstones have no commit id"
-        );
-        self.arena.set_commit_id(entry.0, id);
+        self.commits.set_commit_id(entry, id);
     }
 
     /// Overwrite the preserved parents of the commit at `entry` (see
@@ -476,11 +299,7 @@ impl GraphEditor {
         entry: CommitIndex,
         parents: Option<Vec<gix::ObjectId>>,
     ) {
-        debug_assert!(
-            self.arena.commit_id(entry.0).is_some(),
-            "tombstones carry no spec to read"
-        );
-        self.settings[entry.0].preserved_parents = parents;
+        self.commits.set_preserved_parents(entry, parents);
     }
 
     /// `true` iff `entry` is a commit — `false` for tombstones and references.
@@ -491,16 +310,14 @@ impl GraphEditor {
     /// All node-arena ids (commits and tombstones), ascending — the type says
     /// references are not here; see [`Self::references`] and [`Self::ref_indices`].
     pub(crate) fn commit_indices(&self) -> impl Iterator<Item = CommitIndex> + '_ {
-        (0..self.arena.commit_count()).map(CommitIndex)
+        self.commits.commit_indices()
     }
 
     /// The nodes that no other node lists as a parent — the childless tips, ascending.
     /// Callers (head discovery) want commits and tombstones only; references can't appear
     /// here by type.
     pub(crate) fn tips(&self) -> impl Iterator<Item = CommitIndex> + '_ {
-        (0..self.arena.commit_count())
-            .filter(|&i| self.children[i].is_empty())
-            .map(CommitIndex)
+        self.commits.tips()
     }
 
     /// Add a reference and return its stable id. Names are identity: adding a name that
@@ -914,12 +731,7 @@ impl GraphEditor {
     /// have none.
     pub(crate) fn parents(&self, entry: impl Into<EditorIndex>) -> Vec<CommitIndex> {
         match entry.into() {
-            EditorIndex::Commit(i) => self
-                .arena
-                .parent_indices(i.0)
-                .into_iter()
-                .map(CommitIndex)
-                .collect(),
+            EditorIndex::Commit(i) => self.commits.parents(i),
             EditorIndex::Ref(_) => Vec::new(),
         }
     }
@@ -932,21 +744,15 @@ impl GraphEditor {
     /// Every parent entry that names `entry` as a parent, as sorted `(child, parent number)`
     /// pairs — answered from the maintained children index, not an arena scan.
     pub(crate) fn children_of(&self, entry: impl Into<EditorIndex>) -> &[ParentEntry] {
-        let entry = entry.into();
-        match entry {
-            EditorIndex::Commit(i) => &self.children[i.0],
+        match entry.into() {
+            EditorIndex::Commit(i) => self.commits.children_of(i),
             EditorIndex::Ref(_) => &[],
         }
     }
 
     /// Append `parent` as `child`'s last parent; returns its parent number.
     pub(crate) fn push_parent(&mut self, child: CommitIndex, parent: CommitIndex) -> usize {
-        let id = self.alloc_edge_id();
-        self.parent_entry_ids[child.0].push(id);
-        self.update_parents(child, |parents| {
-            parents.push(parent);
-            parents.len() - 1
-        })
+        self.commits.push_parent(child, parent)
     }
 
     /// Insert `parent` at `parent number` of `child` (clamped to the array end); later
@@ -958,28 +764,20 @@ impl GraphEditor {
         parent_number: usize,
         parent: CommitIndex,
     ) -> usize {
-        let len = self.parent_count(child);
-        let parent_number = parent_number.min(len);
-        let id = self.alloc_edge_id();
-        self.parent_entry_ids[child.0].insert(parent_number, id);
-        self.update_parents(child, |parents| parents.insert(parent_number, parent));
-        parent_number
+        self.commits.insert_parent(child, parent_number, parent)
     }
 
     /// Remove `child`'s parent at `parent number`, returning it; later parent numbers
     /// shift down, their statements untouched, and statements naming the removed parent entry
     /// are dropped for good — an operation that wants them back must state them again.
+    /// The ONE cross-store parent mutation: the removal is the arena's, the statement
+    /// drop is the layout's.
     pub(crate) fn remove_parent(
         &mut self,
         child: CommitIndex,
         parent_number: usize,
     ) -> Option<CommitIndex> {
-        let len = self.parent_count(child);
-        if parent_number >= len {
-            return None;
-        }
-        let target = self.update_parents(child, |parents| parents.remove(parent_number));
-        let removed = self.parent_entry_ids[child.0].remove(parent_number);
+        let (target, removed) = self.commits.remove_parent(child, parent_number)?;
         self.retain_edges(|&id| id != removed);
         Some(target)
     }
@@ -992,48 +790,20 @@ impl GraphEditor {
         parent_number: usize,
         new_parent: CommitIndex,
     ) {
-        self.update_parents(child, |parents| match parents.get_mut(parent_number) {
-            Some(entry) => *entry = new_parent,
-            None => debug_assert!(
-                false,
-                "replace_parent: {child} has no parent_number {parent_number}"
-            ),
-        });
+        self.commits
+            .replace_parent(child, parent_number, new_parent);
     }
 
     /// Move `from`'s whole parent array onto `to` (which must have none); the parent entries keep
     /// their identities, so statements follow without any rewrite.
     pub(crate) fn transplant_parents(&mut self, from: CommitIndex, to: CommitIndex) {
-        debug_assert_eq!(
-            self.parent_count(to),
-            0,
-            "transplant target {to} already has parents"
-        );
-        let parents = self.update_parents(from, std::mem::take);
-        let ids = std::mem::take(&mut self.parent_entry_ids[from.0]);
-        self.parent_entry_ids[to.0] = ids;
-        self.update_parents(to, |to_parents| *to_parents = parents);
+        self.commits.transplant_parents(from, to);
     }
 
     /// Re-target every parent-array entry naming `from` onto `to`, parent numbers preserved —
     /// the parent entries keep their ids, so statements naming them stay valid untouched.
     pub(crate) fn redirect_children(&mut self, from: CommitIndex, to: CommitIndex) {
-        // The index is sorted by child, so consecutive parent entries of one child dedup away.
-        let mut children: Vec<CommitIndex> = self
-            .children_of(from)
-            .iter()
-            .map(|&ParentEntry { child, .. }| child)
-            .collect();
-        children.dedup();
-        for child in children {
-            self.update_parents(child, |parents| {
-                for parent in parents.iter_mut() {
-                    if *parent == from {
-                        *parent = to;
-                    }
-                }
-            });
-        }
+        self.commits.redirect_children(from, to);
     }
 
     /// Empty `child`'s parent array, returning each parent with its retired parent entry id.
@@ -1045,9 +815,7 @@ impl GraphEditor {
         &mut self,
         child: CommitIndex,
     ) -> Vec<(CommitIndex, ParentEntryId)> {
-        let parents = self.update_parents(child, std::mem::take);
-        let ids = std::mem::take(&mut self.parent_entry_ids[child.0]);
-        parents.into_iter().zip(ids).collect()
+        self.commits.drain_parents(child)
     }
 
     /// Re-state carry statements from retired parent entry ids onto their successors — the ONE
@@ -1086,56 +854,5 @@ impl GraphEditor {
                 entries.retain(&keep);
             }
         }
-    }
-
-    /// Rewrite `child`'s parent array through `f` — the single seam every parent mutation
-    /// flows through into the arena's parent number write. Parents are [`CommitIndex`] by type:
-    /// references in a parent entry are unrepresentable.
-    fn update_parents<R>(
-        &mut self,
-        child: CommitIndex,
-        f: impl FnOnce(&mut Vec<CommitIndex>) -> R,
-    ) -> R {
-        let old = self.arena.parent_indices(child.0);
-        let mut parents: Vec<CommitIndex> = old.iter().copied().map(CommitIndex).collect();
-        let result = f(&mut parents);
-        let targets: Vec<usize> = parents.into_iter().map(|parent| parent.0).collect();
-        for (parent_number, &parent) in old.iter().enumerate() {
-            let entries = &mut self.children[parent];
-            if let Ok(at) = entries.binary_search(&ParentEntry {
-                child,
-                number: parent_number,
-            }) {
-                entries.remove(at);
-            }
-        }
-        for (parent_number, &parent) in targets.iter().enumerate() {
-            let entries = &mut self.children[parent];
-            match entries.binary_search(&ParentEntry {
-                child,
-                number: parent_number,
-            }) {
-                Err(at) => entries.insert(
-                    at,
-                    ParentEntry {
-                        child,
-                        number: parent_number,
-                    },
-                ),
-                Ok(_) => debug_assert!(
-                    false,
-                    "children index already names ({child}, {parent_number})"
-                ),
-            }
-        }
-        // Preserved parents pin the commit's onto-commits only while its parent entries are
-        // untouched (they carry raw parents the walk didn't materialize). Once a
-        // mutation rewrites the parent array, the live parent entries are the truth — a stale
-        // preserved list would make the rebase silently ignore the reparenting.
-        if targets.as_slice() != old && self.settings[child.0].preserved_parents.is_some() {
-            self.settings[child.0].preserved_parents = None;
-        }
-        self.arena.set_parents(child.0, targets);
-        result
     }
 }

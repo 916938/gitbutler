@@ -3,7 +3,7 @@
 //! graph as an ASCII DAG for snapshot tests. The rest of the module (group grouping,
 //! head finding, topological order) supports that rendering.
 
-use crate::graph_rebase::graph_editor::ParentEntry;
+use crate::graph_rebase::arena::ParentEntry;
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
@@ -13,7 +13,8 @@ use anyhow::Result;
 use but_core::RefMetadata;
 use renderdag::{Ancestor, GraphRowRenderer, Renderer as _};
 
-use crate::graph_rebase::graph_editor::{CommitIndex, RefIndex};
+use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::{
     Editor, EditorIndex, GraphEditor, RebasedEditor, positions, workspace::Subgraph,
 };
