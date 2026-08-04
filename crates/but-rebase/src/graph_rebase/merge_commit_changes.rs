@@ -274,7 +274,7 @@ fn traverse_graph_for_planning<M: RefMetadata>(
     let mut seen_normal = HashSet::<CommitIndex>::new();
     let mut seen_target_ancestor_walk = HashSet::<CommitIndex>::new();
 
-    let mut roots = editor.graph.tips().collect::<Vec<CommitIndex>>();
+    let mut roots = editor.store.tips().collect::<Vec<CommitIndex>>();
     roots.sort_unstable();
 
     for root in roots {
@@ -283,7 +283,7 @@ fn traverse_graph_for_planning<M: RefMetadata>(
             match mode {
                 TraversalMode::Normal => {
                     if expanded {
-                        if let Some(id) = editor.graph.commit_id(entry) {
+                        if let Some(id) = editor.store.commit_id(entry) {
                             if let Some(first_parent_metadata) =
                                 first_parent_metadata(editor, id, selected_commit_ids)?
                             {
@@ -297,7 +297,7 @@ fn traverse_graph_for_planning<M: RefMetadata>(
 
                             if id == target_commit_id {
                                 traversal.target_ancestor_commit_ids.insert(id);
-                                for parent_idx in collect_ordered_parents(&editor.graph, entry) {
+                                for parent_idx in collect_ordered_parents(&editor.store, entry) {
                                     stack.push((
                                         parent_idx,
                                         false,
@@ -313,7 +313,7 @@ fn traverse_graph_for_planning<M: RefMetadata>(
                         continue;
                     }
 
-                    let parents = collect_ordered_parents(&editor.graph, entry);
+                    let parents = collect_ordered_parents(&editor.store, entry);
                     stack.push((entry, true, TraversalMode::Normal));
                     for parent_idx in parents.into_iter() {
                         stack.push((parent_idx, false, TraversalMode::Normal));
@@ -324,11 +324,11 @@ fn traverse_graph_for_planning<M: RefMetadata>(
                         continue;
                     }
 
-                    if let Some(id) = editor.graph.commit_id(entry) {
+                    if let Some(id) = editor.store.commit_id(entry) {
                         traversal.target_ancestor_commit_ids.insert(id);
                     }
 
-                    for parent_idx in collect_ordered_parents(&editor.graph, entry) {
+                    for parent_idx in collect_ordered_parents(&editor.store, entry) {
                         stack.push((parent_idx, false, TraversalMode::MarkTargetAncestors));
                     }
                 }

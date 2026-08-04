@@ -4,7 +4,7 @@ use crate::graph_rebase::arena::ParentEntry;
 use std::collections::HashSet;
 
 use crate::graph_rebase::arena::CommitIndex;
-use crate::graph_rebase::{EditorIndex, GraphEditor};
+use crate::graph_rebase::{EditorIndex, EditorStore};
 
 /// Pruned depth-first search for `target`'s commit parents in parent order, descending through
 /// non-commit steps.
@@ -15,7 +15,7 @@ use crate::graph_rebase::{EditorIndex, GraphEditor};
 /// the same commit, that commit is listed once. Plain duplicate parents are all kept
 /// (dup-parents workspace commits).
 pub(crate) fn collect_ordered_parents(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     target: impl Into<EditorIndex>,
 ) -> Vec<CommitIndex> {
     collect_ordered_parents_with_indices(graph, target)
@@ -29,7 +29,7 @@ pub(crate) fn collect_ordered_parents(
 /// must ask something about a specific parent index need this: the emitted order skips and flattens, so an
 /// emitted position is not a parent index, and indexing one by the other silently misattributes.
 pub(crate) fn collect_ordered_parents_with_indices(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     target: impl Into<EditorIndex>,
 ) -> Vec<(CommitIndex, Option<usize>)> {
     let target = target.into();
@@ -102,11 +102,11 @@ mod test {
 
         use anyhow::Result;
 
-        use crate::graph_rebase::{CommitSpec, GraphEditor, util::collect_ordered_parents};
+        use crate::graph_rebase::{CommitSpec, EditorStore, util::collect_ordered_parents};
 
         #[test]
         fn basic_scenario() -> Result<()> {
-            let mut graph = GraphEditor::default();
+            let mut graph = EditorStore::default();
             let a_id = gix::ObjectId::from_str("1000000000000000000000000000000000000000")?;
             let a = graph.add_commit(CommitSpec::new(a_id));
             // First parent

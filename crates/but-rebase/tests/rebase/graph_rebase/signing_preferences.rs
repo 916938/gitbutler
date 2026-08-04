@@ -3,7 +3,7 @@
 use anyhow::Result;
 use but_core::commit::SignCommit;
 use but_graph::Workspace;
-use but_rebase::graph_rebase::{CommitSpec, Editor, GraphEditorOptions, cherry_pick::PickMode};
+use but_rebase::graph_rebase::{CommitSpec, Editor, EditorStoreOptions, cherry_pick::PickMode};
 use but_testsupport::{cat_commit, graph_dag, visualize_commit_graph_all};
 
 use crate::utils::{fixture_writable_with_signing, standard_options};
@@ -259,7 +259,7 @@ fn force_picked_commit_with_sign_yes_is_signed_when_otherwise_unchanged() -> Res
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &GraphEditorOptions {
+        &EditorStoreOptions {
             default_sign_commit: SignCommit::No,
             ..<_>::default()
         },
@@ -342,7 +342,7 @@ fn force_picked_ancestor_does_not_sign_descendants_picked_with_sign_commit_no() 
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &GraphEditorOptions {
+        &EditorStoreOptions {
             default_sign_commit: SignCommit::No,
             ..<_>::default()
         },
@@ -444,7 +444,7 @@ fn force_picked_ancestor_triggers_cascading_signatures_on_descendants_picked_wit
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &GraphEditorOptions {
+        &EditorStoreOptions {
             default_sign_commit: SignCommit::Yes,
             ..<_>::default()
         },
@@ -544,7 +544,7 @@ fn commit_picked_with_sign_if_enabled_is_not_signed_when_signing_config_is_disab
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &GraphEditorOptions {
+        &EditorStoreOptions {
             default_sign_commit: SignCommit::IfSignCommitsEnabled,
             ..<_>::default()
         },
@@ -627,7 +627,7 @@ fn parentless_commit_force_picked_with_sign_yes_is_signed() -> Result<()> {
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &GraphEditorOptions {
+        &EditorStoreOptions {
             default_sign_commit: SignCommit::IfSignCommitsEnabled,
             ..<_>::default()
         },

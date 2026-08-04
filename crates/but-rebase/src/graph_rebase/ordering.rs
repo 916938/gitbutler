@@ -86,13 +86,13 @@ fn parent_to_child_rank<M: RefMetadata>(
     let mut next_rank = 0usize;
     let mut seen = HashSet::<CommitIndex>::new();
 
-    let mut roots = editor.graph.tips().collect::<Vec<CommitIndex>>();
+    let mut roots = editor.store.tips().collect::<Vec<CommitIndex>>();
     roots.sort_unstable();
     // The entrypoint's region ranks first: its history is what the user is looking at, and
     // auxiliary regions (linked worktrees) come after it — arena layout must not decide.
     if let Some(head_pick) = editor.checkouts.iter().find_map(|checkout| match checkout {
         crate::graph_rebase::Checkout::Head { entry, .. } => {
-            crate::graph_rebase::positions::resolve_to_commit(&editor.graph, *entry)
+            crate::graph_rebase::positions::resolve_to_commit(&editor.store, *entry)
         }
         crate::graph_rebase::Checkout::Worktree { .. } => None,
     }) {
@@ -117,7 +117,7 @@ fn parent_to_child_rank<M: RefMetadata>(
             }
 
             if expanded {
-                if let Some(id) = editor.graph.commit_id(entry)
+                if let Some(id) = editor.store.commit_id(entry)
                     && selected_ids.contains(&id)
                 {
                     rank_by_id.entry(id).or_insert_with(|| {
@@ -133,7 +133,7 @@ fn parent_to_child_rank<M: RefMetadata>(
                 continue;
             }
 
-            let parents = util::collect_ordered_parents(&editor.graph, entry);
+            let parents = util::collect_ordered_parents(&editor.store, entry);
             stack.push((entry, true));
             for parent_idx in parents.into_iter() {
                 stack.push((parent_idx, false));

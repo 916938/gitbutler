@@ -66,7 +66,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Load the full commit the commit at `commit` currently holds from the editor's
     /// repository — the payload-loading twin of [`Editor::spec_of`](crate::graph_rebase::Editor::spec_of).
     pub fn commit_of(&self, commit: CommitIndex) -> Result<but_core::CommitOwned> {
-        let Some(id) = self.graph.commit_id(commit) else {
+        let Some(id) = self.store.commit_id(commit) else {
             bail!("The addressed commit was removed");
         };
         self.find_commit(id)
@@ -75,10 +75,10 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Finds the first commit parent of a reference
     pub fn target_of(&self, reference: RefIndex) -> Result<(CommitIndex, but_core::CommitOwned)> {
         let first_parent =
-            crate::graph_rebase::positions::resolve_to_commit(&self.graph, reference)
+            crate::graph_rebase::positions::resolve_to_commit(&self.store, reference)
                 .context("Failed to find a parent for selected reference in the commit graph.")?;
 
-        let Some(id) = self.graph.commit_id(first_parent) else {
+        let Some(id) = self.store.commit_id(first_parent) else {
             bail!("BUG: resolve_to_commit returned a non-commit entry");
         };
 

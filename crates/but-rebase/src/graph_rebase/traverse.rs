@@ -9,7 +9,7 @@ use but_core::RefMetadata;
 use crate::graph_rebase::anchor::Anchor;
 use crate::graph_rebase::arena::CommitIndex;
 use crate::graph_rebase::mutate::commit_entry;
-use crate::graph_rebase::{Editor, EditorIndex, GraphEditor, positions};
+use crate::graph_rebase::{Editor, EditorIndex, EditorStore, positions};
 
 /// How far `a` is ahead of and behind `b`, counted in commits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,21 +21,21 @@ pub(crate) struct AheadBehind {
 }
 
 /// Count the `CommitSpec` steps (i.e. commits) among `steps`.
-fn count_commits(graph: &GraphEditor, steps: impl Iterator<Item = EditorIndex>) -> usize {
+fn count_commits(graph: &EditorStore, steps: impl Iterator<Item = EditorIndex>) -> usize {
     steps.filter(|ix| graph.is_commit(*ix)).count()
 }
 
-struct Traversal<'graph> {
-    graph: &'graph GraphEditor,
+struct Traversal<'store> {
+    store: &'store EditorStore,
     excluded: HashSet<EditorIndex>,
     seen: HashSet<EditorIndex>,
     tips: Vec<EditorIndex>,
 }
 
-impl<'graph> Traversal<'graph> {
-    fn new(graph: &'graph GraphEditor, start: EditorIndex, excluded: HashSet<EditorIndex>) -> Self {
+impl<'store> Traversal<'store> {
+    fn new(store: &'store EditorStore, start: EditorIndex, excluded: HashSet<EditorIndex>) -> Self {
         Self {
-            graph,
+            store,
             excluded,
             seen: HashSet::new(),
             tips: vec![start],
@@ -52,7 +52,7 @@ impl Iterator for Traversal<'_> {
                 continue;
             }
             self.tips
-                .extend(self.graph.parents(n).into_iter().map(EditorIndex::from));
+                .extend(self.store.parents(n).into_iter().map(EditorIndex::from));
             return Some(n);
         }
         None
@@ -61,7 +61,7 @@ impl Iterator for Traversal<'_> {
 
 /// Every step reachable from `start` following parent entries.
 pub(crate) fn reachable_from(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     start: EditorIndex,
 ) -> impl Iterator<Item = EditorIndex> + '_ {
     Traversal::new(graph, start, HashSet::new())
@@ -70,7 +70,7 @@ pub(crate) fn reachable_from(
 /// The rev-set `start ^excluded`: steps reachable from `start` but not
 /// `excluded`.
 pub(crate) fn a_not_b(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     start: EditorIndex,
     excluded: EditorIndex,
 ) -> impl Iterator<Item = EditorIndex> + '_ {
@@ -80,7 +80,7 @@ pub(crate) fn a_not_b(
 /// All steps in `start ^limit`, or everything reachable from `start` when there
 /// is no `limit`.
 pub(crate) fn all_until_optional_limit(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     start: EditorIndex,
     limit: Option<EditorIndex>,
 ) -> impl Iterator<Item = EditorIndex> + '_ {
@@ -97,14 +97,14 @@ impl<M: RefMetadata> Editor<'_, M> {
     pub fn direct_children(&self, target: impl Into<Anchor>) -> Result<Vec<(EditorIndex, usize)>> {
         let target = self.resolve_anchor(target)?;
         // A reference's children are the parent entries entering through its position.
-        if self.graph.is_positioned(target) {
-            return Ok(positions::entering(&self.graph, target)
+        if self.store.is_positioned(target) {
+            return Ok(positions::entering(&self.store, target)
                 .into_iter()
                 .map(|ParentEntry { child, number }| (EditorIndex::from(child), number))
                 .collect());
         }
         Ok(self
-            .graph
+            .store
             .children_of(target)
             .iter()
             .map(|&ParentEntry { child, number }| (EditorIndex::from(child), number))
@@ -117,12 +117,12 @@ impl<M: RefMetadata> Editor<'_, M> {
     pub fn direct_parents(&self, target: impl Into<Anchor>) -> Result<Vec<(EditorIndex, usize)>> {
         let target = self.resolve_anchor(target)?;
         // A reference's one downward link is its commit.
-        if let Some(on) = self.graph.positioned_on(target) {
+        if let Some(on) = self.store.positioned_on(target) {
             let commit = self.resolved_commit(on)?;
             return Ok(vec![(EditorIndex::from(commit), 0)]);
         }
         Ok(self
-            .graph
+            .store
             .parents(target)
             .iter()
             .copied()
@@ -159,35 +159,35 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// renderers that interleave references with commits.
     pub fn position_parents(&self, target: impl Into<Anchor>) -> Result<Vec<EditorIndex>> {
         let target = self.resolve_anchor(target)?;
-        if let Some(on) = self.graph.positioned_on(target) {
+        if let Some(on) = self.store.positioned_on(target) {
             let commit = self.resolved_commit(on)?;
             // The physical member directly below is stored adjacency; the commit when at
             // the bottom of the stack.
-            return Ok(vec![match self.graph.below_of(target) {
+            return Ok(vec![match self.store.below_of(target) {
                 Some(below) => EditorIndex::from(below),
                 None => EditorIndex::from(commit),
             }]);
         }
         Ok(self
-            .graph
+            .store
             .parents(target)
             .iter()
             .copied()
             .enumerate()
             .map(|(parent_number, commit)| {
                 let carried_top = self
-                    .graph
+                    .store
                     .positioned_refs()
                     .filter(|&entry| {
                         let Some(node) = target.as_commit() else {
                             return false;
                         };
-                        positions::entering(&self.graph, entry).contains(&ParentEntry {
+                        positions::entering(&self.store, entry).contains(&ParentEntry {
                             child: node,
                             number: parent_number,
-                        }) && positions::resolve_to_commit(&self.graph, entry) == Some(commit)
+                        }) && positions::resolve_to_commit(&self.store, entry) == Some(commit)
                     })
-                    .max_by_key(|&entry| (positions::ref_depth(&self.graph, entry), entry));
+                    .max_by_key(|&entry| (positions::ref_depth(&self.store, entry), entry));
                 match carried_top {
                     Some(top) => EditorIndex::from(top),
                     None => EditorIndex::from(commit),
@@ -202,26 +202,26 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// plain parent entries into it; for a reference, the next group member above, else its parent entries.
     pub fn position_children(&self, target: impl Into<Anchor>) -> Result<Vec<EditorIndex>> {
         let target = self.resolve_anchor(target)?;
-        if self.graph.is_positioned(target) {
-            let commit = positions::resolve_to_commit(&self.graph, target);
+        if self.store.is_positioned(target) {
+            let commit = positions::resolve_to_commit(&self.store, target);
             // Members sitting directly on it (group-mates and root siblings stacked above),
             // plus — when this is the top of its group — the parent entries that enter it.
             let mut out: Vec<EditorIndex> = self
-                .graph
+                .store
                 .positioned_refs()
                 .filter(|&entry| {
                     EditorIndex::from(entry) != target
-                        && self.graph.below_of(entry).map(EditorIndex::from) == Some(target)
+                        && self.store.below_of(entry).map(EditorIndex::from) == Some(target)
                 })
                 .map(EditorIndex::from)
                 .collect();
-            let target_entries = positions::entering(&self.graph, target);
-            let target_depth = positions::ref_depth(&self.graph, target);
-            let is_group_top = !self.graph.positioned_refs().any(|entry| {
+            let target_entries = positions::entering(&self.store, target);
+            let target_depth = positions::ref_depth(&self.store, target);
+            let is_group_top = !self.store.positioned_refs().any(|entry| {
                 EditorIndex::from(entry) != target
-                    && positions::entering(&self.graph, entry) == target_entries
-                    && positions::ref_depth(&self.graph, entry) > target_depth
-                    && positions::resolve_to_commit(&self.graph, entry) == commit
+                    && positions::entering(&self.store, entry) == target_entries
+                    && positions::ref_depth(&self.store, entry) > target_depth
+                    && positions::resolve_to_commit(&self.store, entry) == commit
             });
             if is_group_top {
                 out.extend(
@@ -236,11 +236,11 @@ impl<M: RefMetadata> Editor<'_, M> {
         }
         // Bottom members sit directly on the commit; other parent entries are plain.
         let mut out: Vec<EditorIndex> = self
-            .graph
+            .store
             .positioned_refs()
             .filter(|&entry| {
-                self.graph.below_of(entry).is_none()
-                    && positions::resolve_to_commit(&self.graph, entry).map(EditorIndex::from)
+                self.store.below_of(entry).is_none()
+                    && positions::resolve_to_commit(&self.store, entry).map(EditorIndex::from)
                         == Some(target)
             })
             .map(EditorIndex::from)
@@ -248,13 +248,13 @@ impl<M: RefMetadata> Editor<'_, M> {
         for &ParentEntry {
             child,
             number: parent_number,
-        } in self.graph.children_of(target)
+        } in self.store.children_of(target)
         {
-            let carrying = self.graph.positioned_refs().any(|entry| {
-                positions::entering(&self.graph, entry).contains(&ParentEntry {
+            let carrying = self.store.positioned_refs().any(|entry| {
+                positions::entering(&self.store, entry).contains(&ParentEntry {
                     child,
                     number: parent_number,
-                }) && positions::resolve_to_commit(&self.graph, entry).map(EditorIndex::from)
+                }) && positions::resolve_to_commit(&self.store, entry).map(EditorIndex::from)
                     == Some(target)
             });
             if !carrying {
@@ -274,7 +274,7 @@ impl<M: RefMetadata> Editor<'_, M> {
 
         let commit = commit_entry(target)?;
         Ok(
-            crate::graph_rebase::positions::refs_resolving_to(&self.graph, commit)
+            crate::graph_rebase::positions::refs_resolving_to(&self.store, commit)
                 .into_iter()
                 .map(EditorIndex::from)
                 .collect(),
@@ -293,16 +293,16 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Reachability including references: commits and tombstones by parent entries (a reference start
     /// descends from its commit), plus every reference group the walk entered.
     fn reachable_ids(&self, start: EditorIndex) -> Vec<EditorIndex> {
-        let seed = crate::graph_rebase::positions::resolve_to_commit(&self.graph, start);
+        let seed = crate::graph_rebase::positions::resolve_to_commit(&self.store, start);
         let commits: std::collections::HashSet<CommitIndex> = match seed {
-            Some(seed) => reachable_from(&self.graph, seed.into())
+            Some(seed) => reachable_from(&self.store, seed.into())
                 .filter_map(|entry| entry.as_commit())
                 .collect(),
             None => Default::default(),
         };
         let mut all: Vec<EditorIndex> = commits.iter().copied().map(EditorIndex::from).collect();
         all.extend(
-            crate::graph_rebase::positions::refs_reachable_with(&self.graph, start, &commits)
+            crate::graph_rebase::positions::refs_reachable_with(&self.store, start, &commits)
                 .into_iter()
                 .map(EditorIndex::from),
         );
@@ -327,8 +327,8 @@ impl<M: RefMetadata> Editor<'_, M> {
         let a = self.resolve_anchor(a)?;
         let b = self.resolve_anchor(b)?;
         // Only commits count, so reference endpoints stand for their commits.
-        let a = crate::graph_rebase::positions::resolve_to_commit(&self.graph, a);
-        let b = crate::graph_rebase::positions::resolve_to_commit(&self.graph, b);
+        let a = crate::graph_rebase::positions::resolve_to_commit(&self.store, a);
+        let b = crate::graph_rebase::positions::resolve_to_commit(&self.store, b);
         let (Some(a), Some(b)) = (a, b) else {
             return Ok(AheadBehind {
                 ahead: 0,
@@ -336,8 +336,8 @@ impl<M: RefMetadata> Editor<'_, M> {
             });
         };
         Ok(AheadBehind {
-            ahead: count_commits(&self.graph, a_not_b(&self.graph, a.into(), b.into())),
-            behind: count_commits(&self.graph, a_not_b(&self.graph, b.into(), a.into())),
+            ahead: count_commits(&self.store, a_not_b(&self.store, a.into(), b.into())),
+            behind: count_commits(&self.store, a_not_b(&self.store, b.into(), a.into())),
         })
     }
 
@@ -367,9 +367,9 @@ mod test {
 
     use super::{a_not_b, all_until_optional_limit, count_commits, reachable_from};
     use crate::graph_rebase::arena::CommitIndex;
-    use crate::graph_rebase::{CommitSpec, GraphEditor};
+    use crate::graph_rebase::{CommitSpec, EditorStore};
 
-    fn commit(graph: &mut GraphEditor) -> CommitIndex {
+    fn commit(graph: &mut EditorStore) -> CommitIndex {
         let id = gix::ObjectId::from_str("1000000000000000000000000000000000000000").unwrap();
         graph.add_commit(CommitSpec::new(id))
     }
@@ -378,7 +378,7 @@ mod test {
     /// `a ^c` must drop `base` (shared with `c`) but keep `a`, `b`.
     #[test]
     fn a_not_b_excludes_shared_ancestry() {
-        let mut g = GraphEditor::default();
+        let mut g = EditorStore::default();
         let a = commit(&mut g);
         let b = commit(&mut g);
         let base = commit(&mut g);
@@ -407,7 +407,7 @@ mod test {
     /// `b`; only the two commits count. `c ^a` reaches `c`.
     #[test]
     fn count_picks_ignores_non_pick_steps() {
-        let mut g = GraphEditor::default();
+        let mut g = EditorStore::default();
         let a = commit(&mut g);
         let none = g.add_tombstone();
         let b = commit(&mut g);

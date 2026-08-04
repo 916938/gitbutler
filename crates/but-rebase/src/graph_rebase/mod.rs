@@ -22,9 +22,9 @@
 
 mod arena;
 mod creation;
-mod graph_editor;
 mod positions;
 mod ref_ops;
+mod store;
 pub(crate) mod util;
 
 pub mod anchor;
@@ -41,11 +41,11 @@ pub mod traverse;
 pub mod workspace;
 
 pub use arena::CommitIndex;
-pub use creation::GraphEditorOptions;
-pub use graph_editor::{EditorIndex, RefIndex};
+pub use creation::EditorStoreOptions;
+pub use store::{EditorIndex, RefIndex};
 pub use workspace::{GraphWorkspace, Subgraph};
 
-pub(crate) use graph_editor::GraphEditor;
+pub(crate) use store::EditorStore;
 
 use std::collections::BTreeMap;
 
@@ -62,8 +62,8 @@ use crate::graph_rebase::cherry_pick::{PickMode, TreeMergeMode};
 /// how [`RebasedEditor`] exposes it.
 #[derive(Debug)]
 pub struct Editor<'meta, M: RefMetadata> {
-    /// The internal graph of steps
-    pub(crate) graph: GraphEditor,
+    /// The editor's store — the state every mutation rewrites; see [`EditorStore`].
+    pub(crate) store: EditorStore,
     /// Worktrees that we might need to perform `safe_checkout` on.
     pub(crate) checkouts: Vec<Checkout>,
     /// The in-memory repository that the rebase engine works with.
@@ -96,14 +96,14 @@ impl<M: RefMetadata> Editor<'_, M> {
 
     /// The full commit at `commit` — id and per-commit options; errors when removed.
     pub fn spec_of(&self, commit: CommitIndex) -> Result<CommitSpec> {
-        self.graph
+        self.store
             .commit_spec(commit)
             .context("The addressed commit was removed")
     }
 
     /// The name of the reference at `reference`; errors when it was deleted.
     pub fn name_of(&self, reference: RefIndex) -> Result<gix::refs::FullName> {
-        match self.graph.reference(reference.into()) {
+        match self.store.reference(reference.into()) {
             Some((refname, _)) => Ok(refname.clone()),
             None => bail!("The addressed reference was deleted"),
         }
@@ -113,8 +113,8 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// answers WHICH KIND statically; this answers the one dynamic fact, liveness.
     pub fn is_removed(&self, index: impl Into<EditorIndex>) -> bool {
         match index.into() {
-            index @ EditorIndex::Commit(_) => self.graph.commit_id(index).is_none(),
-            EditorIndex::Ref(i) => !self.graph.is_reference(i),
+            index @ EditorIndex::Commit(_) => self.store.commit_id(index).is_none(),
+            EditorIndex::Ref(i) => !self.store.is_reference(i),
         }
     }
 
@@ -181,18 +181,18 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
     /// state, since materializing only persists objects and applies ref edits. Project it
     /// (with [`Editor::repo`] and [`Self::overlay`]) to preview without a rewalk.
     pub fn commit_graph(&self) -> &but_graph::CommitGraph {
-        self.graph.arena()
+        self.store.arena()
     }
 
     /// Return the commit targeted by `ref_name` in the post-rebase graph.
     pub fn reference_target(&self, ref_name: &gix::refs::FullNameRef) -> Result<gix::ObjectId> {
         let (ref_idx, ..) = self
-            .graph
+            .store
             .references()
             .find(|(_, refname, _)| refname.as_ref() == ref_name)
             .with_context(|| format!("Could not find reference '{ref_name}' in rebase result"))?;
-        crate::graph_rebase::positions::resolve_to_commit(&self.graph, ref_idx)
-            .and_then(|commit| self.graph.commit_id(commit))
+        crate::graph_rebase::positions::resolve_to_commit(&self.store, ref_idx)
+            .and_then(|commit| self.store.commit_id(commit))
             .context("Reference has no target commit in rebase result")
     }
 
@@ -206,16 +206,16 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
         entry: EditorIndex,
     ) -> Result<Option<(gix::ObjectId, Option<gix::refs::FullName>)>> {
         Ok(match entry {
-            EditorIndex::Commit(_) => self.graph.commit_id(entry).map(|id| (id, None)),
-            EditorIndex::Ref(_) => match self.graph.reference(entry) {
+            EditorIndex::Commit(_) => self.store.commit_id(entry).map(|id| (id, None)),
+            EditorIndex::Ref(_) => match self.store.reference(entry) {
                 None => None,
                 Some((refname, _)) => {
                     let refname = refname.clone();
                     let commit =
-                        crate::graph_rebase::positions::resolve_to_commit(&self.graph, entry)
+                        crate::graph_rebase::positions::resolve_to_commit(&self.store, entry)
                             .context("No commit to reference")?;
                     let id = self
-                        .graph
+                        .store
                         .commit_id(commit)
                         .context("resolve_to_commit always resolves to a commit")?;
                     Some((id, Some(refname)))

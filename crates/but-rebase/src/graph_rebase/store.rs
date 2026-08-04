@@ -2,7 +2,7 @@
 //! (`arena.rs`): the owned commit graph with ordered parent arrays, settings, the
 //! children index, and stable parent-entry ids — no reference knowledge at all. This
 //! module holds the REFERENCE half — the ref table and the position layout — plus
-//! [`GraphEditor`], which composes the two and owns every method that must read across
+//! [`EditorStore`], which composes the two and owns every method that must read across
 //! them (classification, workspace-parent provenance, the [`EditorIndex`] dispatchers).
 //! Nothing is ever deleted on either side (commits and references tombstone in place),
 //! so ids stay stable. [`CommitSpec`] exists only at the API boundary.
@@ -89,8 +89,8 @@ impl std::fmt::Display for RefIndex {
 /// flips `live` but keeps the name and position — that matters: indices taken before the
 /// deletion still resolve through the tombstoned record, and rebuilds copy it forward. Where a
 /// reference SITS is not
-/// state but list structure in the layout table, read via [`GraphEditor::positioned_on`],
-/// [`GraphEditor::below_of`] and the derived queries in `positions` (`ref_depth` for rank,
+/// state but list structure in the layout table, read via [`EditorStore::positioned_on`],
+/// [`EditorStore::below_of`] and the derived queries in `positions` (`ref_depth` for rank,
 /// `entering` for entering parent entries, `resolve_to_commit` for the commit through tombstones).
 #[derive(Debug, Clone)]
 pub(crate) struct RefState {
@@ -129,7 +129,7 @@ pub(crate) type RefGroup = but_graph::ref_layout::RefGroup<ParentEntryId>;
 /// The reference half of the editor's store: the ref table, its name lookup, and the
 /// position layout. The mirror of [`CommitArena`] — where that half knows nothing about
 /// references, this half holds arena coordinates ([`CommitIndex`], [`ParentEntryId`])
-/// as OPAQUE DATA: only [`GraphEditor`]'s cross-store methods dereference them.
+/// as OPAQUE DATA: only [`EditorStore`]'s cross-store methods dereference them.
 #[derive(Debug, Clone, Default)]
 struct RefLedger {
     refs: Vec<RefState>,
@@ -146,8 +146,8 @@ struct RefLedger {
     /// [`RefLayout`](but_graph::ref_layout::RefLayout) uses, keyed by commit indices and
     /// stable parent entry ids instead of commit ids: per STORED (unresolved) key, the reference
     /// groups standing on it. A reference's position (its `on`, its below, its rank, its
-    /// entering parent entries) is all list structure there, read via [`GraphEditor::positioned_on`],
-    /// [`GraphEditor::below_of`], `positions::ref_depth` and `positions::entering`.
+    /// entering parent entries) is all list structure there, read via [`EditorStore::positioned_on`],
+    /// [`EditorStore::below_of`], `positions::ref_depth` and `positions::entering`.
     layout: but_graph::ref_layout::RefGroups<CommitIndex, ParentEntryId>,
 }
 
@@ -157,7 +157,7 @@ struct RefLedger {
 /// References are edgeless: creation authors their positions straight from the stored
 /// [`RefLayout`](but_graph::ref_layout::RefLayout).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct GraphEditor {
+pub(crate) struct EditorStore {
     /// The commit table — the vanilla half of the store; see [`CommitArena`].
     commits: CommitArena,
 
@@ -192,7 +192,7 @@ pub(crate) enum WsParentKind {
     Surgical,
 }
 
-impl GraphEditor {
+impl EditorStore {
     /// Adopt `arena` as the editor's arena. Full commit records (flags, refs, generation)
     /// survive, which handing the arena back out after a rebase depends on. Every parent
     /// parent entry must already point at a node in the graph — the editor's standing requirement —

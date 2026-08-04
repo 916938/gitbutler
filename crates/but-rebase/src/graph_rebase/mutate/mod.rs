@@ -55,9 +55,9 @@ impl<M: RefMetadata> Editor<'_, M> {
 
     /// The index of the commit `id` in the graph, when present.
     pub fn try_select_commit(&self, id: gix::ObjectId) -> Option<CommitIndex> {
-        self.graph
+        self.store
             .commit_indices()
-            .find(|&commit_idx| self.graph.commit_id(commit_idx) == Some(id))
+            .find(|&commit_idx| self.store.commit_id(commit_idx) == Some(id))
     }
 
     /// Select several commits at once, in input order — the batch form of
@@ -79,7 +79,7 @@ impl<M: RefMetadata> Editor<'_, M> {
 
     /// The index of the reference `name` in the graph, when present.
     pub fn try_select_reference(&self, name: &gix::refs::FullNameRef) -> Option<RefIndex> {
-        for (ref_idx, refname, _) in self.graph.references() {
+        for (ref_idx, refname, _) in self.store.references() {
             if name == refname.as_ref() {
                 return Some(ref_idx);
             }
@@ -93,13 +93,13 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Replace the commit at `commit` with `spec`, recording a commit mapping from the old
     /// to the new id (unless either side is untracked).
     pub fn replace_commit(&mut self, commit: CommitIndex, spec: CommitSpec) -> Result<()> {
-        if let Some(from) = self.graph.commit_spec(commit)
+        if let Some(from) = self.store.commit_spec(commit)
             && !from.exclude_from_tracking
             && !spec.exclude_from_tracking
         {
             self.history.update_mapping(from.id, spec.id);
         }
-        self.graph.set_commit(commit, spec);
+        self.store.set_commit(commit, spec);
         self.verified(Ok(()))
     }
 
@@ -109,7 +109,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// MATERIALIZED outcome is identical (merges included, pinned by test), so choose by
     /// whether later same-session operations need to see the healed graph.
     pub fn drop_commit(&mut self, commit: CommitIndex) -> Result<()> {
-        self.graph.tombstone_commit(commit);
+        self.store.tombstone_commit(commit);
         self.verified(Ok(()))
     }
 
@@ -132,7 +132,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         refname: gix::refs::FullName,
     ) -> Result<()> {
         self.ensure_mutable_ref(reference.into())?;
-        self.graph.set_reference(reference, refname, true);
+        self.store.set_reference(reference, refname, true);
         self.verified(Ok(()))
     }
 
@@ -142,10 +142,10 @@ impl<M: RefMetadata> Editor<'_, M> {
         self.ensure_mutable_ref(reference.into())?;
         // Deleting removes the reference from the physical stack: splice dependents
         // past it. Name and stored position are kept for retention reads.
-        let was_live = self.graph.is_reference(reference);
-        self.graph.tombstone_reference(reference);
+        let was_live = self.store.is_reference(reference);
+        self.store.tombstone_reference(reference);
         if was_live {
-            self.graph.splice(reference);
+            self.store.splice(reference);
         }
         self.verified(Ok(()))
     }
@@ -164,7 +164,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         target: impl Into<Anchor>,
         side: InsertSide,
     ) -> Result<()> {
-        if !self.graph.is_positioned(subject) {
+        if !self.store.is_positioned(subject) {
             bail!("Can only move a reference that holds a position");
         }
         self.move_range(
@@ -223,14 +223,14 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Add the commit `spec` describes to the graph, unconnected. Almost always you want
     /// [`Self::insert_commit`] instead.
     pub fn add_commit(&mut self, spec: CommitSpec) -> Result<CommitIndex> {
-        let new_idx = self.graph.add_commit(spec);
+        let new_idx = self.store.add_commit(spec);
         Ok(new_idx)
     }
 
     /// Add a mutable reference named `refname` to the graph, unpositioned. Almost always
     /// you want [`Self::insert_reference`] instead.
     pub fn add_reference(&mut self, refname: gix::refs::FullName) -> Result<RefIndex> {
-        let new_idx = self.graph.add_reference(refname, true, false);
+        let new_idx = self.store.add_reference(refname, true, false);
         Ok(new_idx)
     }
 
@@ -238,7 +238,7 @@ impl<M: RefMetadata> Editor<'_, M> {
 
     /// The commit `entry` resolves to; an error when it resolves to nothing (an unborn ref).
     pub(crate) fn resolved_commit(&self, entry: impl Into<EditorIndex>) -> Result<CommitIndex> {
-        positions::resolve_to_commit(&self.graph, entry)
+        positions::resolve_to_commit(&self.store, entry)
             .context("Reference target should resolve to a commit")
     }
 
@@ -246,7 +246,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// materialization would refuse the write, so the op fails up front instead of
     /// succeeding session-only.
     fn ensure_mutable_ref(&self, entry: EditorIndex) -> Result<()> {
-        if let Some(record) = self.graph.state_of(entry)
+        if let Some(record) = self.store.state_of(entry)
             && !record.mutable
         {
             bail!(
@@ -268,7 +268,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     fn verified<T>(&self, out: Result<T>) -> Result<T> {
         #[cfg(debug_assertions)]
         if out.is_ok() {
-            crate::graph_rebase::positions::assert_positions_total(&self.graph)?;
+            crate::graph_rebase::positions::assert_positions_total(&self.store)?;
         }
         out
     }

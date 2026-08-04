@@ -1,6 +1,6 @@
 use anyhow::Result;
 use but_graph::{Workspace, walk::Seed};
-use but_rebase::graph_rebase::{CommitSpec, Editor, GraphEditorOptions, testing::Testing as _};
+use but_rebase::graph_rebase::{CommitSpec, Editor, EditorStoreOptions, testing::Testing as _};
 use but_testsupport::{StackState, graph_dag, visualize_commit_graph_all};
 use snapbox::prelude::*;
 
@@ -734,7 +734,7 @@ fn includes_extra_refs_in_editor_creation() -> Result<()> {
             ws.project_meta(),
             &mut *meta,
             &repo,
-            &GraphEditorOptions {
+            &EditorStoreOptions {
                 extra_mutable_refs: vec![main_ref.clone()],
                 ..<_>::default()
             },
@@ -889,7 +889,7 @@ fn immutable_entrypoints_propogate_until_mutable_entrypoints() -> Result<()> {
 "#]]
     );
 
-    let opts = GraphEditorOptions {
+    let opts = EditorStoreOptions {
         extra_mutable_refs: vec!["refs/heads/explicit-mut".try_into()?],
         ..Default::default()
     };

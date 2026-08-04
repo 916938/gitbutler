@@ -15,9 +15,9 @@ use gix::refs::{
 };
 
 use crate::graph_rebase::arena::CommitIndex;
-use crate::graph_rebase::graph_editor::WsParentKind;
+use crate::graph_rebase::store::WsParentKind;
 use crate::graph_rebase::{
-    CommitSpec, Editor, GraphEditor, RebasedEditor,
+    CommitSpec, Editor, EditorStore, RebasedEditor,
     cherry_pick::{CherryPickOutcome, cherry_pick, merge_base},
     util::collect_ordered_parents_with_indices,
 };
@@ -71,7 +71,7 @@ fn contained_parents(
 /// no-op rebase byte-identical with the product writer instead of "materializing"
 /// lanes. Only what surgery produced is left to judge by containment.
 fn retain_real_ws_parents(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     repo: &gix::Repository,
     commit_idx: CommitIndex,
     spec: &CommitSpec,
@@ -138,10 +138,10 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
     /// outstanding index stay valid across the rebase.
     #[tracing::instrument(level = "debug", skip_all, err(Debug))]
     pub fn rebase(self) -> Result<RebasedEditor<'meta, M>> {
-        crate::graph_rebase::positions::assert_positions_total(&self.graph)?;
+        crate::graph_rebase::positions::assert_positions_total(&self.store)?;
 
         let Editor {
-            graph,
+            store: graph,
             checkouts,
             repo,
             history,
@@ -238,7 +238,7 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
 
         Ok(RebasedEditor {
             editor: Editor {
-                graph,
+                store: graph,
                 checkouts,
                 repo,
                 history,
@@ -255,7 +255,7 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
 /// mutable, positioned reference moves to the id its position resolves to (guarded by
 /// `MustExistAndMatch`, so a concurrent move fails the transaction loudly), and every
 /// mutable reference that existed at creation but is no longer stated is deleted.
-fn derive_ref_edits(graph: &GraphEditor, repo: &gix::Repository) -> Result<Vec<RefEdit>> {
+fn derive_ref_edits(graph: &EditorStore, repo: &gix::Repository) -> Result<Vec<RefEdit>> {
     let mut ref_edits = vec![];
     let mut unchanged_references = vec![];
 
@@ -337,7 +337,7 @@ fn derive_ref_edits(graph: &GraphEditor, repo: &gix::Repository) -> Result<Vec<R
 ///
 /// This second traversal ensures that all the parents of any given entry have
 /// been seen, before traversing it.
-fn cherry_pick_order(graph: &GraphEditor, heads: &[CommitIndex]) -> Result<VecDeque<CommitIndex>> {
+fn cherry_pick_order(graph: &EditorStore, heads: &[CommitIndex]) -> Result<VecDeque<CommitIndex>> {
     // References take no part in the commit order (no parent entries, replayed separately) —
     // the head type keeps them out. commits AND tombstones must all be traversed,
     // or their subtree is orphaned.
@@ -439,12 +439,12 @@ mod test {
         use anyhow::Result;
 
         use crate::graph_rebase::{
-            CommitSpec, GraphEditor, rebase::cherry_pick_order, testing::render_ascii_graph,
+            CommitSpec, EditorStore, rebase::cherry_pick_order, testing::render_ascii_graph,
         };
 
         #[test]
         fn basic_scenario() -> Result<()> {
-            let mut graph = GraphEditor::default();
+            let mut graph = EditorStore::default();
             let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
                 "1000000000000000000000000000000000000000",
             )?));
@@ -475,7 +475,7 @@ mod test {
 
         #[test]
         fn incomplete_order_from_a_cycle_is_rejected() -> Result<()> {
-            let mut graph = GraphEditor::default();
+            let mut graph = EditorStore::default();
             let commit = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
                 "1000000000000000000000000000000000000000",
             )?));
@@ -492,7 +492,7 @@ mod test {
 
         #[test]
         fn complex_scenario() -> Result<()> {
-            let mut graph = GraphEditor::default();
+            let mut graph = EditorStore::default();
             let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
                 "1000000000000000000000000000000000000000",
             )?));
@@ -562,7 +562,7 @@ mod test {
 
         #[test]
         fn merge_scenario() -> Result<()> {
-            let mut graph = GraphEditor::default();
+            let mut graph = EditorStore::default();
             let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
                 "1000000000000000000000000000000000000000",
             )?));
@@ -607,7 +607,7 @@ mod test {
 
         #[test]
         fn merge_flipped_scenario() -> Result<()> {
-            let mut graph = GraphEditor::default();
+            let mut graph = EditorStore::default();
             let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
                 "1000000000000000000000000000000000000000",
             )?));

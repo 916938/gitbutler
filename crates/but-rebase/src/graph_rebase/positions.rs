@@ -1,13 +1,13 @@
 //! Where each reference sits, stored as position data rather than as graph parent entries.
 //!
 //! A commit carries parent entries; a reference carries
-//! NONE. Instead every reference stands in the layout table (`GraphEditor::layout`):
+//! NONE. Instead every reference stands in the layout table (`EditorStore::layout`):
 //! per stored key, an ordered list of groups (`RefGroup`), each a bottom→top run of references
 //! sharing one [`GroupCarry`]. A position reads back through the editor's accessors: `on`
-//! ([`GraphEditor::positioned_on`], the stored key it stands on — a commit, or its tombstone
-//! after deletion; [`resolve_to_commit`] follows it down), `below` ([`GraphEditor::below_of`], the
+//! ([`EditorStore::positioned_on`], the stored key it stands on — a commit, or its tombstone
+//! after deletion; [`resolve_to_commit`] follows it down), `below` ([`EditorStore::below_of`], the
 //! reference directly underneath; `None` = on the commit), and `ambiguous`
-//! ([`GraphEditor::ambiguous_of`], this position is a merge).
+//! ([`EditorStore::ambiguous_of`], this position is a merge).
 //!
 //! Keeping references out of the parent entry graph is deliberate: a parent entry running THROUGH a reference
 //! would make it bear connectivity it shouldn't — gluing a commit's history onto whatever else
@@ -36,19 +36,19 @@
 //! - **land** (`ref_ops::land_stack_above`) — hang a carried stack above a known top
 //!   reference, so it follows that top through later moves.
 //! - **mint** — a workspace-parent entry that exists only in the stack declaration (an
-//!   empty lane), never written as real ancestry; see `GraphEditor::ws_minted_parents`.
+//!   empty lane), never written as real ancestry; see `EditorStore::ws_minted_parents`.
 
 use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
-use crate::graph_rebase::graph_editor::GroupCarry;
-use crate::graph_rebase::graph_editor::RefIndex;
-use crate::graph_rebase::{EditorIndex, GraphEditor};
+use crate::graph_rebase::store::GroupCarry;
+use crate::graph_rebase::store::RefIndex;
+use crate::graph_rebase::{EditorIndex, EditorStore};
 
 /// Resolve `entry` to the commit it stands for: a commit is itself, a tombstone follows its
 /// preserved first parent entry downward, a reference goes via its stored position — dead references
 /// via their RETAINED position, which stale indices normalize through (unborn refs carry
 /// none and resolve to nothing).
 pub(crate) fn resolve_to_commit(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     entry: impl Into<EditorIndex>,
 ) -> Option<CommitIndex> {
     // A reference resolves via its (retained) stored position; unborn refs carry none and
@@ -76,7 +76,7 @@ pub(crate) fn resolve_to_commit(
 
 /// A commit's incoming parent entries as sorted `(child, parent number)` pairs. The groups on the commit
 /// divide these among themselves (their [`GroupCarry`]); [`entering`] reads one group's share.
-pub(crate) fn live_children_of(graph: &GraphEditor, commit: CommitIndex) -> Vec<ParentEntry> {
+pub(crate) fn live_children_of(graph: &EditorStore, commit: CommitIndex) -> Vec<ParentEntry> {
     graph
         .children_of(commit)
         .iter()
@@ -88,7 +88,7 @@ pub(crate) fn live_children_of(graph: &GraphEditor, commit: CommitIndex) -> Vec<
 /// The parent entries currently entering through the reference at `entry`: the group's own carry
 /// statement (kept aligned by the parent number mutators), ordered and filtered by the resolved commit's
 /// live parent entries so a stale carry parent entry never reaches a consumer.
-pub(crate) fn entering(graph: &GraphEditor, entry: impl Into<EditorIndex>) -> Vec<ParentEntry> {
+pub(crate) fn entering(graph: &EditorStore, entry: impl Into<EditorIndex>) -> Vec<ParentEntry> {
     let Some(entry) = entry.into().as_ref() else {
         return Vec::new();
     };
@@ -119,7 +119,7 @@ pub(crate) fn entering(graph: &GraphEditor, entry: impl Into<EditorIndex>) -> Ve
 /// The members of `ref_node`'s group — every reference with the same resolved commit and the
 /// same (derived) entering parent entries.
 pub(crate) fn group_members(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     ref_node: impl Into<EditorIndex>,
 ) -> Vec<RefIndex> {
     let Some(ref_node) = ref_node.into().as_ref() else {
@@ -141,7 +141,7 @@ pub(crate) fn group_members(
 /// Does `entry` enter a positioned group that resolves to `commit` — i.e. does it reach
 /// the commit THROUGH a reference's group rather than plainly?
 pub(crate) fn enters_group_resolving_to(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     entry: ParentEntry,
     commit: CommitIndex,
 ) -> bool {
@@ -152,7 +152,7 @@ pub(crate) fn enters_group_resolving_to(
 
 /// Every reference whose stored `on`, followed through tombstones, resolves to `commit`.
 /// Order is unspecified (ascending entry id).
-pub(crate) fn refs_resolving_to(graph: &GraphEditor, commit: CommitIndex) -> Vec<RefIndex> {
+pub(crate) fn refs_resolving_to(graph: &EditorStore, commit: CommitIndex) -> Vec<RefIndex> {
     graph
         .positioned_refs()
         .filter(|&entry| resolve_to_commit(graph, entry) == Some(commit))
@@ -162,7 +162,7 @@ pub(crate) fn refs_resolving_to(graph: &GraphEditor, commit: CommitIndex) -> Vec
 /// The references reachable from `start`, given the COMMIT set it reached. When `start` is
 /// itself a reference, it counts too.
 pub(crate) fn refs_reachable_with(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     start: EditorIndex,
     commits: &std::collections::HashSet<CommitIndex>,
 ) -> Vec<RefIndex> {
@@ -191,7 +191,7 @@ pub(crate) fn refs_reachable_with(
 
 /// The reference's depth above its commit — the length of its below walk (0 = directly on
 /// the commit). This IS the rank: order among co-located references is adjacency, not a number.
-pub(crate) fn ref_depth(graph: &GraphEditor, entry: impl Into<EditorIndex>) -> usize {
+pub(crate) fn ref_depth(graph: &EditorStore, entry: impl Into<EditorIndex>) -> usize {
     let Some(entry) = entry.into().as_ref() else {
         return 0;
     };
@@ -221,7 +221,7 @@ pub(crate) struct GroupJoin {
 }
 
 /// Capture `ref_node`'s group for a coming join — call BEFORE the joining parent entry is added.
-pub(crate) fn prepare_group_join(graph: &GraphEditor, ref_node: RefIndex) -> GroupJoin {
+pub(crate) fn prepare_group_join(graph: &EditorStore, ref_node: RefIndex) -> GroupJoin {
     let capture = |entry: RefIndex| {
         graph
             .positioned_on(entry)
@@ -264,7 +264,7 @@ pub(crate) fn prepare_group_join(graph: &GraphEditor, ref_node: RefIndex) -> Gro
 /// AFTER the parent is added. An `All` group stays `All`; an `Entries` group gains the
 /// entry; a Root descends.
 pub(crate) fn apply_group_join(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     join: &GroupJoin,
     entering_entry: ParentEntry,
 ) {
@@ -300,7 +300,7 @@ pub(crate) enum Carry {
 /// Move every reference resolving to `from_commit` onto `to_commit`; `carry` says what
 /// their group-carry does there.
 pub(crate) fn reposition_refs(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     from_commit: CommitIndex,
     to_commit: CommitIndex,
     carry: Carry,
@@ -312,7 +312,7 @@ pub(crate) fn reposition_refs(
 /// a worktree's checked-out branch follows the commit its worktree stands on, while
 /// ordinary references stay behind in the lineage.
 pub(crate) fn reposition_refs_except(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     from_commit: CommitIndex,
     to_commit: CommitIndex,
     carry: Carry,
@@ -341,7 +341,7 @@ pub(crate) fn reposition_refs_except(
 ///
 /// Wired at editor creation AND at rebase entry, so every graph shape the suite produces —
 /// including post-mutation shapes — continuously validates the position model.
-pub(crate) fn assert_positions_total(graph: &GraphEditor) -> anyhow::Result<()> {
+pub(crate) fn assert_positions_total(graph: &EditorStore) -> anyhow::Result<()> {
     assert_below_wellformed(graph)?;
     type OrderedPositionKey = (Option<CommitIndex>, Vec<ParentEntry>, usize);
     let mut seen: std::collections::HashMap<OrderedPositionKey, RefIndex> = Default::default();
@@ -376,7 +376,7 @@ pub(crate) fn assert_positions_total(graph: &GraphEditor) -> anyhow::Result<()> 
 /// Every stored `below` of a LIVE reference names a positioned reference resolving to the SAME
 /// commit, and the below walk is acyclic. Tombstoned refs keep their stored position for
 /// retention reads but are spliced out of the physical stack, so only live refs are graded.
-fn assert_below_wellformed(graph: &GraphEditor) -> anyhow::Result<()> {
+fn assert_below_wellformed(graph: &EditorStore) -> anyhow::Result<()> {
     let name = |entry: RefIndex| match graph.reference(entry.into()) {
         Some((refname, _)) => refname.to_string(),
         None => "removed".to_string(),

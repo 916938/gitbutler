@@ -4,7 +4,7 @@
 //!
 //! This module has no reference knowledge at all: no ref table, no positions, no
 //! carries. That is a checked property, not a habit — it imports nothing from
-//! `graph_editor`'s ref side, `positions`, or `ref_ops`, so commit surgery *cannot*
+//! `store`'s ref side, `positions`, or `ref_ops`, so commit surgery *cannot*
 //! touch references by construction. Everything GitButler-specific about references
 //! rides in the editor's other store and joins these rows by [`CommitIndex`] and
 //! [`ParentEntryId`].

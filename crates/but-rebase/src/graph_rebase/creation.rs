@@ -15,14 +15,14 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use but_core::{RefMetadata, commit::SignCommit, ref_metadata::ProjectMeta};
 
 use crate::graph_rebase::arena::CommitIndex;
-use crate::graph_rebase::graph_editor::{EditorIndex, GroupCarry, RefGroup, RefIndex};
+use crate::graph_rebase::store::{EditorIndex, GroupCarry, RefGroup, RefIndex};
 use crate::graph_rebase::{
-    Checkout, CommitSpec, Editor, GraphEditor, RebasedEditor, RevisionHistory,
+    Checkout, CommitSpec, Editor, EditorStore, RebasedEditor, RevisionHistory,
 };
 
 #[derive(Clone)]
 /// Options for the editor.
-pub struct GraphEditorOptions {
+pub struct EditorStoreOptions {
     /// Determines how cherry-picked commits are signed.
     pub default_sign_commit: SignCommit,
     /// References to force mutable.
@@ -44,7 +44,7 @@ pub struct GraphEditorOptions {
     pub worktree_tips: Vec<but_graph::walk::WorktreeTip>,
 }
 
-impl Default for GraphEditorOptions {
+impl Default for EditorStoreOptions {
     fn default() -> Self {
         Self {
             default_sign_commit: SignCommit::IfSignCommitsEnabled,
@@ -68,7 +68,7 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
         meta: &'meta mut M,
         repo: &gix::Repository,
     ) -> Result<Self> {
-        Self::for_workspace_with_opts(ws, meta, repo, GraphEditorOptions::default())
+        Self::for_workspace_with_opts(ws, meta, repo, EditorStoreOptions::default())
     }
 
     /// Like [`Self::for_workspace`], with room for extra options. The workspace's linked
@@ -77,7 +77,7 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
         ws: &but_graph::Workspace,
         meta: &'meta mut M,
         repo: &gix::Repository,
-        mut options: GraphEditorOptions,
+        mut options: EditorStoreOptions,
     ) -> Result<Self> {
         options.worktree_tips = ws.options().worktree_tips.clone();
         Self::create_with_opts(ws.commit_graph(), ws.project_meta(), meta, repo, &options)
@@ -97,7 +97,7 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
             project_meta,
             meta,
             repo,
-            &GraphEditorOptions::default(),
+            &EditorStoreOptions::default(),
         )
     }
 
@@ -107,13 +107,13 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
         project_meta: &ProjectMeta,
         meta: &'meta mut M,
         repo: &gix::Repository,
-        options: &GraphEditorOptions,
+        options: &EditorStoreOptions,
     ) -> Result<Self> {
         // Not #[instrument]: its generated closure cannot return the `'meta` borrow.
         let _span = tracing::debug_span!("Editor::create").entered();
-        let (graph, checkouts) = build_graph_editor(commit_graph, options)?;
+        let (graph, checkouts) = build_store(commit_graph, options)?;
         Ok(Self {
-            graph,
+            store: graph,
             checkouts,
             repo: repo.clone().with_object_memory(),
             history: RevisionHistory::new(),
@@ -125,10 +125,10 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
 
 /// Build the editor graph from the data the builder stores on the
 /// [`but_graph::CommitGraph`] — no segment is read; the module doc spells the ingest contract.
-fn build_graph_editor(
+fn build_store(
     cg: &but_graph::CommitGraph,
-    options: &GraphEditorOptions,
-) -> Result<(GraphEditor, Vec<Checkout>)> {
+    options: &EditorStoreOptions,
+) -> Result<(EditorStore, Vec<Checkout>)> {
     let Some(stored) = cg.layout() else {
         bail!("editor creation requires the ref layout the builder stores on the CommitGraph");
     };
@@ -190,7 +190,7 @@ fn build_graph_editor(
         })
         .collect();
 
-    let mut step_graph = GraphEditor::adopt(arena);
+    let mut step_graph = EditorStore::adopt(arena);
     // Split the workspace commit's ingested parent entries into REAL parents (on disk) and MINTED ones —
     // the amended-list entries that exist only in the declaration, one per empty chain. The merge
     // formula makes the split exact: the amended list is real plus minted as a multiset, with the

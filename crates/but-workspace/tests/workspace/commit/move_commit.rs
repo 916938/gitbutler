@@ -1211,7 +1211,7 @@ fn move_mixed_main_and_worktree_commits_to_another_worktree() -> anyhow::Result<
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &but_rebase::graph_rebase::GraphEditorOptions {
+        &but_rebase::graph_rebase::EditorStoreOptions {
             worktree_tips: ws.options().worktree_tips.clone(),
             ..Default::default()
         },

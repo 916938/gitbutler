@@ -2,11 +2,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
-use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::ref_ops::{
     carry_stack_above, land_stack_above, readopt_dangling_refs, transfer_stack, unhook_ref,
 };
-use crate::graph_rebase::{EditorIndex, GraphEditor, positions};
+use crate::graph_rebase::store::RefIndex;
+use crate::graph_rebase::{EditorIndex, EditorStore, positions};
 use anyhow::{Context as _, Result, anyhow, bail};
 use but_core::RefMetadata;
 
@@ -30,7 +30,7 @@ impl NumberTranslation {
     /// of its parent numbers mutate.
     fn current(
         &mut self,
-        graph: &GraphEditor,
+        graph: &EditorStore,
         source: CommitIndex,
         frame_number: usize,
     ) -> Option<usize> {
@@ -198,9 +198,9 @@ impl<M: RefMetadata> Editor<'_, M> {
         // A single-entry range that is just a reference: it leaves its group (members
         // above close the gap) and gives up its entries — with a heal they stay as plain
         // entries onto the commit, without one they are removed outright.
-        if target.child == target.parent && self.graph.is_positioned(target.child) {
+        if target.child == target.parent && self.store.is_positioned(target.child) {
             self.ensure_mutable_ref(target.child)?;
-            unhook_ref(&mut self.graph, ref_entry(target.child)?, !heal);
+            unhook_ref(&mut self.store, ref_entry(target.child)?, !heal);
             return Ok(());
         }
 
@@ -229,10 +229,10 @@ impl<M: RefMetadata> Editor<'_, M> {
         // and the reference's group rides the commit's links as position data. A
         // reference child only owns the entries entering its own group — plain entries
         // into its commit belong to it and stay.
-        let child_is_ref = self.graph.is_positioned(target.child);
+        let child_is_ref = self.store.is_positioned(target.child);
         let child_ref_entries =
-            child_is_ref.then(|| positions::entering(&self.graph, target.child));
-        let child_ref_depth = child_is_ref.then(|| positions::ref_depth(&self.graph, target.child));
+            child_is_ref.then(|| positions::entering(&self.store, target.child));
+        let child_ref_depth = child_is_ref.then(|| positions::ref_depth(&self.store, target.child));
 
         // The range bounds as COMMITS.
         let child_commit = self.resolved_commit(self.resolve_bound(target.child))?;
@@ -267,8 +267,8 @@ impl<M: RefMetadata> Editor<'_, M> {
             children
                 .into_iter()
                 .flat_map(|entry| {
-                    if self.graph.is_positioned(entry) {
-                        let entries = positions::entering(&self.graph, entry)
+                    if self.store.is_positioned(entry) {
+                        let entries = positions::entering(&self.store, entry)
                             .into_iter()
                             .map(|ParentEntry { child, .. }| EditorIndex::from(child))
                             .collect::<Vec<_>>();
@@ -283,7 +283,7 @@ impl<M: RefMetadata> Editor<'_, M> {
 
         // The neighbors on each side, as frame coordinates.
         let incoming = self
-            .graph
+            .store
             .children_of(EditorIndex::from(child_commit))
             .iter()
             .copied()
@@ -294,7 +294,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             })
             .collect::<Vec<_>>();
         let outgoing = self
-            .graph
+            .store
             .parents(parent_commit)
             .iter()
             .copied()
@@ -330,7 +330,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// A bound or cut member that is a reference stands for the commit it resolves to;
     /// commits pass through (and so does an unborn reference, to fail cleanly later).
     fn resolve_bound(&self, entry: EditorIndex) -> EditorIndex {
-        match positions::resolve_to_commit(&self.graph, entry) {
+        match positions::resolve_to_commit(&self.store, entry) {
             Some(commit) if EditorIndex::from(commit) != entry => EditorIndex::from(commit),
             _ => entry,
         }
@@ -358,7 +358,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             // shift parent entries down). Shifts preserve relative order, so the recorded parent numbers
             // still sort the disconnected parents as their captured orders did.
             let parent_number = numbers
-                .current(&self.graph, commit, frame_number)
+                .current(&self.store, commit, frame_number)
                 .context("BUG: disconnected parent entry vanished")?;
             let removed = ParentEntry {
                 child: commit,
@@ -398,7 +398,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             }
             // Earlier removals on the same child shift this parent entry down; the translation resolves the
             // captured name to the parent number the store uses now.
-            let Some(parent_number) = numbers.current(&self.graph, source_child, frame_number)
+            let Some(parent_number) = numbers.current(&self.store, source_child, frame_number)
             else {
                 // The parent loop already removed this parent entry: the range bounds can name
                 // overlapping parent entries when the range's parent-most sits directly above
@@ -415,20 +415,20 @@ impl<M: RefMetadata> Editor<'_, M> {
             if heal
                 && ctx.ref_entries.is_none()
                 && !severed.by_number.is_empty()
-                && positions::enters_group_resolving_to(&self.graph, entry, ctx.commit)
+                && positions::enters_group_resolving_to(&self.store, entry, ctx.commit)
             {
                 // A parent entry that carried the target's group is a parent entry into the group — it never
                 // lost its parent. Fan it out in place: the first disconnected parent takes
                 // the parent entry's parent number (the statement keeps its name, so the carried
                 // groups follow), the rest are inserted right after.
                 let mut targets = severed.by_number.iter().map(|s| s.parent);
-                self.graph.replace_parent(
+                self.store.replace_parent(
                     source_child,
                     parent_number,
                     targets.next().expect("non-empty"),
                 );
                 for (offset, target) in targets.enumerate() {
-                    self.graph
+                    self.store
                         .insert_parent(source_child, parent_number + 1 + offset, target);
                     numbers.note_insert(source_child, parent_number + 1 + offset);
                 }
@@ -436,7 +436,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             }
             // Remove the child parent entry; groups it carried lose it from their derived
             // entering set automatically.
-            self.graph.remove_parent(source_child, parent_number);
+            self.store.remove_parent(source_child, parent_number);
             numbers.note_remove(source_child, parent_number);
             if heal {
                 self.reconnect_to_parents(severed, source_child);
@@ -448,7 +448,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         // at or below its rank — those stay with the range.
         if let Some(landing) = group_commit {
             for moving_ref in &ctx.moving_refs {
-                transfer_stack(&mut self.graph, *moving_ref, ctx.commit, landing);
+                transfer_stack(&mut self.store, *moving_ref, ctx.commit, landing);
             }
         }
         if ctx.filter.admits_everything()
@@ -463,7 +463,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                     // stack now sits behind all of those fresh parent entries (`GroupCarry::All`), which
                     // is also right when `commit` is a merge.
                     let landed = severed.carried_tops.first().is_some_and(|&top| {
-                        land_stack_above(&mut self.graph, ctx.commit, top, landing)
+                        land_stack_above(&mut self.store, ctx.commit, top, landing)
                     });
                     if !landed {
                         // A worktree's checked-out branch FOLLOWS the commit its
@@ -481,7 +481,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                             })
                             .collect();
                         positions::reposition_refs_except(
-                            &mut self.graph,
+                            &mut self.store,
                             ctx.commit,
                             landing,
                             positions::Carry::Preserve,
@@ -493,7 +493,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                     // The bound and its group at or below its depth stay with the range;
                     // the group slice above it follows the commit move verbatim.
                     carry_stack_above(
-                        &mut self.graph,
+                        &mut self.store,
                         ctx.commit,
                         child_bound_entries,
                         ctx.ref_depth.unwrap_or_default(),
@@ -509,7 +509,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// references follow where the commit's place went; their entering parent entries stay.
     fn readopt_range_danglers(&mut self, severed: &SeveredParents) {
         if let Some(onto) = severed.first_severed() {
-            readopt_dangling_refs(&mut self.graph, onto);
+            readopt_dangling_refs(&mut self.store, onto);
         }
     }
 
@@ -522,15 +522,15 @@ impl<M: RefMetadata> Editor<'_, M> {
         // entry afterwards drops it from every derived read automatically (no group
         // bookkeeping needed).
         let carried: Vec<_> = self
-            .graph
+            .store
             .positioned_refs()
-            .filter(|&r| positions::entering(&self.graph, r).contains(&entry))
+            .filter(|&r| positions::entering(&self.store, r).contains(&entry))
             .collect();
         let top = carried
             .into_iter()
-            .filter(|&r| positions::resolve_to_commit(&self.graph, r) == Some(toward))
-            .max_by_key(|&r| (positions::ref_depth(&self.graph, r), r));
-        self.graph.remove_parent(entry.child, entry.number);
+            .filter(|&r| positions::resolve_to_commit(&self.store, r) == Some(toward))
+            .max_by_key(|&r| (positions::ref_depth(&self.store, r), r));
+        self.store.remove_parent(entry.child, entry.number);
         top
     }
 
@@ -538,7 +538,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// parents in their original relative order.
     fn reconnect_to_parents(&mut self, severed: &SeveredParents, child_commit: CommitIndex) {
         for s in &severed.by_number {
-            self.graph.push_parent(child_commit, s.parent);
+            self.store.push_parent(child_commit, s.parent);
         }
     }
 

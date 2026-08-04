@@ -52,37 +52,37 @@ impl<M: RefMetadata> Editor<'_, M> {
         let parent = self.resolve_anchor(parent)?;
         self.ensure_acyclic(child, parent)?;
 
-        if self.graph.state_of(child).is_some() {
+        if self.store.state_of(child).is_some() {
             // A parent entry FROM a reference re-points it; a reference PARENT merely gains an
             // entering parent entry and may stay immutable.
             self.ensure_mutable_ref(child)?;
-            let onto = match self.graph.positioned_on(parent) {
+            let onto = match self.store.positioned_on(parent) {
                 Some(parent_on) => self.resolved_commit(parent_on)?,
                 None => commit_entry(parent)?,
             };
             let child_ref = ref_entry(child)?;
-            if self.graph.is_reference(child_ref) {
-                repoint_ref(&mut self.graph, child_ref, onto);
+            if self.store.is_reference(child_ref) {
+                repoint_ref(&mut self.store, child_ref, onto);
             } else {
-                self.graph.set_retained_position(child_ref, onto);
+                self.store.set_retained_position(child_ref, onto);
             }
             return Ok(());
         }
-        let parent_is_ref = self.graph.is_positioned(parent);
-        let parent_commit = match self.graph.positioned_on(parent) {
+        let parent_is_ref = self.store.is_positioned(parent);
+        let parent_commit = match self.store.positioned_on(parent) {
             Some(on) => self.resolved_commit(on)?,
             None => commit_entry(parent)?,
         };
         let child_commit = commit_entry(child)?;
         let parent_number = self
-            .graph
+            .store
             .insert_parent(child_commit, parent_number, parent_commit);
         // The group is captured AFTER the insert: normalization and the shift rename the
         // child's statements, so a pre-capture would hold stale parent entry names.
         if parent_is_ref {
-            let join = positions::prepare_group_join(&self.graph, ref_entry(parent)?);
+            let join = positions::prepare_group_join(&self.store, ref_entry(parent)?);
             positions::apply_group_join(
-                &mut self.graph,
+                &mut self.store,
                 &join,
                 ParentEntry {
                     child: child_commit,
@@ -102,7 +102,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let mut tips = vec![parent];
 
         while let Some(tip) = tips.pop() {
-            for parent in self.graph.parents(tip) {
+            for parent in self.store.parents(tip) {
                 if seen.insert(parent.into()) {
                     tips.push(parent.into());
                 }
@@ -160,18 +160,18 @@ impl<M: RefMetadata> Editor<'_, M> {
         // A reference child holds one conceptual downward parent entry (order 0) — its commit. It is
         // reported but not cleared; a follow-up insert_parent re-points, and a position without
         // a resolving commit is not representable.
-        if self.graph.is_positioned(child) {
-            let resolves_to_parent = positions::resolve_to_commit(&self.graph, child)
-                == positions::resolve_to_commit(&self.graph, parent);
+        if self.store.is_positioned(child) {
+            let resolves_to_parent = positions::resolve_to_commit(&self.store, child)
+                == positions::resolve_to_commit(&self.store, parent);
             return Ok(if resolves_to_parent { vec![0] } else { vec![] });
         }
-        let numbers = match self.graph.positioned_on(parent) {
+        let numbers = match self.store.positioned_on(parent) {
             // Disconnecting from a reference removes the parent entries carrying its group.
             Some(on) => {
                 let target_commit = self.resolved_commit(on)?;
-                let group_entries = positions::entering(&self.graph, parent);
+                let group_entries = positions::entering(&self.store, parent);
                 let child_commit = commit_entry(child)?;
-                self.graph
+                self.store
                     .parents(child_commit)
                     .iter()
                     .copied()
@@ -189,7 +189,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             // Disconnecting from a commit removes its parent numbers; groups riding a removed parent entry lose
             // it from their entering parent entries below.
             None => self
-                .graph
+                .store
                 .parents(child)
                 .iter()
                 .copied()
@@ -203,7 +203,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         // Highest-first so earlier parent numbers keep their names; report the pre-removal parent numbers.
         let child_commit = commit_entry(child)?;
         for parent_number in numbers.iter().rev() {
-            self.graph
+            self.store
                 .remove_parent(child_commit, *parent_number)
                 .context("BUG: Failed to remove parent")?;
         }

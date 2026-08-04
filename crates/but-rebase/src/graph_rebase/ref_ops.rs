@@ -8,10 +8,10 @@
 //! Names never churn under graph mutation, which is what keeps the table stable while
 //! commits are rewritten around it.
 
-use crate::graph_rebase::GraphEditor;
+use crate::graph_rebase::EditorStore;
 use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
-use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::positions;
+use crate::graph_rebase::store::RefIndex;
 
 /// A destination for a reference among the groups on a commit, named by intent.
 #[derive(Debug, Clone, Copy)]
@@ -38,7 +38,7 @@ pub(crate) enum RefPlace {
 
 /// Re-hang the references sitting directly ON `commit` (no `below` of their own) onto
 /// `moving`, which is taking the commit-bottom spot; `moving` itself is left alone.
-fn rehang_bottom(graph: &mut GraphEditor, commit: CommitIndex, moving: RefIndex) {
+fn rehang_bottom(graph: &mut EditorStore, commit: CommitIndex, moving: RefIndex) {
     let rehang: Vec<_> = graph
         .positioned_refs()
         .filter(|&mate| {
@@ -55,7 +55,7 @@ fn rehang_bottom(graph: &mut GraphEditor, commit: CommitIndex, moving: RefIndex)
 /// The topmost reference on `commit` entered through exactly `entering` — the one a
 /// group-top placement stacks above; `moving` itself is not a candidate.
 fn group_top_at(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     commit: CommitIndex,
     entering: &[ParentEntry],
     moving: RefIndex,
@@ -72,7 +72,7 @@ fn group_top_at(
 
 /// Place the reference at `entry` into `place`, shifting other positions as the placement demands.
 /// Fresh placement only — moving an existing reference is [`move_ref`].
-pub(crate) fn place_ref(graph: &mut GraphEditor, entry: RefIndex, place: RefPlace) {
+pub(crate) fn place_ref(graph: &mut EditorStore, entry: RefIndex, place: RefPlace) {
     match place {
         RefPlace::Above(target) => {
             if !graph.is_positioned(target) {
@@ -121,7 +121,7 @@ pub(crate) fn place_ref(graph: &mut GraphEditor, entry: RefIndex, place: RefPlac
 /// holds a position: when it is the sole carrier of its entering parent entries, those follow it
 /// (re-pointed onto the new commit and merged into the destination's entering set), and — when
 /// moving above another reference — the members now entered through it share the merged set.
-pub(crate) fn move_ref(graph: &mut GraphEditor, entry: RefIndex, place: RefPlace) {
+pub(crate) fn move_ref(graph: &mut EditorStore, entry: RefIndex, place: RefPlace) {
     let Some(moving_on) = graph.positioned_on(entry) else {
         return;
     };
@@ -223,7 +223,7 @@ pub(crate) fn move_ref(graph: &mut GraphEditor, entry: RefIndex, place: RefPlace
 /// caller's captured coordinates stay exact, and its stable id, so groups stated on it follow it to
 /// its new target. Entries already rewired elsewhere are left alone.
 pub(crate) fn redirect_entries(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     entries: &[ParentEntry],
     from: CommitIndex,
     to: CommitIndex,
@@ -245,7 +245,7 @@ pub(crate) fn redirect_entries(
 /// The mate a reference landing at `depth` on `on` (resolved) sits on — the member at
 /// `depth - 1`, excluding `exclude`, lowest entry id on a tie.
 fn mate_below_depth(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     exclude: RefIndex,
     on: CommitIndex,
     depth: usize,
@@ -268,7 +268,7 @@ fn mate_below_depth(
 /// move. Its entering parent entries and the members stacked above move with it; members below lose
 /// their entering parent entries and become roots at the old commit. An unplaced reference is placed as
 /// a fresh root; one already resolving there just refreshes its stored `on`.
-pub(crate) fn repoint_ref(graph: &mut GraphEditor, entry: RefIndex, onto: CommitIndex) {
+pub(crate) fn repoint_ref(graph: &mut EditorStore, entry: RefIndex, onto: CommitIndex) {
     if !graph.is_positioned(entry) {
         place_ref(graph, entry, RefPlace::Root(onto));
         return;
@@ -329,7 +329,7 @@ pub(crate) fn repoint_ref(graph: &mut GraphEditor, entry: RefIndex, onto: Commit
 /// Remove the reference at `entry` from its group: members above close the gap and it becomes
 /// a root at its current commit. With `drop_edges` the parent entries that entered through it are removed
 /// outright; otherwise they stay on the commit for a follow-up reconnect to rewire.
-pub(crate) fn unhook_ref(graph: &mut GraphEditor, entry: RefIndex, drop_edges: bool) {
+pub(crate) fn unhook_ref(graph: &mut EditorStore, entry: RefIndex, drop_edges: bool) {
     let Some(unhooked_on) = graph.positioned_on(entry) else {
         return;
     };
@@ -364,7 +364,7 @@ pub(crate) fn unhook_ref(graph: &mut GraphEditor, entry: RefIndex, drop_edges: b
 /// `source_pick` — onto `dest`: the lead lands at the bottom, each member re-classifies
 /// against its own parent entries at the destination, and stored ambiguity is preserved.
 pub(crate) fn transfer_stack(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     lead_ref: RefIndex,
     source_pick: CommitIndex,
     dest: CommitIndex,
@@ -406,7 +406,7 @@ pub(crate) fn transfer_stack(
 /// changes. The delimiter below the slice stays behind. `entering`/`above_depth` are
 /// caller-captured (pre-mutation) coordinates, not live derivations.
 pub(crate) fn carry_stack_above(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     source_pick: CommitIndex,
     entering: &[ParentEntry],
     above_depth: usize,
@@ -438,7 +438,7 @@ pub(crate) fn carry_stack_above(
 /// now descending into the joined group. Returns false (graph untouched) when `top` holds
 /// no position.
 pub(crate) fn land_stack_above(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     source_pick: CommitIndex,
     top: RefIndex,
     bridge_pick: CommitIndex,
@@ -481,7 +481,7 @@ pub(crate) fn land_stack_above(
 /// Re-key every reference whose `on` no longer resolves (it sat on removed commits) onto
 /// `onto`, positions carried verbatim — dangling references follow where the commit's
 /// place went; their entering parent entries stay.
-pub(crate) fn readopt_dangling_refs(graph: &mut GraphEditor, onto: CommitIndex) {
+pub(crate) fn readopt_dangling_refs(graph: &mut EditorStore, onto: CommitIndex) {
     let dangling: Vec<_> = graph
         .positioned_refs()
         .filter(|&entry| positions::resolve_to_commit(graph, entry).is_none())
@@ -522,7 +522,7 @@ pub(crate) struct GroupSplit {
 /// (A/B 2026-07-23: mixed-ops seed 41 + managed-moves seed 48, rank-0 position
 /// collisions).
 pub(crate) fn rehang_split_boundary(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     split: &GroupSplit,
     landing_commit: CommitIndex,
 ) {
@@ -563,7 +563,7 @@ pub(crate) fn rehang_split_boundary(
 /// `boundary` re-key onto `upper` (carry kinds verbatim, boundary member at the bottom); the
 /// lower members are returned untouched for the caller to settle.
 pub(crate) fn split_group(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     at_ref: RefIndex,
     boundary: SplitBoundary,
     upper: CommitIndex,
@@ -638,7 +638,7 @@ pub(crate) fn split_group(
 /// Settle the lower part of a split group: each member keeps its `on` and stacking but is now
 /// entered through `parent entry` — the parent entry descending from the interposed commit.
 pub(crate) fn settle_group_lower(
-    graph: &mut GraphEditor,
+    graph: &mut EditorStore,
     lower: &[(RefIndex, CommitIndex, Option<RefIndex>)],
     entering: ParentEntry,
 ) {

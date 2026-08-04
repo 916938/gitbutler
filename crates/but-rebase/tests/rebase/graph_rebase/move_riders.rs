@@ -71,7 +71,7 @@ fn worktree_ref_on_moved_commit_rides_it() -> Result<()> {
         ws.project_meta(),
         &mut *meta,
         &repo,
-        &but_rebase::graph_rebase::GraphEditorOptions {
+        &but_rebase::graph_rebase::EditorStoreOptions {
             worktree_tips: ws.options().worktree_tips.clone(),
             ..Default::default()
         },

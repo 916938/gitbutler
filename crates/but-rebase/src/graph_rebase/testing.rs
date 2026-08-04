@@ -14,9 +14,9 @@ use but_core::RefMetadata;
 use renderdag::{Ancestor, GraphRowRenderer, Renderer as _};
 
 use crate::graph_rebase::arena::CommitIndex;
-use crate::graph_rebase::graph_editor::RefIndex;
+use crate::graph_rebase::store::RefIndex;
 use crate::graph_rebase::{
-    Editor, EditorIndex, GraphEditor, RebasedEditor, positions, workspace::Subgraph,
+    Editor, EditorIndex, EditorStore, RebasedEditor, positions, workspace::Subgraph,
 };
 
 /// An extension trait that adds debugging output for graphs
@@ -32,13 +32,13 @@ pub trait Testing {
 
 impl<M: RefMetadata> Testing for Editor<'_, M> {
     fn steps_ascii(&self) -> String {
-        render_ascii_graph(&self.graph, |id| lookup_commit_title(&self.repo, id))
+        render_ascii_graph(&self.store, |id| lookup_commit_title(&self.repo, id))
     }
 }
 
 impl<M: RefMetadata> Testing for RebasedEditor<'_, M> {
     fn steps_ascii(&self) -> String {
-        render_ascii_graph(&self.graph, |id| lookup_commit_title(&self.repo, id))
+        render_ascii_graph(&self.store, |id| lookup_commit_title(&self.repo, id))
     }
 }
 
@@ -53,7 +53,7 @@ fn lookup_commit_title(repo: &gix::Repository, id: gix::ObjectId) -> Option<Stri
 /// The renderer's one-cell description — symbol and label — from typed reads:
 /// `●` commit, `◎` reference, `◌` tombstone.
 fn cell(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     entry: EditorIndex,
     get_title: &mut impl FnMut(gix::ObjectId) -> Option<String>,
 ) -> (char, String) {
@@ -89,7 +89,7 @@ fn cell(
 /// the render's view of positioned refs as rows.
 type GroupKey = (CommitIndex, Vec<ParentEntry>);
 
-fn ref_groups(graph: &GraphEditor) -> HashMap<GroupKey, Vec<RefIndex>> {
+fn ref_groups(graph: &EditorStore) -> HashMap<GroupKey, Vec<RefIndex>> {
     let mut out: HashMap<_, Vec<(usize, RefIndex)>> = HashMap::new();
     for entry in graph.positioned_refs() {
         let Some(on) = graph.positioned_on(entry) else {
@@ -109,7 +109,7 @@ fn ref_groups(graph: &GraphEditor) -> HashMap<GroupKey, Vec<RefIndex>> {
 
 /// Find head rows: commits (and tombstones) without incoming parent entries, plus the tops of root
 /// reference groups (positioned with nothing above them).
-fn find_heads(graph: &GraphEditor) -> Vec<EditorIndex> {
+fn find_heads(graph: &EditorStore) -> Vec<EditorIndex> {
     let mut has_incoming: HashSet<CommitIndex> = HashSet::new();
     for idx in graph.commit_indices() {
         has_incoming.extend(graph.parents(idx));
@@ -143,7 +143,7 @@ fn find_heads(graph: &GraphEditor) -> Vec<EditorIndex> {
 /// below it (or its commit); a commit's parent entries route through the group positioned on
 /// that (parent, parent number), when one exists — reproducing the in-between rows references had
 /// when they were nodes.
-fn rendered_parents(graph: &GraphEditor, entry: EditorIndex) -> Vec<EditorIndex> {
+fn rendered_parents(graph: &EditorStore, entry: EditorIndex) -> Vec<EditorIndex> {
     let groups = ref_groups(graph);
     if let Some(on) = graph.positioned_on(entry) {
         let group = groups
@@ -184,13 +184,13 @@ fn rendered_parents(graph: &GraphEditor, entry: EditorIndex) -> Vec<EditorIndex>
 
 /// A deterministic ordering for the head entries so snapshots are stable: commits
 /// before references, then by id / refname.
-fn compare_heads(graph: &GraphEditor, a: EditorIndex, b: EditorIndex) -> Ordering {
+fn compare_heads(graph: &EditorStore, a: EditorIndex, b: EditorIndex) -> Ordering {
     head_key(graph, a).cmp(&head_key(graph, b))
 }
 
 /// The sort key behind [`compare_heads`]: tombstones sort first, then commits by id,
 /// then references by name.
-fn head_key(graph: &GraphEditor, entry: EditorIndex) -> (u8, String) {
+fn head_key(graph: &EditorStore, entry: EditorIndex) -> (u8, String) {
     match entry {
         EditorIndex::Commit(_) => match graph.commit_id(entry) {
             Some(id) => (1, id.to_string()),
@@ -209,7 +209,7 @@ fn head_key(graph: &GraphEditor, entry: EditorIndex) -> (u8, String) {
 /// graph (where `entries` is every index) as well as a subgraph that doesn't
 /// include its parents.
 fn topological_order(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     entries: &HashSet<EditorIndex>,
     heads: &[EditorIndex],
 ) -> Vec<EditorIndex> {
@@ -228,7 +228,7 @@ fn topological_order(
 
     fn dfs(
         entry: EditorIndex,
-        graph: &GraphEditor,
+        graph: &EditorStore,
         entries: &HashSet<EditorIndex>,
         visited: &mut HashSet<EditorIndex>,
         in_degree: &mut HashMap<EditorIndex, usize>,
@@ -275,8 +275,8 @@ fn topological_order(
 /// `entries` is the set of steps to draw and `heads` are the tips to seed the
 /// ordering from; parents outside `entries` are simply dropped, so this renders
 /// both full graphs and subgraphs.
-fn render_graph_editor<F>(
-    graph: &GraphEditor,
+fn render_store<F>(
+    graph: &EditorStore,
     entries: &HashSet<EditorIndex>,
     heads: &[EditorIndex],
     mut get_title: F,
@@ -332,7 +332,7 @@ where
 }
 
 /// Render the full editor graph as a box-drawing DAG.
-pub(crate) fn render_ascii_graph<F>(graph: &GraphEditor, get_title: F) -> String
+pub(crate) fn render_ascii_graph<F>(graph: &EditorStore, get_title: F) -> String
 where
     F: FnMut(gix::ObjectId) -> Option<String>,
 {
@@ -342,7 +342,7 @@ where
         .chain(graph.ref_indices().map(EditorIndex::from))
         .collect();
     let heads = find_heads(graph);
-    render_graph_editor(graph, &entries, &heads, get_title)
+    render_store(graph, &entries, &heads, get_title)
 }
 
 impl<M: RefMetadata> Editor<'_, M> {
@@ -351,7 +351,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     pub fn subgraph_ascii(&self, subgraph: &Subgraph) -> String {
         let entries: HashSet<EditorIndex> = subgraph.entries.iter().copied().collect();
         let heads: Vec<EditorIndex> = subgraph.heads.to_vec();
-        render_graph_editor(&self.graph, &entries, &heads, |id| {
+        render_store(&self.store, &entries, &heads, |id| {
             lookup_commit_title(&self.repo, id)
         })
     }
@@ -409,7 +409,7 @@ mod tests {
         CommitSpec::new(gix::ObjectId::from_str(hex).unwrap())
     }
 
-    fn add_ref(graph: &mut GraphEditor, name: &str) -> RefIndex {
+    fn add_ref(graph: &mut EditorStore, name: &str) -> RefIndex {
         graph.add_reference(
             gix::refs::FullName::try_from(format!("refs/heads/{name}")).unwrap(),
             true,
@@ -419,7 +419,7 @@ mod tests {
 
     /// Add a reference POSITIONED on `on`, the way the editor's own ref creation authors
     /// refs — a root group of one.
-    fn place_ref(graph: &mut GraphEditor, name: &str, on: CommitIndex) -> RefIndex {
+    fn place_ref(graph: &mut EditorStore, name: &str, on: CommitIndex) -> RefIndex {
         let ix = add_ref(graph, name);
         graph.set_position(ix, on, &[], false, None);
         ix
@@ -427,7 +427,7 @@ mod tests {
 
     /// Helper to append a parent entry; the stated `order` documents the intended parent
     /// number and is asserted against the push (arrays make insertion order the structure).
-    fn add_parent_entry(graph: &mut GraphEditor, from: CommitIndex, to: CommitIndex, order: usize) {
+    fn add_parent_entry(graph: &mut EditorStore, from: CommitIndex, to: CommitIndex, order: usize) {
         let parent_number = graph.push_parent(from, to);
         assert_eq!(
             parent_number, order,
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn linear_graph() {
         // Simple linear: main on B -> C -> D
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let b = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
         let c = graph.add_commit(make_spec("2222222222222222222222222222222222222222"));
         let d = graph.add_commit(make_spec("3333333333333333333333333333333333333333"));
@@ -470,7 +470,7 @@ mod tests {
         // A   B
         //  \ /
         //   C
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -507,7 +507,7 @@ mod tests {
         //  A  B  C
         //   \ | /
         //     D
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -551,7 +551,7 @@ mod tests {
         //  X  Y  Z  \
         //   \ | /   |
         //     C-----+
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff")); // fork point
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn four_way_merge() {
         // Four-way merge
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -652,7 +652,7 @@ mod tests {
         // A3  |
         //  \ /
         //   C
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let a1 = graph.add_commit(make_spec("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"));
         let a2 = graph.add_commit(make_spec("a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"));
@@ -695,7 +695,7 @@ mod tests {
         //   D   E   |
         //    \ /    |
         //     F-----+
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
@@ -747,7 +747,7 @@ mod tests {
         //     X Y Z  \|
         //      \|/    |
         //       D-----+
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -812,7 +812,7 @@ mod tests {
         //   E   F     <- D forks to E and F, F is shared with C
         //    \ /
         //     base
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -882,7 +882,7 @@ mod tests {
         //   |     G     <- B, C, and D's second branch merge at G
         //    \   /
         //      F        <- E and G merge at F
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -949,7 +949,7 @@ mod tests {
         //  E F shared <- D forks to E, F, shared where shared comes from C
         //   \|/
         //    base
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
@@ -1010,7 +1010,7 @@ mod tests {
         // main on a -> b -> base, rendering only the subgraph {a, b}.
         // `main` (positioned on `a`) and `base` (a parent of `b`) are outside
         // the set, so neither is drawn and `b` renders as a root.
-        let mut graph = GraphEditor::default();
+        let mut graph = EditorStore::default();
         let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         let base = graph.add_commit(make_spec("0000000000000000000000000000000000000000"));
@@ -1020,7 +1020,7 @@ mod tests {
         add_parent_entry(&mut graph, b, base, 0);
 
         let entries: HashSet<EditorIndex> = [a.into(), b.into()].into_iter().collect();
-        let output = render_graph_editor(&graph, &entries, &[a.into()], |_| None);
+        let output = render_store(&graph, &entries, &[a.into()], |_| None);
         snapbox::assert_data_eq!(
             output,
             snapbox::str![[r#"

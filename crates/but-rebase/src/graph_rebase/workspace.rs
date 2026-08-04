@@ -7,8 +7,8 @@
 use crate::graph_rebase::arena::ParentEntry;
 use std::collections::{HashMap, HashSet};
 
-use crate::graph_rebase::graph_editor::RefIndex;
 use crate::graph_rebase::positions;
+use crate::graph_rebase::store::RefIndex;
 use anyhow::Result;
 use but_core::{
     RefMetadata, WORKSPACE_REF_NAME,
@@ -22,7 +22,7 @@ use but_graph::workspace::commit::is_managed_workspace_by_message;
 use gix::prelude::ObjectIdExt;
 
 use crate::graph_rebase::{
-    Checkout, Editor, EditorIndex, GraphEditor,
+    Checkout, Editor, EditorIndex, EditorStore,
     traverse::{self, AheadBehind},
 };
 
@@ -237,15 +237,15 @@ impl<M: RefMetadata> Editor<'_, M> {
                 let commit_entries: HashSet<EditorIndex> =
                     subgraph.entries.iter().copied().collect();
                 let additions: Vec<RefIndex> = self
-                    .graph
+                    .store
                     .positioned_refs()
                     .filter(|&entry| !naming.contains(&EditorIndex::from(entry)))
                     .filter(|&entry| {
-                        positions::entering(&self.graph, entry).iter().any(
+                        positions::entering(&self.store, entry).iter().any(
                             |ParentEntry { child, .. }| {
                                 commit_entries.contains(&EditorIndex::from(*child))
                             },
-                        ) || positions::resolve_to_commit(&self.graph, EditorIndex::from(entry))
+                        ) || positions::resolve_to_commit(&self.store, EditorIndex::from(entry))
                             .is_some_and(|commit| {
                                 commit_entries.contains(&EditorIndex::from(commit))
                             })
@@ -278,7 +278,7 @@ impl<M: RefMetadata> Editor<'_, M> {
 
         let ws_ref: gix::refs::FullName = WORKSPACE_REF_NAME.try_into()?;
         let on_workspace = self
-            .graph
+            .store
             .reference(entrypoint_ix)
             .is_some_and(|(refname, _)| *refname == ws_ref);
 
@@ -286,12 +286,12 @@ impl<M: RefMetadata> Editor<'_, M> {
 
         // The entrypoint is a reference: the region floods from the commit it resolves to
         // (references carry no parent entries). The region is the rev-set `HEAD ^target`.
-        let entrypoint_pick = positions::resolve_to_commit(&self.graph, entrypoint_ix);
+        let entrypoint_pick = positions::resolve_to_commit(&self.store, entrypoint_ix);
         let mut region = NodeSet {
             heads: vec![entrypoint_ix],
             entries: entrypoint_pick
                 .map(|commit| {
-                    traverse::all_until_optional_limit(&self.graph, commit.into(), target_ix)
+                    traverse::all_until_optional_limit(&self.store, commit.into(), target_ix)
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -301,7 +301,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let workspace_commit = on_workspace
             .then(|| {
                 region.entries.iter().copied().find_map(|ix| {
-                    let id = self.graph.commit_id(ix)?;
+                    let id = self.store.commit_id(ix)?;
                     let gix_commit = self.repo.find_commit(id).ok()?;
                     is_managed_workspace_by_message(gix_commit.message_raw().ok()?).then_some(ix)
                 })
@@ -312,7 +312,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         // above-workspace remainder: everything flooded that no stack claimed and
         // that isn't the workspace commit itself, refs attached by position.
         let stacks = self.subgraphs_from_stacks(stacks);
-        attach_flooded_refs(&self.graph, &mut region.entries, Some(entrypoint_ix));
+        attach_flooded_refs(&self.store, &mut region.entries, Some(entrypoint_ix));
         let stack_entries: HashSet<EditorIndex> = stacks
             .iter()
             .flat_map(|s| s.entries.iter())
@@ -331,7 +331,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             let has_child_in_region: HashSet<EditorIndex> = region
                 .entries
                 .iter()
-                .flat_map(|&ix| self.graph.parents(ix))
+                .flat_map(|&ix| self.store.parents(ix))
                 .map(EditorIndex::from)
                 .collect();
             region.heads = region
@@ -376,7 +376,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let mut remote_by_ref = HashMap::new();
         let mut status_by_ref = HashMap::new();
         for entry in entries {
-            let Some((refname, _)) = self.graph.reference(*entry) else {
+            let Some((refname, _)) = self.store.reference(*entry) else {
                 continue;
             };
             if refname.category() != Some(gix::refs::Category::LocalBranch) {
@@ -483,7 +483,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let reference_names: HashMap<EditorIndex, gix::refs::FullName> = entries
             .iter()
             .filter_map(|entry| {
-                self.graph
+                self.store
                     .reference(*entry)
                     .map(|(refname, _)| (*entry, refname.clone()))
             })
@@ -493,7 +493,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             if from_target_ref.contains(&entry) {
                 return Ok(true);
             }
-            Ok(match self.graph.commit_id(entry) {
+            Ok(match self.store.commit_id(entry) {
                 Some(id) => content.matches_by_workspace_commit.contains_key(&id),
                 None => false,
             })
@@ -518,7 +518,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                     continue;
                 }
                 if !entries.contains(&entry)
-                    && let Some(id) = self.graph.commit_id(entry)
+                    && let Some(id) = self.store.commit_id(entry)
                 {
                     remote_only_ids.push(id);
                 }
@@ -530,7 +530,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let mut elapsed = std::time::Duration::default();
         let mut commit_state = HashMap::new();
         for entry in entries {
-            let Some(id) = self.graph.commit_id(*entry) else {
+            let Some(id) = self.store.commit_id(*entry) else {
                 continue;
             };
             let state = if is_commit_integrated(*entry)? {
@@ -596,7 +596,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// The commit ids of the live commits among `entries` (references and tombstones dropped).
     fn commit_ids(&self, entries: impl Iterator<Item = EditorIndex>) -> Vec<gix::ObjectId> {
         entries
-            .filter_map(|entry| self.graph.commit_id(entry))
+            .filter_map(|entry| self.store.commit_id(entry))
             .collect()
     }
 
@@ -732,7 +732,7 @@ fn combined_push_status<K: Copy + Eq + std::hash::Hash>(
 /// members below it. Root groups nothing descends into (e.g. a remote ref stacked above a
 /// local one) stay out; no walk ever passes through them.
 fn attach_flooded_refs(
-    graph: &GraphEditor,
+    graph: &EditorStore,
     entries: &mut HashSet<EditorIndex>,
     entry: Option<EditorIndex>,
 ) {
