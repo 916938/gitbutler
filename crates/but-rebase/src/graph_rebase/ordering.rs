@@ -19,7 +19,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     ///
     /// Traversal starts at the editor's own `HEAD` checkout, then covers the remaining
     /// child-most entries: commits from the entrypoint's history rank before commits only an
-    /// auxiliary region (a linked worktree's branch) reaches, however the arena happens to be
+    /// auxiliary region (a linked worktree's branch) reaches, however the rows happen to be
     /// laid out.
     ///
     /// The ranker considers only selected commit ids and exits traversal early once all selected
@@ -89,7 +89,7 @@ fn parent_to_child_rank<M: RefMetadata>(
     let mut roots = editor.store.tips().collect::<Vec<CommitIndex>>();
     roots.sort_unstable();
     // The entrypoint's region ranks first: its history is what the user is looking at, and
-    // auxiliary regions (linked worktrees) come after it — arena layout must not decide.
+    // auxiliary regions (linked worktrees) come after it — row order must not decide.
     if let Some(head_pick) = editor.checkouts.iter().find_map(|checkout| match checkout {
         crate::graph_rebase::Checkout::Head { entry, .. } => {
             crate::graph_rebase::positions::resolve_to_commit(&editor.store, *entry)

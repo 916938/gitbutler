@@ -20,7 +20,7 @@
 //! from its position in one loop. "Rewrote the graph but forgot to move the branch"
 //! is not a bug this engine can have; there is no such step to forget.
 
-mod arena;
+mod commits;
 mod creation;
 mod positions;
 mod ref_ops;
@@ -40,7 +40,7 @@ pub mod testing;
 pub mod traverse;
 pub mod workspace;
 
-pub use arena::CommitIndex;
+pub use commits::CommitIndex;
 pub use creation::EditorStoreOptions;
 pub use store::{EditorIndex, RefIndex};
 pub use workspace::{GraphWorkspace, Subgraph};
@@ -181,7 +181,7 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
     /// state, since materializing only persists objects and applies ref edits. Project it
     /// (with [`Editor::repo`] and [`Self::overlay`]) to preview without a rewalk.
     pub fn commit_graph(&self) -> &but_graph::CommitGraph {
-        self.store.arena()
+        self.store.commit_graph()
     }
 
     /// Return the commit targeted by `ref_name` in the post-rebase graph.

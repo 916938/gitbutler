@@ -3,7 +3,7 @@
 //! graph as an ASCII DAG for snapshot tests. The rest of the module (group grouping,
 //! head finding, topological order) supports that rendering.
 
-use crate::graph_rebase::arena::ParentEntry;
+use crate::graph_rebase::commits::ParentEntry;
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
@@ -13,7 +13,7 @@ use anyhow::Result;
 use but_core::RefMetadata;
 use renderdag::{Ancestor, GraphRowRenderer, Renderer as _};
 
-use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::commits::CommitIndex;
 use crate::graph_rebase::store::RefIndex;
 use crate::graph_rebase::{
     Editor, EditorIndex, EditorStore, RebasedEditor, positions, workspace::Subgraph,
@@ -115,7 +115,7 @@ fn find_heads(graph: &EditorStore) -> Vec<EditorIndex> {
         has_incoming.extend(graph.parents(idx));
     }
     let groups = ref_groups(graph);
-    // Row-arena entries first, then references (the render sorts heads deterministically, so
+    // Commit rows first, then references (the render sorts heads deterministically, so
     // seed order does not reach snapshots): a commit or tombstone with no incoming parent entries, or
     // the top of a root reference group.
     graph

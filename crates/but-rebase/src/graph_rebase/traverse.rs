@@ -1,13 +1,13 @@
 //! Commit graph traversal helpers.
 
-use crate::graph_rebase::arena::ParentEntry;
+use crate::graph_rebase::commits::ParentEntry;
 use std::collections::HashSet;
 
 use anyhow::Result;
 use but_core::RefMetadata;
 
 use crate::graph_rebase::anchor::Anchor;
-use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::commits::CommitIndex;
 use crate::graph_rebase::mutate::commit_entry;
 use crate::graph_rebase::{Editor, EditorIndex, EditorStore, positions};
 
@@ -366,7 +366,7 @@ mod test {
     use std::{collections::HashSet, str::FromStr as _};
 
     use super::{a_not_b, all_until_optional_limit, count_commits, reachable_from};
-    use crate::graph_rebase::arena::CommitIndex;
+    use crate::graph_rebase::commits::CommitIndex;
     use crate::graph_rebase::{CommitSpec, EditorStore};
 
     fn commit(graph: &mut EditorStore) -> CommitIndex {

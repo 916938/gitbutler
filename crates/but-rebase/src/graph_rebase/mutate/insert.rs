@@ -1,6 +1,6 @@
 //! Insertion: placing ranges, commits, and references relative to an anchor.
 
-use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
+use crate::graph_rebase::commits::{CommitIndex, ParentEntry};
 use crate::graph_rebase::ref_ops::{
     RefPlace, SplitBoundary, move_ref, place_ref, redirect_entries, rehang_split_boundary,
     settle_group_lower, split_group,
@@ -25,7 +25,7 @@ struct BelowParents {
     /// joins once that parent's final number is known.
     ref_joins: Vec<(usize, RefIndex)>,
     /// Drained parent entry ids awaiting re-statement onto the range's parent-most.
-    moved_entry_ids: Vec<crate::graph_rebase::arena::ParentEntryId>,
+    moved_entry_ids: Vec<crate::graph_rebase::commits::ParentEntryId>,
 }
 
 impl<M: RefMetadata> Editor<'_, M> {
@@ -220,7 +220,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let split = split_group(&mut self.store, ref_entry(target)?, boundary, landing);
         // The group's parent entries now enter through `landing` — directly when the
         // target topped its group, or through the members that rode above (they carry
-        // their statements verbatim, so the arena entries must follow them or the
+        // their statements verbatim, so the graph entries must follow them or the
         // interposed commit is silently bypassed).
         redirect_entries(&mut self.store, &entering, on_commit, landing);
         rehang_split_boundary(&mut self.store, &split, landing);

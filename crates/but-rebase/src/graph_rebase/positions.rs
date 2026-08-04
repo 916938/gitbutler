@@ -38,7 +38,7 @@
 //! - **mint** — a workspace-parent entry that exists only in the stack declaration (an
 //!   empty lane), never written as real ancestry; see `EditorStore::ws_minted_parents`.
 
-use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
+use crate::graph_rebase::commits::{CommitIndex, ParentEntry};
 use crate::graph_rebase::store::GroupCarry;
 use crate::graph_rebase::store::RefIndex;
 use crate::graph_rebase::{EditorIndex, EditorStore};

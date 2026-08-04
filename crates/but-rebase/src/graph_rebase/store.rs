@@ -1,5 +1,5 @@
-//! The editor's store, in two halves. The COMMIT half lives in [`CommitArena`]
-//! (`arena.rs`): the owned commit graph with ordered parent arrays, settings, the
+//! The editor's store, in two halves. The COMMIT half lives in [`Commits`]
+//! (`commits.rs`): the owned commit graph with ordered parent arrays, settings, the
 //! children index, and stable parent-entry ids — no reference knowledge at all. This
 //! module holds the REFERENCE half — the ref table and the position layout — plus
 //! [`EditorStore`], which composes the two and owns every method that must read across
@@ -10,11 +10,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::graph_rebase::CommitSpec;
-use crate::graph_rebase::arena::{CommitArena, CommitIndex, ParentEntry, ParentEntryId};
+use crate::graph_rebase::commits::{CommitIndex, Commits, ParentEntry, ParentEntryId};
 
 /// The stable identifier of an editor-graph entry — the editor's one union token, and
 /// the only currency callers ever hold. Two namespaces: `Commit` points into the commit
-/// arena (its parent list is its truth), `Ref` into the reference table (a position is
+/// commit half (its parent list is its truth), `Ref` into the reference table (a position is
 /// its truth).
 ///
 /// The arms carry the SEALED per-namespace indices, so the union is publicly matchable —
@@ -29,14 +29,14 @@ use crate::graph_rebase::arena::{CommitArena, CommitIndex, ParentEntry, ParentEn
 /// rewrites, and removal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EditorIndex {
-    /// A commit or its tombstone in the commit arena.
+    /// A commit or its tombstone in the commit half.
     Commit(CommitIndex),
     /// A reference (live or tombstoned) in the ref table.
     Ref(RefIndex),
 }
 
 impl EditorIndex {
-    /// The commit-arena index, when this addresses a commit or tombstone.
+    /// The commit-half index, when this addresses a commit or tombstone.
     pub fn as_commit(self) -> Option<CommitIndex> {
         match self {
             EditorIndex::Commit(i) => Some(i),
@@ -127,8 +127,8 @@ pub(crate) type GroupCarry = but_graph::ref_layout::GroupCarry<ParentEntryId>;
 pub(crate) type RefGroup = but_graph::ref_layout::RefGroup<ParentEntryId>;
 
 /// The reference half of the editor's store: the ref table, its name lookup, and the
-/// position layout. The mirror of [`CommitArena`] — where that half knows nothing about
-/// references, this half holds arena coordinates ([`CommitIndex`], [`ParentEntryId`])
+/// position layout. The mirror of [`Commits`] — where that half knows nothing about
+/// references, this half holds commit-side coordinates ([`CommitIndex`], [`ParentEntryId`])
 /// as OPAQUE DATA: only [`EditorStore`]'s cross-store methods dereference them.
 #[derive(Debug, Clone, Default)]
 struct RefLedger {
@@ -151,15 +151,15 @@ struct RefLedger {
     layout: but_graph::ref_layout::RefGroups<CommitIndex, ParentEntryId>,
 }
 
-/// The editor's graph: a [`but_graph::CommitGraph`] arena where COMMITS carry ordered
+/// The editor's store: a [`but_graph::CommitGraph`] where COMMITS carry ordered
 /// parent arrays, plus a table of [`RefState`]s where REFERENCES carry explicit positions —
-/// the arena is the truth for commits, positions the truth for refs, with no overlap.
+/// the graph is the truth for commits, positions the truth for refs, with no overlap.
 /// References are edgeless: creation authors their positions straight from the stored
 /// [`RefLayout`](but_graph::ref_layout::RefLayout).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EditorStore {
-    /// The commit table — the vanilla half of the store; see [`CommitArena`].
-    commits: CommitArena,
+    /// The commit half — the vanilla side of the store; see [`Commits`].
+    commits: Commits,
 
     /// The reference table and position layout — the GitButler half; see [`RefLedger`].
     ledger: RefLedger,
@@ -193,13 +193,13 @@ pub(crate) enum WsParentKind {
 }
 
 impl EditorStore {
-    /// Adopt `arena` as the editor's arena. Full commit records (flags, refs, generation)
-    /// survive, which handing the arena back out after a rebase depends on. Every parent
+    /// Mount `graph` as the store's commit half. Full commit records (flags, refs,
+    /// generation) survive, which handing the graph back out after a rebase depends on. Every parent
     /// parent entry must already point at a node in the graph — the editor's standing requirement —
     /// and the caller follows up with per-node settings via [`Self::set_step`].
-    pub(crate) fn adopt(arena: but_graph::CommitGraph) -> Self {
+    pub(crate) fn adopt(graph: but_graph::CommitGraph) -> Self {
         Self {
-            commits: CommitArena::adopt(arena),
+            commits: Commits::adopt(graph),
             ledger: RefLedger::default(),
             ws_real_parents: Vec::new(),
             ws_minted_parents: Vec::new(),
@@ -242,17 +242,17 @@ impl EditorStore {
         self.commits.entry_id_at(child, parent_number)
     }
 
-    /// THE arena, read-only — the write-through seam projects it after a rebase.
-    pub(crate) fn arena(&self) -> &but_graph::CommitGraph {
+    /// The mounted commit graph, read-only — the write-through seam projects it after a rebase.
+    pub(crate) fn commit_graph(&self) -> &but_graph::CommitGraph {
         self.commits.graph()
     }
 
-    /// Surrender the arena — the materialized commit graph, the editor's final product.
-    pub(crate) fn into_arena(self) -> but_graph::CommitGraph {
+    /// Surrender the mounted commit graph — the materialized graph, the editor's final product.
+    pub(crate) fn into_commit_graph(self) -> but_graph::CommitGraph {
         self.commits.into_graph()
     }
 
-    /// Add the commit `spec` describes to the node arena and return its stable id.
+    /// Add the commit `spec` describes to the commit half and return its stable id.
     /// References do not belong here — use [`Self::add_reference`].
     pub(crate) fn add_commit(&mut self, spec: CommitSpec) -> CommitIndex {
         self.commits.add_commit(spec)
@@ -286,7 +286,7 @@ impl EditorStore {
         }
     }
 
-    /// The spec of the commit at `entry`, assembled from the arena commit and its
+    /// The spec of the commit at `entry`, assembled from the graph commit and its
     /// settings column; `None` for a tombstone.
     pub(crate) fn commit_spec(&self, entry: CommitIndex) -> Option<CommitSpec> {
         self.commits.commit_spec(entry)
@@ -313,7 +313,7 @@ impl EditorStore {
         self.commit_id(entry).is_some()
     }
 
-    /// All node-arena ids (commits and tombstones), ascending — the type says
+    /// All commit-half ids (commits and tombstones), ascending — the type says
     /// references are not here; see [`Self::references`] and [`Self::ref_indices`].
     pub(crate) fn commit_indices(&self) -> impl Iterator<Item = CommitIndex> + '_ {
         self.commits.commit_indices()
@@ -603,7 +603,7 @@ impl EditorStore {
     /// Where `entry` sits in the layout table: `(key, group index, member index)`.
     /// Membership is by NAME — the record's current name is the table identity.
     /// Find a reference's position as `(commit, group, member index)`. THE HOT PRIMITIVE: a
-    /// linear scan of the whole layout, deliberately left linear — unlike the arena's
+    /// linear scan of the whole layout, deliberately left linear — unlike the commit half's
     /// `children` index, which de-linearizes `children_of` over thousands of commits —
     /// because R, the refs in a workspace, is human-scale. If a workspace ever grows into
     /// the hundreds of branches, this is the primitive to index.
@@ -756,7 +756,7 @@ impl EditorStore {
     }
 
     /// Every parent entry that names `entry` as a parent, as sorted `(child, parent number)`
-    /// pairs — answered from the maintained children index, not an arena scan.
+    /// pairs — answered from the maintained children index, not a graph scan.
     pub(crate) fn children_of(&self, entry: impl Into<EditorIndex>) -> &[ParentEntry] {
         match entry.into() {
             EditorIndex::Commit(i) => self.commits.children_of(i),
@@ -784,7 +784,7 @@ impl EditorStore {
     /// Remove `child`'s parent at `parent number`, returning it; later parent numbers
     /// shift down, their statements untouched, and statements naming the removed parent entry
     /// are dropped for good — an operation that wants them back must state them again.
-    /// The ONE cross-store parent mutation: the removal is the arena's, the statement
+    /// The ONE cross-store parent mutation: the removal is the commit half's, the statement
     /// drop is the layout's.
     pub(crate) fn remove_parent(
         &mut self,

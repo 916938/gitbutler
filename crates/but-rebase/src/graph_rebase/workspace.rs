@@ -4,7 +4,7 @@
 //! graph via [`EditorIndex`]s, so consumers can frame the mutations they're about
 //! to perform against the same entries they'll act on.
 
-use crate::graph_rebase::arena::ParentEntry;
+use crate::graph_rebase::commits::ParentEntry;
 use std::collections::{HashMap, HashSet};
 
 use crate::graph_rebase::positions;

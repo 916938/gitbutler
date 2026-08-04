@@ -1,6 +1,6 @@
 //! Perform the actual rebase operations
 
-use crate::graph_rebase::arena::ParentEntry;
+use crate::graph_rebase::commits::ParentEntry;
 use std::{
     collections::{HashSet, VecDeque},
     fmt::Write as _,
@@ -14,7 +14,7 @@ use gix::refs::{
     transaction::{Change, LogChange, PreviousValue, RefEdit},
 };
 
-use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::commits::CommitIndex;
 use crate::graph_rebase::store::WsParentKind;
 use crate::graph_rebase::{
     CommitSpec, Editor, EditorStore, RebasedEditor,
@@ -329,7 +329,7 @@ fn derive_ref_edits(graph: &EditorStore, repo: &gix::Repository) -> Result<Vec<R
 /// Creates a list of step indicies ordered in the dependency order.
 ///
 /// We do this by first doing a breadth-first traversal down from the heads
-/// (usually the childless tips of the node arena) in order
+/// (usually the childless tips of the commit half) in order
 /// to determine which steps are reachable, and what the bottom most steps are.
 ///
 /// Then, we do a second traversal up from those bottom most

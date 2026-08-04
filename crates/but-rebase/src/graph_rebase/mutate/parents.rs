@@ -1,7 +1,7 @@
 //! Parent-list primitives: adding, inserting, detaching, and re-pointing parents.
 use std::collections::HashSet;
 
-use crate::graph_rebase::arena::ParentEntry;
+use crate::graph_rebase::commits::ParentEntry;
 use crate::graph_rebase::ref_ops::repoint_ref;
 use crate::graph_rebase::{EditorIndex, positions};
 use anyhow::{Context as _, Result, bail};

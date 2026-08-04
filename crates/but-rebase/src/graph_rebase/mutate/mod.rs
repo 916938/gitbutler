@@ -281,7 +281,7 @@ fn ref_entry(entry: EditorIndex) -> Result<RefIndex> {
         .context("operation targets a reference, but a commit was addressed")
 }
 
-/// The commit-arena index of `entry`; an error when it addresses a reference instead.
+/// The commit-half index of `entry`; an error when it addresses a reference instead.
 pub(crate) fn commit_entry(entry: EditorIndex) -> Result<CommitIndex> {
     entry
         .as_commit()

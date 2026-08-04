@@ -9,7 +9,7 @@
 //! commits are rewritten around it.
 
 use crate::graph_rebase::EditorStore;
-use crate::graph_rebase::arena::{CommitIndex, ParentEntry};
+use crate::graph_rebase::commits::{CommitIndex, ParentEntry};
 use crate::graph_rebase::positions;
 use crate::graph_rebase::store::RefIndex;
 
@@ -517,7 +517,7 @@ pub(crate) struct GroupSplit {
 /// the range's own ref chain already stands — hang the split boundary on that chain's
 /// top so both form one stack. This must run AFTER the entering entries are redirected,
 /// and it is TIMING that keeps it alive, not statement staleness: the split places the
-/// slice before the arena parent entries settle, so no placement-door fold can unify the
+/// slice before the graph parent entries settle, so no placement-door fold can unify the
 /// resolve-equal chains — deleting this under stable parent entry ids still collides
 /// (A/B 2026-07-23: mixed-ops seed 41 + managed-moves seed 48, rank-0 position
 /// collisions).

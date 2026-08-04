@@ -1,6 +1,6 @@
 //! Editor creation: turning a commit graph into an editor (see the lifecycle in
-//! [`but_graph::ref_layout`]). The arena is cloned wholesale — full commit payloads
-//! survive, which putting the arena back after a rebase depends on — then normalized:
+//! [`but_graph::ref_layout`]). The graph is cloned wholesale — full commit records
+//! survive, which putting the graph back after a rebase depends on — then normalized:
 //! every parent entry must point at a node in the graph, and the workspace commit gets the
 //! parents its chains say it has. Each commit becomes a commit; a commit is mutable when its
 //! commit is reachable from `HEAD` and not below the workspace lower bound, extended by
@@ -8,13 +8,13 @@
 //! reference table is a straight copy of the stored layout with commit ids mapped to commit
 //! indices; nothing is re-derived on the way in.
 
-use crate::graph_rebase::arena::ParentEntry;
+use crate::graph_rebase::commits::ParentEntry;
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use but_core::{RefMetadata, commit::SignCommit, ref_metadata::ProjectMeta};
 
-use crate::graph_rebase::arena::CommitIndex;
+use crate::graph_rebase::commits::CommitIndex;
 use crate::graph_rebase::store::{EditorIndex, GroupCarry, RefGroup, RefIndex};
 use crate::graph_rebase::{
     Checkout, CommitSpec, Editor, EditorStore, RebasedEditor, RevisionHistory,
@@ -149,7 +149,7 @@ fn build_store(
             .ok_or_else(|| anyhow!("stored position {id} is not a commit in the graph"))
     };
 
-    let mut arena = cg.clone();
+    let mut graph = cg.clone();
     for (i, id) in cg.commit_ids().enumerate() {
         // The workspace commit takes its chain parents from the stored layout (duplicates
         // and all); everything else keeps its present parents in order.
@@ -166,9 +166,9 @@ fn build_store(
                 };
                 targets.push(target);
             }
-            arena.set_parents(i, targets);
+            graph.set_parents(i, targets);
         } else if traversal_was_partial_at(id).is_some() {
-            arena.set_parents(i, cg.present_parent_indices(i));
+            graph.set_parents(i, cg.present_parent_indices(i));
         }
     }
 
@@ -190,7 +190,7 @@ fn build_store(
         })
         .collect();
 
-    let mut step_graph = EditorStore::adopt(arena);
+    let mut step_graph = EditorStore::adopt(graph);
     // Split the workspace commit's ingested parent entries into REAL parents (on disk) and MINTED ones —
     // the amended-list entries that exist only in the declaration, one per empty chain. The merge
     // formula makes the split exact: the amended list is real plus minted as a multiset, with the

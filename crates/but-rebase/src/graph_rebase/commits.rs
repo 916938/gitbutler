@@ -1,6 +1,9 @@
-//! The commit table: the arena plus its lockstep columns — the VANILLA half of the
-//! editor. One row per commit, all indexed by the same [`CommitIndex`]; appends flow
-//! through `push_rows`, which asserts the columns never drift apart.
+//! The store's commit half: a [`but_graph::CommitGraph`] MOUNTED FOR EDITING, plus the
+//! lockstep columns editing needs — replay settings, the derived children index, and
+//! stable parent-entry ids. One row per commit, all indexed by the same
+//! [`CommitIndex`]; appends flow through `push_rows`, which asserts the columns never
+//! drift apart. `adopt` mounts the graph, `into_commit_graph` hands the SAME type back
+//! out as the editor's final product.
 //!
 //! This module has no reference knowledge at all: no ref table, no positions, no
 //! carries. That is a checked property, not a habit — it imports nothing from
@@ -16,7 +19,7 @@ use crate::graph_rebase::{
     cherry_pick::{PickMode, TreeMergeMode},
 };
 
-/// A node in the commit arena — a commit or its tombstone. Nodes are the ONLY entities that
+/// A row in the commit half — a commit or its tombstone. Nodes are the ONLY entities that
 /// carry parent entries: parent arrays connect nodes, never references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CommitIndex(pub(crate) usize);
@@ -48,7 +51,7 @@ pub(crate) struct ParentEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ParentEntryId(u64);
 
-/// Everything a [`CommitSpec`] carries except the commit id — the id lives on the arena commit itself,
+/// Everything a [`CommitSpec`] carries except the commit id — the id lives on the graph commit itself,
 /// so the options live beside it. Stale for tombstones (never read; a revival overwrites).
 #[derive(Debug, Clone)]
 pub(crate) struct CommitSettings {
@@ -109,21 +112,21 @@ impl Default for CommitSettings {
     }
 }
 
-/// The commit store: an owned [`but_graph::CommitGraph`] arena where commits carry ordered
-/// parent arrays, with settings, a derived children index, and stable parent-entry ids in
-/// lockstep columns. Nothing is ever deleted (a removed commit is tombstoned in place), so
-/// ids stay stable.
+/// A [`but_graph::CommitGraph`] mounted for editing: commits carry ordered parent
+/// arrays, with replay settings, a derived children index, and stable parent-entry ids
+/// in lockstep columns. Nothing is ever deleted (a removed commit is tombstoned in
+/// place), so ids stay stable for the session's lifetime.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct CommitArena {
-    /// THE arena: commit ids are the commit (tombstoning flags a commit in place, its
-    /// index survives every rewrite); the parent arrays are the ordered structure.
+pub(crate) struct Commits {
+    /// THE substrate: commit ids are the commit (tombstoning flags a commit in place,
+    /// its index survives every rewrite); the parent arrays are the ordered structure.
     graph: but_graph::CommitGraph,
     /// Each commit's options.
     settings: Vec<CommitSettings>,
     /// The derived children index: `children[p]` holds every `(child, parent number)`
     /// parent entry naming commit `p`, sorted. Maintained through [`Self::update_parents`] — the
     /// single seam every parent mutation flows through — so [`Self::children_of`] is a
-    /// lookup, not an arena scan.
+    /// lookup, not a graph scan.
     children: Vec<Vec<ParentEntry>>,
     /// Each commit's parent-array parent entry ids — an INNER parallel array, one id per parent
     /// entry: `parent_entry_ids[child][parent_number]` is the stable identity of that parent entry.
@@ -133,9 +136,9 @@ pub(crate) struct CommitArena {
     next_parent_entry_id: u64,
 }
 
-impl CommitArena {
-    /// Adopt `graph` as the arena. Full commit records (flags, refs, generation)
-    /// survive, which handing the arena back out after a rebase depends on. Every parent
+impl Commits {
+    /// Mount `graph` for editing. Full commit records (flags, refs, generation)
+    /// survive, which handing the graph back out after a rebase depends on. Every parent
     /// entry must already point at a node in the graph — the editor's standing requirement.
     pub(crate) fn adopt(graph: but_graph::CommitGraph) -> Self {
         let settings = vec![CommitSettings::default(); graph.commit_count()];
@@ -187,17 +190,18 @@ impl CommitArena {
             .copied()
     }
 
-    /// THE arena, read-only — the write-through seam projects it after a rebase.
+    /// The mounted graph, read-only — the write-through seam projects it after a rebase.
     pub(crate) fn graph(&self) -> &but_graph::CommitGraph {
         &self.graph
     }
 
-    /// Surrender the arena — the materialized commit graph, the editor's final product.
+    /// Surrender the mounted graph — the materialized commit graph, the editor's final
+    /// product.
     pub(crate) fn into_graph(self) -> but_graph::CommitGraph {
         self.graph
     }
 
-    /// Add the commit `spec` describes to the node arena and return its stable id.
+    /// Add the commit `spec` describes to the commit half and return its stable id.
     pub(crate) fn add_commit(&mut self, spec: CommitSpec) -> CommitIndex {
         let (id, settings) = CommitSettings::split(spec);
         let i = self.graph.add_commit(id);
@@ -219,7 +223,7 @@ impl CommitArena {
         debug_assert_eq!(
             self.settings.len(),
             self.graph.commit_count(),
-            "settings table fell out of step with the arena"
+            "settings table fell out of step with the commit graph"
         );
         CommitIndex(i)
     }
@@ -244,7 +248,7 @@ impl CommitArena {
         self.graph.commit_id(entry.0)
     }
 
-    /// The spec of the commit at `entry`, assembled from the arena commit and its
+    /// The spec of the commit at `entry`, assembled from the graph commit and its
     /// settings column; `None` for a tombstone.
     pub(crate) fn commit_spec(&self, entry: CommitIndex) -> Option<CommitSpec> {
         self.graph
@@ -276,7 +280,7 @@ impl CommitArena {
         self.settings[entry.0].preserved_parents = parents;
     }
 
-    /// All node-arena ids (commits and tombstones), ascending.
+    /// All commit-half ids (commits and tombstones), ascending.
     pub(crate) fn commit_indices(&self) -> impl Iterator<Item = CommitIndex> + '_ {
         (0..self.graph.commit_count()).map(CommitIndex)
     }
@@ -303,7 +307,7 @@ impl CommitArena {
     }
 
     /// Every parent entry that names `entry` as a parent, as sorted `(child, parent number)`
-    /// pairs — answered from the maintained children index, not an arena scan.
+    /// pairs — answered from the maintained children index, not a graph scan.
     pub(crate) fn children_of(&self, entry: CommitIndex) -> &[ParentEntry] {
         &self.children[entry.0]
     }
@@ -337,7 +341,7 @@ impl CommitArena {
 
     /// Remove `child`'s parent at `parent number`, returning it with its retired entry id;
     /// later parent numbers shift down, their statements untouched. The caller owns
-    /// dropping any statements naming the retired id — the arena knows no statements.
+    /// dropping any statements naming the retired id — the commit half knows no statements.
     pub(crate) fn remove_parent(
         &mut self,
         child: CommitIndex,
@@ -406,7 +410,7 @@ impl CommitArena {
 
     /// Empty `child`'s parent array, returning each parent with its retired parent entry id.
     /// Statements naming the drained parent entries are the caller's to re-state onto their
-    /// new carrier — the arena knows no statements.
+    /// new carrier — the commit half knows no statements.
     pub(crate) fn drain_parents(
         &mut self,
         child: CommitIndex,
@@ -417,7 +421,7 @@ impl CommitArena {
     }
 
     /// Rewrite `child`'s parent array through `f` — the single seam every parent mutation
-    /// flows through into the arena's parent number write. Parents are [`CommitIndex`] by type:
+    /// flows through into the graph's parent number write. Parents are [`CommitIndex`] by type:
     /// references in a parent entry are unrepresentable.
     fn update_parents<R>(
         &mut self,
