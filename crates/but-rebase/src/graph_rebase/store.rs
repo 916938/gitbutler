@@ -109,6 +109,13 @@ pub(crate) struct RefState {
     /// creation-time signal distinct from the entering-parent entry count (a position can converge
     /// yet resolve to a single parent entry), so it is preserved here, never re-derived.
     pub ambiguous: bool,
+    /// The commit this reference stands on — THE VANILLA FACT (name → commit, what git
+    /// itself can say), kept as an exact MIRROR of the layout table's site key by the
+    /// three placement doors (`extract` clears, `place` sets, `insert_groups` sets).
+    /// `assert_positions_total` checks mirror-exactness continuously, and `locate` reads
+    /// this instead of scanning the whole table. Retained through deletion like the
+    /// position itself.
+    pub on: Option<CommitIndex>,
 }
 
 /// The editor's carry: [`but_graph::ref_layout::GroupCarry`] over STABLE PARENT-ENTRY IDS — the
@@ -350,6 +357,7 @@ impl EditorStore {
             mutable,
             live: true,
             ambiguous: false,
+            on: None,
         });
         entry
     }
@@ -608,7 +616,22 @@ impl EditorStore {
     /// because R, the refs in a workspace, is human-scale. If a workspace ever grows into
     /// the hundreds of branches, this is the primitive to index.
     fn locate(&self, entry: RefIndex) -> Option<(CommitIndex, usize, usize)> {
-        self.ledger.layout.locate(self.name_of(entry).as_ref())
+        let key = self.ledger.refs[entry.0].on?;
+        let name = self.name_of(entry);
+        let found = self.ledger.layout.groups_at(key).and_then(|groups| {
+            groups.iter().enumerate().find_map(|(g, group)| {
+                group
+                    .members
+                    .iter()
+                    .position(|m| m.as_ref() == name.as_ref())
+                    .map(|i| (key, g, i))
+            })
+        });
+        debug_assert!(
+            found.is_some(),
+            "BUG: {name} mirrors site {key} but is not in its groups"
+        );
+        found
     }
 
     /// Classify a position's entering-parent entry intent against `on`'s CURRENT parent entries: empty is a
@@ -644,6 +667,7 @@ impl EditorStore {
     /// re-places the entry immediately.
     fn extract(&mut self, entry: RefIndex) -> Option<gix::refs::FullName> {
         let name = self.name_of(entry).clone();
+        self.ledger.refs[entry.0].on = None;
         self.ledger.layout.extract(name.as_ref())
     }
 
@@ -658,6 +682,7 @@ impl EditorStore {
         vacated: Option<gix::refs::FullName>,
     ) {
         let carry = self.normalize_carry(key, carry);
+        self.ledger.refs[entry.0].on = Some(key);
         let name = self.name_of(entry).clone();
         let attach = attach.map(|b| self.name_of(b).clone());
         self.ledger.layout.place(name, key, carry, attach, vacated);
@@ -685,6 +710,27 @@ impl EditorStore {
         } else {
             carry
         }
+    }
+
+    /// Law support: every reference record's `(index, name, mirrored key)` — dead ones
+    /// included, since retained positions mirror too.
+    pub(crate) fn ref_positions_for_law(
+        &self,
+    ) -> impl Iterator<Item = (RefIndex, &gix::refs::FullName, Option<CommitIndex>)> {
+        self.ledger
+            .refs
+            .iter()
+            .enumerate()
+            .map(|(i, record)| (RefIndex(i), &record.refname, record.on))
+    }
+
+    /// Law support: the full-table scan `locate` no longer performs — the slow truth the
+    /// mirror is checked against.
+    pub(crate) fn locate_by_scan_for_law(
+        &self,
+        name: &gix::refs::FullNameRef,
+    ) -> Option<(CommitIndex, usize, usize)> {
+        self.ledger.layout.locate(name)
     }
 
     /// The raw groups at `key`, for well-formedness failure reports.
@@ -738,6 +784,10 @@ impl EditorStore {
                 .all(|name| self.ledger.by_name.contains_key(name.as_ref())),
             "BUG: ingest must register every reference before copying groups"
         );
+        for member in groups.iter().flat_map(|g| g.members.iter()) {
+            let entry = self.ledger.by_name[member.as_ref()];
+            self.ledger.refs[entry.0].on = Some(key);
+        }
         self.ledger.layout.insert_groups(key, groups);
     }
 
