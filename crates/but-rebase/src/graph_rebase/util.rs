@@ -108,30 +108,30 @@ mod test {
         fn basic_scenario() -> Result<()> {
             let mut graph = EditorStore::default();
             let a_id = gix::ObjectId::from_str("1000000000000000000000000000000000000000")?;
-            let a = graph.add_commit(CommitSpec::new(a_id));
+            let a = graph.commits.add_commit(CommitSpec::new(a_id));
             // First parent
             let b_id = gix::ObjectId::from_str("1000000000000000000000000000000000000000")?;
-            let b = graph.add_commit(CommitSpec::new(b_id));
+            let b = graph.commits.add_commit(CommitSpec::new(b_id));
             // Second parent - is a tombstone, so it flattens to its own parents
-            let c = graph.add_tombstone();
+            let c = graph.commits.add_tombstone();
             // Second parent's first parent
             let d_id = gix::ObjectId::from_str("3000000000000000000000000000000000000000")?;
-            let d = graph.add_commit(CommitSpec::new(d_id));
+            let d = graph.commits.add_commit(CommitSpec::new(d_id));
             // Second parent's second parent
             let e_id = gix::ObjectId::from_str("4000000000000000000000000000000000000000")?;
-            let e = graph.add_commit(CommitSpec::new(e_id));
+            let e = graph.commits.add_commit(CommitSpec::new(e_id));
             // Third parent
             let f_id = gix::ObjectId::from_str("5000000000000000000000000000000000000000")?;
-            let f = graph.add_commit(CommitSpec::new(f_id));
+            let f = graph.commits.add_commit(CommitSpec::new(f_id));
 
             // A's parents
-            graph.push_parent(a, b);
-            graph.push_parent(a, c);
-            graph.push_parent(a, f);
+            graph.commits.push_parent(a, b);
+            graph.commits.push_parent(a, c);
+            graph.commits.push_parent(a, f);
 
             // C's parents
-            graph.push_parent(c, d);
-            graph.push_parent(c, e);
+            graph.commits.push_parent(c, d);
+            graph.commits.push_parent(c, e);
 
             let parents = collect_ordered_parents(&graph, a);
             assert_eq!(&parents, &[b, d, e, f]);

@@ -259,7 +259,7 @@ pub(crate) fn redirect_entries(
     } in entries
     {
         if graph.parents(child).get(parent_number) == Some(&from) {
-            graph.replace_parent(child, parent_number, to);
+            graph.commits.replace_parent(child, parent_number, to);
         }
     }
 }

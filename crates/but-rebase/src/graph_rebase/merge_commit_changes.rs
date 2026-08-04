@@ -274,7 +274,7 @@ fn traverse_graph_for_planning<M: RefMetadata>(
     let mut seen_normal = HashSet::<CommitIndex>::new();
     let mut seen_target_ancestor_walk = HashSet::<CommitIndex>::new();
 
-    let mut roots = editor.store.tips().collect::<Vec<CommitIndex>>();
+    let mut roots = editor.store.commits.tips().collect::<Vec<CommitIndex>>();
     roots.sort_unstable();
 
     for root in roots {

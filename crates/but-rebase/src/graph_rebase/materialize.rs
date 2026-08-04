@@ -285,6 +285,6 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
     fn finish(self, ref_edits: Vec<RefEdit>) -> Result<(but_graph::CommitGraph, &'meta mut M)> {
         self.repo.edit_references(ref_edits)?;
 
-        Ok((self.editor.store.into_commit_graph(), self.editor.meta))
+        Ok((self.editor.store.commits.into_graph(), self.editor.meta))
     }
 }

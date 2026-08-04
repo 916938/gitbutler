@@ -55,6 +55,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// The index of the commit `id` in the graph, when present.
     pub fn try_select_commit(&self, id: gix::ObjectId) -> Option<CommitIndex> {
         self.store
+            .commits
             .commit_indices()
             .find(|&commit_idx| self.store.commit_id(commit_idx) == Some(id))
     }
@@ -92,13 +93,13 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Replace the commit at `commit` with `spec`, recording a commit mapping from the old
     /// to the new id (unless either side is untracked).
     pub fn replace_commit(&mut self, commit: CommitIndex, spec: CommitSpec) -> Result<()> {
-        if let Some(from) = self.store.commit_spec(commit)
+        if let Some(from) = self.store.commits.commit_spec(commit)
             && !from.exclude_from_tracking
             && !spec.exclude_from_tracking
         {
             self.history.update_mapping(from.id, spec.id);
         }
-        self.store.set_commit(commit, spec);
+        self.store.commits.set_commit(commit, spec);
         self.verified(Ok(()))
     }
 
@@ -108,7 +109,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// MATERIALIZED outcome is identical (merges included, pinned by test), so choose by
     /// whether later same-session operations need to see the healed graph.
     pub fn drop_commit(&mut self, commit: CommitIndex) -> Result<()> {
-        self.store.tombstone_commit(commit);
+        self.store.commits.tombstone_commit(commit);
         self.verified(Ok(()))
     }
 
@@ -222,7 +223,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Add the commit `spec` describes to the graph, unconnected. Almost always you want
     /// [`Self::insert_commit`] instead.
     pub fn add_commit(&mut self, spec: CommitSpec) -> Result<CommitIndex> {
-        let new_idx = self.store.add_commit(spec);
+        let new_idx = self.store.commits.add_commit(spec);
         Ok(new_idx)
     }
 

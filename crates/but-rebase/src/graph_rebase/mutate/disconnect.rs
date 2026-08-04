@@ -420,14 +420,17 @@ impl<M: RefMetadata> Editor<'_, M> {
                 // the parent entry's parent number (the statement keeps its name, so the carried
                 // groups follow), the rest are inserted right after.
                 let mut targets = severed.by_number.iter().map(|s| s.parent);
-                self.store.replace_parent(
+                self.store.commits.replace_parent(
                     source_child,
                     parent_number,
                     targets.next().expect("non-empty"),
                 );
                 for (offset, target) in targets.enumerate() {
-                    self.store
-                        .insert_parent(source_child, parent_number + 1 + offset, target);
+                    self.store.commits.insert_parent(
+                        source_child,
+                        parent_number + 1 + offset,
+                        target,
+                    );
                     numbers.note_insert(source_child, parent_number + 1 + offset);
                 }
                 continue;
@@ -536,7 +539,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// parents in their original relative order.
     fn reconnect_to_parents(&mut self, severed: &SeveredParents, child_commit: CommitIndex) {
         for s in &severed.by_number {
-            self.store.push_parent(child_commit, s.parent);
+            self.store.commits.push_parent(child_commit, s.parent);
         }
     }
 

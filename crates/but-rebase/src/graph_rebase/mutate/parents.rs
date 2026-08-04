@@ -74,9 +74,10 @@ impl<M: RefMetadata> Editor<'_, M> {
             None => commit_entry(parent)?,
         };
         let child_commit = commit_entry(child)?;
-        let parent_number = self
-            .store
-            .insert_parent(child_commit, parent_number, parent_commit);
+        let parent_number =
+            self.store
+                .commits
+                .insert_parent(child_commit, parent_number, parent_commit);
         // The group is captured AFTER the insert: normalization and the shift rename the
         // child's statements, so a pre-capture would hold stale parent entry names.
         if parent_is_ref {

@@ -152,11 +152,11 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
 
         // Every tip (an entry with no children) seeds the traversal so every commit is
         // visited — immutable commits and tombstones are left untouched where they stand.
-        let rebase_heads = graph.tips().collect::<Vec<_>>();
+        let rebase_heads = graph.commits.tips().collect::<Vec<_>>();
         let to_pick = cherry_pick_order(&graph, &rebase_heads)?;
 
         for commit_idx in to_pick {
-            let Some(spec) = graph.commit_spec(commit_idx) else {
+            let Some(spec) = graph.commits.commit_spec(commit_idx) else {
                 // Tombstones have nothing to rewrite.
                 continue;
             };
@@ -209,7 +209,7 @@ impl<'meta, M: RefMetadata> Editor<'meta, M> {
                 CherryPickOutcome::Commit(new_id)
                 | CherryPickOutcome::ConflictedCommit(new_id)
                 | CherryPickOutcome::Identity(new_id) => {
-                    graph.set_commit_id(commit_idx, new_id);
+                    graph.commits.set_commit_id(commit_idx, new_id);
                     if !spec.exclude_from_tracking {
                         history.update_mapping(spec.id, new_id);
                     }
@@ -446,18 +446,24 @@ mod test {
         #[test]
         fn basic_scenario() -> Result<()> {
             let mut graph = EditorStore::default();
-            let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "1000000000000000000000000000000000000000",
-            )?));
-            let b = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "2000000000000000000000000000000000000000",
-            )?));
-            let c = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "3000000000000000000000000000000000000000",
-            )?));
+            let a = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "1000000000000000000000000000000000000000",
+                )?));
+            let b = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "2000000000000000000000000000000000000000",
+                )?));
+            let c = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "3000000000000000000000000000000000000000",
+                )?));
 
-            graph.push_parent(a, b);
-            graph.push_parent(b, c);
+            graph.commits.push_parent(a, b);
+            graph.commits.push_parent(b, c);
 
             snapbox::assert_data_eq!(
                 render_ascii_graph(&graph, |_| None),
@@ -468,7 +474,8 @@ mod test {
 "#]]
             );
 
-            let ordered_from_a = cherry_pick_order(&graph, &graph.tips().collect::<Vec<_>>())?;
+            let ordered_from_a =
+                cherry_pick_order(&graph, &graph.commits.tips().collect::<Vec<_>>())?;
             assert_eq!(&ordered_from_a, &[c, b, a]);
 
             Ok(())
@@ -477,10 +484,12 @@ mod test {
         #[test]
         fn incomplete_order_from_a_cycle_is_rejected() -> Result<()> {
             let mut graph = EditorStore::default();
-            let commit = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "1000000000000000000000000000000000000000",
-            )?));
-            graph.push_parent(commit, commit);
+            let commit = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "1000000000000000000000000000000000000000",
+                )?));
+            graph.commits.push_parent(commit, commit);
 
             // A self-parent leaves no tip at all, so the walk starts from nothing and
             // orders nothing — the partial result the guard exists to reject.
@@ -494,48 +503,68 @@ mod test {
         #[test]
         fn complex_scenario() -> Result<()> {
             let mut graph = EditorStore::default();
-            let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "1000000000000000000000000000000000000000",
-            )?));
-            let b = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "2000000000000000000000000000000000000000",
-            )?));
-            let c = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "3000000000000000000000000000000000000000",
-            )?));
-            let d = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "4000000000000000000000000000000000000000",
-            )?));
-            let e = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "5000000000000000000000000000000000000000",
-            )?));
-            let f = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "6000000000000000000000000000000000000000",
-            )?));
-            let g = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "7000000000000000000000000000000000000000",
-            )?));
-            let h = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "8000000000000000000000000000000000000000",
-            )?));
-            let i = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "9000000000000000000000000000000000000000",
-            )?));
-            let j = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "1100000000000000000000000000000000000000",
-            )?));
+            let a = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "1000000000000000000000000000000000000000",
+                )?));
+            let b = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "2000000000000000000000000000000000000000",
+                )?));
+            let c = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "3000000000000000000000000000000000000000",
+                )?));
+            let d = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "4000000000000000000000000000000000000000",
+                )?));
+            let e = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "5000000000000000000000000000000000000000",
+                )?));
+            let f = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "6000000000000000000000000000000000000000",
+                )?));
+            let g = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "7000000000000000000000000000000000000000",
+                )?));
+            let h = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "8000000000000000000000000000000000000000",
+                )?));
+            let i = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "9000000000000000000000000000000000000000",
+                )?));
+            let j = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "1100000000000000000000000000000000000000",
+                )?));
 
-            graph.push_parent(a, b);
-            graph.push_parent(b, c);
-            graph.push_parent(c, d);
-            graph.push_parent(d, e);
+            graph.commits.push_parent(a, b);
+            graph.commits.push_parent(b, c);
+            graph.commits.push_parent(c, d);
+            graph.commits.push_parent(d, e);
 
-            graph.push_parent(f, g);
-            graph.push_parent(g, c);
+            graph.commits.push_parent(f, g);
+            graph.commits.push_parent(g, c);
 
-            graph.push_parent(h, d);
+            graph.commits.push_parent(h, d);
 
-            graph.push_parent(i, j);
+            graph.commits.push_parent(i, j);
 
             snapbox::assert_data_eq!(
                 render_ascii_graph(&graph, |_| None),
@@ -564,28 +593,38 @@ mod test {
         #[test]
         fn merge_scenario() -> Result<()> {
             let mut graph = EditorStore::default();
-            let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "1000000000000000000000000000000000000000",
-            )?));
-            let b = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "2000000000000000000000000000000000000000",
-            )?));
-            let c = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "3000000000000000000000000000000000000000",
-            )?));
-            let d = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "4000000000000000000000000000000000000000",
-            )?));
-            let e = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "5000000000000000000000000000000000000000",
-            )?));
+            let a = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "1000000000000000000000000000000000000000",
+                )?));
+            let b = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "2000000000000000000000000000000000000000",
+                )?));
+            let c = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "3000000000000000000000000000000000000000",
+                )?));
+            let d = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "4000000000000000000000000000000000000000",
+                )?));
+            let e = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "5000000000000000000000000000000000000000",
+                )?));
 
-            graph.push_parent(a, b);
-            graph.push_parent(b, c);
+            graph.commits.push_parent(a, b);
+            graph.commits.push_parent(b, c);
 
-            graph.push_parent(a, d);
-            graph.push_parent(d, e);
-            graph.push_parent(e, b);
+            graph.commits.push_parent(a, d);
+            graph.commits.push_parent(d, e);
+            graph.commits.push_parent(e, b);
 
             snapbox::assert_data_eq!(
                 render_ascii_graph(&graph, |_| None),
@@ -600,7 +639,8 @@ mod test {
 "#]]
             );
 
-            let ordered_from_a = cherry_pick_order(&graph, &graph.tips().collect::<Vec<_>>())?;
+            let ordered_from_a =
+                cherry_pick_order(&graph, &graph.commits.tips().collect::<Vec<_>>())?;
             assert_eq!(&ordered_from_a, &[c, b, e, d, a]);
 
             Ok(())
@@ -609,28 +649,38 @@ mod test {
         #[test]
         fn merge_flipped_scenario() -> Result<()> {
             let mut graph = EditorStore::default();
-            let a = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "1000000000000000000000000000000000000000",
-            )?));
-            let b = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "2000000000000000000000000000000000000000",
-            )?));
-            let c = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "3000000000000000000000000000000000000000",
-            )?));
-            let d = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "4000000000000000000000000000000000000000",
-            )?));
-            let e = graph.add_commit(CommitSpec::new(gix::ObjectId::from_str(
-                "5000000000000000000000000000000000000000",
-            )?));
+            let a = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "1000000000000000000000000000000000000000",
+                )?));
+            let b = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "2000000000000000000000000000000000000000",
+                )?));
+            let c = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "3000000000000000000000000000000000000000",
+                )?));
+            let d = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "4000000000000000000000000000000000000000",
+                )?));
+            let e = graph
+                .commits
+                .add_commit(CommitSpec::new(gix::ObjectId::from_str(
+                    "5000000000000000000000000000000000000000",
+                )?));
 
-            graph.push_parent(a, d);
-            graph.push_parent(d, e);
-            graph.push_parent(e, b);
-            graph.push_parent(b, c);
+            graph.commits.push_parent(a, d);
+            graph.commits.push_parent(d, e);
+            graph.commits.push_parent(e, b);
+            graph.commits.push_parent(b, c);
 
-            graph.push_parent(a, b);
+            graph.commits.push_parent(a, b);
 
             snapbox::assert_data_eq!(
                 render_ascii_graph(&graph, |_| None),
@@ -645,7 +695,8 @@ mod test {
 "#]]
             );
 
-            let ordered_from_a = cherry_pick_order(&graph, &graph.tips().collect::<Vec<_>>())?;
+            let ordered_from_a =
+                cherry_pick_order(&graph, &graph.commits.tips().collect::<Vec<_>>())?;
             assert_eq!(&ordered_from_a, &[c, b, e, d, a]);
 
             Ok(())

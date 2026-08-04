@@ -41,6 +41,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             .enumerate()
             .map(|(parent_number, parent_commit)| {
                 self.store
+                    .commits
                     .insert_parent(child_commit, parent_number, parent_commit);
                 parent_number
             })
@@ -234,6 +235,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// untouched — and the target's groups slide under the range.
     fn splice_above_commit(&mut self, target: EditorIndex, child: EditorIndex) -> Result<()> {
         self.store
+            .commits
             .redirect_children(commit_entry(target)?, commit_entry(child)?);
         // Refs sitting on the target move up onto the range's child-most commit.
         if let Some(child_commit) = self.store.resolve_to_commit(child) {
@@ -347,7 +349,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         } else {
             // Statements keep naming the drained parent entry ids until the restate moves
             // them onto the range's parent-most.
-            let drained = self.store.drain_parents(commit_entry(target)?);
+            let drained = self.store.commits.drain_parents(commit_entry(target)?);
             gathered.moved_entry_ids = drained.iter().map(|&(_, id)| id).collect();
             gathered.commits = drained.into_iter().map(|(parent, _)| parent).collect();
         }
@@ -397,7 +399,9 @@ impl<M: RefMetadata> Editor<'_, M> {
             let restates: Vec<_> = moved_entry_ids
                 .iter()
                 .zip(new_orders)
-                .filter_map(|(&old, new)| Some((old, self.store.entry_id_at(parent_commit, new)?)))
+                .filter_map(|(&old, new)| {
+                    Some((old, self.store.commits.entry_id_at(parent_commit, new)?))
+                })
                 .collect();
             self.store.restate_entries(&restates);
         }
@@ -429,9 +433,9 @@ impl<M: RefMetadata> Editor<'_, M> {
         if matches!(boundary, SplitBoundary::At) {
             self.ensure_mutable_ref(target)?;
         }
-        let new_idx = self.store.add_commit(new);
+        let new_idx = self.store.commits.add_commit(new);
         let (split, on_commit) = self.interpose_into_group(target, new_idx, boundary)?;
-        self.store.push_parent(new_idx, on_commit);
+        self.store.commits.push_parent(new_idx, on_commit);
         ref_ops::settle_group_lower(
             &mut self.store,
             &split.lower,
@@ -468,10 +472,10 @@ impl<M: RefMetadata> Editor<'_, M> {
                 // Above a commit: the interposed entry slides under the commit's groups — its
                 // children rewire to the new entry with parent numbers preserved (so stored group
                 // parent entries stay valid) and every ref sitting on it moves up.
-                let new_idx = self.store.add_commit(spec);
+                let new_idx = self.store.commits.add_commit(spec);
                 let target_commit = commit_entry(target)?;
-                self.store.redirect_children(target_commit, new_idx);
-                self.store.push_parent(new_idx, target_commit);
+                self.store.commits.redirect_children(target_commit, new_idx);
+                self.store.commits.push_parent(new_idx, target_commit);
                 ref_ops::reposition_refs(
                     &mut self.store,
                     target_commit,
@@ -490,9 +494,11 @@ impl<M: RefMetadata> Editor<'_, M> {
                 // Below a commit: the commit's whole parent array moves onto the new entry with
                 // parent numbers preserved, so groups carried by those parent entries follow the rename.
                 let target_commit = commit_entry(target)?;
-                let new_idx = self.store.add_commit(spec);
-                self.store.transplant_parents(target_commit, new_idx);
-                self.store.push_parent(target_commit, new_idx);
+                let new_idx = self.store.commits.add_commit(spec);
+                self.store
+                    .commits
+                    .transplant_parents(target_commit, new_idx);
+                self.store.commits.push_parent(target_commit, new_idx);
                 EditorIndex::from(new_idx)
             }
             (InsertSide::Below, true) => {

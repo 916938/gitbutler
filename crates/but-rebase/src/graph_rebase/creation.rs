@@ -217,7 +217,7 @@ fn build_store(
                 disk.pop_front();
             }
             if let (Some(entry), Some(&target)) = (
-                step_graph.entry_id_at(ws_commit, index),
+                step_graph.commits.entry_id_at(ws_commit, index),
                 ws_parents.get(index),
             ) {
                 if is_real {
@@ -282,7 +282,7 @@ fn build_store(
                                     // parent entry's stable id; a coordinate past the live
                                     // parent count has no parent entry to name and drops.
                                     Ok(commit_index_of(entry.child).ok().and_then(|child| {
-                                        step_graph.entry_id_at(child, entry.index)
+                                        step_graph.commits.entry_id_at(child, entry.index)
                                     }))
                                 })
                                 .collect::<Result<Vec<_>>>()?
@@ -409,9 +409,11 @@ fn build_store(
             spec
         };
         spec.mutable = mutable_commits.contains(&id);
-        step_graph.set_commit(ix, spec);
+        step_graph.commits.set_commit(ix, spec);
         if let Some(raw_parents) = traversal_was_partial_at(id) {
-            step_graph.set_preserved_parents(ix, Some(raw_parents));
+            step_graph
+                .commits
+                .set_preserved_parents(ix, Some(raw_parents));
         }
     }
 

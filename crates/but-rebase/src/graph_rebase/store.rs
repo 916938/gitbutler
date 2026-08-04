@@ -9,7 +9,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::graph_rebase::CommitSpec;
 use crate::graph_rebase::commits::{CommitIndex, Commits, ParentEntry, ParentEntryId};
 
 /// The stable identifier of an editor-graph entry — the editor's one union token, and
@@ -165,8 +164,11 @@ struct RefLedger {
 /// [`RefLayout`](but_graph::ref_layout::RefLayout).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EditorStore {
-    /// The commit half — the vanilla side of the store; see [`Commits`].
-    commits: Commits,
+    /// The commit half — the vanilla side of the store; see [`Commits`]. Deliberately
+    /// reachable: verbs address it as `store.commits.…`, so every vanilla-surgery line
+    /// classifies itself at the call site. Methods remaining on [`EditorStore`] itself
+    /// are the JOINS — reads and doors that span both halves.
+    pub(crate) commits: Commits,
 
     /// The reference table and position layout — the GitButler half; see [`RefLedger`].
     ledger: RefLedger,
@@ -226,7 +228,7 @@ impl EditorStore {
             .into_iter()
             .enumerate()
             .map(|(index, target)| {
-                let Some(entry) = self.entry_id_at(ws, index) else {
+                let Some(entry) = self.commits.entry_id_at(ws, index) else {
                     return WsParentKind::Surgical;
                 };
                 if minted.contains(&(entry, target)) {
@@ -240,50 +242,6 @@ impl EditorStore {
             .collect()
     }
 
-    /// The stable identity of the live parent entry at `(child, parent_number)`, if it exists.
-    pub(crate) fn entry_id_at(
-        &self,
-        child: CommitIndex,
-        parent_number: usize,
-    ) -> Option<ParentEntryId> {
-        self.commits.entry_id_at(child, parent_number)
-    }
-
-    /// The mounted commit graph, read-only — the write-through seam projects it after a rebase.
-    pub(crate) fn commit_graph(&self) -> &but_graph::CommitGraph {
-        self.commits.graph()
-    }
-
-    /// Surrender the mounted commit graph — the materialized graph, the editor's final product.
-    pub(crate) fn into_commit_graph(self) -> but_graph::CommitGraph {
-        self.commits.into_graph()
-    }
-
-    /// Add the commit `spec` describes to the commit half and return its stable id.
-    /// References do not belong here — use [`Self::add_reference`].
-    pub(crate) fn add_commit(&mut self, spec: CommitSpec) -> CommitIndex {
-        self.commits.add_commit(spec)
-    }
-
-    /// Add an entry born tombstoned: a placeholder that holds no commit. Only unit-test
-    /// graph builders construct these; real removal tombstones an existing commit.
-    #[cfg(test)]
-    pub(crate) fn add_tombstone(&mut self) -> CommitIndex {
-        self.commits.add_tombstone()
-    }
-
-    /// Overwrite the commit at `entry` per `spec` — id and settings both; revives a
-    /// tombstone.
-    pub(crate) fn set_commit(&mut self, entry: CommitIndex, spec: CommitSpec) {
-        self.commits.set_commit(entry, spec);
-    }
-
-    /// Tombstone the node at `entry`: it stops holding a commit (settings go stale, not
-    /// cleared).
-    pub(crate) fn tombstone_commit(&mut self, entry: CommitIndex) {
-        self.commits.tombstone_commit(entry);
-    }
-
     /// The commit id of the commit at `entry` — `None` for tombstones and references. The
     /// cheap way to read just the id; use [`Self::commit_spec`] for the full spec.
     pub(crate) fn commit_id(&self, entry: impl Into<EditorIndex>) -> Option<gix::ObjectId> {
@@ -293,44 +251,9 @@ impl EditorStore {
         }
     }
 
-    /// The spec of the commit at `entry`, assembled from the graph commit and its
-    /// settings column; `None` for a tombstone.
-    pub(crate) fn commit_spec(&self, entry: CommitIndex) -> Option<CommitSpec> {
-        self.commits.commit_spec(entry)
-    }
-
-    /// Rewrite the commit id of the commit at `entry` IN PLACE — THE rebase write: the node id,
-    /// its parent array, its settings, and every position naming it all survive unchanged.
-    pub(crate) fn set_commit_id(&mut self, entry: CommitIndex, id: gix::ObjectId) {
-        self.commits.set_commit_id(entry, id);
-    }
-
-    /// Overwrite the preserved parents of the commit at `entry` (see
-    /// [`CommitSpec::preserved_parents`]).
-    pub(crate) fn set_preserved_parents(
-        &mut self,
-        entry: CommitIndex,
-        parents: Option<Vec<gix::ObjectId>>,
-    ) {
-        self.commits.set_preserved_parents(entry, parents);
-    }
-
     /// `true` iff `entry` is a commit — `false` for tombstones and references.
     pub(crate) fn is_commit(&self, entry: impl Into<EditorIndex>) -> bool {
         self.commit_id(entry).is_some()
-    }
-
-    /// All commit-half ids (commits and tombstones), ascending — the type says
-    /// references are not here; see [`Self::references`] and [`Self::ref_indices`].
-    pub(crate) fn commit_indices(&self) -> impl Iterator<Item = CommitIndex> + '_ {
-        self.commits.commit_indices()
-    }
-
-    /// The nodes that no other node lists as a parent — the childless tips, ascending.
-    /// Callers (head discovery) want commits and tombstones only; references can't appear
-    /// here by type.
-    pub(crate) fn tips(&self) -> impl Iterator<Item = CommitIndex> + '_ {
-        self.commits.tips()
     }
 
     /// Add a reference and return its stable id. Names are identity: adding a name that
@@ -683,7 +606,9 @@ impl EditorStore {
             // The intent is authored positionally from live captures; STATED by id.
             let mut entries: Vec<ParentEntryId> = entering
                 .iter()
-                .filter_map(|&ParentEntry { child, number }| self.entry_id_at(child, number))
+                .filter_map(|&ParentEntry { child, number }| {
+                    self.commits.entry_id_at(child, number)
+                })
                 .collect();
             entries.sort_unstable();
             entries.dedup();
@@ -730,7 +655,7 @@ impl EditorStore {
         let live: Vec<ParentEntryId> = match self.resolve_to_commit(key) {
             Some(commit) => crate::graph_rebase::positions::live_children_of(self, commit)
                 .into_iter()
-                .filter_map(|ParentEntry { child, number }| self.entry_id_at(child, number))
+                .filter_map(|ParentEntry { child, number }| self.commits.entry_id_at(child, number))
                 .collect(),
             None => return carry,
         };
@@ -792,6 +717,7 @@ impl EditorStore {
                 GroupCarry::None => false,
                 GroupCarry::All => true,
                 GroupCarry::Entries(entries) => self
+                    .commits
                     .entry_id_at(entry.child, entry.number)
                     .is_some_and(|id| entries.contains(&id)),
             })
@@ -843,23 +769,6 @@ impl EditorStore {
         }
     }
 
-    /// Append `parent` as `child`'s last parent; returns its parent number.
-    pub(crate) fn push_parent(&mut self, child: CommitIndex, parent: CommitIndex) -> usize {
-        self.commits.push_parent(child, parent)
-    }
-
-    /// Insert `parent` at `parent number` of `child` (clamped to the array end); later
-    /// parent numbers shift up, their statements untouched — a statement names an
-    /// [`ParentEntryId`], not a position. Returns the parent number actually used.
-    pub(crate) fn insert_parent(
-        &mut self,
-        child: CommitIndex,
-        parent_number: usize,
-        parent: CommitIndex,
-    ) -> usize {
-        self.commits.insert_parent(child, parent_number, parent)
-    }
-
     /// Remove `child`'s parent at `parent number`, returning it; later parent numbers
     /// shift down, their statements untouched, and statements naming the removed parent entry
     /// are dropped for good — an operation that wants them back must state them again.
@@ -873,42 +782,6 @@ impl EditorStore {
         let (target, removed) = self.commits.remove_parent(child, parent_number)?;
         self.retain_edges(|&id| id != removed);
         Some(target)
-    }
-
-    /// Re-point `child`'s parent at `parent number` onto `new_parent`. The parent entry keeps its
-    /// [`ParentEntryId`], so groups stated on it follow the parent entry to its new target.
-    pub(crate) fn replace_parent(
-        &mut self,
-        child: CommitIndex,
-        parent_number: usize,
-        new_parent: CommitIndex,
-    ) {
-        self.commits
-            .replace_parent(child, parent_number, new_parent);
-    }
-
-    /// Move `from`'s whole parent array onto `to` (which must have none); the parent entries keep
-    /// their identities, so statements follow without any rewrite.
-    pub(crate) fn transplant_parents(&mut self, from: CommitIndex, to: CommitIndex) {
-        self.commits.transplant_parents(from, to);
-    }
-
-    /// Re-target every parent-array entry naming `from` onto `to`, parent numbers preserved —
-    /// the parent entries keep their ids, so statements naming them stay valid untouched.
-    pub(crate) fn redirect_children(&mut self, from: CommitIndex, to: CommitIndex) {
-        self.commits.redirect_children(from, to);
-    }
-
-    /// Empty `child`'s parent array, returning each parent with its retired parent entry id.
-    /// Group statements naming the drained parent entries are DELIBERATELY untouched: the caller
-    /// re-states the orphaned ids onto their new carrier itself via
-    /// [`Self::restate_entries`] (the below-insert path re-hangs them onto the range's
-    /// parent-most parent entry).
-    pub(crate) fn drain_parents(
-        &mut self,
-        child: CommitIndex,
-    ) -> Vec<(CommitIndex, ParentEntryId)> {
-        self.commits.drain_parents(child)
     }
 
     /// Re-state carry statements from retired parent entry ids onto their successors — the ONE

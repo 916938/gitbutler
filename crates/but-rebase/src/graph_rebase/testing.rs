@@ -111,7 +111,7 @@ fn ref_groups(graph: &EditorStore) -> HashMap<GroupKey, Vec<RefIndex>> {
 /// reference groups (positioned with nothing above them).
 fn find_heads(graph: &EditorStore) -> Vec<EditorIndex> {
     let mut has_incoming: HashSet<CommitIndex> = HashSet::new();
-    for idx in graph.commit_indices() {
+    for idx in graph.commits.commit_indices() {
         has_incoming.extend(graph.parents(idx));
     }
     let groups = ref_groups(graph);
@@ -119,6 +119,7 @@ fn find_heads(graph: &EditorStore) -> Vec<EditorIndex> {
     // seed order does not reach snapshots): a commit or tombstone with no incoming parent entries, or
     // the top of a root reference group.
     graph
+        .commits
         .commit_indices()
         .map(EditorIndex::from)
         .chain(graph.ref_indices().map(EditorIndex::from))
@@ -338,6 +339,7 @@ where
     F: FnMut(gix::ObjectId) -> Option<String>,
 {
     let entries: HashSet<EditorIndex> = graph
+        .commits
         .commit_indices()
         .map(EditorIndex::from)
         .chain(graph.ref_indices().map(EditorIndex::from))
@@ -429,7 +431,7 @@ mod tests {
     /// Helper to append a parent entry; the stated `order` documents the intended parent
     /// number and is asserted against the push (arrays make insertion order the structure).
     fn add_parent_entry(graph: &mut EditorStore, from: CommitIndex, to: CommitIndex, order: usize) {
-        let parent_number = graph.push_parent(from, to);
+        let parent_number = graph.commits.push_parent(from, to);
         assert_eq!(
             parent_number, order,
             "test builder must push parents in parent_number order"
@@ -440,10 +442,16 @@ mod tests {
     fn linear_graph() {
         // Simple linear: main on B -> C -> D
         let mut graph = EditorStore::default();
-        let b = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
-        let c = graph.add_commit(make_spec("2222222222222222222222222222222222222222"));
-        let d = graph.add_commit(make_spec("3333333333333333333333333333333333333333"));
-        let none = graph.add_tombstone();
+        let b = graph
+            .commits
+            .add_commit(make_spec("1111111111111111111111111111111111111111"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("2222222222222222222222222222222222222222"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("3333333333333333333333333333333333333333"));
+        let none = graph.commits.add_tombstone();
         place_ref(&mut graph, "main", b);
 
         add_parent_entry(&mut graph, b, c, 0);
@@ -472,10 +480,18 @@ mod tests {
         //  \ /
         //   C
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
         place_ref(&mut graph, "main", m);
 
         // M has two parents: A (first) and B (second)
@@ -509,11 +525,21 @@ mod tests {
         //   \ | /
         //     D
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
         place_ref(&mut graph, "main", m);
 
         // M has three parents
@@ -553,13 +579,27 @@ mod tests {
         //   \ | /   |
         //     C-----+
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff")); // fork point
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let x = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
-        let y = graph.add_commit(make_spec("2222222222222222222222222222222222222222"));
-        let z = graph.add_commit(make_spec("3333333333333333333333333333333333333333"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let f = graph
+            .commits
+            .add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff")); // fork point
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let x = graph
+            .commits
+            .add_commit(make_spec("1111111111111111111111111111111111111111"));
+        let y = graph
+            .commits
+            .add_commit(make_spec("2222222222222222222222222222222222222222"));
+        let z = graph
+            .commits
+            .add_commit(make_spec("3333333333333333333333333333333333333333"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
         place_ref(&mut graph, "main", m);
 
         // M has two parents: F (first) and B (second)
@@ -604,12 +644,24 @@ mod tests {
     fn four_way_merge() {
         // Four-way merge
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
-        let base = graph.add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let base = graph
+            .commits
+            .add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
         place_ref(&mut graph, "main", m);
 
         add_parent_entry(&mut graph, m, a, 0);
@@ -654,12 +706,24 @@ mod tests {
         //  \ /
         //   C
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let a1 = graph.add_commit(make_spec("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"));
-        let a2 = graph.add_commit(make_spec("a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"));
-        let a3 = graph.add_commit(make_spec("a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let a1 = graph
+            .commits
+            .add_commit(make_spec("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"));
+        let a2 = graph
+            .commits
+            .add_commit(make_spec("a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"));
+        let a3 = graph
+            .commits
+            .add_commit(make_spec("a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
         place_ref(&mut graph, "main", m);
 
         add_parent_entry(&mut graph, m, a1, 0);
@@ -697,12 +761,24 @@ mod tests {
         //    \ /    |
         //     F-----+
         let mut graph = EditorStore::default();
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
-        let e = graph.add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
-        let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let e = graph
+            .commits
+            .add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
+        let f = graph
+            .commits
+            .add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
         place_ref(&mut graph, "main", a);
 
         // A forks to B, C
@@ -749,14 +825,30 @@ mod tests {
         //      \|/    |
         //       D-----+
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let x = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
-        let y = graph.add_commit(make_spec("2222222222222222222222222222222222222222"));
-        let z = graph.add_commit(make_spec("3333333333333333333333333333333333333333"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let f = graph
+            .commits
+            .add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let x = graph
+            .commits
+            .add_commit(make_spec("1111111111111111111111111111111111111111"));
+        let y = graph
+            .commits
+            .add_commit(make_spec("2222222222222222222222222222222222222222"));
+        let z = graph
+            .commits
+            .add_commit(make_spec("3333333333333333333333333333333333333333"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
         place_ref(&mut graph, "main", m);
 
         // M forks to F, B, C
@@ -814,14 +906,30 @@ mod tests {
         //    \ /
         //     base
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
-        let e = graph.add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
-        let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
-        let base = graph.add_commit(make_spec("0000000000000000000000000000000000000000"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let e = graph
+            .commits
+            .add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
+        let f = graph
+            .commits
+            .add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
+        let base = graph
+            .commits
+            .add_commit(make_spec("0000000000000000000000000000000000000000"));
         place_ref(&mut graph, "main", m);
 
         // M forks to A, B, C
@@ -884,14 +992,30 @@ mod tests {
         //    \   /
         //      F        <- E and G merge at F
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
-        let e = graph.add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
-        let g = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("1111111111111111111111111111111111111111"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let e = graph
+            .commits
+            .add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
+        let g = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let f = graph
+            .commits
+            .add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
         place_ref(&mut graph, "main", m);
 
         // M forks to A, B, C
@@ -951,15 +1075,33 @@ mod tests {
         //   \|/
         //    base
         let mut graph = EditorStore::default();
-        let m = graph.add_commit(make_spec("9999999999999999999999999999999999999999"));
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let c = graph.add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
-        let d = graph.add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
-        let e = graph.add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
-        let f = graph.add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
-        let shared = graph.add_commit(make_spec("1111111111111111111111111111111111111111"));
-        let base = graph.add_commit(make_spec("0000000000000000000000000000000000000000"));
+        let m = graph
+            .commits
+            .add_commit(make_spec("9999999999999999999999999999999999999999"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let c = graph
+            .commits
+            .add_commit(make_spec("cccccccccccccccccccccccccccccccccccccccc"));
+        let d = graph
+            .commits
+            .add_commit(make_spec("dddddddddddddddddddddddddddddddddddddddd"));
+        let e = graph
+            .commits
+            .add_commit(make_spec("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
+        let f = graph
+            .commits
+            .add_commit(make_spec("ffffffffffffffffffffffffffffffffffffffff"));
+        let shared = graph
+            .commits
+            .add_commit(make_spec("1111111111111111111111111111111111111111"));
+        let base = graph
+            .commits
+            .add_commit(make_spec("0000000000000000000000000000000000000000"));
         place_ref(&mut graph, "main", m);
 
         // M forks to A, B, C
@@ -1012,9 +1154,15 @@ mod tests {
         // `main` (positioned on `a`) and `base` (a parent of `b`) are outside
         // the set, so neither is drawn and `b` renders as a root.
         let mut graph = EditorStore::default();
-        let a = graph.add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        let b = graph.add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-        let base = graph.add_commit(make_spec("0000000000000000000000000000000000000000"));
+        let a = graph
+            .commits
+            .add_commit(make_spec("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        let b = graph
+            .commits
+            .add_commit(make_spec("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        let base = graph
+            .commits
+            .add_commit(make_spec("0000000000000000000000000000000000000000"));
         place_ref(&mut graph, "main", a);
 
         add_parent_entry(&mut graph, a, b, 0);

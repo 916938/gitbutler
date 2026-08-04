@@ -88,6 +88,7 @@ pub(crate) fn entering(graph: &EditorStore, entry: impl Into<EditorIndex>) -> Ve
             .into_iter()
             .filter(|&ParentEntry { child, number }| {
                 graph
+                    .commits
                     .entry_id_at(child, number)
                     .is_some_and(|id| stated.contains(&id))
             })

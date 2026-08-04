@@ -369,7 +369,7 @@ mod test {
 
     fn commit(graph: &mut EditorStore) -> CommitIndex {
         let id = gix::ObjectId::from_str("1000000000000000000000000000000000000000").unwrap();
-        graph.add_commit(CommitSpec::new(id))
+        graph.commits.add_commit(CommitSpec::new(id))
     }
 
     /// `a -> b -> base` and `c -> base` (parent entries point child -> parent).
@@ -381,9 +381,9 @@ mod test {
         let b = commit(&mut g);
         let base = commit(&mut g);
         let c = commit(&mut g);
-        g.push_parent(a, b);
-        g.push_parent(b, base);
-        g.push_parent(c, base);
+        g.commits.push_parent(a, b);
+        g.commits.push_parent(b, base);
+        g.commits.push_parent(c, base);
 
         assert_eq!(
             a_not_b(&g, a.into(), c.into()).collect::<HashSet<_>>(),
@@ -407,14 +407,14 @@ mod test {
     fn count_picks_ignores_non_pick_steps() {
         let mut g = EditorStore::default();
         let a = commit(&mut g);
-        let none = g.add_tombstone();
+        let none = g.commits.add_tombstone();
         let b = commit(&mut g);
         let base = commit(&mut g);
         let c = commit(&mut g);
-        g.push_parent(a, none);
-        g.push_parent(none, b);
-        g.push_parent(b, base);
-        g.push_parent(c, base);
+        g.commits.push_parent(a, none);
+        g.commits.push_parent(none, b);
+        g.commits.push_parent(b, base);
+        g.commits.push_parent(c, base);
 
         assert_eq!(count_commits(&g, a_not_b(&g, a.into(), c.into())), 2);
         assert_eq!(count_commits(&g, a_not_b(&g, c.into(), a.into())), 1);

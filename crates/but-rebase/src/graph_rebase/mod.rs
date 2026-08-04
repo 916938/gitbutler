@@ -33,7 +33,9 @@
 //!   function takes `&mut`.
 //! - the verbs (`mutate`) — deliberately BOTH: a mutation states its commit-side and
 //!   ref-side consequences in one place, because maintenance policy is a function of
-//!   intent. There is no fixup pass anywhere.
+//!   intent. There is no fixup pass anywhere. Their lines classify themselves:
+//!   `store.commits.…` is vanilla surgery, `positions::`/`ref_ops::` is the extension,
+//!   and a bare `store.…` method is one of the JOINS spanning both halves.
 //!
 //! Vanilla behaviors are the extension's degenerate cases: a plain ref is a singleton
 //! group with carry `All` and nothing stacked above it, and a ref following a rebase is
@@ -121,6 +123,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// The full commit at `commit` — id and per-commit options; errors when removed.
     pub fn spec_of(&self, commit: CommitIndex) -> Result<CommitSpec> {
         self.store
+            .commits
             .commit_spec(commit)
             .context("The addressed commit was removed")
     }
@@ -205,7 +208,7 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
     /// state, since materializing only persists objects and applies ref edits. Project it
     /// (with [`Editor::repo`] and [`Self::overlay`]) to preview without a rewalk.
     pub fn commit_graph(&self) -> &but_graph::CommitGraph {
-        self.store.commit_graph()
+        self.store.commits.graph()
     }
 
     /// Return the commit targeted by `ref_name` in the post-rebase graph.

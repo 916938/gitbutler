@@ -86,7 +86,7 @@ fn parent_to_child_rank<M: RefMetadata>(
     let mut next_rank = 0usize;
     let mut seen = HashSet::<CommitIndex>::new();
 
-    let mut roots = editor.store.tips().collect::<Vec<CommitIndex>>();
+    let mut roots = editor.store.commits.tips().collect::<Vec<CommitIndex>>();
     roots.sort_unstable();
     // The entrypoint's region ranks first: its history is what the user is looking at, and
     // auxiliary regions (linked worktrees) come after it — row order must not decide.
