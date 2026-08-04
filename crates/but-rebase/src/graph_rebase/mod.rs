@@ -19,6 +19,27 @@
 //! maintains a ref target by hand — after the rewrite, every ref's update is DERIVED
 //! from its position in one loop. "Rewrote the graph but forgot to move the branch"
 //! is not a bug this engine can have; there is no such step to forget.
+//!
+//! # Vanilla git and the extension
+//!
+//! The editor is a plain-git rebase engine with GitButler's workspace model layered
+//! beside it, and the code keeps the two worlds addressable:
+//!
+//! - `commits` — the VANILLA half: the commit graph mounted for editing. It imports
+//!   nothing from the ref side, so commit surgery cannot touch references.
+//! - `positions` (reads and laws) and `ref_ops` (writes) — the EXTENSION: group order,
+//!   carries, empty-lane slots; the facts git itself cannot represent. The split is the
+//!   signature: every `positions` function takes `&EditorStore`, every `ref_ops`
+//!   function takes `&mut`.
+//! - the verbs (`mutate`) — deliberately BOTH: a mutation states its commit-side and
+//!   ref-side consequences in one place, because maintenance policy is a function of
+//!   intent. There is no fixup pass anywhere.
+//!
+//! Vanilla behaviors are the extension's degenerate cases: a plain ref is a singleton
+//! group with carry `All` and nothing stacked above it, and a ref following a rebase is
+//! implemented by doing NOTHING — positions stand still while ids rewrite underneath.
+//! The seam between the worlds is `RefState::on`: the one fact git can say (name to
+//! commit), mirrored out of the extension's table and checked by law.
 
 mod commits;
 mod creation;

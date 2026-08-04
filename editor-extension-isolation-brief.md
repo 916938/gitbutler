@@ -57,7 +57,23 @@ ws slots, mint filter, ambiguity} leaves it compiling and correct.
   (maintenance policy is a function of intent) is architecture, not debt.
 - **Anchors and the well-formedness checks**: their job is the join.
 
-## Rungs
+## RULING (reader-first revision)
+
+The goal is READER comprehension, not a shippable vanilla editor — so the deletion test
+is the wrong acceptance criterion for the remaining work. Rungs 2–3 below are PARKED:
+they are proof machinery, and their real trigger is the deletion test becoming a product
+goal (e.g. extracting a reusable rebase crate). What replaced them:
+
+- **R2′ — the two-worlds doc pass**: the vanilla/extension map, the degenerate-case
+  story, and the mirror-as-seam stated in `graph_rebase`'s module docs where readers
+  land, with one-line world-banners on `positions` and `ref_ops`.
+- **R3′ — the rider rules stated**: which refs follow which surgery, as prose beside the
+  writes that implement it, with the vanilla default (stay put, zero code) explicit.
+
+The trap this avoids: mistaking proof machinery for pedagogy — code that *proves*
+something a reader never asks, instead of *saying* what they need.
+
+## Rungs (original ladder; 2–3 parked per the ruling above)
 
 1. **`on` + dual-write door + law clause + `locate` fast path.** Behavior-neutral,
    kills the O(R²) tripwire. Small: `RefState`, `place`/`extract`, `locate`,

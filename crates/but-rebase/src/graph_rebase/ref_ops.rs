@@ -1,3 +1,6 @@
+//! GITBUTLER'S EXTENSION, the write side: every function here mutates structure
+//! vanilla git cannot represent. A plain-git editor would need none of this module.
+//!
 //! The reference-op API: mutation sites say where a reference should end up
 //! ([`RefPlace`]) and let [`place_ref`] and friends work out the `(on, below, group)`
 //! details.
@@ -10,6 +13,19 @@
 //!
 //! THE MODULE LAW, the mirror of `positions`': every layout WRITE lives here — each
 //! function takes `&mut EditorStore`. The reads and the laws live in `positions`.
+//!
+//! # The rider rules
+//!
+//! Which references follow which surgery is PRODUCT POLICY, not mechanics — stated here
+//! because this module's writes implement it:
+//!
+//! - The vanilla default costs zero code: refs stay put while ids rewrite underneath.
+//! - Interposing a commit above another lifts every ref standing there onto the
+//!   newcomer ([`reposition_refs`], [`Carry::Preserve`]).
+//! - Moving a range leaves ordinary refs behind on the healed lineage; a worktree's
+//!   checked-out branch follows the commit its worktree stands on
+//!   ([`reposition_refs_except`]'s `keep_seated`).
+//! - Removing a commit lands the refs standing on it on the heal target.
 
 use crate::graph_rebase::EditorStore;
 use crate::graph_rebase::commits::{CommitIndex, ParentEntry};

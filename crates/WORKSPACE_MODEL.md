@@ -249,7 +249,9 @@ The invariants the architecture commits to, each with where it is stated or enfo
    (`but-graph/src/projection/derive.rs`, the prune passes).
 5. **Refs are positions, not nodes.** Parent arrays cannot contain references by
    construction; the only way to affect a ref is a named ref operation. The measured
-   argument: `refs-as-positions.md`.
+   argument: `refs-as-positions.md`. In the editor the two worlds stay addressable —
+   `commits.rs` is the vanilla half, `positions`/`ref_ops` are the extension; the
+   `graph_rebase` module doc maps them ("Vanilla git and the extension").
 6. **Parent order is authoritative.** Ordered parent arrays are preserved end to end;
    the workspace merge round-trips bit-for-bit.
 7. **Convergence stops the walk; the budget pages it.** Correctness and display depth
