@@ -126,17 +126,12 @@ pub(crate) type GroupCarry = but_graph::ref_layout::GroupCarry<ParentEntryId>;
 /// (`positions::ref_depth`).
 pub(crate) type RefGroup = but_graph::ref_layout::RefGroup<ParentEntryId>;
 
-/// The editor's graph: a [`but_graph::CommitGraph`] arena where COMMITS carry ordered
-/// parent arrays, plus a table of [`RefState`]s where REFERENCES carry explicit positions —
-/// the arena is the truth for commits, positions the truth for refs, with no overlap.
-/// References are edgeless: creation authors their positions straight from the stored
-/// [`RefLayout`](but_graph::ref_layout::RefLayout).
+/// The reference half of the editor's store: the ref table, its name lookup, and the
+/// position layout. The mirror of [`CommitArena`] — where that half knows nothing about
+/// references, this half holds arena coordinates ([`CommitIndex`], [`ParentEntryId`])
+/// as OPAQUE DATA: only [`GraphEditor`]'s cross-store methods dereference them.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct GraphEditor {
-    /// The commit table — the vanilla half of the store; see [`CommitArena`].
-    commits: CommitArena,
-
-    // ── The reference table and its lookup. ──
+struct RefLedger {
     refs: Vec<RefState>,
     /// Each record's index by CURRENT name — names are unique across live and tombstoned
     /// records (re-creating a deleted name revives its record), which is why the layout
@@ -147,15 +142,28 @@ pub(crate) struct GraphEditor {
     /// indices, the materialized ref edit), so the old record — position retained — must
     /// come back rather than a second record competing for the name.
     by_name: HashMap<gix::refs::FullName, RefIndex>,
-
-    // ── Positions and identities. ──
     /// THE position store — the SAME [`but_graph::ref_layout::PositionTable`] the stored
     /// [`RefLayout`](but_graph::ref_layout::RefLayout) uses, keyed by commit indices and
     /// stable parent entry ids instead of commit ids: per STORED (unresolved) key, the reference
     /// groups standing on it. A reference's position (its `on`, its below, its rank, its
-    /// entering parent entries) is all list structure there, read via [`Self::positioned_on`],
-    /// [`Self::below_of`], `positions::ref_depth` and `positions::entering`.
+    /// entering parent entries) is all list structure there, read via [`GraphEditor::positioned_on`],
+    /// [`GraphEditor::below_of`], `positions::ref_depth` and `positions::entering`.
     layout: but_graph::ref_layout::RefGroups<CommitIndex, ParentEntryId>,
+}
+
+/// The editor's graph: a [`but_graph::CommitGraph`] arena where COMMITS carry ordered
+/// parent arrays, plus a table of [`RefState`]s where REFERENCES carry explicit positions —
+/// the arena is the truth for commits, positions the truth for refs, with no overlap.
+/// References are edgeless: creation authors their positions straight from the stored
+/// [`RefLayout`](but_graph::ref_layout::RefLayout).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GraphEditor {
+    /// The commit table — the vanilla half of the store; see [`CommitArena`].
+    commits: CommitArena,
+
+    /// The reference table and position layout — the GitButler half; see [`RefLedger`].
+    ledger: RefLedger,
+
     // ── Workspace-parent provenance (see [`WsParentKind`]). ──
     /// The workspace commit's REAL parents as ingested: `(parent entry, target)` per entry backed by
     /// an on-disk parent of the managed workspace commit. An entry stays faithful while its parent entry
@@ -192,9 +200,7 @@ impl GraphEditor {
     pub(crate) fn adopt(arena: but_graph::CommitGraph) -> Self {
         Self {
             commits: CommitArena::adopt(arena),
-            refs: Vec::new(),
-            by_name: HashMap::new(),
-            layout: Default::default(),
+            ledger: RefLedger::default(),
             ws_real_parents: Vec::new(),
             ws_minted_parents: Vec::new(),
         }
@@ -330,15 +336,15 @@ impl GraphEditor {
         existed_at_creation: bool,
     ) -> RefIndex {
         let created_as = (existed_at_creation && mutable).then(|| refname.clone());
-        if let Some(&existing) = self.by_name.get(&refname) {
-            let record = &mut self.refs[existing.0];
+        if let Some(&existing) = self.ledger.by_name.get(&refname) {
+            let record = &mut self.ledger.refs[existing.0];
             record.mutable = mutable;
             record.live = true;
             return existing;
         }
-        let entry = RefIndex(self.refs.len());
-        self.by_name.insert(refname.clone(), entry);
-        self.refs.push(RefState {
+        let entry = RefIndex(self.ledger.refs.len());
+        self.ledger.by_name.insert(refname.clone(), entry);
+        self.ledger.refs.push(RefState {
             refname,
             created_as,
             mutable,
@@ -351,25 +357,26 @@ impl GraphEditor {
     /// Drop `entry`'s creation mark — for refs that existed but are not ours to delete
     /// (a foreign worktree's checkout).
     pub(crate) fn clear_existed_at_creation(&mut self, entry: RefIndex) {
-        self.refs[entry.0].created_as = None;
+        self.ledger.refs[entry.0].created_as = None;
     }
 
     /// The creation-time names of mutable references, live, dead, or since renamed —
     /// the deletion universe.
     pub(crate) fn creation_references(&self) -> impl Iterator<Item = &gix::refs::FullName> {
-        self.refs
+        self.ledger
+            .refs
             .iter()
             .filter_map(|record| record.created_as.as_ref())
     }
 
     /// The record registered under `name`, live or dead.
     pub(crate) fn entry_of(&self, name: &gix::refs::FullNameRef) -> Option<RefIndex> {
-        self.by_name.get(name).copied()
+        self.ledger.by_name.get(name).copied()
     }
 
     /// The CURRENT name of the record at `entry`, live or dead.
     fn name_of(&self, entry: RefIndex) -> &gix::refs::FullName {
-        &self.refs[entry.0].refname
+        &self.ledger.refs[entry.0].refname
     }
 
     /// The reference payload at `entry` — `Some` iff it names a live (non-deleted) reference.
@@ -377,7 +384,7 @@ impl GraphEditor {
         let EditorIndex::Ref(i) = entry else {
             return None;
         };
-        let record = self.refs.get(i.0)?;
+        let record = self.ledger.refs.get(i.0)?;
         record.live.then_some((&record.refname, record.mutable))
     }
 
@@ -390,24 +397,28 @@ impl GraphEditor {
     pub(crate) fn references(
         &self,
     ) -> impl Iterator<Item = (RefIndex, &gix::refs::FullName, bool)> + '_ {
-        self.refs.iter().enumerate().filter_map(|(i, record)| {
-            record
-                .live
-                .then_some((RefIndex(i), &record.refname, record.mutable))
-        })
+        self.ledger
+            .refs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, record)| {
+                record
+                    .live
+                    .then_some((RefIndex(i), &record.refname, record.mutable))
+            })
     }
 
     /// All reference ids — live AND dead — ascending. Dead references still carry their
     /// retained name and position (see [`RefState`]).
     pub(crate) fn ref_indices(&self) -> impl Iterator<Item = RefIndex> + '_ {
-        (0..self.refs.len()).map(RefIndex)
+        (0..self.ledger.refs.len()).map(RefIndex)
     }
 
     /// The full record of the reference at `entry`, including dead ones — rebuilds need the
     /// retained payload.
     pub(crate) fn state_of(&self, entry: EditorIndex) -> Option<&RefState> {
         match entry {
-            EditorIndex::Ref(i) => self.refs.get(i.0),
+            EditorIndex::Ref(i) => self.ledger.refs.get(i.0),
             EditorIndex::Commit(_) => None,
         }
     }
@@ -420,17 +431,17 @@ impl GraphEditor {
         refname: gix::refs::FullName,
         mutable: bool,
     ) {
-        let old_name = self.refs[entry.0].refname.clone();
+        let old_name = self.ledger.refs[entry.0].refname.clone();
         if old_name != refname {
             debug_assert!(
-                !self.by_name.contains_key(&refname),
+                !self.ledger.by_name.contains_key(&refname),
                 "BUG: renaming {old_name} onto a name that already has a record: {refname}"
             );
-            self.by_name.remove(&old_name);
-            self.by_name.insert(refname.clone(), entry);
-            self.layout.rename(old_name.as_ref(), &refname);
+            self.ledger.by_name.remove(&old_name);
+            self.ledger.by_name.insert(refname.clone(), entry);
+            self.ledger.layout.rename(old_name.as_ref(), &refname);
         }
-        let record = &mut self.refs[entry.0];
+        let record = &mut self.ledger.refs[entry.0];
         record.refname = refname;
         record.mutable = mutable;
         record.live = true;
@@ -439,7 +450,7 @@ impl GraphEditor {
     /// Delete the reference at `entry`: it goes dead in place, retaining name and position
     /// (see [`RefState`]).
     pub(crate) fn tombstone_reference(&mut self, entry: RefIndex) {
-        self.refs[entry.0].live = false;
+        self.ledger.refs[entry.0].live = false;
     }
 
     /// The stored key the reference at `entry` stands on (a commit, or its tombstone after
@@ -453,9 +464,10 @@ impl GraphEditor {
     /// sits directly on its commit (or holds no position at all; see [`Self::is_positioned`]).
     pub(crate) fn below_of(&self, entry: impl Into<EditorIndex>) -> Option<RefIndex> {
         let entry = entry.into().as_ref()?;
-        self.layout
+        self.ledger
+            .layout
             .below_of(self.name_of(entry).as_ref())
-            .and_then(|name| self.by_name.get(name.as_ref()).copied())
+            .and_then(|name| self.ledger.by_name.get(name.as_ref()).copied())
     }
 
     /// Whether the reference at `entry` holds a position — only unborn refs don't.
@@ -468,7 +480,7 @@ impl GraphEditor {
 
     /// The preserved convergence flag of the reference at `entry` (see [`RefState`]).
     pub(crate) fn ambiguous_of(&self, entry: RefIndex) -> bool {
-        self.refs[entry.0].ambiguous
+        self.ledger.refs[entry.0].ambiguous
     }
 
     /// Author a position for `entry`: `entering` is the carry intent — the parent entries meant to
@@ -496,7 +508,7 @@ impl GraphEditor {
     /// leaves behind.
     pub(crate) fn splice(&mut self, entry: RefIndex) {
         let name = self.name_of(entry).clone();
-        self.layout.splice(name.as_ref());
+        self.ledger.layout.splice(name.as_ref());
     }
 
     /// Join `entry` into the group of `mate` — copying the mate's key, carry, and ambiguity —
@@ -511,11 +523,12 @@ impl GraphEditor {
             return;
         };
         let carry = self
+            .ledger
             .layout
             .carry_of(self.name_of(mate).as_ref())
             .cloned()
             .expect("just located");
-        let ambiguous = self.refs[mate.0].ambiguous;
+        let ambiguous = self.ledger.refs[mate.0].ambiguous;
         let vacated = self.extract(entry);
         self.place(entry, key, carry, below, vacated);
         self.set_ambiguous(entry, ambiguous);
@@ -569,7 +582,7 @@ impl GraphEditor {
     /// The carry of the group holding the reference at `entry`, if it holds a position.
     pub(crate) fn carry_of(&self, entry: impl Into<EditorIndex>) -> Option<&GroupCarry> {
         let entry = entry.into().as_ref()?;
-        self.layout.carry_of(self.name_of(entry).as_ref())
+        self.ledger.layout.carry_of(self.name_of(entry).as_ref())
     }
 
     /// All positioned references — live AND dead — ascending by id.
@@ -578,11 +591,11 @@ impl GraphEditor {
         // loop this are O(R²)–O(R³). Fine while R is human-scale; the tripwire makes the
         // "R stays small" assumption (see locate) announce itself before it becomes a cliff.
         debug_assert!(
-            self.refs.len() < 4096,
+            self.ledger.refs.len() < 4096,
             "positioned_refs is O(R²); R={} — de-linearize locate() before this scales",
-            self.refs.len()
+            self.ledger.refs.len()
         );
-        (0..self.refs.len())
+        (0..self.ledger.refs.len())
             .map(RefIndex)
             .filter(|&entry| self.locate(entry).is_some())
     }
@@ -595,7 +608,7 @@ impl GraphEditor {
     /// because R, the refs in a workspace, is human-scale. If a workspace ever grows into
     /// the hundreds of branches, this is the primitive to index.
     fn locate(&self, entry: RefIndex) -> Option<(CommitIndex, usize, usize)> {
-        self.layout.locate(self.name_of(entry).as_ref())
+        self.ledger.layout.locate(self.name_of(entry).as_ref())
     }
 
     /// Classify a position's entering-parent entry intent against `on`'s CURRENT parent entries: empty is a
@@ -631,7 +644,7 @@ impl GraphEditor {
     /// re-places the entry immediately.
     fn extract(&mut self, entry: RefIndex) -> Option<gix::refs::FullName> {
         let name = self.name_of(entry).clone();
-        self.layout.extract(name.as_ref())
+        self.ledger.layout.extract(name.as_ref())
     }
 
     /// Put the (extracted or fresh) `entry` into the table at `key` via the shared
@@ -647,7 +660,7 @@ impl GraphEditor {
         let carry = self.normalize_carry(key, carry);
         let name = self.name_of(entry).clone();
         let attach = attach.map(|b| self.name_of(b).clone());
-        self.layout.place(name, key, carry, attach, vacated);
+        self.ledger.layout.place(name, key, carry, attach, vacated);
     }
 
     /// An `Entries` carry naming the key's ENTIRE live parent entry set re-states as `All` — the same
@@ -676,16 +689,16 @@ impl GraphEditor {
 
     /// The raw groups at `key`, for well-formedness failure reports.
     pub(crate) fn groups_at_for_debug(&self, key: CommitIndex) -> Option<&[RefGroup]> {
-        self.layout.groups_at(key)
+        self.ledger.layout.groups_at(key)
     }
 
     fn set_ambiguous(&mut self, entry: RefIndex, ambiguous: bool) {
-        self.refs[entry.0].ambiguous = ambiguous;
+        self.ledger.refs[entry.0].ambiguous = ambiguous;
     }
 
     /// Overwrite whether the rebase may move the reference at `entry`.
     pub(crate) fn set_ref_mutable(&mut self, entry: RefIndex, mutable: bool) {
-        self.refs[entry.0].mutable = mutable;
+        self.ledger.refs[entry.0].mutable = mutable;
     }
 
     /// The references carrying the parent entry `(child, parent number)` into `parent`: each carrying
@@ -695,7 +708,8 @@ impl GraphEditor {
         parent: CommitIndex,
         entry: ParentEntry,
     ) -> impl Iterator<Item = RefIndex> + '_ {
-        self.layout
+        self.ledger
+            .layout
             .groups_at(parent)
             .into_iter()
             .flatten()
@@ -707,7 +721,7 @@ impl GraphEditor {
                     .is_some_and(|id| entries.contains(&id)),
             })
             .filter_map(|group| group.members.last())
-            .filter_map(|name| self.by_name.get(name).copied())
+            .filter_map(|name| self.ledger.by_name.get(name).copied())
     }
 
     pub(crate) fn set_ref_ambiguous(&mut self, entry: RefIndex, ambiguous: bool) {
@@ -721,10 +735,10 @@ impl GraphEditor {
             groups
                 .iter()
                 .flat_map(|g| g.members.iter())
-                .all(|name| self.by_name.contains_key(name.as_ref())),
+                .all(|name| self.ledger.by_name.contains_key(name.as_ref())),
             "BUG: ingest must register every reference before copying groups"
         );
-        self.layout.insert_groups(key, groups);
+        self.ledger.layout.insert_groups(key, groups);
     }
 
     /// The ordered parents of `entry` — parent number position is the parent order; references
@@ -822,7 +836,7 @@ impl GraphEditor {
     /// deliberate statement rewrite left (the drain-then-re-hang path); renumbering needs
     /// none, parent entry identity being stable.
     pub(crate) fn restate_entries(&mut self, restates: &[(ParentEntryId, ParentEntryId)]) {
-        for group in self.layout.groups_mut() {
+        for group in self.ledger.layout.groups_mut() {
             let GroupCarry::Entries(entries) = &mut group.carry else {
                 continue;
             };
@@ -849,7 +863,7 @@ impl GraphEditor {
 
     /// Drop every stated carry parent entry id `keep` rejects.
     fn retain_edges(&mut self, keep: impl Fn(&ParentEntryId) -> bool) {
-        for group in self.layout.groups_mut() {
+        for group in self.ledger.layout.groups_mut() {
             if let GroupCarry::Entries(entries) = &mut group.carry {
                 entries.retain(&keep);
             }
