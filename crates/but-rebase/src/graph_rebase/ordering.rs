@@ -91,9 +91,7 @@ fn parent_to_child_rank<M: RefMetadata>(
     // The entrypoint's region ranks first: its history is what the user is looking at, and
     // auxiliary regions (linked worktrees) come after it — row order must not decide.
     if let Some(head_pick) = editor.checkouts.iter().find_map(|checkout| match checkout {
-        crate::graph_rebase::Checkout::Head { entry, .. } => {
-            crate::graph_rebase::positions::resolve_to_commit(&editor.store, *entry)
-        }
+        crate::graph_rebase::Checkout::Head { entry, .. } => editor.store.resolve_to_commit(*entry),
         crate::graph_rebase::Checkout::Worktree { .. } => None,
     }) {
         roots.retain(|&root| root != head_pick);

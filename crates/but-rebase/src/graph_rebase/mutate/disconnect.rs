@@ -328,7 +328,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// A bound or cut member that is a reference stands for the commit it resolves to;
     /// commits pass through (and so does an unborn reference, to fail cleanly later).
     fn resolve_bound(&self, entry: EditorIndex) -> EditorIndex {
-        match positions::resolve_to_commit(&self.store, entry) {
+        match self.store.resolve_to_commit(entry) {
             Some(commit) if EditorIndex::from(commit) != entry => EditorIndex::from(commit),
             _ => entry,
         }
@@ -526,7 +526,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             .collect();
         let top = carried
             .into_iter()
-            .filter(|&r| positions::resolve_to_commit(&self.store, r) == Some(toward))
+            .filter(|&r| self.store.resolve_to_commit(r) == Some(toward))
             .max_by_key(|&r| (positions::ref_depth(&self.store, r), r));
         self.store.remove_parent(entry.child, entry.number);
         top

@@ -245,7 +245,9 @@ impl<M: RefMetadata> Editor<'_, M> {
                             |ParentEntry { child, .. }| {
                                 commit_entries.contains(&EditorIndex::from(*child))
                             },
-                        ) || positions::resolve_to_commit(&self.store, EditorIndex::from(entry))
+                        ) || self
+                            .store
+                            .resolve_to_commit(EditorIndex::from(entry))
                             .is_some_and(|commit| {
                                 commit_entries.contains(&EditorIndex::from(commit))
                             })
@@ -286,7 +288,7 @@ impl<M: RefMetadata> Editor<'_, M> {
 
         // The entrypoint is a reference: the region floods from the commit it resolves to
         // (references carry no parent entries). The region is the rev-set `HEAD ^target`.
-        let entrypoint_pick = positions::resolve_to_commit(&self.store, entrypoint_ix);
+        let entrypoint_pick = self.store.resolve_to_commit(entrypoint_ix);
         let mut region = NodeSet {
             heads: vec![entrypoint_ix],
             entries: entrypoint_pick

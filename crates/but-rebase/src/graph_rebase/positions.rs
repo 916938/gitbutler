@@ -1,9 +1,8 @@
-//! GITBUTLER'S EXTENSION, the read side: this module is about structure vanilla git
-//! cannot represent — group order, carries, statements — and the laws that hold it
-//! honest. Two vanilla-class reads live here too, exactly as the degenerate-case story
-//! predicts: [`resolve_to_commit`] and the `positioned_on` path answer a question a
-//! plain editor also asks, through this machinery. The vanilla fact itself (which
-//! commit a reference stands on) is mirrored OUT of here onto `RefState::on`.
+//! GITBUTLER'S EXTENSION, the read side: everything in this module is about structure
+//! vanilla git cannot represent — group order, carries, statements — and the laws that
+//! hold it honest. The vanilla reads live elsewhere, on the record and the store:
+//! `RefState::on` is the fact (name to commit), and `EditorStore::resolve_to_commit` /
+//! `positioned_on` are the joins that read it without touching this module's table.
 //!
 //! Where each reference sits, stored as position data rather than as graph parent entries.
 //!
@@ -54,37 +53,6 @@ use crate::graph_rebase::store::GroupCarry;
 use crate::graph_rebase::store::RefIndex;
 use crate::graph_rebase::{EditorIndex, EditorStore};
 
-/// Resolve `entry` to the commit it stands for: a commit is itself, a tombstone follows its
-/// preserved first parent entry downward, a reference goes via its stored position — dead references
-/// via their RETAINED position, which stale indices normalize through (unborn refs carry
-/// none and resolve to nothing).
-pub(crate) fn resolve_to_commit(
-    graph: &EditorStore,
-    entry: impl Into<EditorIndex>,
-) -> Option<CommitIndex> {
-    // A reference resolves via its (retained) stored position; unborn refs carry none and
-    // resolve to nothing.
-    let mut node = match entry.into() {
-        EditorIndex::Commit(i) => i,
-        entry @ EditorIndex::Ref(_) => graph.positioned_on(entry.as_ref()?)?,
-    };
-    // Tombstones descend their preserved first parent entry. Like ref_depth, the bound guards the
-    // acyclic invariant — a broken invariant announces itself loudly in debug instead of
-    // returning a silent wrong answer.
-    let mut steps = 0usize;
-    loop {
-        if graph.is_commit(node) {
-            return Some(node);
-        }
-        node = *graph.parents(node).first()?;
-        steps += 1;
-        if steps >= 10_000 {
-            debug_assert!(false, "tombstone descent cycle resolving {node:?}");
-            return None;
-        }
-    }
-}
-
 /// A commit's incoming parent entries as sorted `(child, parent number)` pairs. The groups on the commit
 /// divide these among themselves (their [`GroupCarry`]); [`entering`] reads one group's share.
 pub(crate) fn live_children_of(graph: &EditorStore, commit: CommitIndex) -> Vec<ParentEntry> {
@@ -109,7 +77,7 @@ pub(crate) fn entering(graph: &EditorStore, entry: impl Into<EditorIndex>) -> Ve
     let Some(carry) = graph.carry_of(entry) else {
         return Vec::new();
     };
-    let entries = match resolve_to_commit(graph, on) {
+    let entries = match graph.resolve_to_commit(on) {
         Some(commit) => live_children_of(graph, commit),
         None => Vec::new(),
     };
@@ -139,12 +107,12 @@ pub(crate) fn group_members(
     if !graph.is_positioned(ref_node) {
         return vec![];
     }
-    let commit = resolve_to_commit(graph, ref_node);
+    let commit = graph.resolve_to_commit(ref_node);
     let entering_here = entering(graph, ref_node);
     graph
         .positioned_refs()
         .filter(|&entry| {
-            entering(graph, entry) == entering_here && resolve_to_commit(graph, entry) == commit
+            entering(graph, entry) == entering_here && graph.resolve_to_commit(entry) == commit
         })
         .collect()
 }
@@ -158,7 +126,7 @@ pub(crate) fn enters_group_resolving_to(
 ) -> bool {
     graph
         .positioned_refs()
-        .any(|r| entering(graph, r).contains(&entry) && resolve_to_commit(graph, r) == Some(commit))
+        .any(|r| entering(graph, r).contains(&entry) && graph.resolve_to_commit(r) == Some(commit))
 }
 
 /// Every reference whose stored `on`, followed through tombstones, resolves to `commit`.
@@ -166,7 +134,7 @@ pub(crate) fn enters_group_resolving_to(
 pub(crate) fn refs_resolving_to(graph: &EditorStore, commit: CommitIndex) -> Vec<RefIndex> {
     graph
         .positioned_refs()
-        .filter(|&entry| resolve_to_commit(graph, entry) == Some(commit))
+        .filter(|&entry| graph.resolve_to_commit(entry) == Some(commit))
         .collect()
 }
 
@@ -187,7 +155,7 @@ pub(crate) fn refs_reachable_with(
     let mut out = Vec::new();
     for entry in graph.positioned_refs() {
         // Node-based reachability, commit-equivalent across duplicate groups.
-        let commit_reached = resolve_to_commit(graph, entry).is_some_and(|commit| {
+        let commit_reached = graph.resolve_to_commit(entry).is_some_and(|commit| {
             commits.contains(&commit)
                 || graph
                     .commit_id(commit)
@@ -291,7 +259,7 @@ pub(crate) fn assert_positions_total(graph: &EditorStore) -> anyhow::Result<()> 
         if entering.is_empty() {
             continue;
         }
-        let commit = resolve_to_commit(graph, entry);
+        let commit = graph.resolve_to_commit(entry);
         let rank = ref_depth(graph, entry);
         if let Some(previous) = seen.insert((commit, entering.clone(), rank), entry) {
             let name = |entry: RefIndex| match graph.reference(entry.into()) {
@@ -337,14 +305,14 @@ fn assert_below_wellformed(graph: &EditorStore) -> anyhow::Result<()> {
         if !graph.is_reference(entry) {
             continue;
         }
-        let commit = resolve_to_commit(graph, entry);
+        let commit = graph.resolve_to_commit(entry);
         let mut depth = 0usize;
         let mut cursor = graph.below_of(entry);
         while let Some(b) = cursor {
             if !graph.is_positioned(b) {
                 anyhow::bail!("BUG: ref {entry}: below {b} is not a positioned reference");
             }
-            if resolve_to_commit(graph, b) != commit {
+            if graph.resolve_to_commit(b) != commit {
                 anyhow::bail!(
                     "BUG: ref {entry} ({}): below {b} ({}) resolves to a different commit",
                     name(entry),

@@ -303,7 +303,8 @@ where
         // original walk never reached from this subgraph's heads — don't seed it.
         .filter(|n| {
             graph.positioned_on(*n).is_none_or(|_| {
-                crate::graph_rebase::positions::resolve_to_commit(graph, *n)
+                graph
+                    .resolve_to_commit(*n)
                     .is_some_and(|commit| entries.contains(&commit.into()))
             })
         })

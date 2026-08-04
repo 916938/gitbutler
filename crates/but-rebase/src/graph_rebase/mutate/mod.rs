@@ -9,7 +9,6 @@ mod parents;
 #[cfg(test)]
 mod tests;
 
-use crate::graph_rebase::positions;
 use anyhow::{Context as _, Result, anyhow, bail};
 use but_core::RefMetadata;
 use serde::{Deserialize, Serialize};
@@ -238,7 +237,8 @@ impl<M: RefMetadata> Editor<'_, M> {
 
     /// The commit `entry` resolves to; an error when it resolves to nothing (an unborn ref).
     pub(crate) fn resolved_commit(&self, entry: impl Into<EditorIndex>) -> Result<CommitIndex> {
-        positions::resolve_to_commit(&self.store, entry)
+        self.store
+            .resolve_to_commit(entry)
             .context("Reference target should resolve to a commit")
     }
 

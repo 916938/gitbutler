@@ -74,9 +74,10 @@ impl<M: RefMetadata> Editor<'_, M> {
 
     /// Finds the first commit parent of a reference
     pub fn target_of(&self, reference: RefIndex) -> Result<(CommitIndex, but_core::CommitOwned)> {
-        let first_parent =
-            crate::graph_rebase::positions::resolve_to_commit(&self.store, reference)
-                .context("Failed to find a parent for selected reference in the commit graph.")?;
+        let first_parent = self
+            .store
+            .resolve_to_commit(reference)
+            .context("Failed to find a parent for selected reference in the commit graph.")?;
 
         let Some(id) = self.store.commit_id(first_parent) else {
             bail!("BUG: resolve_to_commit returned a non-commit entry");

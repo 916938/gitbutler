@@ -39,7 +39,10 @@
 //! group with carry `All` and nothing stacked above it, and a ref following a rebase is
 //! implemented by doing NOTHING — positions stand still while ids rewrite underneath.
 //! The seam between the worlds is `RefState::on`: the one fact git can say (name to
-//! commit), mirrored out of the extension's table and checked by law.
+//! commit), mirrored out of the extension's table and checked by law. The vanilla
+//! joins that read it — `resolve_to_commit`, `positioned_on` — live on the store with
+//! the other cross-store methods, so a plain-git question never consults the
+//! extension's table at all.
 
 mod commits;
 mod creation;
@@ -212,7 +215,8 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
             .references()
             .find(|(_, refname, _)| refname.as_ref() == ref_name)
             .with_context(|| format!("Could not find reference '{ref_name}' in rebase result"))?;
-        crate::graph_rebase::positions::resolve_to_commit(&self.store, ref_idx)
+        self.store
+            .resolve_to_commit(ref_idx)
             .and_then(|commit| self.store.commit_id(commit))
             .context("Reference has no target commit in rebase result")
     }
@@ -232,9 +236,10 @@ impl<'meta, M: RefMetadata> RebasedEditor<'meta, M> {
                 None => None,
                 Some((refname, _)) => {
                     let refname = refname.clone();
-                    let commit =
-                        crate::graph_rebase::positions::resolve_to_commit(&self.store, entry)
-                            .context("No commit to reference")?;
+                    let commit = self
+                        .store
+                        .resolve_to_commit(entry)
+                        .context("No commit to reference")?;
                     let id = self
                         .store
                         .commit_id(commit)

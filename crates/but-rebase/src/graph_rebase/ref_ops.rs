@@ -66,7 +66,7 @@ fn rehang_bottom(graph: &mut EditorStore, commit: CommitIndex, moving: RefIndex)
         .filter(|&mate| {
             mate != moving
                 && graph.below_of(mate).is_none()
-                && positions::resolve_to_commit(graph, mate) == Some(commit)
+                && graph.resolve_to_commit(mate) == Some(commit)
         })
         .collect();
     for mate in rehang {
@@ -86,7 +86,7 @@ fn group_top_at(
         .positioned_refs()
         .filter(|&mate| {
             mate != moving
-                && positions::resolve_to_commit(graph, mate) == Some(commit)
+                && graph.resolve_to_commit(mate) == Some(commit)
                 && positions::entering(graph, mate) == entering
         })
         .max_by_key(|&mate| (positions::ref_depth(graph, mate), mate))
@@ -208,8 +208,8 @@ pub(crate) fn move_ref(graph: &mut EditorStore, entry: RefIndex, place: RefPlace
     };
     // The parent entries follow the mover only when it was their sole carrier: group members staying
     // behind keep their entering parent entries.
-    let old_resolved = positions::resolve_to_commit(graph, moving_on);
-    let new_resolved = positions::resolve_to_commit(graph, on);
+    let old_resolved = graph.resolve_to_commit(moving_on);
+    let new_resolved = graph.resolve_to_commit(on);
     if sole_carrier && let (Some(old_pick), Some(new)) = (old_resolved, new_resolved) {
         redirect_entries(graph, &moving_edges, old_pick, new);
         for &entry in &moving_edges {
@@ -275,12 +275,12 @@ fn mate_below_depth(
     if depth == 0 {
         return None;
     }
-    let commit = positions::resolve_to_commit(graph, on)?;
+    let commit = graph.resolve_to_commit(on)?;
     graph
         .positioned_refs()
         .filter(|&mate| {
             mate != exclude
-                && positions::resolve_to_commit(graph, mate) == Some(commit)
+                && graph.resolve_to_commit(mate) == Some(commit)
                 && positions::ref_depth(graph, mate) + 1 == depth
         })
         .min()
@@ -295,7 +295,7 @@ pub(crate) fn repoint_ref(graph: &mut EditorStore, entry: RefIndex, onto: Commit
         place_ref(graph, entry, RefPlace::Root(onto));
         return;
     }
-    match positions::resolve_to_commit(graph, entry) {
+    match graph.resolve_to_commit(entry) {
         Some(old_pick) if old_pick != onto => {
             // Snapshot the entering parent entries before re-pointing them — the derived read tracks
             // live parent entries.
@@ -364,7 +364,7 @@ pub(crate) fn unhook_ref(graph: &mut EditorStore, entry: RefIndex, drop_edges: b
     for mate in rehang {
         graph.set_below(mate, unhooked_below);
     }
-    if drop_edges && let Some(commit) = positions::resolve_to_commit(graph, entry) {
+    if drop_edges && let Some(commit) = graph.resolve_to_commit(entry) {
         let mut entries = positions::entering(graph, entry);
         entries.sort_unstable();
         // Descending parent numbers per child: a removal shifts only the parent numbers above it, so every
@@ -405,7 +405,7 @@ pub(crate) fn transfer_stack(
             .filter(|&entry| {
                 graph.below_of(entry) == Some(current)
                     && !moves.contains(&entry)
-                    && positions::resolve_to_commit(graph, entry) == Some(source_pick)
+                    && graph.resolve_to_commit(entry) == Some(source_pick)
                     && positions::entering(graph, entry) == lead_entering
             })
             .collect();
@@ -437,7 +437,7 @@ pub(crate) fn carry_stack_above(
     let moves: Vec<_> = graph
         .positioned_refs()
         .filter(|&entry| {
-            positions::resolve_to_commit(graph, entry) == Some(source_pick)
+            graph.resolve_to_commit(entry) == Some(source_pick)
                 && positions::entering(graph, entry) == entering
                 && positions::ref_depth(graph, entry) > above_depth
         })
@@ -475,7 +475,7 @@ pub(crate) fn land_stack_above(
 
     let mut moves: Vec<_> = graph
         .positioned_refs()
-        .filter(|&entry| positions::resolve_to_commit(graph, entry) == Some(source_pick))
+        .filter(|&entry| graph.resolve_to_commit(entry) == Some(source_pick))
         .map(|entry| {
             (
                 entry,
@@ -506,7 +506,7 @@ pub(crate) fn land_stack_above(
 pub(crate) fn readopt_dangling_refs(graph: &mut EditorStore, onto: CommitIndex) {
     let dangling: Vec<_> = graph
         .positioned_refs()
-        .filter(|&entry| positions::resolve_to_commit(graph, entry).is_none())
+        .filter(|&entry| graph.resolve_to_commit(entry).is_none())
         .collect();
     for entry in dangling {
         graph.rekey_position(entry, onto);
@@ -555,7 +555,7 @@ pub(crate) fn rehang_split_boundary(
         .positioned_refs()
         .filter(|&entry| graph.is_reference(entry))
         .filter(|entry| !split.moved.contains(entry))
-        .filter(|&entry| positions::resolve_to_commit(graph, entry) == Some(landing_commit))
+        .filter(|&entry| graph.resolve_to_commit(entry) == Some(landing_commit))
         .filter(|&entry| {
             // Never hang the boundary onto a chain that already stands ON it — that
             // closes the below chain into a contradiction and two references share one

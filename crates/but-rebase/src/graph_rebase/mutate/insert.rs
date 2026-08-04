@@ -163,9 +163,13 @@ impl<M: RefMetadata> Editor<'_, M> {
         child: EditorIndex,
         parent: EditorIndex,
     ) -> Result<()> {
-        let child_commit = positions::resolve_to_commit(&self.store, child)
+        let child_commit = self
+            .store
+            .resolve_to_commit(child)
             .context("Range child should resolve to a commit")?;
-        let parent_commit = positions::resolve_to_commit(&self.store, parent)
+        let parent_commit = self
+            .store
+            .resolve_to_commit(parent)
             .context("Range parent should resolve to a commit")?;
         let (split, on_commit) =
             self.interpose_into_group(target, child_commit, SplitBoundary::Above)?;
@@ -232,7 +236,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         self.store
             .redirect_children(commit_entry(target)?, commit_entry(child)?);
         // Refs sitting on the target move up onto the range's child-most commit.
-        if let Some(child_commit) = positions::resolve_to_commit(&self.store, child) {
+        if let Some(child_commit) = self.store.resolve_to_commit(child) {
             ref_ops::reposition_refs(
                 &mut self.store,
                 commit_entry(target)?,

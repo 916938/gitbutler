@@ -185,7 +185,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                         positions::entering(&self.store, entry).contains(&ParentEntry {
                             child: node,
                             number: parent_number,
-                        }) && positions::resolve_to_commit(&self.store, entry) == Some(commit)
+                        }) && self.store.resolve_to_commit(entry) == Some(commit)
                     })
                     .max_by_key(|&entry| (positions::ref_depth(&self.store, entry), entry));
                 match carried_top {
@@ -203,7 +203,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     pub fn position_children(&self, target: impl Into<Anchor>) -> Result<Vec<EditorIndex>> {
         let target = self.resolve_anchor(target)?;
         if self.store.is_positioned(target) {
-            let commit = positions::resolve_to_commit(&self.store, target);
+            let commit = self.store.resolve_to_commit(target);
             // Members sitting directly on it (group-mates and root siblings stacked above),
             // plus — when this is the top of its group — the parent entries that enter it.
             let mut out: Vec<EditorIndex> = self
@@ -221,7 +221,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                 EditorIndex::from(entry) != target
                     && positions::entering(&self.store, entry) == target_entries
                     && positions::ref_depth(&self.store, entry) > target_depth
-                    && positions::resolve_to_commit(&self.store, entry) == commit
+                    && self.store.resolve_to_commit(entry) == commit
             });
             if is_group_top {
                 out.extend(
@@ -240,8 +240,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             .positioned_refs()
             .filter(|&entry| {
                 self.store.below_of(entry).is_none()
-                    && positions::resolve_to_commit(&self.store, entry).map(EditorIndex::from)
-                        == Some(target)
+                    && self.store.resolve_to_commit(entry).map(EditorIndex::from) == Some(target)
             })
             .map(EditorIndex::from)
             .collect();
@@ -254,8 +253,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                 positions::entering(&self.store, entry).contains(&ParentEntry {
                     child,
                     number: parent_number,
-                }) && positions::resolve_to_commit(&self.store, entry).map(EditorIndex::from)
-                    == Some(target)
+                }) && self.store.resolve_to_commit(entry).map(EditorIndex::from) == Some(target)
             });
             if !carrying {
                 out.push(EditorIndex::from(child));
@@ -293,7 +291,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// Reachability including references: commits and tombstones by parent entries (a reference start
     /// descends from its commit), plus every reference group the walk entered.
     fn reachable_ids(&self, start: EditorIndex) -> Vec<EditorIndex> {
-        let seed = crate::graph_rebase::positions::resolve_to_commit(&self.store, start);
+        let seed = self.store.resolve_to_commit(start);
         let commits: std::collections::HashSet<CommitIndex> = match seed {
             Some(seed) => reachable_from(&self.store, seed.into())
                 .filter_map(|entry| entry.as_commit())
@@ -327,8 +325,8 @@ impl<M: RefMetadata> Editor<'_, M> {
         let a = self.resolve_anchor(a)?;
         let b = self.resolve_anchor(b)?;
         // Only commits count, so reference endpoints stand for their commits.
-        let a = crate::graph_rebase::positions::resolve_to_commit(&self.store, a);
-        let b = crate::graph_rebase::positions::resolve_to_commit(&self.store, b);
+        let a = self.store.resolve_to_commit(a);
+        let b = self.store.resolve_to_commit(b);
         let (Some(a), Some(b)) = (a, b) else {
             return Ok(AheadBehind {
                 ahead: 0,

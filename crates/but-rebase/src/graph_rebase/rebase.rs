@@ -269,7 +269,8 @@ fn derive_ref_edits(graph: &EditorStore, repo: &gix::Repository) -> Result<Vec<R
             continue;
         }
         let refname = record.refname.clone();
-        let resolved_commit = crate::graph_rebase::positions::resolve_to_commit(graph, ref_idx)
+        let resolved_commit = graph
+            .resolve_to_commit(ref_idx)
             .context("References should resolve to a commit")?;
         let to_reference = match graph.commit_id(resolved_commit) {
             Some(id) => id,

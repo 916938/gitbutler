@@ -161,8 +161,8 @@ impl<M: RefMetadata> Editor<'_, M> {
         // reported but not cleared; a follow-up insert_parent re-points, and a position without
         // a resolving commit is not representable.
         if self.store.is_positioned(child) {
-            let resolves_to_parent = positions::resolve_to_commit(&self.store, child)
-                == positions::resolve_to_commit(&self.store, parent);
+            let resolves_to_parent =
+                self.store.resolve_to_commit(child) == self.store.resolve_to_commit(parent);
             return Ok(if resolves_to_parent { vec![0] } else { vec![] });
         }
         let numbers = match self.store.positioned_on(parent) {

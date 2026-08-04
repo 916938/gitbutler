@@ -465,7 +465,37 @@ impl EditorStore {
     /// deletion), live or dead — `None` until placed.
     pub(crate) fn positioned_on(&self, entry: impl Into<EditorIndex>) -> Option<CommitIndex> {
         let entry = entry.into().as_ref()?;
-        self.locate(entry).map(|(key, ..)| key)
+        self.ledger.refs[entry.0].on
+    }
+
+    /// Resolve `entry` to the commit it stands for: a commit is itself, a tombstone follows its
+    /// preserved first parent entry downward, a reference goes via its stored `on` — dead references
+    /// via their RETAINED position, which stale indices normalize through (unborn refs carry
+    /// none and resolve to nothing).
+    ///
+    /// THE VANILLA JOIN: record fact plus commit-half descent, no extension read anywhere —
+    /// which is why it lives here with the other cross-store methods rather than in
+    /// `positions`.
+    pub(crate) fn resolve_to_commit(&self, entry: impl Into<EditorIndex>) -> Option<CommitIndex> {
+        let mut node = match entry.into() {
+            EditorIndex::Commit(i) => i,
+            entry @ EditorIndex::Ref(_) => self.positioned_on(entry.as_ref()?)?,
+        };
+        // Tombstones descend their preserved first parent entry. Like ref_depth, the bound guards the
+        // acyclic invariant — a broken invariant announces itself loudly in debug instead of
+        // returning a silent wrong answer.
+        let mut steps = 0usize;
+        loop {
+            if self.is_commit(node) {
+                return Some(node);
+            }
+            node = *self.parents(node).first()?;
+            steps += 1;
+            if steps >= 10_000 {
+                debug_assert!(false, "tombstone descent cycle resolving {node:?}");
+                return None;
+            }
+        }
     }
 
     /// The reference directly underneath `entry` in the physical stack — `None` when it
@@ -483,7 +513,7 @@ impl EditorStore {
         entry
             .into()
             .as_ref()
-            .is_some_and(|entry| self.locate(entry).is_some())
+            .is_some_and(|entry| self.ledger.refs[entry.0].on.is_some())
     }
 
     /// The preserved convergence flag of the reference at `entry` (see [`RefState`]).
@@ -641,7 +671,7 @@ impl EditorStore {
         if entering.is_empty() {
             return GroupCarry::None;
         }
-        let live = match crate::graph_rebase::positions::resolve_to_commit(self, on) {
+        let live = match self.resolve_to_commit(on) {
             Some(commit) => crate::graph_rebase::positions::live_children_of(self, commit),
             None => Vec::new(),
         };
@@ -697,14 +727,13 @@ impl EditorStore {
         let GroupCarry::Entries(entries) = &carry else {
             return carry;
         };
-        let live: Vec<ParentEntryId> =
-            match crate::graph_rebase::positions::resolve_to_commit(self, key) {
-                Some(commit) => crate::graph_rebase::positions::live_children_of(self, commit)
-                    .into_iter()
-                    .filter_map(|ParentEntry { child, number }| self.entry_id_at(child, number))
-                    .collect(),
-                None => return carry,
-            };
+        let live: Vec<ParentEntryId> = match self.resolve_to_commit(key) {
+            Some(commit) => crate::graph_rebase::positions::live_children_of(self, commit)
+                .into_iter()
+                .filter_map(|ParentEntry { child, number }| self.entry_id_at(child, number))
+                .collect(),
+            None => return carry,
+        };
         if !live.is_empty() && *entries == live {
             GroupCarry::All
         } else {
