@@ -109,11 +109,11 @@ pub(crate) struct RefState {
     /// yet resolve to a single parent entry), so it is preserved here, never re-derived.
     pub ambiguous: bool,
     /// The commit this reference stands on — THE VANILLA FACT (name → commit, what git
-    /// itself can say), kept as an exact MIRROR of the layout table's site key by the
-    /// three placement doors (`extract` clears, `place` sets, `insert_groups` sets).
-    /// `assert_positions_total` checks mirror-exactness continuously, and `locate` reads
-    /// this instead of scanning the whole table. Retained through deletion like the
-    /// position itself.
+    /// itself can say), written by the one primitive `set_on` inside the placement
+    /// doors. The extension's layout table ANNOTATES this fact (order among co-located
+    /// refs, carries); `assert_positions_total` checks the annotation agrees
+    /// continuously, and `locate` reads the fact instead of scanning the table.
+    /// Retained through deletion like the position itself.
     pub on: Option<CommitIndex>,
 }
 
@@ -620,9 +620,16 @@ impl EditorStore {
     /// group split off as their own group attached to `entry` (they keep sitting on it,
     /// wherever it goes next), and groups attached to `entry` stay attached. The caller
     /// re-places the entry immediately.
+    /// THE VANILLA PRIMITIVE WRITE: state which commit the reference stands on. Every
+    /// door writes the fact through here first; the layout annotation is maintained
+    /// alongside, and the law holds the two together.
+    fn set_on(&mut self, entry: RefIndex, on: Option<CommitIndex>) {
+        self.ledger.refs[entry.0].on = on;
+    }
+
     fn extract(&mut self, entry: RefIndex) -> Option<gix::refs::FullName> {
         let name = self.name_of(entry).clone();
-        self.ledger.refs[entry.0].on = None;
+        self.set_on(entry, None);
         self.ledger.layout.extract(name.as_ref())
     }
 
@@ -636,8 +643,8 @@ impl EditorStore {
         attach: Option<RefIndex>,
         vacated: Option<gix::refs::FullName>,
     ) {
+        self.set_on(entry, Some(key));
         let carry = self.normalize_carry(key, carry);
-        self.ledger.refs[entry.0].on = Some(key);
         let name = self.name_of(entry).clone();
         let attach = attach.map(|b| self.name_of(b).clone());
         self.ledger.layout.place(name, key, carry, attach, vacated);
@@ -739,9 +746,13 @@ impl EditorStore {
                 .all(|name| self.ledger.by_name.contains_key(name.as_ref())),
             "BUG: ingest must register every reference before copying groups"
         );
-        for member in groups.iter().flat_map(|g| g.members.iter()) {
-            let entry = self.ledger.by_name[member.as_ref()];
-            self.ledger.refs[entry.0].on = Some(key);
+        let members: Vec<RefIndex> = groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .map(|member| self.ledger.by_name[member.as_ref()])
+            .collect();
+        for entry in members {
+            self.set_on(entry, Some(key));
         }
         self.ledger.layout.insert_groups(key, groups);
     }

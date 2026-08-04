@@ -41,7 +41,8 @@
 //! group with carry `All` and nothing stacked above it, and a ref following a rebase is
 //! implemented by doing NOTHING — positions stand still while ids rewrite underneath.
 //! The seam between the worlds is `RefState::on`: the one fact git can say (name to
-//! commit), mirrored out of the extension's table and checked by law. The vanilla
+//! commit), written by the vanilla primitive `set_on` and ANNOTATED by the extension's
+//! table, with the agreement checked by law. The vanilla
 //! joins that read it — `resolve_to_commit`, `positioned_on` — live on the store with
 //! the other cross-store methods, so a plain-git question never consults the
 //! extension's table at all.

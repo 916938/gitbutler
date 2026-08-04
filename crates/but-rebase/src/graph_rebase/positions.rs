@@ -248,7 +248,7 @@ pub(crate) fn prepare_group_join(graph: &EditorStore, ref_node: RefIndex) -> Gro
 /// including post-mutation shapes — continuously validates the position model.
 pub(crate) fn assert_positions_total(graph: &EditorStore) -> anyhow::Result<()> {
     assert_below_wellformed(graph)?;
-    assert_on_mirrors_table(graph)?;
+    assert_table_annotates_on(graph)?;
     type OrderedPositionKey = (Option<CommitIndex>, Vec<ParentEntry>, usize);
     let mut seen: std::collections::HashMap<OrderedPositionKey, RefIndex> = Default::default();
     for entry in graph.references().map(|(entry, _, _)| entry) {
@@ -282,15 +282,17 @@ pub(crate) fn assert_positions_total(graph: &EditorStore) -> anyhow::Result<()> 
 /// Every stored `below` of a LIVE reference names a positioned reference resolving to the SAME
 /// commit, and the below walk is acyclic. Tombstoned refs keep their stored position for
 /// retention reads but are spliced out of the physical stack, so only live refs are graded.
-/// The vanilla fact mirrors the table exactly: every reference's stored `on` equals the
-/// site key the (slow) full-table scan finds for it — `None` on both sides for the
-/// unplaced. The mirror is what `locate` trusts, so this clause is what licenses it.
-fn assert_on_mirrors_table(graph: &EditorStore) -> anyhow::Result<()> {
+/// The extension's table ANNOTATES the vanilla fact, never contradicts it: the site key
+/// the (slow) full-table scan finds for every reference equals the record's `on` —
+/// `None` on both sides for the unplaced. `locate` trusts the fact, so this clause is
+/// what licenses it; under the sparse-overlay design this is the law that inverts into
+/// "absent from the table means vanilla".
+fn assert_table_annotates_on(graph: &EditorStore) -> anyhow::Result<()> {
     for (entry, name, key) in graph.ref_positions_for_law() {
         let scanned = graph.locate_by_scan_for_law(name.as_ref()).map(|(k, ..)| k);
         if key != scanned {
             anyhow::bail!(
-                "position mirror out of step for {name} ({entry}): record says {key:?}, table scan says {scanned:?}"
+                "table annotation contradicts the vanilla fact for {name} ({entry}): record says {key:?}, table says {scanned:?}"
             );
         }
     }

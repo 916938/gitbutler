@@ -73,7 +73,34 @@ goal (e.g. extracting a reusable rebase crate). What replaced them:
 The trap this avoids: mistaking proof machinery for pedagogy — code that *proves*
 something a reader never asks, instead of *saying* what they need.
 
-## Rungs (original ladder; 2–3 parked per the ruling above)
+## THE SPARSE-OVERLAY DESIGN (supersedes the vanilla-map sketch below)
+
+Ratified 2026-08-04: the purest extension shape is not "vanilla store + extension
+store" but "vanilla store + a SPARSE OVERLAY recording only deviations from vanilla" —
+absence means vanilla. Goal is structural purity, not configurability: no traits, no
+feature flags.
+
+- **`on` is the primitive write**; the layout annotates it. (The mirror from rung 1
+  becomes the truth it was always shaped like.)
+- **The table stores deviations only**: multi-member groups, `Entries` carries, attach
+  chains. A plain ref alone on its commit has NO table entry — it is a derived
+  singleton with carry `All`. The degenerate defaults already exist in the code as
+  fallbacks (`unwrap_or(GroupCarry::All)`) and normalization targets (the aliasing
+  rule); sparsity makes them the storage rule. Refs promote into the table on first
+  stacking and degenerate back out.
+- **The totality law inverts into a sparsity law**: every table entry must agree with
+  `on` and be non-degenerate; absence is vanilla by definition. Deletion test passes by
+  construction — an empty overlay is a valid overlay meaning "plain git".
+- The extension's stored state becomes exactly GitButler's diff against vanilla,
+  materialized as data.
+
+Rungs: (1) door inversion, table still total — `set_on` the named primitive, law
+direction flips [DONE on branch]; (2) vanilla verb paths — doors write the fact first,
+annotation second; (3) sparsify — derived defaults, law inversion, promote/degenerate
+lifecycle, fuzzer-gated; (4) ingest split — git refs feed the record, RefLayout feeds
+the overlay.
+
+## Rungs (original ladder; superseded by the sparse-overlay design above)
 
 1. **`on` + dual-write door + law clause + `locate` fast path.** Behavior-neutral,
    kills the O(R²) tripwire. Small: `RefState`, `place`/`extract`, `locate`,
