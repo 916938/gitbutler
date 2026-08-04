@@ -1,5 +1,8 @@
 //! GITBUTLER'S EXTENSION, the write side: every function here mutates structure
-//! vanilla git cannot represent. A plain-git editor would need none of this module.
+//! vanilla git cannot represent. A plain-git editor would keep only one resident:
+//! [`repoint_ref`] is `git branch -f` in extension clothing — vanilla semantics,
+//! implemented through the position machinery like every other degenerate case.
+//! The rest of the module it would not need.
 //!
 //! The reference-op API: mutation sites say where a reference should end up
 //! ([`RefPlace`]) and let [`place_ref`] and friends work out the `(on, below, group)`

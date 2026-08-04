@@ -1,7 +1,9 @@
 //! GITBUTLER'S EXTENSION, the read side: this module is about structure vanilla git
 //! cannot represent — group order, carries, statements — and the laws that hold it
-//! honest. The one vanilla fact (which commit a reference stands on) is mirrored OUT of
-//! here onto `RefState::on`.
+//! honest. Two vanilla-class reads live here too, exactly as the degenerate-case story
+//! predicts: [`resolve_to_commit`] and the `positioned_on` path answer a question a
+//! plain editor also asks, through this machinery. The vanilla fact itself (which
+//! commit a reference stands on) is mirrored OUT of here onto `RefState::on`.
 //!
 //! Where each reference sits, stored as position data rather than as graph parent entries.
 //!
