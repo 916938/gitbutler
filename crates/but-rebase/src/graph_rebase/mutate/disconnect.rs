@@ -2,9 +2,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::graph_rebase::commits::{CommitIndex, ParentEntry};
-use crate::graph_rebase::ref_ops::{
-    carry_stack_above, land_stack_above, readopt_dangling_refs, transfer_stack, unhook_ref,
-};
+use crate::graph_rebase::ref_ops;
 use crate::graph_rebase::store::RefIndex;
 use crate::graph_rebase::{EditorIndex, EditorStore, positions};
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -200,7 +198,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         // entries onto the commit, without one they are removed outright.
         if target.child == target.parent && self.store.is_positioned(target.child) {
             self.ensure_mutable_ref(target.child)?;
-            unhook_ref(&mut self.store, ref_entry(target.child)?, !heal);
+            ref_ops::unhook_ref(&mut self.store, ref_entry(target.child)?, !heal);
             return Ok(());
         }
 
@@ -448,7 +446,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         // at or below its rank — those stay with the range.
         if let Some(landing) = group_commit {
             for moving_ref in &ctx.moving_refs {
-                transfer_stack(&mut self.store, *moving_ref, ctx.commit, landing);
+                ref_ops::transfer_stack(&mut self.store, *moving_ref, ctx.commit, landing);
             }
         }
         if ctx.filter.admits_everything()
@@ -463,7 +461,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                     // stack now sits behind all of those fresh parent entries (`GroupCarry::All`), which
                     // is also right when `commit` is a merge.
                     let landed = severed.carried_tops.first().is_some_and(|&top| {
-                        land_stack_above(&mut self.store, ctx.commit, top, landing)
+                        ref_ops::land_stack_above(&mut self.store, ctx.commit, top, landing)
                     });
                     if !landed {
                         // A worktree's checked-out branch FOLLOWS the commit its
@@ -480,11 +478,11 @@ impl<M: RefMetadata> Editor<'_, M> {
                                 crate::graph_rebase::Checkout::Head { .. } => None,
                             })
                             .collect();
-                        positions::reposition_refs_except(
+                        ref_ops::reposition_refs_except(
                             &mut self.store,
                             ctx.commit,
                             landing,
-                            positions::Carry::Preserve,
+                            ref_ops::Carry::Preserve,
                             &keep_seated,
                         );
                     }
@@ -492,7 +490,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                 Some(child_bound_entries) => {
                     // The bound and its group at or below its depth stay with the range;
                     // the group slice above it follows the commit move verbatim.
-                    carry_stack_above(
+                    ref_ops::carry_stack_above(
                         &mut self.store,
                         ctx.commit,
                         child_bound_entries,
@@ -509,7 +507,7 @@ impl<M: RefMetadata> Editor<'_, M> {
     /// references follow where the commit's place went; their entering parent entries stay.
     fn readopt_range_danglers(&mut self, severed: &SeveredParents) {
         if let Some(onto) = severed.first_severed() {
-            readopt_dangling_refs(&mut self.store, onto);
+            ref_ops::readopt_dangling_refs(&mut self.store, onto);
         }
     }
 

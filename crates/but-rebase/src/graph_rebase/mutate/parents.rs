@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 
 use crate::graph_rebase::commits::ParentEntry;
-use crate::graph_rebase::ref_ops::repoint_ref;
+use crate::graph_rebase::ref_ops;
 use crate::graph_rebase::{EditorIndex, positions};
 use anyhow::{Context as _, Result, bail};
 use but_core::RefMetadata;
@@ -62,7 +62,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             };
             let child_ref = ref_entry(child)?;
             if self.store.is_reference(child_ref) {
-                repoint_ref(&mut self.store, child_ref, onto);
+                ref_ops::repoint_ref(&mut self.store, child_ref, onto);
             } else {
                 self.store.set_retained_position(child_ref, onto);
             }
@@ -81,7 +81,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         // child's statements, so a pre-capture would hold stale parent entry names.
         if parent_is_ref {
             let join = positions::prepare_group_join(&self.store, ref_entry(parent)?);
-            positions::apply_group_join(
+            ref_ops::apply_group_join(
                 &mut self.store,
                 &join,
                 ParentEntry {

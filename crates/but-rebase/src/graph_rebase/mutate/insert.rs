@@ -1,10 +1,8 @@
 //! Insertion: placing ranges, commits, and references relative to an anchor.
 
 use crate::graph_rebase::commits::{CommitIndex, ParentEntry};
-use crate::graph_rebase::ref_ops::{
-    RefPlace, SplitBoundary, move_ref, place_ref, redirect_entries, rehang_split_boundary,
-    settle_group_lower, split_group,
-};
+use crate::graph_rebase::ref_ops;
+use crate::graph_rebase::ref_ops::{RefPlace, SplitBoundary};
 use crate::graph_rebase::store::RefIndex;
 use crate::graph_rebase::{EditorIndex, positions};
 use anyhow::{Context as _, Result, bail};
@@ -125,7 +123,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                 }
             }
         };
-        move_ref(&mut self.store, ref_entry(subject)?, place);
+        ref_ops::move_ref(&mut self.store, ref_entry(subject)?, place);
         if let Some(entries_to_connect) = entries_to_connect {
             self.add_parent_to_each(&entries_to_connect, subject)?;
         }
@@ -184,7 +182,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             let orders = self.add_parents(commit_entry(parent)?, [on_commit]);
             orders.first().copied().unwrap_or(0)
         };
-        settle_group_lower(
+        ref_ops::settle_group_lower(
             &mut self.store,
             &split.lower,
             ParentEntry {
@@ -217,13 +215,13 @@ impl<M: RefMetadata> Editor<'_, M> {
             .expect("caller checked the target is positioned");
         let on_commit = self.resolved_commit(on)?;
         let entering = positions::entering(&self.store, target);
-        let split = split_group(&mut self.store, ref_entry(target)?, boundary, landing);
+        let split = ref_ops::split_group(&mut self.store, ref_entry(target)?, boundary, landing);
         // The group's parent entries now enter through `landing` — directly when the
         // target topped its group, or through the members that rode above (they carry
         // their statements verbatim, so the graph entries must follow them or the
         // interposed commit is silently bypassed).
-        redirect_entries(&mut self.store, &entering, on_commit, landing);
-        rehang_split_boundary(&mut self.store, &split, landing);
+        ref_ops::redirect_entries(&mut self.store, &entering, on_commit, landing);
+        ref_ops::rehang_split_boundary(&mut self.store, &split, landing);
         Ok((split, on_commit))
     }
 
@@ -235,11 +233,11 @@ impl<M: RefMetadata> Editor<'_, M> {
             .redirect_children(commit_entry(target)?, commit_entry(child)?);
         // Refs sitting on the target move up onto the range's child-most commit.
         if let Some(child_commit) = positions::resolve_to_commit(&self.store, child) {
-            positions::reposition_refs(
+            ref_ops::reposition_refs(
                 &mut self.store,
                 commit_entry(target)?,
                 child_commit,
-                positions::Carry::Reclassify,
+                ref_ops::Carry::Reclassify,
             );
         }
         Ok(())
@@ -264,7 +262,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             let parent_commit = commit_entry(parent)?;
             let orders = self.add_parents(parent_commit, [connect_to]);
             if let (Some(join), Some(order)) = (join, orders.first()) {
-                positions::apply_group_join(
+                ref_ops::apply_group_join(
                     &mut self.store,
                     &join,
                     ParentEntry {
@@ -378,7 +376,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let new_orders = self.add_parents(parent_commit, commits);
         for (k, join) in &joins {
             if let Some(order) = new_orders.get(*k) {
-                positions::apply_group_join(
+                ref_ops::apply_group_join(
                     &mut self.store,
                     join,
                     ParentEntry {
@@ -430,7 +428,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         let new_idx = self.store.add_commit(new);
         let (split, on_commit) = self.interpose_into_group(target, new_idx, boundary)?;
         self.store.push_parent(new_idx, on_commit);
-        settle_group_lower(
+        ref_ops::settle_group_lower(
             &mut self.store,
             &split.lower,
             ParentEntry {
@@ -470,11 +468,11 @@ impl<M: RefMetadata> Editor<'_, M> {
                 let target_commit = commit_entry(target)?;
                 self.store.redirect_children(target_commit, new_idx);
                 self.store.push_parent(new_idx, target_commit);
-                positions::reposition_refs(
+                ref_ops::reposition_refs(
                     &mut self.store,
                     target_commit,
                     new_idx,
-                    positions::Carry::Preserve,
+                    ref_ops::Carry::Preserve,
                 );
                 EditorIndex::from(new_idx)
             }
@@ -528,7 +526,7 @@ impl<M: RefMetadata> Editor<'_, M> {
         match (side, target_positioned) {
             (InsertSide::Above, false) => {
                 // A reference above a commit becomes the bottom of the commit's stack.
-                place_ref(
+                ref_ops::place_ref(
                     &mut self.store,
                     new_ref,
                     RefPlace::Bottom(commit_entry(target)?),
@@ -536,7 +534,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             }
             (InsertSide::Above, true) => {
                 // A reference above a reference joins its group one rank up.
-                place_ref(
+                ref_ops::place_ref(
                     &mut self.store,
                     new_ref,
                     RefPlace::Above(ref_entry(target)?),
@@ -547,7 +545,7 @@ impl<M: RefMetadata> Editor<'_, M> {
                 // parent entry enters (or starts one).
                 let target_commit = commit_entry(target)?;
                 if let Some(parent_commit) = self.store.parents(target_commit).first().copied() {
-                    place_ref(
+                    ref_ops::place_ref(
                         &mut self.store,
                         new_ref,
                         RefPlace::GroupTop {
@@ -563,7 +561,7 @@ impl<M: RefMetadata> Editor<'_, M> {
             (InsertSide::Below, true) => {
                 // A reference below a reference takes its position; it and everything above
                 // shift up.
-                place_ref(
+                ref_ops::place_ref(
                     &mut self.store,
                     new_ref,
                     RefPlace::Below(ref_entry(target)?),

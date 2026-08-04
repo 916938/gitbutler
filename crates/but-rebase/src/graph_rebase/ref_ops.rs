@@ -7,6 +7,9 @@
 //! from the table plus live commit parent entries (`positioned_on`, `ref_depth`, `entering`).
 //! Names never churn under graph mutation, which is what keeps the table stable while
 //! commits are rewritten around it.
+//!
+//! THE MODULE LAW, the mirror of `positions`': every layout WRITE lives here — each
+//! function takes `&mut EditorStore`. The reads and the laws live in `positions`.
 
 use crate::graph_rebase::EditorStore;
 use crate::graph_rebase::commits::{CommitIndex, ParentEntry};
@@ -644,5 +647,80 @@ pub(crate) fn settle_group_lower(
 ) {
     for &(entry, on, below) in lower {
         graph.set_position(entry, on, &[entering], false, below);
+    }
+}
+
+/// The new parent entry enters the captured group: every member gains it among its
+/// entering entries, classified against the commit's now-complete parent list — call right
+/// AFTER the parent is added (capture with `positions::prepare_group_join` BEFORE). An
+/// `All` group stays `All`; an `Entries` group gains the entry; a Root descends.
+pub(crate) fn apply_group_join(
+    graph: &mut EditorStore,
+    join: &positions::GroupJoin,
+    entering_entry: ParentEntry,
+) {
+    for &(entry, on, below, was_ambiguous) in &join.members {
+        let mut entering = join.entering.clone();
+        if !entering.contains(&entering_entry) {
+            entering.push(entering_entry);
+        }
+        let ambiguous = was_ambiguous || entering.len() > 1;
+        graph.set_position(entry, on, &entering, ambiguous, below);
+    }
+}
+
+/// What happens to a moved reference's group-carry at its destination — the one
+/// decision [`reposition_refs`] asks of its caller. It never affects where the
+/// reference ends up: both variants land it on the destination commit, and the rebase
+/// derives ref targets from position alone. The carry is the layer git cannot
+/// represent — WHICH parent entries enter through the group — and the choice is about
+/// keeping that statement honest across the move. Per-situation, not cleanly
+/// per-caller: preserve when the move keeps the statement true, re-derive when the
+/// move itself invalidates it. `ambiguous` is preserved either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Carry {
+    /// The record moves verbatim: an `All` group derives its parent entries afresh at
+    /// the destination, robust to a reconnect renumbering parent numbers.
+    Preserve,
+    /// The currently derived parent entries are re-classified against the
+    /// destination's, so a ref sliding onto a dup-parent MERGE base splits into the
+    /// `Entries` group its parent entry occupies.
+    Reclassify,
+}
+
+/// Move every reference resolving to `from_commit` onto `to_commit`; `carry` says what
+/// their group-carry does there.
+pub(crate) fn reposition_refs(
+    graph: &mut EditorStore,
+    from_commit: CommitIndex,
+    to_commit: CommitIndex,
+    carry: Carry,
+) {
+    reposition_refs_except(graph, from_commit, to_commit, carry, &[]);
+}
+
+/// [`reposition_refs`], except that references in `keep_seated` hold their position —
+/// a worktree's checked-out branch follows the commit its worktree stands on, while
+/// ordinary references stay behind in the lineage.
+pub(crate) fn reposition_refs_except(
+    graph: &mut EditorStore,
+    from_commit: CommitIndex,
+    to_commit: CommitIndex,
+    carry: Carry,
+    keep_seated: &[RefIndex],
+) {
+    let moves = positions::refs_resolving_to(graph, from_commit);
+    for entry in moves {
+        if keep_seated.contains(&entry) {
+            continue;
+        }
+        match carry {
+            Carry::Reclassify => {
+                let entering = positions::entering(graph, entry);
+                let (ambiguous, below) = (graph.ambiguous_of(entry), graph.below_of(entry));
+                graph.set_position(entry, to_commit, &entering, ambiguous, below);
+            }
+            Carry::Preserve => graph.rekey_position(entry, to_commit),
+        }
     }
 }

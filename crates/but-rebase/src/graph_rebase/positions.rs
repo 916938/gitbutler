@@ -9,6 +9,10 @@
 //! reference directly underneath; `None` = on the commit), and `ambiguous`
 //! ([`EditorStore::ambiguous_of`], this position is a merge).
 //!
+//! THE MODULE LAW: reads and laws only — every function here takes `&EditorStore`.
+//! Anything that mutates the store (takes `&mut`) is a layout WRITE and belongs in
+//! `ref_ops`, whatever vocabulary its contract is written in.
+//!
 //! Keeping references out of the parent entry graph is deliberate: a parent entry running THROUGH a reference
 //! would make it bear connectivity it shouldn't — gluing a commit's history onto whatever else
 //! the reference happens to touch.
@@ -209,15 +213,15 @@ pub(crate) fn ref_depth(graph: &EditorStore, entry: impl Into<EditorIndex>) -> u
 }
 
 /// A group about to be entered by a new parent entry, captured BEFORE that parent entry exists so
-/// [`apply_group_join`] never reads a half-updated store.
+/// `ref_ops::apply_group_join` never reads a half-updated store.
 pub(crate) struct GroupJoin {
     /// The joining members: the reference and the group-mates its below walk rests on —
     /// each with its position captured (`on`, `below`, `ambiguous`). Root groups (no
     /// entering parent entries) at one commit are distinct siblings, so only the reference itself
     /// joins.
-    members: Vec<(RefIndex, CommitIndex, Option<RefIndex>, bool)>,
+    pub(crate) members: Vec<(RefIndex, CommitIndex, Option<RefIndex>, bool)>,
     /// The parent entries entering the group at capture time.
-    entering: Vec<ParentEntry>,
+    pub(crate) entering: Vec<ParentEntry>,
 }
 
 /// Capture `ref_node`'s group for a coming join — call BEFORE the joining parent entry is added.
@@ -256,81 +260,6 @@ pub(crate) fn prepare_group_join(graph: &EditorStore, ref_node: RefIndex) -> Gro
     GroupJoin {
         members,
         entering: entering(graph, ref_node),
-    }
-}
-
-/// The new parent entry enters the captured group: every member gains it among its
-/// entering entries, classified against the commit's now-complete parent list — call right
-/// AFTER the parent is added. An `All` group stays `All`; an `Entries` group gains the
-/// entry; a Root descends.
-pub(crate) fn apply_group_join(
-    graph: &mut EditorStore,
-    join: &GroupJoin,
-    entering_entry: ParentEntry,
-) {
-    for &(entry, on, below, was_ambiguous) in &join.members {
-        let mut entering = join.entering.clone();
-        if !entering.contains(&entering_entry) {
-            entering.push(entering_entry);
-        }
-        let ambiguous = was_ambiguous || entering.len() > 1;
-        graph.set_position(entry, on, &entering, ambiguous, below);
-    }
-}
-
-/// What happens to a moved reference's group-carry at its destination — the one
-/// decision [`reposition_refs`] asks of its caller. It never affects where the
-/// reference ends up: both variants land it on the destination commit, and the rebase
-/// derives ref targets from position alone. The carry is the layer git cannot
-/// represent — WHICH parent entries enter through the group — and the choice is about
-/// keeping that statement honest across the move. Per-situation, not cleanly
-/// per-caller: preserve when the move keeps the statement true, re-derive when the
-/// move itself invalidates it. `ambiguous` is preserved either way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Carry {
-    /// The record moves verbatim: an `All` group derives its parent entries afresh at
-    /// the destination, robust to a reconnect renumbering parent numbers.
-    Preserve,
-    /// The currently derived parent entries are re-classified against the
-    /// destination's, so a ref sliding onto a dup-parent MERGE base splits into the
-    /// `Entries` group its parent entry occupies.
-    Reclassify,
-}
-
-/// Move every reference resolving to `from_commit` onto `to_commit`; `carry` says what
-/// their group-carry does there.
-pub(crate) fn reposition_refs(
-    graph: &mut EditorStore,
-    from_commit: CommitIndex,
-    to_commit: CommitIndex,
-    carry: Carry,
-) {
-    reposition_refs_except(graph, from_commit, to_commit, carry, &[]);
-}
-
-/// [`reposition_refs`], except that references in `keep_seated` hold their position —
-/// a worktree's checked-out branch follows the commit its worktree stands on, while
-/// ordinary references stay behind in the lineage.
-pub(crate) fn reposition_refs_except(
-    graph: &mut EditorStore,
-    from_commit: CommitIndex,
-    to_commit: CommitIndex,
-    carry: Carry,
-    keep_seated: &[RefIndex],
-) {
-    let moves = refs_resolving_to(graph, from_commit);
-    for entry in moves {
-        if keep_seated.contains(&entry) {
-            continue;
-        }
-        match carry {
-            Carry::Reclassify => {
-                let entering = entering(graph, entry);
-                let (ambiguous, below) = (graph.ambiguous_of(entry), graph.below_of(entry));
-                graph.set_position(entry, to_commit, &entering, ambiguous, below);
-            }
-            Carry::Preserve => graph.rekey_position(entry, to_commit),
-        }
     }
 }
 
