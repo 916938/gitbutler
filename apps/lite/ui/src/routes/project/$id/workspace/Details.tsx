@@ -57,7 +57,13 @@ import {
 	FieldTextareaStyles,
 } from "#ui/components/Field.tsx";
 import { Field, Toggle, ToggleGroup, Toolbar, Tooltip } from "@base-ui/react";
-import type { CiCheck, CommitDetails, ReviewMergeStatus, TreeChange } from "@gitbutler/but-sdk";
+import type {
+	CiCheck,
+	CommitDetails,
+	ReviewMergeMethod,
+	ReviewMergeStatus,
+	TreeChange,
+} from "@gitbutler/but-sdk";
 import type {
 	CodeViewDiffItem,
 	CodeView as CodeViewClass,
@@ -105,7 +111,11 @@ import {
 } from "./file-row.ts";
 import { contiguousSelectionByLine } from "#ui/hunk.ts";
 import { buildIndexByKey, type NavigationIndex } from "#ui/workspace/navigation-index.ts";
-import { showNativeContextMenu, showNativeMenuFromTrigger } from "#ui/native-menu.ts";
+import {
+	nativeMenuItem,
+	showNativeContextMenu,
+	showNativeMenuFromTrigger,
+} from "#ui/native-menu.ts";
 import { useFileMenuItems } from "#ui/routes/project/$id/workspace/useFileMenuItems.ts";
 import { useMergedRefs } from "@base-ui/utils/useMergedRefs";
 import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
@@ -114,7 +124,13 @@ import type { GUISettings } from "#electron/settings.ts";
 import { defaultSettings } from "#ui/settings.ts";
 import type { AggregateCIChecks } from "#ui/ci.ts";
 import type { IconName } from "#ui/components/iconNames.ts";
-import { draftPRQueryOptions, useDeleteDraftPR, usePersistDraftPR } from "#ui/pr.ts";
+import {
+	draftPRQueryOptions,
+	mergeMethodQueryOptions,
+	useDeleteDraftPR,
+	usePersistDraftPR,
+	usePersistMergeMethod,
+} from "#ui/pr.ts";
 import { combineHashes, hash } from "#ui/hash.ts";
 import { assert } from "#ui/assert.ts";
 import {
@@ -1330,6 +1346,18 @@ const mergeBlockedReason = (mergeStatus: ReviewMergeStatus | undefined): string 
 	}
 };
 
+const mergeMethods = [
+	"merge",
+	"squash",
+	"rebase",
+] as const satisfies ReadonlyArray<ReviewMergeMethod>;
+
+const mergeMethodLabels: Record<ReviewMergeMethod, string> = {
+	merge: "Merge",
+	squash: "Squash and merge",
+	rebase: "Rebase and merge",
+};
+
 const PullRequestPrimaryAction: FC<{
 	projectId: string;
 	reviewId: number;
@@ -1340,6 +1368,9 @@ const PullRequestPrimaryAction: FC<{
 		// Minimise API calls.
 		enabled: !isDraft,
 	});
+	const { data: storedMergeMethod } = useQuery(mergeMethodQueryOptions(projectId));
+	const mergeMethod = storedMergeMethod ?? "merge";
+	const { mutate: persistMergeMethod } = usePersistMergeMethod();
 
 	const { isPending: isUpdateReviewPending, mutate: updateReview } = useUpdateReview();
 	const { isPending: isMergeReviewPending, mutate: mergeReview } = useMergeReview();
@@ -1404,28 +1435,53 @@ const PullRequestPrimaryAction: FC<{
 							<button
 								className={getButtonClassName({ variant: "pop" })}
 								disabled={isAnyPending || blockedReason !== null}
-								onClick={() => mergeReview({ projectId, reviewId, mergeMethod: null })}
+								onClick={() => mergeReview({ projectId, reviewId, mergeMethod })}
 								type="button"
 							>
 								{isMergeReviewPending && <Icon name="spinner" />}
-								Merge
+								{mergeMethodLabels[mergeMethod]}
 							</button>
 						);
 
-						return blockedReason === null ? (
-							mergeButton
-						) : (
-							<Tooltip.Root>
-								{/* Disabled buttons swallow hover, so a wrapper span carries the tooltip. */}
-								<Tooltip.Trigger render={<span className={styles.disabledActionWrap} />}>
-									{mergeButton}
-								</Tooltip.Trigger>
-								<Tooltip.Portal>
-									<Tooltip.Positioner sideOffset={4}>
-										<Tooltip.Popup render={<TooltipPopup />}>{blockedReason}</Tooltip.Popup>
-									</Tooltip.Positioner>
-								</Tooltip.Portal>
-							</Tooltip.Root>
+						return (
+							<div className={styles.splitButton}>
+								{blockedReason === null ? (
+									mergeButton
+								) : (
+									<Tooltip.Root>
+										{/* Disabled buttons swallow hover, so a wrapper span carries the tooltip. */}
+										<Tooltip.Trigger render={<span className={styles.disabledActionWrap} />}>
+											{mergeButton}
+										</Tooltip.Trigger>
+										<Tooltip.Portal>
+											<Tooltip.Positioner sideOffset={4}>
+												<Tooltip.Popup render={<TooltipPopup />}>{blockedReason}</Tooltip.Popup>
+											</Tooltip.Positioner>
+										</Tooltip.Portal>
+									</Tooltip.Root>
+								)}
+
+								<button
+									aria-label="Merge method"
+									className={getButtonClassName({ variant: "pop", iconOnly: true })}
+									disabled={isAnyPending}
+									onClick={(evt) =>
+										void showNativeMenuFromTrigger(
+											evt.currentTarget,
+											mergeMethods.map((method) =>
+												nativeMenuItem({
+													label: mergeMethodLabels[method],
+													checked: method === mergeMethod,
+													onSelect: () => persistMergeMethod({ projectId, method }),
+												}),
+											),
+										)
+									}
+									type="button"
+								>
+									<Icon name="chevron-down" />
+								</button>
+							</div>
 						);
 					})()}
 				</>

@@ -55,6 +55,11 @@
 	gap: 6px;
 }
 
+.splitButton {
+	display: flex;
+	gap: 2px;
+}
+
 .disabledActionWrap {
 	display: inline-flex;
 
