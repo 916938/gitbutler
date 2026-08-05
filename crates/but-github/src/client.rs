@@ -546,14 +546,7 @@ impl GitHubClient {
         pr_number: i64,
         label: &str,
     ) -> Result<()> {
-        let mut url = reqwest::Url::parse(&format!(
-            "{}/repos/{}/{}/issues/{}/labels",
-            self.base_url, owner, repo, pr_number
-        ))?;
-        // Label names may contain spaces or unicode; push() percent-encodes.
-        url.path_segments_mut()
-            .map_err(|()| anyhow::anyhow!("Invalid GitHub base URL"))?
-            .push(label);
+        let url = label_removal_url(&self.base_url, owner, repo, pr_number, label)?;
 
         let response = self.client.delete(url).send().await?;
 
@@ -1491,6 +1484,30 @@ struct ReviewersBody<'a> {
     reviewers: &'a [String],
 }
 
+/// Build `DELETE /repos/{o}/{r}/issues/{n}/labels/{name}` with the label name
+/// percent-encoded. `PathSegmentsMut::push` silently *drops* `.` and `..`
+/// segments, which would degrade this into GitHub's remove-ALL-labels
+/// endpoint — refuse those names instead of encoding them.
+fn label_removal_url(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    pr_number: i64,
+    label: &str,
+) -> Result<reqwest::Url> {
+    if matches!(label, "" | "." | "..") {
+        bail!("Refusing to remove label with degenerate name {label:?}");
+    }
+
+    let mut url = reqwest::Url::parse(&format!(
+        "{base_url}/repos/{owner}/{repo}/issues/{pr_number}/labels"
+    ))?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow::anyhow!("Invalid GitHub base URL"))?
+        .push(label);
+    Ok(url)
+}
+
 /// A submitted review on a pull request, from `GET /pulls/{n}/reviews`.
 #[derive(Debug, Serialize)]
 pub struct PullRequestReview {
@@ -1723,6 +1740,28 @@ mod tests {
         assert_eq!(merge, serde_json::json!("MERGE"));
         assert_eq!(squash, serde_json::json!("SQUASH"));
         assert_eq!(rebase, serde_json::json!("REBASE"));
+    }
+
+    #[test]
+    fn label_removal_url_encodes_exotic_names() {
+        let url = label_removal_url("https://api.github.com", "o", "r", 7, "help wanted 🙏/2")
+            .expect("normal names build a URL");
+        assert_eq!(
+            url.as_str(),
+            "https://api.github.com/repos/o/r/issues/7/labels/help%20wanted%20%F0%9F%99%8F%2F2",
+            "spaces, unicode, and slashes must be percent-encoded, not path-splitting"
+        );
+    }
+
+    #[test]
+    fn label_removal_url_refuses_names_the_url_crate_would_drop() {
+        // A dropped segment would target the remove-ALL-labels endpoint.
+        for degenerate in ["", ".", ".."] {
+            assert!(
+                label_removal_url("https://api.github.com", "o", "r", 7, degenerate).is_err(),
+                "{degenerate:?} must be refused"
+            );
+        }
     }
 
     #[test]
