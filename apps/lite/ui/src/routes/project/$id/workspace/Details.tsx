@@ -57,7 +57,7 @@ import {
 	FieldTextareaStyles,
 } from "#ui/components/Field.tsx";
 import { Field, Toggle, ToggleGroup, Toolbar, Tooltip } from "@base-ui/react";
-import type { CiCheck, CommitDetails, TreeChange } from "@gitbutler/but-sdk";
+import type { CiCheck, CommitDetails, ReviewMergeStatus, TreeChange } from "@gitbutler/but-sdk";
 import type {
 	CodeViewDiffItem,
 	CodeView as CodeViewClass,
@@ -1308,6 +1308,28 @@ const PullRequestForm: FC<{
 	);
 };
 
+/** Why the Merge button is disabled, or null when merging is possible. */
+const mergeBlockedReason = (mergeStatus: ReviewMergeStatus | undefined): string | null => {
+	if (mergeStatus === undefined) return "Checking mergeability…";
+	if (mergeStatus.isMergeable) return null;
+
+	switch (mergeStatus.mergeableState) {
+		case "blocked":
+			return "Blocked: required approvals or checks are not satisfied";
+		case "behind":
+			return "Behind the base branch; update the branch first";
+		case "dirty":
+			return "Merge conflicts with the base branch";
+		case "draft":
+			return "Draft pull requests cannot be merged";
+		case "unknown":
+		case null:
+			return "Mergeability not yet determined by the forge";
+		default:
+			return `Not mergeable (state: ${mergeStatus.mergeableState})`;
+	}
+};
+
 const PullRequestPrimaryAction: FC<{
 	projectId: string;
 	reviewId: number;
@@ -1376,15 +1398,36 @@ const PullRequestPrimaryAction: FC<{
 						Enable auto-merge
 					</button>
 
-					<button
-						className={getButtonClassName({ variant: "pop" })}
-						disabled={isAnyPending || mergeStatus?.isMergeable !== true}
-						onClick={() => mergeReview({ projectId, reviewId, mergeMethod: null })}
-						type="button"
-					>
-						{isMergeReviewPending && <Icon name="spinner" />}
-						Merge
-					</button>
+					{(() => {
+						const blockedReason = isAnyPending ? null : mergeBlockedReason(mergeStatus);
+						const mergeButton = (
+							<button
+								className={getButtonClassName({ variant: "pop" })}
+								disabled={isAnyPending || blockedReason !== null}
+								onClick={() => mergeReview({ projectId, reviewId, mergeMethod: null })}
+								type="button"
+							>
+								{isMergeReviewPending && <Icon name="spinner" />}
+								Merge
+							</button>
+						);
+
+						return blockedReason === null ? (
+							mergeButton
+						) : (
+							<Tooltip.Root>
+								{/* Disabled buttons swallow hover, so a wrapper span carries the tooltip. */}
+								<Tooltip.Trigger render={<span className={styles.disabledActionWrap} />}>
+									{mergeButton}
+								</Tooltip.Trigger>
+								<Tooltip.Portal>
+									<Tooltip.Positioner sideOffset={4}>
+										<Tooltip.Popup render={<TooltipPopup />}>{blockedReason}</Tooltip.Popup>
+									</Tooltip.Positioner>
+								</Tooltip.Portal>
+							</Tooltip.Root>
+						);
+					})()}
 				</>
 			)}
 		</div>
