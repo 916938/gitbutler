@@ -59,6 +59,7 @@ import type {
 	ReviewState,
 	ReviewMergeMethod,
 	ReviewMergeStatus,
+	ForgeReviewComment,
 	ReviewTemplateInfo,
 	RestoreKind,
 	Snapshot,
@@ -264,6 +265,12 @@ export interface ListReviewsForBranchParams {
 export interface GetReviewParams {
 	projectId: string;
 	reviewId: number;
+}
+
+export interface CreateReviewCommentParams {
+	projectId: string;
+	reviewId: number;
+	body: string;
 }
 
 export interface ListCiChecksParams {
@@ -474,6 +481,7 @@ export interface LiteElectronApi {
 	commitMoveChangesBetween: (params: CommitMoveChangesBetweenParams) => Promise<MoveChangesResult>;
 	commitUncommit: (params: CommitUncommitParams) => Promise<UncommitResult>;
 	commitUncommitChanges: (params: CommitUncommitChangesParams) => Promise<MoveChangesResult>;
+	createReviewComment: (params: CreateReviewCommentParams) => Promise<ForgeReviewComment>;
 	forgeCompareBranchUrl: (params: ForgeCompareBranchUrlParams) => Promise<string | null>;
 	forgeInfo: (projectId: string) => Promise<ForgeInfo | null>;
 	forgeProvider: (projectId: string) => Promise<ForgeName | null>;
@@ -495,6 +503,7 @@ export interface LiteElectronApi {
 	listEditors: () => Promise<Array<Editor>>;
 	listPrograms: () => Promise<Array<Program>>;
 	listProjectsStateless: () => Promise<Array<ProjectForFrontend>>;
+	listReviewComments: (params: GetReviewParams) => Promise<Array<ForgeReviewComment>>;
 	listReviews: (params: ListReviewsParams) => Promise<Array<ForgeReview>>;
 	listReviewsForBranch: (params: ListReviewsForBranchParams) => Promise<Array<ForgeReview>>;
 	mergeReview: (params: MergeReviewParams) => Promise<void>;
@@ -569,6 +578,7 @@ export const liteIpcChannels = {
 	commitMoveChangesBetween: "workspace:commit-move-changes-between",
 	commitUncommit: "workspace:commit-uncommit",
 	commitUncommitChanges: "workspace:commit-uncommit-changes",
+	createReviewComment: "workspace:create-review-comment",
 	forgeCompareBranchUrl: "workspace:forge-compare-branch-url",
 	forgeInfo: "workspace:forge-info",
 	forgeProvider: "workspace:forge-provider",
@@ -588,6 +598,7 @@ export const liteIpcChannels = {
 	listEditors: "workspace:list-editors",
 	listPrograms: "workspace:list-programs",
 	listProjectsStateless: "projects:list-stateless",
+	listReviewComments: "workspace:list-review-comments",
 	listReviews: "workspace:list-reviews",
 	listReviewsForBranch: "workspace:list-reviews-for-branch",
 	mergeReview: "workspace:merge-review",

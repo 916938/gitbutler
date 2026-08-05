@@ -47,6 +47,7 @@ import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { ToggleGroupStyles, ToggleStyles } from "#ui/components/ToggleGroup.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
+import { PullRequestComments } from "#ui/routes/project/$id/workspace/PullRequestComments.tsx";
 import { PullRequestPanel } from "#ui/routes/project/$id/workspace/PullRequestPanel.tsx";
 import { useAppDispatch, useAppSelector } from "#ui/store.ts";
 import { classes } from "#ui/components/classes.ts";
@@ -1986,6 +1987,8 @@ const BranchDetails: FC<{
 														}
 													</SuspenseQuery>
 												)}
+
+												<PullRequestComments projectId={projectId} reviewId={review.number} />
 											</div>
 
 											<PullRequestPanel review={review} />

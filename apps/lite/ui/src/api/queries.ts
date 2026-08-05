@@ -30,6 +30,7 @@ export type QueryKey =
 	| "forgeInfo"
 	| "headInfo"
 	| "review"
+	| "reviewComments"
 	| "reviewMergeStatus"
 	| "reviews"
 	| "editors"
@@ -196,6 +197,17 @@ export const workspaceFetchQueryOptions = (
 		initialData: null,
 	});
 };
+
+/** This query should be gated by PR capability lest it fail. */
+export const listReviewCommentsQueryOptions = ({ projectId, reviewId }: GetReviewParams) =>
+	queryOptions({
+		queryKey: ["reviewComments" satisfies QueryKey, projectId, reviewId],
+		queryFn: () => window.lite.listReviewComments({ projectId, reviewId }),
+		// Fresh forge fetch each time; keep a gentle poll while the tab is open
+		// so replies from others appear without a manual refresh.
+		staleTime: 60_000,
+		refetchInterval: 60_000,
+	});
 
 export const getReviewMergeStatusQueryOptions = ({ projectId, reviewId }: GetReviewParams) =>
 	queryOptions({

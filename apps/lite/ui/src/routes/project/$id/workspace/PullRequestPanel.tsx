@@ -30,7 +30,7 @@ const Section: FC<{ heading: string; children: ReactNode }> = (p) => (
 	</div>
 );
 
-const User: FC<{ user: ForgeReviewUser }> = ({ user }) => (
+export const ReviewUser: FC<{ user: ForgeReviewUser }> = ({ user }) => (
 	<div className={classes("text-13", styles.user)} title={user.name ?? undefined}>
 		{user.avatarUrl !== null ? (
 			<img src={user.avatarUrl} className={styles.avatar} alt="" />
@@ -86,14 +86,14 @@ export const PullRequestPanel: FC<{ review: ForgeReview }> = ({ review }) => {
 
 			{review.author !== null && (
 				<Section heading="Author">
-					<User user={review.author} />
+					<ReviewUser user={review.author} />
 				</Section>
 			)}
 
 			{review.reviewers.length > 0 && (
 				<Section heading="Reviewers">
 					{review.reviewers.map((reviewer) => (
-						<User key={reviewer.id} user={reviewer} />
+						<ReviewUser key={reviewer.id} user={reviewer} />
 					))}
 				</Section>
 			)}

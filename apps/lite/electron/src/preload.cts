@@ -11,6 +11,7 @@ import type {
 	DiffSpec,
 	Editor,
 	ForgeReview,
+	ForgeReviewComment,
 	Program,
 	ProjectForFrontend,
 	PublishReviewOutcome,
@@ -138,6 +139,8 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:commit-uncommit", params) as Promise<UncommitResult>,
 	commitUncommitChanges: (params) =>
 		ipcRenderer.invoke("workspace:commit-uncommit-changes", params) as Promise<MoveChangesResult>,
+	createReviewComment: (params) =>
+		ipcRenderer.invoke("workspace:create-review-comment", params) as Promise<ForgeReviewComment>,
 	forgeCompareBranchUrl: (params) =>
 		ipcRenderer.invoke("workspace:forge-compare-branch-url", params) as Promise<string | null>,
 	forgeInfo: (projectId) =>
@@ -180,6 +183,10 @@ const api: LiteElectronApi = {
 	listPrograms: () => ipcRenderer.invoke("workspace:list-programs") as Promise<Array<Program>>,
 	listProjectsStateless: () =>
 		ipcRenderer.invoke("projects:list-stateless") as Promise<Array<ProjectForFrontend>>,
+	listReviewComments: (params) =>
+		ipcRenderer.invoke("workspace:list-review-comments", params) as Promise<
+			Array<ForgeReviewComment>
+		>,
 	listReviews: (params) =>
 		ipcRenderer.invoke("workspace:list-reviews", params) as Promise<Array<ForgeReview>>,
 	listReviewsForBranch: (params) =>

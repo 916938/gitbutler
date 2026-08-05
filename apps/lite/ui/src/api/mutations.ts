@@ -207,6 +207,30 @@ export const useUpdateReview = () => {
 	});
 };
 
+export const useCreateReviewComment = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.createReviewComment,
+		onSuccess: async (_response, input, _context, mutation) => {
+			await mutation.client.invalidateQueries({
+				queryKey: ["reviewComments" satisfies QueryKey, input.projectId, input.reviewId],
+			});
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to post comment",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
 export const useSetReviewAutoMerge = () => {
 	const toastManager = Toast.useToastManager();
 

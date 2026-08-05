@@ -29,6 +29,7 @@ import {
 	type ForgeCompareBranchUrlParams,
 	type GetInitialBranchIntegrationParams,
 	type GetReviewBaseRepoUrlParams,
+	type CreateReviewCommentParams,
 	type GetReviewParams,
 	type ListCiChecksParams,
 	type ListReviewsParams,
@@ -94,6 +95,7 @@ import {
 	commitMove,
 	commitDetailsWithLineStats,
 	commitMoveChangesBetween,
+	createReviewComment,
 	forgeCompareBranchUrl,
 	forgeInfo,
 	forgeProvider,
@@ -107,6 +109,7 @@ import {
 	listEditors,
 	listPrograms,
 	listProjectsStateless,
+	listReviewComments,
 	listReviews,
 	listReviewsForBranch,
 	mergeReview,
@@ -556,6 +559,15 @@ const registerIpcHandlers = (): void => {
 	senderValidatingHandle(
 		liteIpcChannels.getReviewMergeStatus,
 		(_e, { projectId, reviewId }: GetReviewParams) => getReviewMergeStatus(projectId, reviewId),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.listReviewComments,
+		(_e, { projectId, reviewId }: GetReviewParams) => listReviewComments(projectId, reviewId),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.createReviewComment,
+		(_e, { projectId, reviewId, body }: CreateReviewCommentParams) =>
+			createReviewComment(projectId, reviewId, body),
 	);
 	senderValidatingHandle(liteIpcChannels.getVersion, () => Promise.resolve(app.getVersion()));
 	senderValidatingHandle(liteIpcChannels.getRedoTargetSnapshot, async (_e, projectId: string) =>
