@@ -85,6 +85,19 @@
 	border-radius: 50%;
 }
 
+.checksSummary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.checksProblems {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	color: var(--text-2);
+}
+
 .branches {
 	display: flex;
 	align-items: center;

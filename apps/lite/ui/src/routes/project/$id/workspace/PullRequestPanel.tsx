@@ -6,6 +6,7 @@ import {
 } from "#ui/api/mutations.ts";
 import {
 	forgeInfoOptions,
+	listCIChecksQueryOptions,
 	listReviewSubmissionsQueryOptions,
 	repoLabelsQueryOptions,
 	reviewerCandidatesQueryOptions,
@@ -75,6 +76,66 @@ const Label: FC<{ label: ForgeReviewLabel }> = ({ label }) => {
 			{color !== null && <span className={styles.labelDot} style={{ backgroundColor: color }} />}
 			{label.name}
 		</span>
+	);
+};
+
+const openLinkExternally = (evt: MouseEvent<HTMLAnchorElement>): void => {
+	evt.preventDefault();
+	void window.lite.openInWebBrowser(evt.currentTarget.href);
+};
+
+/** Compact CI summary for the panel: one line, plus links for problem jobs. */
+const ChecksSection: FC<{ projectId: string; reference: string }> = ({ projectId, reference }) => {
+	const { data } = useQuery(
+		listCIChecksQueryOptions({ projectId, reference, polling: "priority" }),
+	);
+	const aggregate = data?.aggregate ?? null;
+	if (aggregate === null) return null;
+
+	const passed = aggregate.success.length + aggregate.neutral.length + aggregate.skipped.length;
+	const [summary, icon, color] = Match.value(aggregate.status).pipe(
+		Match.withReturnType<[string, IconName, string]>(),
+		Match.when("success", () => [
+			`${passed}/${aggregate.total} passed`,
+			"tick-circle",
+			"var(--scale-safe-50)",
+		]),
+		Match.when("failure", () => [
+			`${aggregate.failure.length + aggregate.timedOut.length}/${aggregate.total} failed`,
+			"cross-circle",
+			"var(--scale-danger-50)",
+		]),
+		Match.when("cancelled", () => ["Some cancelled", "cross-circle", "var(--scale-danger-50)"]),
+		Match.when("action_required", () => ["Action required", "warning", "var(--scale-warn-50)"]),
+		Match.when("in_progress", () => ["In progress", "spinner", "var(--text-3)"]),
+		Match.when("unknown", () => ["Unknown", "question-circle", "var(--text-3)"]),
+		Match.exhaustive,
+	);
+
+	const problemChecks = [...aggregate.failure, ...aggregate.timedOut, ...aggregate.actionRequired];
+
+	return (
+		<Section heading="Checks">
+			<div className={classes("text-13", styles.checksSummary)}>
+				<Icon name={icon} style={{ color }} />
+				{summary}
+			</div>
+
+			{problemChecks.length > 0 && (
+				<div className={styles.checksProblems}>
+					{problemChecks.map((check) => (
+						<a
+							key={check.id}
+							href={check.htmlUrl}
+							onClick={openLinkExternally}
+							className={classes("text-12", styles.link)}
+						>
+							{check.name}
+						</a>
+					))}
+				</div>
+			)}
+		</Section>
 	);
 };
 
@@ -278,6 +339,10 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 						))}
 					</div>
 				</Section>
+			)}
+
+			{forgeInfo?.capabilities.checks === true && (
+				<ChecksSection projectId={projectId} reference={review.sourceBranch} />
 			)}
 
 			<Section heading="Branches">

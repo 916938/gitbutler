@@ -18,7 +18,6 @@ import {
 	guiSettingsQueryOptions,
 	getReviewMergeStatusQueryOptions,
 	headInfoQueryOptions,
-	listCIChecksQueryOptions,
 	listEditorsQueryOptions,
 	listReviewsQueryOptions,
 	treeChangeDiffsQueryOptions,
@@ -61,7 +60,6 @@ import {
 } from "#ui/components/Field.tsx";
 import { Field, Toggle, ToggleGroup, Toolbar, Tooltip } from "@base-ui/react";
 import type {
-	CiCheck,
 	CommitDetails,
 	ReviewMergeMethod,
 	ReviewMergeStatus,
@@ -81,7 +79,6 @@ import { Match } from "effect";
 import {
 	type ComponentProps,
 	type FC,
-	type MouseEvent,
 	type ReactNode,
 	type RefObject,
 	type SubmitEventHandler,
@@ -125,7 +122,6 @@ import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
 import { Checkbox } from "#ui/components/Checkbox.tsx";
 import type { GUISettings } from "#electron/settings.ts";
 import { defaultSettings } from "#ui/settings.ts";
-import type { AggregateCIChecks } from "#ui/ci.ts";
 import type { IconName } from "#ui/components/iconNames.ts";
 import {
 	draftPRQueryOptions,
@@ -1168,7 +1164,9 @@ const PullRequestForm: FC<{
 	body: string | null;
 	canSubmit: boolean;
 	onAfterSubmit?: () => void;
-}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit, onAfterSubmit }) => {
+	/** Replaces Reset with a Cancel button that discards edits and calls this. */
+	onCancel?: () => void;
+}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit, onAfterSubmit, onCancel }) => {
 	const { isPending: isPublishReviewPending, mutate: publishReview } = usePublishReview();
 	const { isPending: isUpdateReviewPending, mutate: updateReview } = useUpdateReview();
 	const formRef = useRef<HTMLFormElement | null>(null);
@@ -1309,14 +1307,28 @@ const PullRequestForm: FC<{
 			)}
 
 			<div className={styles.prFormActions}>
-				<button
-					className={getButtonClassName({})}
-					disabled={isAnyPending || !hasChanges}
-					onClick={handleReset}
-					type="button"
-				>
-					Reset
-				</button>
+				{onCancel !== undefined ? (
+					<button
+						className={getButtonClassName({})}
+						disabled={isAnyPending}
+						onClick={() => {
+							handleReset();
+							onCancel();
+						}}
+						type="button"
+					>
+						Cancel
+					</button>
+				) : (
+					<button
+						className={getButtonClassName({})}
+						disabled={isAnyPending || !hasChanges}
+						onClick={handleReset}
+						type="button"
+					>
+						Reset
+					</button>
+				)}
 
 				<button
 					className={getButtonClassName({ variant: "pop" })}
@@ -1331,7 +1343,7 @@ const PullRequestForm: FC<{
 	);
 };
 
-/** Rendered PR title and body, flipping to the editable form on demand. */
+/** Rendered PR title and body; the header's Edit button flips to the form. */
 const PullRequestDescription: FC<{
 	projectId: string;
 	sourceBranch: string;
@@ -1339,9 +1351,9 @@ const PullRequestDescription: FC<{
 	title: string;
 	body: string | null;
 	canSubmit: boolean;
-}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit }) => {
-	const [editing, setEditing] = useState(false);
-
+	editing: boolean;
+	onDoneEditing: () => void;
+}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit, editing, onDoneEditing }) => {
 	if (editing) {
 		return (
 			<PullRequestForm
@@ -1351,24 +1363,15 @@ const PullRequestDescription: FC<{
 				sourceBranch={sourceBranch}
 				title={title}
 				canSubmit={canSubmit}
-				onAfterSubmit={() => setEditing(false)}
+				onAfterSubmit={onDoneEditing}
+				onCancel={onDoneEditing}
 			/>
 		);
 	}
 
 	return (
 		<div className={styles.prView}>
-			<div className={styles.prViewHeader}>
-				<h3 className={classes("text-15", "text-semibold")}>{title}</h3>
-				<button
-					className={getButtonClassName({ variant: "outline", size: "small" })}
-					onClick={() => setEditing(true)}
-					type="button"
-				>
-					<Icon name="edit" />
-					Edit
-				</button>
-			</div>
+			<h3 className={classes("text-15", "text-semibold")}>{title}</h3>
 
 			{body !== null && body.trim() !== "" ? (
 				// Taller ceiling than comments: only truly huge descriptions fold.
@@ -1421,7 +1424,9 @@ const PullRequestPrimaryAction: FC<{
 	reviewId: number;
 	isDraft: boolean;
 	autoMergeEnabled: boolean;
-}> = ({ projectId, reviewId, isDraft, autoMergeEnabled }) => {
+	isEditing: boolean;
+	onToggleEdit: () => void;
+}> = ({ projectId, reviewId, isDraft, autoMergeEnabled, isEditing, onToggleEdit }) => {
 	const { data: mergeStatus } = useQuery({
 		...getReviewMergeStatusQueryOptions({ projectId, reviewId }),
 		// Minimise API calls.
@@ -1447,6 +1452,17 @@ const PullRequestPrimaryAction: FC<{
 	return (
 		<div className={styles.prActions}>
 			<button
+				aria-pressed={isEditing}
+				className={getButtonClassName({ variant: isEditing ? "gray" : "outline" })}
+				disabled={isAnyPending}
+				onClick={onToggleEdit}
+				type="button"
+			>
+				<Icon name="edit" />
+				Edit
+			</button>
+
+			<button
 				className={getButtonClassName({ variant: !isDraft ? "outline" : "pop" })}
 				disabled={isAnyPending}
 				onClick={() => setReviewDraftiness({ projectId, reviewId, draft: !isDraft })}
@@ -1454,25 +1470,6 @@ const PullRequestPrimaryAction: FC<{
 			>
 				{isSetReviewDraftinessPending && <Icon name="spinner" />}
 				{isDraft ? "Mark as Ready" : "Convert to draft"}
-			</button>
-
-			<button
-				className={getButtonClassName({ variant: "danger" })}
-				disabled={isAnyPending}
-				onClick={() =>
-					updateReview({
-						projectId,
-						reviewId,
-						state: "closed",
-						title: null,
-						body: null,
-						targetBase: null,
-					})
-				}
-				type="button"
-			>
-				{isUpdateReviewPending && <Icon name="spinner" />}
-				Close
 			</button>
 
 			{!isDraft && (
@@ -1544,90 +1541,31 @@ const PullRequestPrimaryAction: FC<{
 					})()}
 				</>
 			)}
-		</div>
-	);
-};
 
-const Check: FC<{
-	title: string;
-	icon: IconName;
-	iconColor: string;
-	url: string;
-}> = (p) => {
-	const handleOpen =
-		(url: string) =>
-		async (evt: MouseEvent<HTMLAnchorElement>): Promise<void> => {
-			evt.preventDefault();
-
-			await window.lite.openInWebBrowser(url);
-		};
-
-	return (
-		<a
-			href={p.url}
-			onClick={(evt) => void handleOpen(p.url)(evt)}
-			className={classes("text-13", styles.check)}
-		>
-			<Icon name={p.icon} style={{ color: p.iconColor }} />
-			{p.title}
-		</a>
-	);
-};
-
-const Checks: FC<{ checks: Array<CiCheck>; aggregate: AggregateCIChecks }> = (p) => {
-	const [summary, summaryIcon, summaryIconColor] = Match.value(p.aggregate.status).pipe(
-		Match.withReturnType<[string, IconName, string]>(),
-		Match.when("success", () => ["All passed", "checklist", "var(--scale-safe-50)"]),
-		Match.when("failure", () => ["Failed", "checklist-remove", "var(--scale-danger-50)"]),
-		Match.when("cancelled", () => ["Some cancelled", "checklist-remove", "var(--scale-danger-50)"]),
-		Match.when("action_required", () => ["Action required", "warning", "var(--scale-warn-50)"]),
-		Match.when("in_progress", () => [
-			"In progress",
-			"spinner",
-			p.aggregate.failure.length > 0
-				? "var(--scale-danger-50)"
-				: p.aggregate.actionRequired.length > 0
-					? "var(--scale-warn-50)"
-					: "grey",
-		]),
-		Match.when("unknown", () => ["Unknown", "warning", "var(--scale-purple-50)"]),
-		Match.exhaustive,
-	);
-
-	return (
-		<div className={styles.checks}>
-			<h4 className={classes("text-14", styles.checkHeading)}>Checks</h4>
-
-			<div className={classes("text-14", styles.checkSummary)}>
-				<Icon name={summaryIcon} style={{ color: summaryIconColor }} />
-				{summary}
-			</div>
-
-			{(p.aggregate.failure.length > 0 || p.aggregate.actionRequired.length > 0) && (
-				<div className={styles.checkItems}>
-					<h5 className={classes("text-13", styles.checkJobsHeading)}>Failed jobs</h5>
-
-					{p.aggregate.failure.map((check) => (
-						<Check
-							key={check.id}
-							title={check.name}
-							icon="cross-circle"
-							iconColor="var(--scale-danger-60)"
-							url={check.htmlUrl}
-						/>
-					))}
-
-					{p.aggregate.actionRequired.map((check) => (
-						<Check
-							key={check.id}
-							title={check.name}
-							icon="warning"
-							iconColor="var(--scale-warn-60)"
-							url={check.htmlUrl}
-						/>
-					))}
-				</div>
-			)}
+			<button
+				aria-label="More pull request actions"
+				className={getButtonClassName({ variant: "outline", iconOnly: true })}
+				disabled={isAnyPending}
+				onClick={(evt) =>
+					void showNativeMenuFromTrigger(evt.currentTarget, [
+						nativeMenuItem({
+							label: "Close pull request",
+							onSelect: () =>
+								updateReview({
+									projectId,
+									reviewId,
+									state: "closed",
+									title: null,
+									body: null,
+									targetBase: null,
+								}),
+						}),
+					])
+				}
+				type="button"
+			>
+				{isUpdateReviewPending ? <Icon name="spinner" /> : <Icon name="kebab" />}
+			</button>
 		</div>
 	);
 };
@@ -1861,6 +1799,20 @@ const BranchDetails: FC<{
 		dispatch(projectSlice.actions.setSelectedBranchTab({ projectId, branchName, tab }));
 	};
 
+	const [prEditing, setPrEditing] = useState(false);
+	// Editing is per PR; leave the mode when the selection moves to another branch.
+	const [prevEditBranch, setPrevEditBranch] = useState(branchName);
+	if (prevEditBranch !== branchName) {
+		setPrevEditBranch(branchName);
+		setPrEditing(false);
+	}
+
+	const togglePrEdit = () => {
+		// Entering edit mode from the Diff tab brings the PR tab forward too.
+		if (!prEditing) setBranchTab("pr");
+		setPrEditing(!prEditing);
+	};
+
 	const ref = useRef<HTMLDivElement>(null);
 
 	useHotkeys([
@@ -1973,6 +1925,8 @@ const BranchDetails: FC<{
 												reviewId={review.number}
 												isDraft={review.draft}
 												autoMergeEnabled={review.autoMergeEnabled}
+												isEditing={prEditing}
+												onToggleEdit={togglePrEdit}
 											/>
 										</div>
 									);
@@ -2029,21 +1983,9 @@ const BranchDetails: FC<{
 													sourceBranch={branchName}
 													title={review.title}
 													canSubmit
+													editing={prEditing}
+													onDoneEditing={() => setPrEditing(false)}
 												/>
-
-												{forgeInfo.capabilities.checks && (
-													<SuspenseQuery
-														{...listCIChecksQueryOptions({
-															projectId,
-															reference: branchName,
-															polling: "priority",
-														})}
-													>
-														{({ data: { data: checks, aggregate } }) =>
-															aggregate && <Checks checks={checks} aggregate={aggregate} />
-														}
-													</SuspenseQuery>
-												)}
 
 												<PullRequestComments projectId={projectId} review={review} />
 											</div>
