@@ -13,8 +13,8 @@ pub mod stacks;
 pub use client::{
     AutoMergeEnableParams, AutoMergeState, CheckRun, CreatePullRequestParams, GitHubClient,
     GitHubPrLabel, GitHubRepoPermissions, GitHubRepository, GitHubUser, MergeMethod,
-    MergePullRequestParams, PullRequest, PullRequestMergeStatus, SetPullRequestAutoMergeParams,
-    SetPullRequestDraftStateParams, UpdatePullRequestParams,
+    MergePullRequestParams, PullRequest, PullRequestComment, PullRequestMergeStatus,
+    SetPullRequestAutoMergeParams, SetPullRequestDraftStateParams, UpdatePullRequestParams,
 };
 mod token;
 pub use token::GithubAccountIdentifier;

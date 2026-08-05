@@ -352,6 +352,9 @@ export declare function commitUncommitChanges(projectId: string, commitId: strin
  */
 export declare function commitUncommitChangesFromCommits(projectId: string, sources: Array<UncommitChangesSource>, assignTo: string | null, dryRun: boolean): Promise<UncommitChangesFromCommitsResult>
 
+/** Post a top-level conversation comment on a review. */
+export declare function createReviewComment(projectId: string, reviewId: number, body: string): Promise<ForgeReviewComment>
+
 /**
  * Discard all worktree changes that match the specs in `worktree_changes`.
  *
@@ -449,6 +452,9 @@ export declare function listEditors(): Promise<Array<Editor>>
 export declare function listPrograms(): Promise<Array<Program>>
 
 export declare function listProjectsStateless(): Promise<Array<ProjectForFrontend>>
+
+/** List the top-level conversation comments on a review, oldest first. */
+export declare function listReviewComments(projectId: string, reviewId: number): Promise<Array<ForgeReviewComment>>
 
 export declare function listReviews(projectId: string, cacheConfig: CacheConfig | null): Promise<Array<ForgeReview>>
 
@@ -1831,6 +1837,26 @@ export type ForgeReview = {
   unitSymbol: string;
   /** The timestamp when this review was last fetched from the forge. */
   lastSyncAt: string;
+};
+
+/**
+ * A top-level comment on a review's conversation thread. Fetched fresh
+ * from the forge; not cached. Diff-anchored review comments are not
+ * part of this type.
+ */
+export type ForgeReviewComment = {
+  /** Forge-assigned identifier of the comment. */
+  id: number;
+  /** The comment text, as forge-flavored markdown. */
+  body: string;
+  /** The comment's author. */
+  author: ForgeReviewUser | null;
+  /** ISO 8601 timestamp of when the comment was created. */
+  createdAt: string | null;
+  /** ISO 8601 timestamp of the comment's last edit. */
+  modifiedAt: string | null;
+  /** The URL to view this comment in a web browser. */
+  htmlUrl: string;
 };
 
 export type ForgeReviewFilter = "today" | "thisWeek" | "thisMonth" | "all";

@@ -1021,6 +1021,104 @@ pub struct ReviewMergeStatus {
     pub is_mergeable: bool,
 }
 
+/// A top-level comment on a review's conversation thread. Fetched fresh
+/// from the forge; not cached. Diff-anchored review comments are not
+/// part of this type.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeReviewComment {
+    /// Forge-assigned identifier of the comment.
+    pub id: i64,
+    /// The comment text, as forge-flavored markdown.
+    pub body: String,
+    /// The comment's author.
+    pub author: Option<ForgeReviewUser>,
+    /// ISO 8601 timestamp of when the comment was created.
+    pub created_at: Option<String>,
+    /// ISO 8601 timestamp of the comment's last edit.
+    pub modified_at: Option<String>,
+    /// The URL to view this comment in a web browser.
+    pub html_url: String,
+}
+
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(ForgeReviewComment);
+
+impl From<but_github::PullRequestComment> for ForgeReviewComment {
+    fn from(comment: but_github::PullRequestComment) -> Self {
+        ForgeReviewComment {
+            id: comment.id,
+            body: comment.body,
+            author: comment.author.map(ForgeReviewUser::from),
+            created_at: comment.created_at,
+            modified_at: comment.modified_at,
+            html_url: comment.html_url,
+        }
+    }
+}
+
+/// List the top-level conversation comments on a review, oldest first.
+/// Each call hits the forge fresh (no DB cache).
+pub async fn list_review_comments(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReviewComment>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let comments = but_github::pr::list_comments(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                storage,
+            )
+            .await?;
+            Ok(comments.into_iter().map(Into::into).collect())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review comments for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// Post a top-level conversation comment on a review.
+pub async fn create_review_comment(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    body: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<ForgeReviewComment> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let comment = but_github::pr::create_comment(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                body,
+                storage,
+            )
+            .await?;
+            Ok(comment.into())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review comments for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(ReviewMergeStatus);
 

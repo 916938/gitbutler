@@ -431,6 +431,77 @@ impl GitHubClient {
         Ok(pr.into())
     }
 
+    /// List the top-level conversation (issue) comments on a pull request,
+    /// oldest first. Paginated; review-thread (diff) comments are not included.
+    pub async fn list_pull_request_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<Vec<PullRequestComment>> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            self.base_url, owner, repo, pr_number
+        );
+
+        let mut comments = Vec::new();
+        for page in 1usize.. {
+            let response = self
+                .client
+                .get(&url)
+                .query(&[("per_page", "100"), ("page", &page.to_string())])
+                .send()
+                .await?;
+
+            ensure_success(&response)?;
+
+            let page_comments: Vec<GitHubIssueComment> = response.json().await?;
+            let last_page = page_comments.len() < 100;
+            comments.extend(page_comments.into_iter().map(PullRequestComment::from));
+            if last_page {
+                break;
+            }
+        }
+
+        Ok(comments)
+    }
+
+    /// Post a top-level conversation comment on a pull request.
+    pub async fn create_pull_request_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        body: &str,
+    ) -> Result<PullRequestComment> {
+        #[derive(Serialize)]
+        struct CommentBody<'a> {
+            body: &'a str,
+        }
+
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            self.base_url, owner, repo, pr_number
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&CommentBody { body })
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "Failed to create pull request comment: {}",
+                response_error(response).await
+            );
+        }
+
+        let comment: GitHubIssueComment = response.json().await?;
+        Ok(comment.into())
+    }
+
     /// Update the information of a given PR.
     ///
     /// This is used e.g. to update the description footers for stacked reviews.
@@ -1184,6 +1255,39 @@ pub struct PullRequest {
     pub requested_reviewers: Vec<GitHubUser>,
     /// Whether auto-merge is enabled on the pull request.
     pub auto_merge_enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PullRequestComment {
+    pub id: i64,
+    pub body: String,
+    pub author: Option<GitHubUser>,
+    pub created_at: Option<String>,
+    pub modified_at: Option<String>,
+    pub html_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubIssueComment {
+    id: i64,
+    body: Option<String>,
+    user: Option<GitHubApiUser>,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    html_url: String,
+}
+
+impl From<GitHubIssueComment> for PullRequestComment {
+    fn from(comment: GitHubIssueComment) -> Self {
+        PullRequestComment {
+            id: comment.id,
+            body: comment.body.unwrap_or_default(),
+            author: comment.user.map(Into::into),
+            created_at: comment.created_at,
+            modified_at: comment.updated_at,
+            html_url: comment.html_url,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

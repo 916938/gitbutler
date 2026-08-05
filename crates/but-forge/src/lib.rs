@@ -15,13 +15,14 @@ pub use ci::{CiCheck, CiConclusion, CiOutput, CiStatus, ci_checks_for_ref_with_c
 pub use forge_info::{ForgeCapabilities, ForgeInfo, ForgeUnitInfo, compare_branch_url, forge_info};
 pub use repo::{RepoInfo, RepoPermissions, get_repo_info};
 pub use review::{
-    CacheConfig, CreateForgeReviewParams, ForgeAccountValidity, ForgeReview, ForgeReviewFilter,
-    ForgeReviewTargetUpdate, ForgeReviewUpdate, GitHubStackingMode, PublishReviewOutcome,
-    ReviewMergeMethod, ReviewMergeStatus, ReviewStackingDescription, ReviewState,
-    ReviewSyncOutcome, ReviewTemplateFunctions, ReviewUpdatePayload, available_review_templates,
-    cache_review, check_forge_account_is_valid, compute_review_target_updates, create_forge_review,
-    get_forge_review, get_review_base_repo_url, get_review_merge_status,
-    get_review_template_functions, list_forge_reviews_for_branch, list_forge_reviews_with_cache,
+    CacheConfig, CreateForgeReviewParams, ForgeAccountValidity, ForgeReview, ForgeReviewComment,
+    ForgeReviewFilter, ForgeReviewTargetUpdate, ForgeReviewUpdate, GitHubStackingMode,
+    PublishReviewOutcome, ReviewMergeMethod, ReviewMergeStatus, ReviewStackingDescription,
+    ReviewState, ReviewSyncOutcome, ReviewTemplateFunctions, ReviewUpdatePayload,
+    available_review_templates, cache_review, check_forge_account_is_valid,
+    compute_review_target_updates, create_forge_review, create_review_comment, get_forge_review,
+    get_review_base_repo_url, get_review_merge_status, get_review_template_functions,
+    list_forge_reviews_for_branch, list_forge_reviews_with_cache, list_review_comments,
     merge_review, prepare_review_target_updates, restore_native_stacks,
     set_review_auto_merge_state, set_review_draftiness, sync_reviews, update_review,
 };

@@ -102,6 +102,36 @@ pub async fn get(
     Ok(pr)
 }
 
+pub async fn list_comments(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<crate::client::PullRequestComment>> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_pull_request_comments(owner, repo, pr_number)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list pull request comments")
+}
+
+pub async fn create_comment(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    body: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<crate::client::PullRequestComment> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .create_pull_request_comment(owner, repo, pr_number, body)
+        .await
+        .context("Failed to create pull request comment")
+}
+
 pub async fn update(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     params: crate::client::UpdatePullRequestParams<'_>,
