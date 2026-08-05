@@ -1262,6 +1262,19 @@ pub struct ForgeReviewSubmission {
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(ForgeReviewSubmission);
 
+/// Map GitHub's review-state string to the forge-agnostic verdict.
+/// `PENDING` (the caller's own unsubmitted draft) and unknown future states
+/// map to `None` and are omitted from listings.
+fn github_submission_state(raw: &str) -> Option<ForgeReviewSubmissionState> {
+    match raw {
+        "APPROVED" => Some(ForgeReviewSubmissionState::Approved),
+        "CHANGES_REQUESTED" => Some(ForgeReviewSubmissionState::ChangesRequested),
+        "COMMENTED" => Some(ForgeReviewSubmissionState::Commented),
+        "DISMISSED" => Some(ForgeReviewSubmissionState::Dismissed),
+        _ => None,
+    }
+}
+
 /// List the submitted reviews on a review, oldest first. Each call hits
 /// the forge fresh (no DB cache).
 pub async fn list_review_submissions(
@@ -1287,14 +1300,7 @@ pub async fn list_review_submissions(
             Ok(reviews
                 .into_iter()
                 .filter_map(|review| {
-                    let state = match review.state.as_str() {
-                        "APPROVED" => ForgeReviewSubmissionState::Approved,
-                        "CHANGES_REQUESTED" => ForgeReviewSubmissionState::ChangesRequested,
-                        "COMMENTED" => ForgeReviewSubmissionState::Commented,
-                        "DISMISSED" => ForgeReviewSubmissionState::Dismissed,
-                        // PENDING (the caller's own draft) and anything unknown.
-                        _ => return None,
-                    };
+                    let state = github_submission_state(&review.state)?;
                     Some(ForgeReviewSubmission {
                         id: review.id,
                         author: review.author.map(ForgeReviewUser::from),
@@ -1306,9 +1312,8 @@ pub async fn list_review_submissions(
                 })
                 .collect())
         }
-        _ => Err(anyhow::anyhow!(
-            "Review submissions for forge {forge:?} are not implemented yet."
-        )),
+        // Read as empty rather than erroring; see list_review_comments.
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -1336,9 +1341,10 @@ pub async fn list_review_comments(
             .await?;
             Ok(comments.into_iter().map(Into::into).collect())
         }
-        _ => Err(anyhow::anyhow!(
-            "Review comments for forge {forge:?} are not implemented yet."
-        )),
+        // Read as empty rather than erroring: the UI polls this for every
+        // open review, and a forge without comment support shouldn't turn
+        // that into a permanent failure loop.
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -2811,6 +2817,21 @@ mod tests {
 
     fn p(path: &str) -> &Path {
         Path::new(path)
+    }
+
+    #[test]
+    fn github_submission_states_map_and_unknowns_drop() {
+        use ForgeReviewSubmissionState as S;
+        assert_eq!(github_submission_state("APPROVED"), Some(S::Approved));
+        assert_eq!(
+            github_submission_state("CHANGES_REQUESTED"),
+            Some(S::ChangesRequested)
+        );
+        assert_eq!(github_submission_state("COMMENTED"), Some(S::Commented));
+        assert_eq!(github_submission_state("DISMISSED"), Some(S::Dismissed));
+        // The caller's own draft, and any state GitHub adds later, are omitted.
+        assert_eq!(github_submission_state("PENDING"), None);
+        assert_eq!(github_submission_state("APPROVED_WITH_COMMENTS"), None);
     }
 
     fn repo_info(owner: &str, repo: &str) -> crate::forge::ForgeRepoInfo {
