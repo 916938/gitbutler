@@ -245,6 +245,11 @@ export const getReviewMergeStatusQueryOptions = ({ projectId, reviewId }: GetRev
 		queryKey: ["reviewMergeStatus" satisfies QueryKey, projectId, reviewId],
 		queryFn: () => window.lite.getReviewMergeStatus({ projectId, reviewId }),
 		staleTime: ({ state: { data } }) => (data?.isMergeable ? 30_000 : 10_000),
+		// Mergeability flips from the forge side (checks finish, approvals
+		// land); poll while the tab is open. Pauses when the app is unfocused
+		// (refetchIntervalInBackground defaults off), and the focusManager
+		// wiring in main.tsx catches up on refocus.
+		refetchInterval: 60_000,
 	});
 
 /** This query should be gated by PR capability lest it fail. */
@@ -261,6 +266,12 @@ export const listReviewsQueryOptions = ({ projectId, ...params }: ListReviewsPar
 			};
 		},
 		staleTime: 60_000,
+		// Review state changes on the forge side too (closed/reopened/merged
+		// on the website, labels, review requests). Poll while the app is
+		// focused; refetchIntervalInBackground defaults off, so an
+		// unfocused app goes quiet and the focusManager wiring in main.tsx
+		// refetches on return instead.
+		refetchInterval: 60_000,
 	});
 
 export const listProjectsQueryOptions = queryOptions({
