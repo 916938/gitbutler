@@ -1,14 +1,20 @@
 .panel {
 	display: flex;
-	row-gap: 20px;
 	flex: 0 0 220px;
 	flex-direction: column;
+	border: 1px solid var(--border-3);
+	border-radius: 8px;
 }
 
 .section {
 	display: flex;
 	row-gap: 6px;
 	flex-direction: column;
+	padding: 10px 12px;
+
+	& + & {
+		border-top: 1px solid var(--border-3);
+	}
 }
 
 .sectionHeader {
