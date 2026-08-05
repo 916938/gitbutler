@@ -264,6 +264,19 @@
 	padding-block-end: var(--panel-padding-block);
 }
 
+.prLayout {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: 32px;
+}
+
+.prMain {
+	flex: 1 1 400px;
+	min-width: 0;
+	max-width: 700px;
+}
+
 .prForm {
 	display: flex;
 	row-gap: 12px;

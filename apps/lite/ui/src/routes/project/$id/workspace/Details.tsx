@@ -47,6 +47,7 @@ import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { ToggleGroupStyles, ToggleStyles } from "#ui/components/ToggleGroup.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
+import { PullRequestPanel } from "#ui/routes/project/$id/workspace/PullRequestPanel.tsx";
 import { useAppDispatch, useAppSelector } from "#ui/store.ts";
 import { classes } from "#ui/components/classes.ts";
 import {
@@ -1860,31 +1861,35 @@ const BranchDetails: FC<{
 											canSubmit
 										/>
 									) : (
-										<>
-											<PullRequestForm
-												key={review.number}
-												body={review.body}
-												projectId={projectId}
-												reviewId={review.number}
-												sourceBranch={branchName}
-												title={review.title}
-												canSubmit
-											/>
+										<div className={styles.prLayout}>
+											<div className={styles.prMain}>
+												<PullRequestForm
+													key={review.number}
+													body={review.body}
+													projectId={projectId}
+													reviewId={review.number}
+													sourceBranch={branchName}
+													title={review.title}
+													canSubmit
+												/>
 
-											{forgeInfo.capabilities.checks && (
-												<SuspenseQuery
-													{...listCIChecksQueryOptions({
-														projectId,
-														reference: branchName,
-														polling: "priority",
-													})}
-												>
-													{({ data: { data: checks, aggregate } }) =>
-														aggregate && <Checks checks={checks} aggregate={aggregate} />
-													}
-												</SuspenseQuery>
-											)}
-										</>
+												{forgeInfo.capabilities.checks && (
+													<SuspenseQuery
+														{...listCIChecksQueryOptions({
+															projectId,
+															reference: branchName,
+															polling: "priority",
+														})}
+													>
+														{({ data: { data: checks, aggregate } }) =>
+															aggregate && <Checks checks={checks} aggregate={aggregate} />
+														}
+													</SuspenseQuery>
+												)}
+											</div>
+
+											<PullRequestPanel review={review} />
+										</div>
 									);
 								}}
 							</SuspenseQuery>

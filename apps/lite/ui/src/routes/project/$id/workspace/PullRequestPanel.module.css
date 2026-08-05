@@ -1,0 +1,76 @@
+.panel {
+	display: flex;
+	row-gap: 20px;
+	flex: 0 0 220px;
+	flex-direction: column;
+}
+
+.section {
+	display: flex;
+	row-gap: 6px;
+	flex-direction: column;
+}
+
+.heading {
+	color: var(--text-2);
+	font-weight: 600;
+}
+
+.statusRow {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.link {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	color: var(--text-2);
+}
+
+.user {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.avatar {
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background-color: lightgray;
+}
+
+.labels {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.label {
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 8px;
+	gap: 5px;
+	border: 1px solid var(--border-2);
+	border-radius: 100px;
+}
+
+.labelDot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.branches {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	color: var(--text-2);
+	word-break: break-all;
+}
+
+.created {
+	color: var(--text-2);
+}
