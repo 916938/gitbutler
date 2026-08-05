@@ -21,9 +21,9 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 8px;
 	/* Keep row height stable whether or not a picker button renders. */
 	min-height: 20px;
+	gap: 8px;
 }
 
 .heading {

@@ -74,9 +74,10 @@ type TimelineItem =
 	| { kind: "submission"; at: number; submission: ForgeReviewSubmission };
 
 const parseTimestamp = (value: string | null): number => {
-	if (value === null) return 0;
+	if (value === null) return Number.MAX_SAFE_INTEGER;
 	const ms = Date.parse(value);
-	return Number.isNaN(ms) ? 0 : ms;
+	// Undated items sink to the bottom rather than jumping the timeline.
+	return Number.isNaN(ms) ? Number.MAX_SAFE_INTEGER : ms;
 };
 
 const timelineItems = (
@@ -102,7 +103,7 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 	const { data: comments, isPending } = useQuery(
 		listReviewCommentsQueryOptions({ projectId, reviewId }),
 	);
-	const { data: submissions } = useQuery(
+	const { data: submissions, isPending: submissionsPending } = useQuery(
 		listReviewSubmissionsQueryOptions({ projectId, reviewId }),
 	);
 	const { isPending: isPosting, mutate: createReviewComment } = useCreateReviewComment();
@@ -120,7 +121,7 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 		<div className={styles.comments}>
 			<h4 className={classes("text-14", styles.commentsHeading)}>Activity</h4>
 
-			{isPending ? (
+			{isPending || submissionsPending ? (
 				<div className={classes("text-13", styles.commentsEmpty)}>Loading…</div>
 			) : (
 				<div className={styles.commentList}>

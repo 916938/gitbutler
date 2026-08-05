@@ -276,7 +276,7 @@ export interface CreateReviewCommentParams {
 	body: string;
 }
 
-export interface ReviewLabelsParams {
+export interface AddReviewLabelsParams {
 	projectId: string;
 	reviewId: number;
 	labels: Array<string>;
@@ -502,7 +502,7 @@ export interface LiteElectronApi {
 	commitMoveChangesBetween: (params: CommitMoveChangesBetweenParams) => Promise<MoveChangesResult>;
 	commitUncommit: (params: CommitUncommitParams) => Promise<UncommitResult>;
 	commitUncommitChanges: (params: CommitUncommitChangesParams) => Promise<MoveChangesResult>;
-	addReviewLabels: (params: ReviewLabelsParams) => Promise<Array<ForgeReviewLabel>>;
+	addReviewLabels: (params: AddReviewLabelsParams) => Promise<Array<ForgeReviewLabel>>;
 	createReviewComment: (params: CreateReviewCommentParams) => Promise<ForgeReviewComment>;
 	forgeCompareBranchUrl: (params: ForgeCompareBranchUrlParams) => Promise<string | null>;
 	forgeInfo: (projectId: string) => Promise<ForgeInfo | null>;

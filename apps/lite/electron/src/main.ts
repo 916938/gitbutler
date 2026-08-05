@@ -32,7 +32,7 @@ import {
 	type CreateReviewCommentParams,
 	type GetReviewParams,
 	type RemoveReviewLabelParams,
-	type ReviewLabelsParams,
+	type AddReviewLabelsParams,
 	type ReviewRequestParams,
 	type ListCiChecksParams,
 	type ListReviewsParams,
@@ -586,7 +586,7 @@ const registerIpcHandlers = (): void => {
 	);
 	senderValidatingHandle(
 		liteIpcChannels.addReviewLabels,
-		(_e, { projectId, reviewId, labels }: ReviewLabelsParams) =>
+		(_e, { projectId, reviewId, labels }: AddReviewLabelsParams) =>
 			addReviewLabels(projectId, reviewId, labels),
 	);
 	senderValidatingHandle(

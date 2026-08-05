@@ -194,6 +194,10 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:list-review-comments", params) as Promise<
 			Array<ForgeReviewComment>
 		>,
+	listReviewSubmissions: (params) =>
+		ipcRenderer.invoke("workspace:list-review-submissions", params) as Promise<
+			Array<ForgeReviewSubmission>
+		>,
 	listReviewerCandidates: (projectId) =>
 		ipcRenderer.invoke("workspace:list-reviewer-candidates", projectId) as Promise<
 			Array<ForgeReviewUser>
@@ -204,10 +208,6 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:request-review", params) as Promise<void>,
 	withdrawReviewRequest: (params) =>
 		ipcRenderer.invoke("workspace:withdraw-review-request", params) as Promise<void>,
-	listReviewSubmissions: (params) =>
-		ipcRenderer.invoke("workspace:list-review-submissions", params) as Promise<
-			Array<ForgeReviewSubmission>
-		>,
 	listReviews: (params) =>
 		ipcRenderer.invoke("workspace:list-reviews", params) as Promise<Array<ForgeReview>>,
 	listReviewsForBranch: (params) =>

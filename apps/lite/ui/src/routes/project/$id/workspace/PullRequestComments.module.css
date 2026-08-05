@@ -42,8 +42,8 @@
 .event {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
 	padding-inline: 12px;
+	gap: 4px;
 }
 
 .eventText {

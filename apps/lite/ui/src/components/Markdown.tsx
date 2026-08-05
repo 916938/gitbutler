@@ -126,8 +126,9 @@ const fencedLanguage = (className: string | undefined): string | undefined =>
  * - URLs pass react-markdown's default transform (`javascript:`/`data:`/
  *   `file:` are stripped); links additionally only open via the system
  *   browser, and the Electron shell blocks all in-app navigation.
- * - Images are never fetched (the CSP has no remote `img-src`); they render
- *   as links instead, like GitHub's camo proxy but with zero requests.
+ * - Markdown images are never fetched: the `img` override below renders a
+ *   link, so no `<img>` element is ever created (zero requests — like
+ *   GitHub's camo proxy, minus the proxy).
  */
 export const Markdown: FC<{ children: string }> = ({ children }) => (
 	<div className={classes("text-13", "text-body", styles.markdown)}>
