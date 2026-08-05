@@ -76,6 +76,10 @@
 		}
 	}
 
+	.highlighted span span {
+		color: light-dark(var(--shiki-light, inherit), var(--shiki-dark, inherit));
+	}
+
 	blockquote {
 		padding-inline-start: 12px;
 		border-inline-start: 3px solid var(--border-2);

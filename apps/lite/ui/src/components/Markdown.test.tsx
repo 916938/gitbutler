@@ -1,8 +1,14 @@
 import { Markdown } from "#ui/components/Markdown.tsx";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-const render = (markdown: string): string => renderToStaticMarkup(<Markdown>{markdown}</Markdown>);
+const render = (markdown: string): string =>
+	renderToStaticMarkup(
+		<QueryClientProvider client={new QueryClient()}>
+			<Markdown>{markdown}</Markdown>
+		</QueryClientProvider>,
+	);
 
 describe("Markdown safety", () => {
 	it("never parses raw HTML into elements", () => {
@@ -53,6 +59,29 @@ describe("Markdown safety", () => {
 		expect(html).toContain('type="checkbox"');
 		expect(html).toContain("disabled");
 	});
+
+	it("renders fenced code as plain text until highlighting resolves", () => {
+		const html = render("```rust\nfn main() {}\n```");
+		expect(html).toContain("fn main() {}");
+		expect(html).toContain("<pre>");
+	});
+
+	it(
+		"tokenizes fenced code into CSS-variable colors for both themes",
+		{ timeout: 30_000 },
+		async () => {
+			const { codeToTokens } = await import("shiki");
+			const result = await codeToTokens("fn main() {}", {
+				lang: "rust",
+				themes: { light: "github-light-default", dark: "github-dark-default" },
+				defaultColor: false,
+				cssVariablePrefix: "--shiki-",
+			});
+			const style = result.tokens[0]?.[0]?.htmlStyle ?? {};
+			expect(Object.keys(style)).toContain("--shiki-light");
+			expect(Object.keys(style)).toContain("--shiki-dark");
+		},
+	);
 
 	it("unwraps content of elements outside the allowlist rather than rendering them", () => {
 		// Footnote references produce sup/section/a, all allowlisted; this
