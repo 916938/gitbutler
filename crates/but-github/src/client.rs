@@ -200,6 +200,35 @@ impl GitHubClient {
         Ok(dedupe_latest_by_name(check_runs))
     }
 
+    /// Fetch every page of a GitHub list endpoint, 100 items per page,
+    /// stopping at the first short page or after `max_pages` (a silent
+    /// truncation bound for pathological list sizes).
+    async fn get_all_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        max_pages: usize,
+    ) -> Result<Vec<T>> {
+        let mut items = Vec::new();
+        for page in 1..=max_pages {
+            let response = self
+                .client
+                .get(url)
+                .query(&[("per_page", "100"), ("page", &page.to_string())])
+                .send()
+                .await?;
+
+            ensure_success(&response)?;
+
+            let page_items: Vec<T> = response.json().await?;
+            let last_page = page_items.len() < 100;
+            items.extend(page_items);
+            if last_page {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
     /// The actual REST API call to fetch a page of the checks.
     async fn fetch_check_runs(&self, url: &str, page: usize) -> Result<reqwest::Response> {
         let response = self
@@ -444,57 +473,24 @@ impl GitHubClient {
             self.base_url, owner, repo, pr_number
         );
 
-        let mut comments = Vec::new();
-        for page in 1usize.. {
-            let response = self
-                .client
-                .get(&url)
-                .query(&[("per_page", "100"), ("page", &page.to_string())])
-                .send()
-                .await?;
-
-            ensure_success(&response)?;
-
-            let page_comments: Vec<GitHubIssueComment> = response.json().await?;
-            let last_page = page_comments.len() < 100;
-            comments.extend(page_comments.into_iter().map(PullRequestComment::from));
-            if last_page {
-                break;
-            }
-        }
-
-        Ok(comments)
+        Ok(self
+            .get_all_pages::<GitHubIssueComment>(&url, 50)
+            .await?
+            .into_iter()
+            .map(PullRequestComment::from)
+            .collect())
     }
 
     /// List the labels defined on a repository, paginated.
     pub async fn list_repo_labels(&self, owner: &str, repo: &str) -> Result<Vec<GitHubPrLabel>> {
         let url = format!("{}/repos/{}/{}/labels", self.base_url, owner, repo);
 
-        let mut labels = Vec::new();
-        for page in 1usize.. {
-            let response = self
-                .client
-                .get(&url)
-                .query(&[("per_page", "100"), ("page", &page.to_string())])
-                .send()
-                .await?;
-
-            ensure_success(&response)?;
-
-            let page_labels: Vec<GitHubPrLabelApi> = response.json().await?;
-            let last_page = page_labels.len() < 100;
-            labels.extend(page_labels.into_iter().map(|label| GitHubPrLabel {
-                id: label.id,
-                name: label.name,
-                description: label.description,
-                color: label.color,
-            }));
-            if last_page {
-                break;
-            }
-        }
-
-        Ok(labels)
+        Ok(self
+            .get_all_pages::<GitHubPrLabelApi>(&url, 10)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     /// Add labels to a pull request; returns the resulting label set.
@@ -527,15 +523,7 @@ impl GitHubClient {
         }
 
         let labels: Vec<GitHubPrLabelApi> = response.json().await?;
-        Ok(labels
-            .into_iter()
-            .map(|label| GitHubPrLabel {
-                id: label.id,
-                name: label.name,
-                description: label.description,
-                color: label.color,
-            })
-            .collect())
+        Ok(labels.into_iter().map(Into::into).collect())
     }
 
     /// Remove one label from a pull request.
@@ -561,26 +549,12 @@ impl GitHubClient {
     pub async fn list_assignable_users(&self, owner: &str, repo: &str) -> Result<Vec<GitHubUser>> {
         let url = format!("{}/repos/{}/{}/assignees", self.base_url, owner, repo);
 
-        let mut users = Vec::new();
-        for page in 1usize.. {
-            let response = self
-                .client
-                .get(&url)
-                .query(&[("per_page", "100"), ("page", &page.to_string())])
-                .send()
-                .await?;
-
-            ensure_success(&response)?;
-
-            let page_users: Vec<GitHubApiUser> = response.json().await?;
-            let last_page = page_users.len() < 100;
-            users.extend(page_users.into_iter().map(GitHubUser::from));
-            if last_page {
-                break;
-            }
-        }
-
-        Ok(users)
+        Ok(self
+            .get_all_pages::<GitHubApiUser>(&url, 10)
+            .await?
+            .into_iter()
+            .map(GitHubUser::from)
+            .collect())
     }
 
     /// Request reviews from the given users on a pull request.
@@ -656,26 +630,12 @@ impl GitHubClient {
             self.base_url, owner, repo, pr_number
         );
 
-        let mut reviews = Vec::new();
-        for page in 1usize.. {
-            let response = self
-                .client
-                .get(&url)
-                .query(&[("per_page", "100"), ("page", &page.to_string())])
-                .send()
-                .await?;
-
-            ensure_success(&response)?;
-
-            let page_reviews: Vec<GitHubPullRequestReviewApi> = response.json().await?;
-            let last_page = page_reviews.len() < 100;
-            reviews.extend(page_reviews.into_iter().map(PullRequestReview::from));
-            if last_page {
-                break;
-            }
-        }
-
-        Ok(reviews)
+        Ok(self
+            .get_all_pages::<GitHubPullRequestReviewApi>(&url, 50)
+            .await?
+            .into_iter()
+            .map(PullRequestReview::from)
+            .collect())
     }
 
     /// Post a top-level conversation comment on a pull request.
@@ -1575,6 +1535,17 @@ struct GitHubPrLabelApi {
     color: Option<String>,
 }
 
+impl From<GitHubPrLabelApi> for GitHubPrLabel {
+    fn from(label: GitHubPrLabelApi) -> Self {
+        GitHubPrLabel {
+            id: label.id,
+            name: label.name,
+            description: label.description,
+            color: label.color,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubBranch {
     #[serde(rename = "ref")]
@@ -1618,16 +1589,7 @@ impl From<GitHubPullRequest> for PullRequest {
     fn from(pr: GitHubPullRequest) -> Self {
         let author = pr.user.map(Into::into);
 
-        let labels = pr
-            .labels
-            .into_iter()
-            .map(|label| GitHubPrLabel {
-                id: label.id,
-                name: label.name,
-                description: label.description,
-                color: label.color,
-            })
-            .collect();
+        let labels = pr.labels.into_iter().map(GitHubPrLabel::from).collect();
 
         let requested_reviewers = pr.requested_reviewers.into_iter().map(Into::into).collect();
         // Only use the merge_commit_sha if the PR has been merged
