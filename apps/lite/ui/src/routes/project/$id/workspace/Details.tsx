@@ -42,6 +42,7 @@ import type { BranchTab } from "#ui/projects/project.ts";
 import { projectSlice } from "#ui/projects/state.ts";
 import { interfaceSlice } from "#ui/interface/state.ts";
 import { Badge } from "#ui/components/Badge.tsx";
+import { Markdown } from "#ui/components/Markdown.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
@@ -1165,7 +1166,8 @@ const PullRequestForm: FC<{
 	title: string | null;
 	body: string | null;
 	canSubmit: boolean;
-}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit }) => {
+	onAfterSubmit?: () => void;
+}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit, onAfterSubmit }) => {
 	const { isPending: isPublishReviewPending, mutate: publishReview } = usePublishReview();
 	const { isPending: isUpdateReviewPending, mutate: updateReview } = useUpdateReview();
 	const formRef = useRef<HTMLFormElement | null>(null);
@@ -1244,14 +1246,17 @@ const PullRequestForm: FC<{
 				},
 			});
 		} else {
-			updateReview({
-				projectId,
-				reviewId,
-				title: localDocument.title,
-				body: localDocument.body,
-				state: null,
-				targetBase: null,
-			});
+			updateReview(
+				{
+					projectId,
+					reviewId,
+					title: localDocument.title,
+					body: localDocument.body,
+					state: null,
+					targetBase: null,
+				},
+				{ onSuccess: () => onAfterSubmit?.() },
+			);
 		}
 	};
 
@@ -1322,6 +1327,54 @@ const PullRequestForm: FC<{
 				</button>
 			</div>
 		</form>
+	);
+};
+
+/** Rendered PR title and body, flipping to the editable form on demand. */
+const PullRequestDescription: FC<{
+	projectId: string;
+	sourceBranch: string;
+	reviewId: number;
+	title: string;
+	body: string | null;
+	canSubmit: boolean;
+}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit }) => {
+	const [editing, setEditing] = useState(false);
+
+	if (editing) {
+		return (
+			<PullRequestForm
+				body={body}
+				projectId={projectId}
+				reviewId={reviewId}
+				sourceBranch={sourceBranch}
+				title={title}
+				canSubmit={canSubmit}
+				onAfterSubmit={() => setEditing(false)}
+			/>
+		);
+	}
+
+	return (
+		<div className={styles.prView}>
+			<div className={styles.prViewHeader}>
+				<h3 className={classes("text-15", "text-semibold")}>{title}</h3>
+				<button
+					className={getButtonClassName({ variant: "outline", size: "small" })}
+					onClick={() => setEditing(true)}
+					type="button"
+				>
+					<Icon name="edit" />
+					Edit
+				</button>
+			</div>
+
+			{body !== null && body.trim() !== "" ? (
+				<Markdown>{body}</Markdown>
+			) : (
+				<p className={classes("text-13", styles.prViewEmptyBody)}>No description provided.</p>
+			)}
+		</div>
 	);
 };
 
@@ -1964,7 +2017,7 @@ const BranchDetails: FC<{
 									) : (
 										<div className={styles.prLayout}>
 											<div className={styles.prMain}>
-												<PullRequestForm
+												<PullRequestDescription
 													key={review.number}
 													body={review.body}
 													projectId={projectId}

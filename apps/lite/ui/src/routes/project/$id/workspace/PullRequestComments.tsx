@@ -4,15 +4,29 @@ import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { FieldTextareaStyles } from "#ui/components/Field.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
+import { Markdown } from "#ui/components/Markdown.tsx";
 import { ReviewUser } from "#ui/routes/project/$id/workspace/PullRequestPanel.tsx";
 import { formatRelativeTime } from "#ui/time.ts";
 import type { ForgeReviewComment } from "@gitbutler/but-sdk";
 import { useQuery } from "@tanstack/react-query";
-import { type FC, useState } from "react";
+import { type FC, useLayoutEffect, useRef, useState } from "react";
 import styles from "./PullRequestComments.module.css";
 
 const Comment: FC<{ comment: ForgeReviewComment }> = ({ comment }) => {
 	const createdAtMs = comment.createdAt === null ? null : Date.parse(comment.createdAt);
+
+	const [expanded, setExpanded] = useState(false);
+	const [overflows, setOverflows] = useState(false);
+	const bodyRef = useRef<HTMLDivElement | null>(null);
+
+	// Detect whether the clamped body actually hides content; the toggle only
+	// shows when it does. Re-measured when the body changes, not on resize —
+	// a width change rarely flips the outcome at this height.
+	useLayoutEffect(() => {
+		if (expanded) return;
+		const el = bodyRef.current;
+		if (el) setOverflows(el.scrollHeight > el.clientHeight + 1);
+	}, [comment.body, expanded]);
 
 	return (
 		<div className={styles.comment}>
@@ -24,7 +38,25 @@ const Comment: FC<{ comment: ForgeReviewComment }> = ({ comment }) => {
 					</span>
 				)}
 			</div>
-			<p className={classes("text-13", "text-body", styles.commentBody)}>{comment.body}</p>
+			<div
+				ref={bodyRef}
+				className={classes(
+					styles.commentBody,
+					!expanded && styles.commentBodyClamped,
+					!expanded && overflows && styles.commentBodyOverflowing,
+				)}
+			>
+				<Markdown>{comment.body}</Markdown>
+			</div>
+			{(overflows || expanded) && (
+				<button
+					className={classes("text-12", styles.commentExpand)}
+					onClick={() => setExpanded(!expanded)}
+					type="button"
+				>
+					{expanded ? "Show less" : "Show more"}
+				</button>
+			)}
 		</div>
 	);
 };

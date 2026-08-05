@@ -298,6 +298,23 @@
 	max-width: 700px;
 }
 
+.prView {
+	display: flex;
+	row-gap: 12px;
+	flex-direction: column;
+}
+
+.prViewHeader {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.prViewEmptyBody {
+	color: var(--text-3);
+}
+
 .prFormActions {
 	display: flex;
 	column-gap: 4px;
