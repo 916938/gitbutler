@@ -35,6 +35,13 @@
 	gap: 6px;
 }
 
+.reviewerRow {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+}
+
 .avatar {
 	width: 16px;
 	height: 16px;

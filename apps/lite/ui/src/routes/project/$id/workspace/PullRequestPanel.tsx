@@ -1,8 +1,16 @@
+import { listReviewSubmissionsQueryOptions } from "#ui/api/queries.ts";
 import { Badge, type BadgeVariant } from "#ui/components/Badge.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { Icon } from "#ui/components/Icon.tsx";
+import type { IconName } from "#ui/components/iconNames.ts";
 import { formatRelativeTime } from "#ui/time.ts";
-import type { ForgeReview, ForgeReviewLabel, ForgeReviewUser } from "@gitbutler/but-sdk";
+import type {
+	ForgeReview,
+	ForgeReviewLabel,
+	ForgeReviewSubmission,
+	ForgeReviewUser,
+} from "@gitbutler/but-sdk";
+import { useQuery } from "@tanstack/react-query";
 import { Match } from "effect";
 import type { FC, MouseEvent, ReactNode } from "react";
 import styles from "./PullRequestPanel.module.css";
@@ -54,7 +62,66 @@ const Label: FC<{ label: ForgeReviewLabel }> = ({ label }) => {
 	);
 };
 
-export const PullRequestPanel: FC<{ review: ForgeReview }> = ({ review }) => {
+/** Dismissals collapse to "commented", so they never appear as a verdict. */
+type ReviewerVerdict = "approved" | "changesRequested" | "commented" | "awaiting";
+
+type ReviewerRow = { user: ForgeReviewUser; verdict: ReviewerVerdict };
+
+/**
+ * One row per reviewer: everyone still requested (awaiting) plus everyone
+ * who submitted a review, carrying their effective verdict. A comment-only
+ * submission never overrides an earlier approval or change request, and a
+ * dismissal drops the verdict back to commented.
+ */
+const reviewerRows = (
+	requested: Array<ForgeReviewUser>,
+	submissions: Array<ForgeReviewSubmission>,
+): Array<ReviewerRow> => {
+	const byLogin = new Map<string, ReviewerRow>();
+	for (const submission of submissions) {
+		if (submission.author === null) continue;
+		const existing = byLogin.get(submission.author.login);
+		const verdict = Match.value(submission.state).pipe(
+			Match.withReturnType<ReviewerVerdict>(),
+			Match.when("approved", () => "approved"),
+			Match.when("changesRequested", () => "changesRequested"),
+			Match.when("commented", () => existing?.verdict ?? "commented"),
+			Match.when("dismissed", () => "commented"),
+			Match.exhaustive,
+		);
+		byLogin.set(submission.author.login, { user: submission.author, verdict });
+	}
+	for (const user of requested)
+		if (!byLogin.has(user.login)) byLogin.set(user.login, { user, verdict: "awaiting" });
+	return [...byLogin.values()];
+};
+
+const verdictBits = (verdict: ReviewerVerdict): [IconName, string, string] =>
+	Match.value(verdict).pipe(
+		Match.withReturnType<[IconName, string, string]>(),
+		Match.when("approved", () => ["tick-circle", "var(--scale-safe-50)", "Approved"]),
+		Match.when("changesRequested", () => [
+			"cross-circle",
+			"var(--scale-danger-50)",
+			"Requested changes",
+		]),
+		Match.when("commented", () => ["eye", "var(--text-3)", "Commented"]),
+		Match.when("awaiting", () => ["clock", "var(--text-3)", "Awaiting review"]),
+		Match.exhaustive,
+	);
+
+export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = ({
+	projectId,
+	review,
+}) => {
+	const { data: reviewers } = useQuery({
+		...listReviewSubmissionsQueryOptions({ projectId, reviewId: review.number }),
+		select: (submissions) => reviewerRows(review.reviewers, submissions),
+	});
+	// Until submissions load, show the requested reviewers without verdicts.
+	const reviewerList =
+		reviewers ?? review.reviewers.map((user): ReviewerRow => ({ user, verdict: "awaiting" }));
+
 	const [statusLabel, statusVariant] = Match.value(reviewStatus(review)).pipe(
 		Match.withReturnType<[string, BadgeVariant]>(),
 		Match.when("open", () => ["Open", "safe"]),
@@ -90,11 +157,17 @@ export const PullRequestPanel: FC<{ review: ForgeReview }> = ({ review }) => {
 				</Section>
 			)}
 
-			{review.reviewers.length > 0 && (
+			{reviewerList.length > 0 && (
 				<Section heading="Reviewers">
-					{review.reviewers.map((reviewer) => (
-						<ReviewUser key={reviewer.id} user={reviewer} />
-					))}
+					{reviewerList.map(({ user, verdict }) => {
+						const [icon, color, label] = verdictBits(verdict);
+						return (
+							<div key={user.id} className={styles.reviewerRow} title={label}>
+								<ReviewUser user={user} />
+								<Icon name={icon} style={{ color }} />
+							</div>
+						);
+					})}
 				</Section>
 			)}
 

@@ -31,6 +31,7 @@ export type QueryKey =
 	| "headInfo"
 	| "review"
 	| "reviewComments"
+	| "reviewSubmissions"
 	| "reviewMergeStatus"
 	| "reviews"
 	| "editors"
@@ -205,6 +206,16 @@ export const listReviewCommentsQueryOptions = ({ projectId, reviewId }: GetRevie
 		queryFn: () => window.lite.listReviewComments({ projectId, reviewId }),
 		// Fresh forge fetch each time; keep a gentle poll while the tab is open
 		// so replies from others appear without a manual refresh.
+		staleTime: 60_000,
+		refetchInterval: 60_000,
+	});
+
+/** This query should be gated by PR capability lest it fail. */
+export const listReviewSubmissionsQueryOptions = ({ projectId, reviewId }: GetReviewParams) =>
+	queryOptions({
+		queryKey: ["reviewSubmissions" satisfies QueryKey, projectId, reviewId],
+		queryFn: () => window.lite.listReviewSubmissions({ projectId, reviewId }),
+		// Same freshness posture as the comments: fresh fetch, gentle poll.
 		staleTime: 60_000,
 		refetchInterval: 60_000,
 	});

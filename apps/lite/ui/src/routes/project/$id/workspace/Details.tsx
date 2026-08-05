@@ -2041,10 +2041,10 @@ const BranchDetails: FC<{
 													</SuspenseQuery>
 												)}
 
-												<PullRequestComments projectId={projectId} reviewId={review.number} />
+												<PullRequestComments projectId={projectId} review={review} />
 											</div>
 
-											<PullRequestPanel review={review} />
+											<PullRequestPanel projectId={projectId} review={review} />
 										</div>
 									);
 								}}

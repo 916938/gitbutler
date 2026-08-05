@@ -12,6 +12,7 @@ import type {
 	Editor,
 	ForgeReview,
 	ForgeReviewComment,
+	ForgeReviewSubmission,
 	Program,
 	ProjectForFrontend,
 	PublishReviewOutcome,
@@ -186,6 +187,10 @@ const api: LiteElectronApi = {
 	listReviewComments: (params) =>
 		ipcRenderer.invoke("workspace:list-review-comments", params) as Promise<
 			Array<ForgeReviewComment>
+		>,
+	listReviewSubmissions: (params) =>
+		ipcRenderer.invoke("workspace:list-review-submissions", params) as Promise<
+			Array<ForgeReviewSubmission>
 		>,
 	listReviews: (params) =>
 		ipcRenderer.invoke("workspace:list-reviews", params) as Promise<Array<ForgeReview>>,

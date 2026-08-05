@@ -37,6 +37,25 @@
 	color: var(--text-3);
 }
 
+/* Timeline rows that are events (opened, reviewed) rather than comments:
+ * no card chrome, just the meta line and an optional indented body. */
+.event {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding-inline: 12px;
+}
+
+.eventText {
+	color: var(--text-2);
+}
+
+.eventBody {
+	padding: 10px 12px;
+	border: 1px solid var(--border-3);
+	border-radius: 8px;
+}
+
 .commentBody {
 	margin: 0;
 }

@@ -110,6 +110,7 @@ import {
 	listPrograms,
 	listProjectsStateless,
 	listReviewComments,
+	listReviewSubmissions,
 	listReviews,
 	listReviewsForBranch,
 	mergeReview,
@@ -563,6 +564,10 @@ const registerIpcHandlers = (): void => {
 	senderValidatingHandle(
 		liteIpcChannels.listReviewComments,
 		(_e, { projectId, reviewId }: GetReviewParams) => listReviewComments(projectId, reviewId),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.listReviewSubmissions,
+		(_e, { projectId, reviewId }: GetReviewParams) => listReviewSubmissions(projectId, reviewId),
 	);
 	senderValidatingHandle(
 		liteIpcChannels.createReviewComment,

@@ -60,6 +60,7 @@ import type {
 	ReviewMergeMethod,
 	ReviewMergeStatus,
 	ForgeReviewComment,
+	ForgeReviewSubmission,
 	ReviewTemplateInfo,
 	RestoreKind,
 	Snapshot,
@@ -504,6 +505,7 @@ export interface LiteElectronApi {
 	listPrograms: () => Promise<Array<Program>>;
 	listProjectsStateless: () => Promise<Array<ProjectForFrontend>>;
 	listReviewComments: (params: GetReviewParams) => Promise<Array<ForgeReviewComment>>;
+	listReviewSubmissions: (params: GetReviewParams) => Promise<Array<ForgeReviewSubmission>>;
 	listReviews: (params: ListReviewsParams) => Promise<Array<ForgeReview>>;
 	listReviewsForBranch: (params: ListReviewsForBranchParams) => Promise<Array<ForgeReview>>;
 	mergeReview: (params: MergeReviewParams) => Promise<void>;
@@ -599,6 +601,7 @@ export const liteIpcChannels = {
 	listPrograms: "workspace:list-programs",
 	listProjectsStateless: "projects:list-stateless",
 	listReviewComments: "workspace:list-review-comments",
+	listReviewSubmissions: "workspace:list-review-submissions",
 	listReviews: "workspace:list-reviews",
 	listReviewsForBranch: "workspace:list-reviews-for-branch",
 	mergeReview: "workspace:merge-review",
