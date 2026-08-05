@@ -460,6 +460,9 @@ export declare function listReviews(projectId: string, cacheConfig: CacheConfig 
 
 export declare function listReviewsForBranch(projectId: string, branch: string, filter: ForgeReviewFilter | null): Promise<Array<ForgeReview>>
 
+/** List the submitted reviews (approvals, change requests) on a review. */
+export declare function listReviewSubmissions(projectId: string, reviewId: number): Promise<Array<ForgeReviewSubmission>>
+
 /** Merge a review on the forge. */
 export declare function mergeReview(projectId: string, reviewId: number, mergeMethod: ReviewMergeMethod | null): Promise<void>
 
@@ -1866,6 +1869,29 @@ export type ForgeReviewLabel = {
   description: string | null;
   color: string | null;
 };
+
+/**
+ * A submitted review (approval, change request, or review comment) on a
+ * review. Fetched fresh from the forge; not cached. The caller's own
+ * unsubmitted (pending) drafts are excluded.
+ */
+export type ForgeReviewSubmission = {
+  /** Forge-assigned identifier of the submission. */
+  id: number;
+  /** Who submitted the review. */
+  author: ForgeReviewUser | null;
+  /** The verdict of this submission. */
+  state: ForgeReviewSubmissionState;
+  /** The summary text accompanying the submission, if any. */
+  body: string | null;
+  /** ISO 8601 timestamp of when the review was submitted. */
+  submittedAt: string | null;
+  /** The URL to view this submission in a web browser. */
+  htmlUrl: string;
+};
+
+/** The verdict a submitted review carries. */
+export type ForgeReviewSubmissionState = "approved" | "changesRequested" | "commented" | "dismissed";
 
 export type ForgeReviewUpdate = {
   /** The unique identifier number for this review within its repository. This can be a PR or MR number. */

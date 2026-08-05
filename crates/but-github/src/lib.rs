@@ -14,7 +14,8 @@ pub use client::{
     AutoMergeEnableParams, AutoMergeState, CheckRun, CreatePullRequestParams, GitHubClient,
     GitHubPrLabel, GitHubRepoPermissions, GitHubRepository, GitHubUser, MergeMethod,
     MergePullRequestParams, PullRequest, PullRequestComment, PullRequestMergeStatus,
-    SetPullRequestAutoMergeParams, SetPullRequestDraftStateParams, UpdatePullRequestParams,
+    PullRequestReview, SetPullRequestAutoMergeParams, SetPullRequestDraftStateParams,
+    UpdatePullRequestParams,
 };
 mod token;
 pub use token::GithubAccountIdentifier;

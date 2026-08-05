@@ -466,6 +466,41 @@ impl GitHubClient {
         Ok(comments)
     }
 
+    /// List the submitted reviews on a pull request (approvals, change
+    /// requests, review comments), oldest first. Paginated.
+    pub async fn list_pull_request_reviews(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<Vec<PullRequestReview>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews",
+            self.base_url, owner, repo, pr_number
+        );
+
+        let mut reviews = Vec::new();
+        for page in 1usize.. {
+            let response = self
+                .client
+                .get(&url)
+                .query(&[("per_page", "100"), ("page", &page.to_string())])
+                .send()
+                .await?;
+
+            ensure_success(&response)?;
+
+            let page_reviews: Vec<GitHubPullRequestReviewApi> = response.json().await?;
+            let last_page = page_reviews.len() < 100;
+            reviews.extend(page_reviews.into_iter().map(PullRequestReview::from));
+            if last_page {
+                break;
+            }
+        }
+
+        Ok(reviews)
+    }
+
     /// Post a top-level conversation comment on a pull request.
     pub async fn create_pull_request_comment(
         &self,
@@ -1265,6 +1300,42 @@ pub struct PullRequestComment {
     pub created_at: Option<String>,
     pub modified_at: Option<String>,
     pub html_url: String,
+}
+
+/// A submitted review on a pull request, from `GET /pulls/{n}/reviews`.
+#[derive(Debug, Serialize)]
+pub struct PullRequestReview {
+    pub id: i64,
+    pub author: Option<GitHubUser>,
+    /// GitHub state string: `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`,
+    /// `DISMISSED`, or `PENDING` (the caller's own unsubmitted draft).
+    pub state: String,
+    pub body: Option<String>,
+    pub submitted_at: Option<String>,
+    pub html_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubPullRequestReviewApi {
+    id: i64,
+    user: Option<GitHubApiUser>,
+    state: String,
+    body: Option<String>,
+    submitted_at: Option<String>,
+    html_url: String,
+}
+
+impl From<GitHubPullRequestReviewApi> for PullRequestReview {
+    fn from(review: GitHubPullRequestReviewApi) -> Self {
+        PullRequestReview {
+            id: review.id,
+            author: review.user.map(Into::into),
+            state: review.state,
+            body: review.body,
+            submitted_at: review.submitted_at,
+            html_url: review.html_url,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

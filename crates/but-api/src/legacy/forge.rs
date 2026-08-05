@@ -707,6 +707,33 @@ pub async fn list_review_comments(
     .await
 }
 
+/// List the submitted reviews (approvals, change requests) on a review.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn list_review_submissions(
+    ctx: ThreadSafeContext,
+    review_id: usize,
+) -> Result<Vec<but_forge::ForgeReviewSubmission>> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::list_review_submissions(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        review_id,
+        &storage,
+    )
+    .await
+}
+
 /// Post a top-level conversation comment on a review.
 #[but_api(napi)]
 #[instrument(err(Debug))]

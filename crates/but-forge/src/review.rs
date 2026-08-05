@@ -1058,6 +1058,94 @@ impl From<but_github::PullRequestComment> for ForgeReviewComment {
     }
 }
 
+/// The verdict a submitted review carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum ForgeReviewSubmissionState {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+}
+
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(ForgeReviewSubmissionState);
+
+/// A submitted review (approval, change request, or review comment) on a
+/// review. Fetched fresh from the forge; not cached. The caller's own
+/// unsubmitted (pending) drafts are excluded.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeReviewSubmission {
+    /// Forge-assigned identifier of the submission.
+    pub id: i64,
+    /// Who submitted the review.
+    pub author: Option<ForgeReviewUser>,
+    /// The verdict of this submission.
+    pub state: ForgeReviewSubmissionState,
+    /// The summary text accompanying the submission, if any.
+    pub body: Option<String>,
+    /// ISO 8601 timestamp of when the review was submitted.
+    pub submitted_at: Option<String>,
+    /// The URL to view this submission in a web browser.
+    pub html_url: String,
+}
+
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(ForgeReviewSubmission);
+
+/// List the submitted reviews on a review, oldest first. Each call hits
+/// the forge fresh (no DB cache).
+pub async fn list_review_submissions(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReviewSubmission>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let reviews = but_github::pr::list_pr_reviews(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                storage,
+            )
+            .await?;
+            Ok(reviews
+                .into_iter()
+                .filter_map(|review| {
+                    let state = match review.state.as_str() {
+                        "APPROVED" => ForgeReviewSubmissionState::Approved,
+                        "CHANGES_REQUESTED" => ForgeReviewSubmissionState::ChangesRequested,
+                        "COMMENTED" => ForgeReviewSubmissionState::Commented,
+                        "DISMISSED" => ForgeReviewSubmissionState::Dismissed,
+                        // PENDING (the caller's own draft) and anything unknown.
+                        _ => return None,
+                    };
+                    Some(ForgeReviewSubmission {
+                        id: review.id,
+                        author: review.author.map(ForgeReviewUser::from),
+                        state,
+                        body: review.body.filter(|body| !body.trim().is_empty()),
+                        submitted_at: review.submitted_at,
+                        html_url: review.html_url,
+                    })
+                })
+                .collect())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review submissions for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
 /// List the top-level conversation comments on a review, oldest first.
 /// Each call hits the forge fresh (no DB cache).
 pub async fn list_review_comments(
