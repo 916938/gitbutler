@@ -1362,7 +1362,8 @@ const PullRequestPrimaryAction: FC<{
 	projectId: string;
 	reviewId: number;
 	isDraft: boolean;
-}> = ({ projectId, reviewId, isDraft }) => {
+	autoMergeEnabled: boolean;
+}> = ({ projectId, reviewId, isDraft, autoMergeEnabled }) => {
 	const { data: mergeStatus } = useQuery({
 		...getReviewMergeStatusQueryOptions({ projectId, reviewId }),
 		// Minimise API calls.
@@ -1420,13 +1421,12 @@ const PullRequestPrimaryAction: FC<{
 				<>
 					<button
 						className={getButtonClassName({ variant: "outline" })}
-						// Currently missing automerge state from SDK.
-						disabled
-						onClick={() => setReviewAutoMerge({ projectId, reviewId, enable: true })}
+						disabled={isAnyPending}
+						onClick={() => setReviewAutoMerge({ projectId, reviewId, enable: !autoMergeEnabled })}
 						type="button"
 					>
 						{isSetReviewAutoMergePending && <Icon name="spinner" />}
-						Enable auto-merge
+						{autoMergeEnabled ? "Disable auto-merge" : "Enable auto-merge"}
 					</button>
 
 					{(() => {
@@ -1914,6 +1914,7 @@ const BranchDetails: FC<{
 												projectId={projectId}
 												reviewId={review.number}
 												isDraft={review.draft}
+												autoMergeEnabled={review.autoMergeEnabled}
 											/>
 										</div>
 									);

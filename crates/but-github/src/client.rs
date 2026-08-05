@@ -1182,6 +1182,8 @@ pub struct PullRequest {
     pub repo_owner: Option<String>,
     pub head_repo_is_fork: bool,
     pub requested_reviewers: Vec<GitHubUser>,
+    /// Whether auto-merge is enabled on the pull request.
+    pub auto_merge_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1226,6 +1228,9 @@ struct GitHubPullRequest {
     merged_at: Option<String>,
     closed_at: Option<String>,
     requested_reviewers: Vec<GitHubApiUser>,
+    /// Present (non-null) when auto-merge is enabled.
+    #[serde(default)]
+    auto_merge: Option<serde_json::Value>,
 }
 
 impl From<GitHubPullRequest> for PullRequest {
@@ -1276,6 +1281,7 @@ impl From<GitHubPullRequest> for PullRequest {
                 .and_then(|r| r.owner.as_ref().map(|o| o.login.clone())),
             head_repo_is_fork: pr.head.repo.as_ref().map(|r| r.fork).unwrap_or(false),
             requested_reviewers,
+            auto_merge_enabled: pr.auto_merge.is_some(),
         }
     }
 }
@@ -1353,6 +1359,41 @@ mod tests {
         assert_eq!(merge, serde_json::json!("MERGE"));
         assert_eq!(squash, serde_json::json!("SQUASH"));
         assert_eq!(rebase, serde_json::json!("REBASE"));
+    }
+
+    #[test]
+    fn auto_merge_presence_maps_to_enabled_flag() {
+        let mut pr_json = json!({
+            "html_url": "https://github.com/o/r/pull/1",
+            "number": 1,
+            "title": "t",
+            "body": null,
+            "user": null,
+            "labels": [],
+            "draft": false,
+            "merge_commit_sha": null,
+            "head": { "ref": "feature", "sha": "abc", "repo": null },
+            "base": { "ref": "main", "sha": "def", "repo": null },
+            "created_at": null,
+            "updated_at": null,
+            "merged_at": null,
+            "closed_at": null,
+            "requested_reviewers": [],
+            "auto_merge": null
+        });
+        let pr: PullRequest = serde_json::from_value::<GitHubPullRequest>(pr_json.clone())
+            .expect("fixture matches the API shape")
+            .into();
+        assert!(!pr.auto_merge_enabled, "null auto_merge means disabled");
+
+        pr_json["auto_merge"] = json!({ "merge_method": "squash" });
+        let pr: PullRequest = serde_json::from_value::<GitHubPullRequest>(pr_json)
+            .expect("fixture matches the API shape")
+            .into();
+        assert!(
+            pr.auto_merge_enabled,
+            "present auto_merge object means enabled"
+        );
     }
 
     fn check_run(name: &str, started_at: Option<&str>, conclusion: Option<&str>) -> CheckRun {

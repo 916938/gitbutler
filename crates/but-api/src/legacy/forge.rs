@@ -506,6 +506,7 @@ mod tests {
             repository_https_url: None,
             repo_owner: Some("alice".into()),
             head_repo_is_fork: true,
+            auto_merge_enabled: false,
             reviewers: Vec::new(),
             unit_symbol: "#".into(),
             last_sync_at: Default::default(),

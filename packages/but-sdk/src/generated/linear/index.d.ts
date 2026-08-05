@@ -1825,6 +1825,8 @@ export type ForgeReview = {
   headRepoIsFork: boolean;
   /** Users who have been requested to review or have reviewed this code. */
   reviewers: Array<ForgeReviewUser>;
+  /** Whether auto-merge (merge once the forge's requirements pass) is enabled. */
+  autoMergeEnabled: boolean;
   /** The platform-specific symbol for this review type (e.g., "#" for GitHub pull requests and "!" for MRs). */
   unitSymbol: string;
   /** The timestamp when this review was last fetched from the forge. */

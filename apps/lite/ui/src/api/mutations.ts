@@ -212,6 +212,16 @@ export const useSetReviewAutoMerge = () => {
 
 	return useMutation({
 		mutationFn: window.lite.setReviewAutoMerge,
+		onSuccess: async (_response, input, _context, mutation) => {
+			await Promise.all([
+				mutation.client.invalidateQueries({
+					queryKey: ["reviews" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["review" satisfies QueryKey, input.projectId],
+				}),
+			]);
+		},
 		onError: (error, input) => {
 			// oxlint-disable-next-line no-console
 			console.error(error);

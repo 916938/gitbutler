@@ -339,6 +339,8 @@ pub struct ForgeReview {
     pub head_repo_is_fork: bool,
     /// Users who have been requested to review or have reviewed this code.
     pub reviewers: Vec<ForgeReviewUser>,
+    /// Whether auto-merge (merge once the forge's requirements pass) is enabled.
+    pub auto_merge_enabled: bool,
     /// The platform-specific symbol for this review type (e.g., "#" for GitHub pull requests and "!" for MRs).
     pub unit_symbol: String,
     /// The timestamp when this review was last fetched from the forge.
@@ -366,7 +368,7 @@ impl ForgeReview {
 
     /// The struct version for persistence compatibility purposes
     pub fn struct_version() -> i32 {
-        3
+        4
     }
 }
 
@@ -415,6 +417,7 @@ impl From<but_github::PullRequest> for ForgeReview {
                 .into_iter()
                 .map(ForgeReviewUser::from)
                 .collect(),
+            auto_merge_enabled: pr.auto_merge_enabled,
             unit_symbol: "#".to_string(),
             last_sync_at: chrono::Local::now().naive_local(),
         }
@@ -448,6 +451,7 @@ impl From<but_gitlab::MergeRequest> for ForgeReview {
                 .into_iter()
                 .map(ForgeReviewUser::from)
                 .collect(),
+            auto_merge_enabled: mr.auto_merge_enabled,
             unit_symbol: "!".to_string(),
             last_sync_at: chrono::Local::now().naive_local(),
         }
@@ -485,6 +489,8 @@ impl From<but_bitbucket::BitbucketPullRequest> for ForgeReview {
                 .into_iter()
                 .map(ForgeReviewUser::from)
                 .collect(),
+            // Bitbucket Cloud has no auto-merge.
+            auto_merge_enabled: false,
             unit_symbol: "#".to_string(),
             last_sync_at: chrono::Local::now().naive_local(),
         }
@@ -2525,6 +2531,7 @@ mod tests {
             source_project_is_fork: true,
             assignees: vec![],
             reviewers: vec![],
+            auto_merge_enabled: false,
         });
 
         assert_eq!(
