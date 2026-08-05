@@ -31,6 +31,9 @@ import {
 	type GetReviewBaseRepoUrlParams,
 	type CreateReviewCommentParams,
 	type GetReviewParams,
+	type RemoveReviewLabelParams,
+	type ReviewLabelsParams,
+	type ReviewRequestParams,
 	type ListCiChecksParams,
 	type ListReviewsParams,
 	type MoveBranchParams,
@@ -93,6 +96,7 @@ import {
 	commitUncommitChanges,
 	headInfo,
 	commitMove,
+	addReviewLabels,
 	commitDetailsWithLineStats,
 	commitMoveChangesBetween,
 	createReviewComment,
@@ -109,9 +113,14 @@ import {
 	listEditors,
 	listPrograms,
 	listProjectsStateless,
+	listRepoLabels,
 	listReviewComments,
 	listReviewSubmissions,
+	listReviewerCandidates,
 	listReviews,
+	removeReviewLabel,
+	requestReview,
+	withdrawReviewRequest,
 	listReviewsForBranch,
 	mergeReview,
 	moveBranch,
@@ -568,6 +577,32 @@ const registerIpcHandlers = (): void => {
 	senderValidatingHandle(
 		liteIpcChannels.listReviewSubmissions,
 		(_e, { projectId, reviewId }: GetReviewParams) => listReviewSubmissions(projectId, reviewId),
+	);
+	senderValidatingHandle(liteIpcChannels.listRepoLabels, (_e, projectId: string) =>
+		listRepoLabels(projectId),
+	);
+	senderValidatingHandle(liteIpcChannels.listReviewerCandidates, (_e, projectId: string) =>
+		listReviewerCandidates(projectId),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.addReviewLabels,
+		(_e, { projectId, reviewId, labels }: ReviewLabelsParams) =>
+			addReviewLabels(projectId, reviewId, labels),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.removeReviewLabel,
+		(_e, { projectId, reviewId, label }: RemoveReviewLabelParams) =>
+			removeReviewLabel(projectId, reviewId, label),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.requestReview,
+		(_e, { projectId, reviewId, logins }: ReviewRequestParams) =>
+			requestReview(projectId, reviewId, logins),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.withdrawReviewRequest,
+		(_e, { projectId, reviewId, logins }: ReviewRequestParams) =>
+			withdrawReviewRequest(projectId, reviewId, logins),
 	);
 	senderValidatingHandle(
 		liteIpcChannels.createReviewComment,

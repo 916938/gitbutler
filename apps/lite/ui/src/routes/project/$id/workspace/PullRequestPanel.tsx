@@ -1,8 +1,21 @@
-import { listReviewSubmissionsQueryOptions } from "#ui/api/queries.ts";
+import {
+	useAddReviewLabels,
+	useRemoveReviewLabel,
+	useRequestReview,
+	useWithdrawReviewRequest,
+} from "#ui/api/mutations.ts";
+import {
+	forgeInfoOptions,
+	listReviewSubmissionsQueryOptions,
+	repoLabelsQueryOptions,
+	reviewerCandidatesQueryOptions,
+} from "#ui/api/queries.ts";
 import { Badge, type BadgeVariant } from "#ui/components/Badge.tsx";
+import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { Icon } from "#ui/components/Icon.tsx";
 import type { IconName } from "#ui/components/iconNames.ts";
+import { nativeMenuItem, showNativeMenuFromTrigger } from "#ui/native-menu.ts";
 import { formatRelativeTime } from "#ui/time.ts";
 import type {
 	ForgeReview,
@@ -31,9 +44,12 @@ const absoluteDate = new Intl.DateTimeFormat(undefined, {
 	timeStyle: "short",
 });
 
-const Section: FC<{ heading: string; children: ReactNode }> = (p) => (
+const Section: FC<{ heading: string; action?: ReactNode; children: ReactNode }> = (p) => (
 	<div className={styles.section}>
-		<h4 className={classes("text-13", styles.heading)}>{p.heading}</h4>
+		<div className={styles.sectionHeader}>
+			<h4 className={classes("text-13", styles.heading)}>{p.heading}</h4>
+			{p.action}
+		</div>
 		{p.children}
 	</div>
 );
@@ -122,6 +138,81 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 	const reviewerList =
 		reviewers ?? review.reviewers.map((user): ReviewerRow => ({ user, verdict: "awaiting" }));
 
+	// Label/reviewer management is GitHub-only for now; the pickers only
+	// appear once their option lists have loaded.
+	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
+	const canManage = forgeInfo?.name === "github" && review.mergedAt === null;
+	const { data: repoLabels } = useQuery({
+		...repoLabelsQueryOptions(projectId),
+		enabled: canManage,
+	});
+	const { data: reviewerCandidates } = useQuery({
+		...reviewerCandidatesQueryOptions(projectId),
+		enabled: canManage,
+	});
+	const { mutate: addReviewLabels } = useAddReviewLabels();
+	const { mutate: removeReviewLabel } = useRemoveReviewLabel();
+	const { mutate: requestReview } = useRequestReview();
+	const { mutate: withdrawReviewRequest } = useWithdrawReviewRequest();
+
+	const openLabelMenu = (evt: MouseEvent<HTMLButtonElement>) => {
+		if (repoLabels === undefined) return;
+		void showNativeMenuFromTrigger(
+			evt.currentTarget,
+			repoLabels.map((label) => {
+				const applied = review.labels.some((existing) => existing.name === label.name);
+				return nativeMenuItem({
+					label: label.name,
+					checked: applied,
+					onSelect: () =>
+						applied
+							? removeReviewLabel({ projectId, reviewId: review.number, label: label.name })
+							: addReviewLabels({ projectId, reviewId: review.number, labels: [label.name] }),
+				});
+			}),
+		);
+	};
+
+	const openReviewerMenu = (evt: MouseEvent<HTMLButtonElement>) => {
+		if (reviewerCandidates === undefined) return;
+		void showNativeMenuFromTrigger(
+			evt.currentTarget,
+			reviewerCandidates
+				// The author can't review their own PR.
+				.filter((candidate) => candidate.login !== review.author?.login)
+				.map((candidate) => {
+					const requested = review.reviewers.some((reviewer) => reviewer.login === candidate.login);
+					return nativeMenuItem({
+						label: candidate.login,
+						checked: requested,
+						onSelect: () =>
+							requested
+								? withdrawReviewRequest({
+										projectId,
+										reviewId: review.number,
+										logins: [candidate.login],
+									})
+								: requestReview({
+										projectId,
+										reviewId: review.number,
+										logins: [candidate.login],
+									}),
+					});
+				}),
+		);
+	};
+
+	const pickerButton = (label: string, onClick: (evt: MouseEvent<HTMLButtonElement>) => void) => (
+		<button
+			aria-label={label}
+			className={getButtonClassName({ variant: "outline", size: "small", iconOnly: true })}
+			onClick={onClick}
+			type="button"
+		>
+			<Icon name="plus" />
+		</button>
+	);
+
 	const [statusLabel, statusVariant] = Match.value(reviewStatus(review)).pipe(
 		Match.withReturnType<[string, BadgeVariant]>(),
 		Match.when("open", () => ["Open", "safe"]),
@@ -157,8 +248,13 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 				</Section>
 			)}
 
-			{reviewerList.length > 0 && (
-				<Section heading="Reviewers">
+			{(reviewerList.length > 0 || reviewerCandidates !== undefined) && (
+				<Section
+					heading="Reviewers"
+					action={
+						reviewerCandidates !== undefined && pickerButton("Request a review", openReviewerMenu)
+					}
+				>
 					{reviewerList.map(({ user, verdict }) => {
 						const [icon, color, label] = verdictBits(verdict);
 						return (
@@ -171,8 +267,11 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 				</Section>
 			)}
 
-			{review.labels.length > 0 && (
-				<Section heading="Labels">
+			{(review.labels.length > 0 || repoLabels !== undefined) && (
+				<Section
+					heading="Labels"
+					action={repoLabels !== undefined && pickerButton("Edit labels", openLabelMenu)}
+				>
 					<div className={styles.labels}>
 						{review.labels.map((label) => (
 							<Label key={label.name} label={label} />

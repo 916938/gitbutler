@@ -207,6 +207,122 @@ export const useUpdateReview = () => {
 	});
 };
 
+export const useAddReviewLabels = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.addReviewLabels,
+		onSuccess: async (_response, input, _context, mutation) => {
+			await Promise.all([
+				mutation.client.invalidateQueries({
+					queryKey: ["reviews" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["review" satisfies QueryKey, input.projectId],
+				}),
+			]);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to add label",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useRemoveReviewLabel = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.removeReviewLabel,
+		onSuccess: async (_response, input, _context, mutation) => {
+			await Promise.all([
+				mutation.client.invalidateQueries({
+					queryKey: ["reviews" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["review" satisfies QueryKey, input.projectId],
+				}),
+			]);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to remove label",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useRequestReview = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.requestReview,
+		onSuccess: async (_response, input, _context, mutation) => {
+			await Promise.all([
+				mutation.client.invalidateQueries({
+					queryKey: ["reviews" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["review" satisfies QueryKey, input.projectId],
+				}),
+			]);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to request review",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useWithdrawReviewRequest = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.withdrawReviewRequest,
+		onSuccess: async (_response, input, _context, mutation) => {
+			await Promise.all([
+				mutation.client.invalidateQueries({
+					queryKey: ["reviews" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["review" satisfies QueryKey, input.projectId],
+				}),
+			]);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to withdraw review request",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
 export const useCreateReviewComment = () => {
 	const toastManager = Toast.useToastManager();
 

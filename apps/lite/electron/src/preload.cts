@@ -12,7 +12,9 @@ import type {
 	Editor,
 	ForgeReview,
 	ForgeReviewComment,
+	ForgeReviewLabel,
 	ForgeReviewSubmission,
+	ForgeReviewUser,
 	Program,
 	ProjectForFrontend,
 	PublishReviewOutcome,
@@ -140,6 +142,8 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:commit-uncommit", params) as Promise<UncommitResult>,
 	commitUncommitChanges: (params) =>
 		ipcRenderer.invoke("workspace:commit-uncommit-changes", params) as Promise<MoveChangesResult>,
+	addReviewLabels: (params) =>
+		ipcRenderer.invoke("workspace:add-review-labels", params) as Promise<Array<ForgeReviewLabel>>,
 	createReviewComment: (params) =>
 		ipcRenderer.invoke("workspace:create-review-comment", params) as Promise<ForgeReviewComment>,
 	forgeCompareBranchUrl: (params) =>
@@ -184,10 +188,22 @@ const api: LiteElectronApi = {
 	listPrograms: () => ipcRenderer.invoke("workspace:list-programs") as Promise<Array<Program>>,
 	listProjectsStateless: () =>
 		ipcRenderer.invoke("projects:list-stateless") as Promise<Array<ProjectForFrontend>>,
+	listRepoLabels: (projectId) =>
+		ipcRenderer.invoke("workspace:list-repo-labels", projectId) as Promise<Array<ForgeReviewLabel>>,
 	listReviewComments: (params) =>
 		ipcRenderer.invoke("workspace:list-review-comments", params) as Promise<
 			Array<ForgeReviewComment>
 		>,
+	listReviewerCandidates: (projectId) =>
+		ipcRenderer.invoke("workspace:list-reviewer-candidates", projectId) as Promise<
+			Array<ForgeReviewUser>
+		>,
+	removeReviewLabel: (params) =>
+		ipcRenderer.invoke("workspace:remove-review-label", params) as Promise<void>,
+	requestReview: (params) =>
+		ipcRenderer.invoke("workspace:request-review", params) as Promise<void>,
+	withdrawReviewRequest: (params) =>
+		ipcRenderer.invoke("workspace:withdraw-review-request", params) as Promise<void>,
 	listReviewSubmissions: (params) =>
 		ipcRenderer.invoke("workspace:list-review-submissions", params) as Promise<
 			Array<ForgeReviewSubmission>

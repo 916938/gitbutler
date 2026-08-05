@@ -29,10 +29,12 @@ export type QueryKey =
 	| "commitDetailsWithLineStats"
 	| "forgeInfo"
 	| "headInfo"
+	| "repoLabels"
 	| "review"
 	| "reviewComments"
 	| "reviewSubmissions"
 	| "reviewMergeStatus"
+	| "reviewerCandidates"
 	| "reviews"
 	| "editors"
 	| "projects"
@@ -208,6 +210,24 @@ export const listReviewCommentsQueryOptions = ({ projectId, reviewId }: GetRevie
 		// so replies from others appear without a manual refresh.
 		staleTime: 60_000,
 		refetchInterval: 60_000,
+	});
+
+/** Gate on the forge being GitHub; other forges reject this call. */
+export const repoLabelsQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: ["repoLabels" satisfies QueryKey, projectId],
+		queryFn: () => window.lite.listRepoLabels(projectId),
+		// Label definitions rarely change.
+		staleTime: 5 * 60_000,
+	});
+
+/** Gate on the forge being GitHub; other forges reject this call. */
+export const reviewerCandidatesQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: ["reviewerCandidates" satisfies QueryKey, projectId],
+		queryFn: () => window.lite.listReviewerCandidates(projectId),
+		// Collaborator lists rarely change.
+		staleTime: 5 * 60_000,
 	});
 
 /** This query should be gated by PR capability lest it fail. */

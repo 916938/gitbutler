@@ -11,6 +11,15 @@
 	flex-direction: column;
 }
 
+.sectionHeader {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	/* Keep row height stable whether or not a picker button renders. */
+	min-height: 20px;
+}
+
 .heading {
 	color: var(--text-2);
 	font-weight: 600;

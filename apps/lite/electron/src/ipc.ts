@@ -60,7 +60,9 @@ import type {
 	ReviewMergeMethod,
 	ReviewMergeStatus,
 	ForgeReviewComment,
+	ForgeReviewLabel,
 	ForgeReviewSubmission,
+	ForgeReviewUser,
 	ReviewTemplateInfo,
 	RestoreKind,
 	Snapshot,
@@ -274,6 +276,24 @@ export interface CreateReviewCommentParams {
 	body: string;
 }
 
+export interface ReviewLabelsParams {
+	projectId: string;
+	reviewId: number;
+	labels: Array<string>;
+}
+
+export interface RemoveReviewLabelParams {
+	projectId: string;
+	reviewId: number;
+	label: string;
+}
+
+export interface ReviewRequestParams {
+	projectId: string;
+	reviewId: number;
+	logins: Array<string>;
+}
+
 export interface ListCiChecksParams {
 	projectId: string;
 	reference: string;
@@ -482,6 +502,7 @@ export interface LiteElectronApi {
 	commitMoveChangesBetween: (params: CommitMoveChangesBetweenParams) => Promise<MoveChangesResult>;
 	commitUncommit: (params: CommitUncommitParams) => Promise<UncommitResult>;
 	commitUncommitChanges: (params: CommitUncommitChangesParams) => Promise<MoveChangesResult>;
+	addReviewLabels: (params: ReviewLabelsParams) => Promise<Array<ForgeReviewLabel>>;
 	createReviewComment: (params: CreateReviewCommentParams) => Promise<ForgeReviewComment>;
 	forgeCompareBranchUrl: (params: ForgeCompareBranchUrlParams) => Promise<string | null>;
 	forgeInfo: (projectId: string) => Promise<ForgeInfo | null>;
@@ -504,8 +525,13 @@ export interface LiteElectronApi {
 	listEditors: () => Promise<Array<Editor>>;
 	listPrograms: () => Promise<Array<Program>>;
 	listProjectsStateless: () => Promise<Array<ProjectForFrontend>>;
+	listRepoLabels: (projectId: string) => Promise<Array<ForgeReviewLabel>>;
 	listReviewComments: (params: GetReviewParams) => Promise<Array<ForgeReviewComment>>;
 	listReviewSubmissions: (params: GetReviewParams) => Promise<Array<ForgeReviewSubmission>>;
+	listReviewerCandidates: (projectId: string) => Promise<Array<ForgeReviewUser>>;
+	removeReviewLabel: (params: RemoveReviewLabelParams) => Promise<void>;
+	requestReview: (params: ReviewRequestParams) => Promise<void>;
+	withdrawReviewRequest: (params: ReviewRequestParams) => Promise<void>;
 	listReviews: (params: ListReviewsParams) => Promise<Array<ForgeReview>>;
 	listReviewsForBranch: (params: ListReviewsForBranchParams) => Promise<Array<ForgeReview>>;
 	mergeReview: (params: MergeReviewParams) => Promise<void>;
@@ -580,6 +606,7 @@ export const liteIpcChannels = {
 	commitMoveChangesBetween: "workspace:commit-move-changes-between",
 	commitUncommit: "workspace:commit-uncommit",
 	commitUncommitChanges: "workspace:commit-uncommit-changes",
+	addReviewLabels: "workspace:add-review-labels",
 	createReviewComment: "workspace:create-review-comment",
 	forgeCompareBranchUrl: "workspace:forge-compare-branch-url",
 	forgeInfo: "workspace:forge-info",
@@ -600,8 +627,13 @@ export const liteIpcChannels = {
 	listEditors: "workspace:list-editors",
 	listPrograms: "workspace:list-programs",
 	listProjectsStateless: "projects:list-stateless",
+	listRepoLabels: "workspace:list-repo-labels",
 	listReviewComments: "workspace:list-review-comments",
 	listReviewSubmissions: "workspace:list-review-submissions",
+	listReviewerCandidates: "workspace:list-reviewer-candidates",
+	removeReviewLabel: "workspace:remove-review-label",
+	requestReview: "workspace:request-review",
+	withdrawReviewRequest: "workspace:withdraw-review-request",
 	listReviews: "workspace:list-reviews",
 	listReviewsForBranch: "workspace:list-reviews-for-branch",
 	mergeReview: "workspace:merge-review",
