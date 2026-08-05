@@ -1356,16 +1356,20 @@ const PullRequestDescription: FC<{
 }> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit, editing, onDoneEditing }) => {
 	if (editing) {
 		return (
-			<PullRequestForm
-				body={body}
-				projectId={projectId}
-				reviewId={reviewId}
-				sourceBranch={sourceBranch}
-				title={title}
-				canSubmit={canSubmit}
-				onAfterSubmit={onDoneEditing}
-				onCancel={onDoneEditing}
-			/>
+			// Own boundary: the form suspends on its first idb draft read, and
+			// without this the whole PR tab flashes to the tab-level fallback.
+			<Suspense fallback={null}>
+				<PullRequestForm
+					body={body}
+					projectId={projectId}
+					reviewId={reviewId}
+					sourceBranch={sourceBranch}
+					title={title}
+					canSubmit={canSubmit}
+					onAfterSubmit={onDoneEditing}
+					onCancel={onDoneEditing}
+				/>
+			</Suspense>
 		);
 	}
 
@@ -1449,6 +1453,8 @@ const PullRequestPrimaryAction: FC<{
 		isSetReviewDraftinessPending ||
 		isSetReviewAutoMergePending;
 
+	const blockedReason = mergeBlockedReason(mergeStatus);
+
 	return (
 		<div className={styles.prActions}>
 			<button
@@ -1484,61 +1490,53 @@ const PullRequestPrimaryAction: FC<{
 						{autoMergeEnabled ? "Disable auto-merge" : "Enable auto-merge"}
 					</button>
 
-					{(() => {
-						const blockedReason = isAnyPending ? null : mergeBlockedReason(mergeStatus);
-						const mergeButton = (
-							<button
-								className={getButtonClassName({ variant: "pop" })}
-								disabled={isAnyPending || blockedReason !== null}
-								onClick={() => mergeReview({ projectId, reviewId, mergeMethod })}
-								type="button"
-							>
-								{isMergeReviewPending && <Icon name="spinner" />}
-								{mergeMethodLabels[mergeMethod]}
-							</button>
-						);
-
-						return (
-							<div className={styles.splitButton}>
-								{blockedReason === null ? (
-									mergeButton
-								) : (
-									<Tooltip.Root>
-										{/* Disabled buttons swallow hover, so a wrapper span carries the tooltip. */}
-										<Tooltip.Trigger render={<span className={styles.disabledActionWrap} />}>
-											{mergeButton}
-										</Tooltip.Trigger>
-										<Tooltip.Portal>
-											<Tooltip.Positioner sideOffset={4}>
-												<Tooltip.Popup render={<TooltipPopup />}>{blockedReason}</Tooltip.Popup>
-											</Tooltip.Positioner>
-										</Tooltip.Portal>
-									</Tooltip.Root>
-								)}
-
+					<div className={styles.splitButton}>
+						{/* The trigger span always wraps the button so its tree position
+						    is stable — a conditional wrapper would remount the button
+						    (dropping focus) whenever blockedReason flips. */}
+						<Tooltip.Root>
+							{/* Disabled buttons swallow hover, so the wrapper span carries the tooltip. */}
+							<Tooltip.Trigger render={<span className={styles.disabledActionWrap} />}>
 								<button
-									aria-label="Merge method"
-									className={getButtonClassName({ variant: "pop", iconOnly: true })}
-									disabled={isAnyPending}
-									onClick={(evt) =>
-										void showNativeMenuFromTrigger(
-											evt.currentTarget,
-											mergeMethods.map((method) =>
-												nativeMenuItem({
-													label: mergeMethodLabels[method],
-													checked: method === mergeMethod,
-													onSelect: () => persistMergeMethod({ projectId, method }),
-												}),
-											),
-										)
-									}
+									className={getButtonClassName({ variant: "pop" })}
+									disabled={isAnyPending || blockedReason !== null}
+									onClick={() => mergeReview({ projectId, reviewId, mergeMethod })}
 									type="button"
 								>
-									<Icon name="chevron-down" />
+									{isMergeReviewPending && <Icon name="spinner" />}
+									{mergeMethodLabels[mergeMethod]}
 								</button>
-							</div>
-						);
-					})()}
+							</Tooltip.Trigger>
+							{!isAnyPending && blockedReason !== null && (
+								<Tooltip.Portal>
+									<Tooltip.Positioner sideOffset={4}>
+										<Tooltip.Popup render={<TooltipPopup />}>{blockedReason}</Tooltip.Popup>
+									</Tooltip.Positioner>
+								</Tooltip.Portal>
+							)}
+						</Tooltip.Root>
+
+						<button
+							aria-label="Merge method"
+							className={getButtonClassName({ variant: "pop", iconOnly: true })}
+							disabled={isAnyPending}
+							onClick={(evt) =>
+								void showNativeMenuFromTrigger(
+									evt.currentTarget,
+									mergeMethods.map((method) =>
+										nativeMenuItem({
+											label: mergeMethodLabels[method],
+											checked: method === mergeMethod,
+											onSelect: () => persistMergeMethod({ projectId, method }),
+										}),
+									),
+								)
+							}
+							type="button"
+						>
+							<Icon name="chevron-down" />
+						</button>
+					</div>
 				</>
 			)}
 
@@ -1799,13 +1797,9 @@ const BranchDetails: FC<{
 		dispatch(projectSlice.actions.setSelectedBranchTab({ projectId, branchName, tab }));
 	};
 
+	// Per-PR by construction: BranchDetails is keyed on the branch identity,
+	// so a selection change remounts this component and resets the mode.
 	const [prEditing, setPrEditing] = useState(false);
-	// Editing is per PR; leave the mode when the selection moves to another branch.
-	const [prevEditBranch, setPrevEditBranch] = useState(branchName);
-	if (prevEditBranch !== branchName) {
-		setPrevEditBranch(branchName);
-		setPrEditing(false);
-	}
 
 	const togglePrEdit = () => {
 		// Entering edit mode from the Diff tab brings the PR tab forward too.
