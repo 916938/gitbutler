@@ -42,6 +42,7 @@ import type { BranchTab } from "#ui/projects/project.ts";
 import { projectSlice } from "#ui/projects/state.ts";
 import { interfaceSlice } from "#ui/interface/state.ts";
 import { Badge } from "#ui/components/Badge.tsx";
+import { Clamped } from "#ui/components/Clamped.tsx";
 import { Markdown } from "#ui/components/Markdown.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
@@ -1370,7 +1371,10 @@ const PullRequestDescription: FC<{
 			</div>
 
 			{body !== null && body.trim() !== "" ? (
-				<Markdown>{body}</Markdown>
+				// Taller ceiling than comments: only truly huge descriptions fold.
+				<Clamped maxHeight="80vh" measureKey={body}>
+					<Markdown>{body}</Markdown>
+				</Clamped>
 			) : (
 				<p className={classes("text-13", styles.prViewEmptyBody)}>No description provided.</p>
 			)}

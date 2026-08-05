@@ -56,46 +56,6 @@
 	border-radius: 8px;
 }
 
-.commentBody {
-	margin: 0;
-}
-
-.commentBodyClamped {
-	z-index: 0;
-	position: relative;
-	max-height: 240px;
-	overflow: hidden;
-}
-
-/* Fade out the cut-off line so the clamp reads as "there's more". Only
- * applied when content is actually hidden, so borderline-height comments
- * don't get their last line dimmed. */
-.commentBodyOverflowing::after {
-	z-index: 1;
-	position: absolute;
-	right: 0;
-	bottom: 0;
-	left: 0;
-	height: 32px;
-	background: linear-gradient(to bottom, transparent, var(--bg-1));
-	content: "";
-	pointer-events: none;
-}
-
-.commentExpand {
-	align-self: flex-start;
-	padding: 0;
-	border: none;
-	background: none;
-	color: var(--text-2);
-	font: inherit;
-	cursor: pointer;
-
-	&:hover {
-		color: var(--text-1);
-	}
-}
-
 .composer {
 	display: flex;
 	flex-direction: column;
