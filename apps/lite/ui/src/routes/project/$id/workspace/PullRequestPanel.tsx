@@ -216,8 +216,13 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 	const { mutate: requestReview } = useRequestReview();
 	const { mutate: withdrawReviewRequest } = useWithdrawReviewRequest();
 
+	// The queries stop fetching when canManage flips off, but cached data
+	// still reads — gate the pickers on manageability, not cache presence.
+	const canPickLabels = canManage && repoLabels !== undefined;
+	const canPickReviewers = canManage && reviewerCandidates !== undefined;
+
 	const openLabelMenu = (evt: MouseEvent<HTMLButtonElement>) => {
-		if (repoLabels === undefined) return;
+		if (!canPickLabels) return;
 		void showNativeMenuFromTrigger(
 			evt.currentTarget,
 			repoLabels.map((label) => {
@@ -235,7 +240,7 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 	};
 
 	const openReviewerMenu = (evt: MouseEvent<HTMLButtonElement>) => {
-		if (reviewerCandidates === undefined) return;
+		if (!canPickReviewers) return;
 		void showNativeMenuFromTrigger(
 			evt.currentTarget,
 			reviewerCandidates
@@ -309,12 +314,10 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 				</Section>
 			)}
 
-			{(reviewerList.length > 0 || reviewerCandidates !== undefined) && (
+			{(reviewerList.length > 0 || canPickReviewers) && (
 				<Section
 					heading="Reviewers"
-					action={
-						reviewerCandidates !== undefined && pickerButton("Request a review", openReviewerMenu)
-					}
+					action={canPickReviewers && pickerButton("Request a review", openReviewerMenu)}
 				>
 					{reviewerList.map(({ user, verdict }) => {
 						const [icon, color, label] = verdictBits(verdict);
@@ -328,10 +331,10 @@ export const PullRequestPanel: FC<{ projectId: string; review: ForgeReview }> = 
 				</Section>
 			)}
 
-			{(review.labels.length > 0 || repoLabels !== undefined) && (
+			{(review.labels.length > 0 || canPickLabels) && (
 				<Section
 					heading="Labels"
-					action={repoLabels !== undefined && pickerButton("Edit labels", openLabelMenu)}
+					action={canPickLabels && pickerButton("Edit labels", openLabelMenu)}
 				>
 					<div className={styles.labels}>
 						{review.labels.map((label) => (
