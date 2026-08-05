@@ -87,8 +87,10 @@
 		text-decoration: underline;
 	}
 
-	img {
-		max-width: 100%;
+	.imageLink {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
 	}
 
 	table {
