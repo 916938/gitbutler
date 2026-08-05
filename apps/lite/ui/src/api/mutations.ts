@@ -232,19 +232,19 @@ export const useMergeReview = () => {
 	return useMutation({
 		mutationFn: window.lite.mergeReview,
 		onSuccess: async (_response, input, _context, mutation) => {
+			// Checks 422 once the branch is merged; refetch so the badge clears.
 			await Promise.all([
 				mutation.client.invalidateQueries({
 					queryKey: ["reviews" satisfies QueryKey, input.projectId],
 				}),
 				mutation.client.invalidateQueries({
-					queryKey: getReviewQueryOptions({ projectId: input.projectId, reviewId: input.reviewId })
-						.queryKey,
+					queryKey: ["review" satisfies QueryKey, input.projectId],
 				}),
 				mutation.client.invalidateQueries({
-					queryKey: getReviewMergeStatusQueryOptions({
-						projectId: input.projectId,
-						reviewId: input.reviewId,
-					}).queryKey,
+					queryKey: ["reviewMergeStatus" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["ciChecks" satisfies QueryKey, input.projectId],
 				}),
 			]);
 		},
@@ -620,9 +620,25 @@ export const useWorkspaceBranchAndAncestorsPush = () => {
 	return useMutation({
 		mutationFn: window.lite.workspaceBranchAndAncestorsPush,
 		onSuccess: async (_response, input, _context, mutation) => {
-			await mutation.client.invalidateQueries({
-				queryKey: headInfoQueryOptions(input.projectId).queryKey,
-			});
+			// A push moves the review's head, so the cached reviews, their mergeability,
+			// and the checks for the new sha are all stale.
+			await Promise.all([
+				mutation.client.invalidateQueries({
+					queryKey: ["headInfo" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["reviews" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["review" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["reviewMergeStatus" satisfies QueryKey, input.projectId],
+				}),
+				mutation.client.invalidateQueries({
+					queryKey: ["ciChecks" satisfies QueryKey, input.projectId],
+				}),
+			]);
 		},
 		onError: (error) => {
 			// oxlint-disable-next-line no-console
