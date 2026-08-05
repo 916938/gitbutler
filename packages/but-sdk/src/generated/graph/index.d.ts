@@ -18,6 +18,9 @@ export declare function absorb(projectId: string, absorptionPlan: Array<CommitAb
  */
 export declare function absorptionPlan(projectId: string, target: AbsorptionTarget): Promise<Array<CommitAbsorption>>
 
+/** Add labels to a review; returns the resulting label set. */
+export declare function addReviewLabels(projectId: string, reviewId: number, labels: Array<string>): Promise<Array<ForgeReviewLabel>>
+
 /**
  * Applies `existing_branch` using the behavior described by
  * [`apply_with_perm()`].
@@ -453,8 +456,14 @@ export declare function listPrograms(): Promise<Array<Program>>
 
 export declare function listProjectsStateless(): Promise<Array<ProjectForFrontend>>
 
+/** List the labels defined on the repository backing this project's reviews. */
+export declare function listRepoLabels(projectId: string): Promise<Array<ForgeReviewLabel>>
+
 /** List the top-level conversation comments on a review, oldest first. */
 export declare function listReviewComments(projectId: string, reviewId: number): Promise<Array<ForgeReviewComment>>
+
+/** List users who can be requested to review on this project's repository. */
+export declare function listReviewerCandidates(projectId: string): Promise<Array<ForgeReviewUser>>
 
 export declare function listReviews(projectId: string, cacheConfig: CacheConfig | null): Promise<Array<ForgeReview>>
 
@@ -538,6 +547,12 @@ export declare function publishReview(projectId: string, params: PublishReviewIn
  * or on a branch that's empty.
  */
 export declare function removeBranch(projectId: string, stackId: string, branchName: string): Promise<void>
+
+/** Remove one label from a review. */
+export declare function removeReviewLabel(projectId: string, reviewId: number, label: string): Promise<void>
+
+/** Request reviews from the given users on a review. */
+export declare function requestReview(projectId: string, reviewId: number, logins: Array<string>): Promise<void>
 
 /**
  * Restores the project to a specific snapshot using a specific kind of restore. This operation
@@ -651,6 +666,9 @@ export declare function updateReviewFooters(projectId: string, reviews: Array<Fo
  * part of any applied stack.
  */
 export declare function warmCiChecksCache(projectId: string): Promise<void>
+
+/** Withdraw review requests for the given users on a review. */
+export declare function withdrawReviewRequest(projectId: string, reviewId: number, logins: Array<string>): Promise<void>
 
 /** Push a branch and any parent references that lie within the current workspace projection. */
 export declare function workspaceBranchAndAncestorsPush(projectId: string, withForce: boolean, skipForcePushProtection: boolean, branch: string, runHooks: boolean, pushOpts: Array<PushFlag>): Promise<PushResult>

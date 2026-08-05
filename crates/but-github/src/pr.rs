@@ -117,6 +117,92 @@ pub async fn list_comments(
         .context("Failed to list pull request comments")
 }
 
+pub async fn list_repo_labels(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<crate::client::GitHubPrLabel>> {
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_repo_labels(owner, repo)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list repository labels")
+}
+
+pub async fn add_labels(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    labels: &[String],
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<crate::client::GitHubPrLabel>> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .add_labels_to_pull_request(owner, repo, pr_number, labels)
+        .await
+        .context("Failed to add labels to pull request")
+}
+
+pub async fn remove_label(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    label: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .remove_label_from_pull_request(owner, repo, pr_number, label)
+        .await
+        .context("Failed to remove label from pull request")
+}
+
+pub async fn list_reviewer_candidates(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<crate::client::GitHubUser>> {
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_assignable_users(owner, repo)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list reviewer candidates")
+}
+
+pub async fn request_reviewers(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    reviewers: &[String],
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .request_reviewers(owner, repo, pr_number, reviewers)
+        .await
+        .context("Failed to request reviewers")
+}
+
+pub async fn remove_requested_reviewers(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    reviewers: &[String],
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .remove_requested_reviewers(owner, repo, pr_number, reviewers)
+        .await
+        .context("Failed to withdraw review request")
+}
+
 pub async fn list_pr_reviews(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     owner: &str,

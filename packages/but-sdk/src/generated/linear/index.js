@@ -579,9 +579,10 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { absorb, absorptionPlan, apply, applyBranchIntegration, assignHunk, branchCheckout, branchCheckoutNew, branchCreate, branchDetails, branchDiff, branchLand, branchList, branchRemove, branchRename, changesInWorktree, changesInWorktreeWithPerm, commentArchive, commentCreate, commentsList, commentUpdate, commitAmend, commitCherryPick, commitCreate, commitDetailsWithLineStats, commitDiscard, commitDiscardChanges, commitInsertBlank, commitMove, commitMoveChangesBetween, commitReword, commitSquash, commitUncommit, commitUncommitChanges, commitUncommitChangesFromCommits, createReviewComment, discardWorktreeChanges, forgeCompareBranchUrl, forgeInfo, forgeProvider, getInitialBranchIntegration, getRedoTargetSnapshot, getRepoInfo, getReview, getReviewBaseRepoUrl, getReviewMergeStatus, getUndoTargetSnapshot, getWorkspace, headInfo, initApplicationNamespace, listAvailableReviewTemplates, listBranches, listCiChecks, listEditors, listPrograms, listProjectsStateless, listReviewComments, listReviews, listReviewsForBranch, listReviewSubmissions, mergeReview, moveBranch, openInProgram, peelRestoreSnapshot, ProgramCategory, publishReview, removeBranch, restoreSnapshotWithKind, reviewApply, reviewTemplate, setPushRemote, setReviewAutoMerge, setReviewDraftiness, setReviewTemplate, setTargetRefAndInitProject, tearOffBranch, treeChangeDiffs, unapplyStack, updateBranchName, updateReview, updateReviewFooters, warmCiChecksCache, workspaceBranchAndAncestorsPush, workspaceCheckout, workspaceFetchFromRemotes, workspaceFetchStatus, workspaceIntegrateUpstream, workspaceTargetCommits, WatcherHandle, ANY_FORK, ANY_FORK_OR_MERGE, ANY_MERGE, askpassInit, askpassSubmitPromptResponse, CHILD, getAppSettings, HORIZ_ANCESTOR, HORIZ_PARENT, HORIZONTAL, LEFT_FORK, LEFT_FORK_ANCESTOR, LEFT_FORK_PARENT, LEFT_MERGE, LEFT_MERGE_ANCESTOR, LEFT_MERGE_PARENT, RIGHT_FORK, RIGHT_FORK_ANCESTOR, RIGHT_FORK_PARENT, RIGHT_MERGE, RIGHT_MERGE_ANCESTOR, RIGHT_MERGE_PARENT, updateFeatureFlags, updateFetch, updateOnboardingComplete, updateReviews, updateTelemetry, updateTelemetryDistinctId, updateUi, VERT_ANCESTOR, VERT_PARENT, VERTICAL, watcherStart } = nativeBinding
+const { absorb, absorptionPlan, addReviewLabels, apply, applyBranchIntegration, assignHunk, branchCheckout, branchCheckoutNew, branchCreate, branchDetails, branchDiff, branchLand, branchList, branchRemove, branchRename, changesInWorktree, changesInWorktreeWithPerm, commentArchive, commentCreate, commentsList, commentUpdate, commitAmend, commitCherryPick, commitCreate, commitDetailsWithLineStats, commitDiscard, commitDiscardChanges, commitInsertBlank, commitMove, commitMoveChangesBetween, commitReword, commitSquash, commitUncommit, commitUncommitChanges, commitUncommitChangesFromCommits, createReviewComment, discardWorktreeChanges, forgeCompareBranchUrl, forgeInfo, forgeProvider, getInitialBranchIntegration, getRedoTargetSnapshot, getRepoInfo, getReview, getReviewBaseRepoUrl, getReviewMergeStatus, getUndoTargetSnapshot, getWorkspace, headInfo, initApplicationNamespace, listAvailableReviewTemplates, listBranches, listCiChecks, listEditors, listPrograms, listProjectsStateless, listRepoLabels, listReviewComments, listReviewerCandidates, listReviews, listReviewsForBranch, listReviewSubmissions, mergeReview, moveBranch, openInProgram, peelRestoreSnapshot, ProgramCategory, publishReview, removeBranch, removeReviewLabel, requestReview, restoreSnapshotWithKind, reviewApply, reviewTemplate, setPushRemote, setReviewAutoMerge, setReviewDraftiness, setReviewTemplate, setTargetRefAndInitProject, tearOffBranch, treeChangeDiffs, unapplyStack, updateBranchName, updateReview, updateReviewFooters, warmCiChecksCache, withdrawReviewRequest, workspaceBranchAndAncestorsPush, workspaceCheckout, workspaceFetchFromRemotes, workspaceFetchStatus, workspaceIntegrateUpstream, workspaceTargetCommits, WatcherHandle, ANY_FORK, ANY_FORK_OR_MERGE, ANY_MERGE, askpassInit, askpassSubmitPromptResponse, CHILD, getAppSettings, HORIZ_ANCESTOR, HORIZ_PARENT, HORIZONTAL, LEFT_FORK, LEFT_FORK_ANCESTOR, LEFT_FORK_PARENT, LEFT_MERGE, LEFT_MERGE_ANCESTOR, LEFT_MERGE_PARENT, RIGHT_FORK, RIGHT_FORK_ANCESTOR, RIGHT_FORK_PARENT, RIGHT_MERGE, RIGHT_MERGE_ANCESTOR, RIGHT_MERGE_PARENT, updateFeatureFlags, updateFetch, updateOnboardingComplete, updateReviews, updateTelemetry, updateTelemetryDistinctId, updateUi, VERT_ANCESTOR, VERT_PARENT, VERTICAL, watcherStart } = nativeBinding
 export { absorb }
 export { absorptionPlan }
+export { addReviewLabels }
 export { apply }
 export { applyBranchIntegration }
 export { assignHunk }
@@ -635,7 +636,9 @@ export { listCiChecks }
 export { listEditors }
 export { listPrograms }
 export { listProjectsStateless }
+export { listRepoLabels }
 export { listReviewComments }
+export { listReviewerCandidates }
 export { listReviews }
 export { listReviewsForBranch }
 export { listReviewSubmissions }
@@ -646,6 +649,8 @@ export { peelRestoreSnapshot }
 export { ProgramCategory }
 export { publishReview }
 export { removeBranch }
+export { removeReviewLabel }
+export { requestReview }
 export { restoreSnapshotWithKind }
 export { reviewApply }
 export { reviewTemplate }
@@ -661,6 +666,7 @@ export { updateBranchName }
 export { updateReview }
 export { updateReviewFooters }
 export { warmCiChecksCache }
+export { withdrawReviewRequest }
 export { workspaceBranchAndAncestorsPush }
 export { workspaceCheckout }
 export { workspaceFetchFromRemotes }

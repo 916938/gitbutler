@@ -734,6 +734,170 @@ pub async fn list_review_submissions(
     .await
 }
 
+/// List the labels defined on the repository backing this project's reviews.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn list_repo_labels(ctx: ThreadSafeContext) -> Result<Vec<but_forge::ForgeReviewLabel>> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::list_repo_labels(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        &storage,
+    )
+    .await
+}
+
+/// Add labels to a review; returns the resulting label set.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn add_review_labels(
+    ctx: ThreadSafeContext,
+    review_id: usize,
+    labels: Vec<String>,
+) -> Result<Vec<but_forge::ForgeReviewLabel>> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::add_review_labels(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        review_id,
+        &labels,
+        &storage,
+    )
+    .await
+}
+
+/// Remove one label from a review.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn remove_review_label(
+    ctx: ThreadSafeContext,
+    review_id: usize,
+    label: String,
+) -> Result<()> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::remove_review_label(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        review_id,
+        &label,
+        &storage,
+    )
+    .await
+}
+
+/// List users who can be requested to review on this project's repository.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn list_reviewer_candidates(
+    ctx: ThreadSafeContext,
+) -> Result<Vec<but_forge::ForgeReviewUser>> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::list_reviewer_candidates(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        &storage,
+    )
+    .await
+}
+
+/// Request reviews from the given users on a review.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn request_review(
+    ctx: ThreadSafeContext,
+    review_id: usize,
+    logins: Vec<String>,
+) -> Result<()> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::request_review(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        review_id,
+        &logins,
+        &storage,
+    )
+    .await
+}
+
+/// Withdraw review requests for the given users on a review.
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub async fn withdraw_review_request(
+    ctx: ThreadSafeContext,
+    review_id: usize,
+    logins: Vec<String>,
+) -> Result<()> {
+    let (storage, forge_repo_info, preferred_forge_user) = {
+        let ctx = ctx.into_thread_local();
+        let project_meta = ctx.project_meta()?;
+        let repo = ctx.repo.get()?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url(&project_meta, &repo)?);
+        (
+            but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
+            forge_repo_info,
+            ctx.legacy_project.preferred_forge_user.clone(),
+        )
+    };
+    but_forge::withdraw_review_request(
+        &preferred_forge_user,
+        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        review_id,
+        &logins,
+        &storage,
+    )
+    .await
+}
+
 /// Post a top-level conversation comment on a review.
 #[but_api(napi)]
 #[instrument(err(Debug))]

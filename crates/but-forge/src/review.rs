@@ -1058,6 +1058,172 @@ impl From<but_github::PullRequestComment> for ForgeReviewComment {
     }
 }
 
+/// List the labels defined on the repository backing a review.
+pub async fn list_repo_labels(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReviewLabel>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let labels =
+                but_github::pr::list_repo_labels(preferred_account, owner, repo, storage).await?;
+            Ok(labels.into_iter().map(Into::into).collect())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Repository labels for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// Add labels to a review; returns the resulting label set.
+pub async fn add_review_labels(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    labels: &[String],
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReviewLabel>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let labels = but_github::pr::add_labels(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                labels,
+                storage,
+            )
+            .await?;
+            Ok(labels.into_iter().map(Into::into).collect())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review labels for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// Remove one label from a review.
+pub async fn remove_review_label(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    label: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            but_github::pr::remove_label(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                label,
+                storage,
+            )
+            .await
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review labels for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// List users who can be requested to review on the repository.
+pub async fn list_reviewer_candidates(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReviewUser>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let users =
+                but_github::pr::list_reviewer_candidates(preferred_account, owner, repo, storage)
+                    .await?;
+            Ok(users.into_iter().map(Into::into).collect())
+        }
+        _ => Err(anyhow::anyhow!(
+            "Reviewer candidates for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// Request reviews from the given users on a review.
+pub async fn request_review(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    logins: &[String],
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            but_github::pr::request_reviewers(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                logins,
+                storage,
+            )
+            .await
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review requests for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// Withdraw review requests for the given users on a review.
+pub async fn withdraw_review_request(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    logins: &[String],
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            but_github::pr::remove_requested_reviewers(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                logins,
+                storage,
+            )
+            .await
+        }
+        _ => Err(anyhow::anyhow!(
+            "Review requests for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
 /// The verdict a submitted review carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]

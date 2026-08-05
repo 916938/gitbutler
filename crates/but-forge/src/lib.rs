@@ -16,16 +16,18 @@ pub use forge_info::{ForgeCapabilities, ForgeInfo, ForgeUnitInfo, compare_branch
 pub use repo::{RepoInfo, RepoPermissions, get_repo_info};
 pub use review::{
     CacheConfig, CreateForgeReviewParams, ForgeAccountValidity, ForgeReview, ForgeReviewComment,
-    ForgeReviewFilter, ForgeReviewSubmission, ForgeReviewSubmissionState, ForgeReviewTargetUpdate,
-    ForgeReviewUpdate, GitHubStackingMode, PublishReviewOutcome, ReviewMergeMethod,
-    ReviewMergeStatus, ReviewStackingDescription, ReviewState, ReviewSyncOutcome,
-    ReviewTemplateFunctions, ReviewUpdatePayload, available_review_templates, cache_review,
-    check_forge_account_is_valid, compute_review_target_updates, create_forge_review,
-    create_review_comment, get_forge_review, get_review_base_repo_url, get_review_merge_status,
-    get_review_template_functions, list_forge_reviews_for_branch, list_forge_reviews_with_cache,
-    list_review_comments, list_review_submissions, merge_review, prepare_review_target_updates,
-    restore_native_stacks, set_review_auto_merge_state, set_review_draftiness, sync_reviews,
-    update_review,
+    ForgeReviewFilter, ForgeReviewLabel, ForgeReviewSubmission, ForgeReviewSubmissionState,
+    ForgeReviewTargetUpdate, ForgeReviewUpdate, ForgeReviewUser, GitHubStackingMode,
+    PublishReviewOutcome, ReviewMergeMethod, ReviewMergeStatus, ReviewStackingDescription,
+    ReviewState, ReviewSyncOutcome, ReviewTemplateFunctions, ReviewUpdatePayload,
+    add_review_labels, available_review_templates, cache_review, check_forge_account_is_valid,
+    compute_review_target_updates, create_forge_review, create_review_comment, get_forge_review,
+    get_review_base_repo_url, get_review_merge_status, get_review_template_functions,
+    list_forge_reviews_for_branch, list_forge_reviews_with_cache, list_repo_labels,
+    list_review_comments, list_review_submissions, list_reviewer_candidates, merge_review,
+    prepare_review_target_updates, remove_review_label, request_review, restore_native_stacks,
+    set_review_auto_merge_state, set_review_draftiness, sync_reviews, update_review,
+    withdraw_review_request,
 };
 
 fn determine_forge_from_host(host: &str) -> Option<ForgeName> {

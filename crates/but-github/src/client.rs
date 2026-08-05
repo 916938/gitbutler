@@ -466,6 +466,190 @@ impl GitHubClient {
         Ok(comments)
     }
 
+    /// List the labels defined on a repository, paginated.
+    pub async fn list_repo_labels(&self, owner: &str, repo: &str) -> Result<Vec<GitHubPrLabel>> {
+        let url = format!("{}/repos/{}/{}/labels", self.base_url, owner, repo);
+
+        let mut labels = Vec::new();
+        for page in 1usize.. {
+            let response = self
+                .client
+                .get(&url)
+                .query(&[("per_page", "100"), ("page", &page.to_string())])
+                .send()
+                .await?;
+
+            ensure_success(&response)?;
+
+            let page_labels: Vec<GitHubPrLabelApi> = response.json().await?;
+            let last_page = page_labels.len() < 100;
+            labels.extend(page_labels.into_iter().map(|label| GitHubPrLabel {
+                id: label.id,
+                name: label.name,
+                description: label.description,
+                color: label.color,
+            }));
+            if last_page {
+                break;
+            }
+        }
+
+        Ok(labels)
+    }
+
+    /// Add labels to a pull request; returns the resulting label set.
+    pub async fn add_labels_to_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        labels: &[String],
+    ) -> Result<Vec<GitHubPrLabel>> {
+        #[derive(Serialize)]
+        struct AddLabelsBody<'a> {
+            labels: &'a [String],
+        }
+
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/labels",
+            self.base_url, owner, repo, pr_number
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&AddLabelsBody { labels })
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!("Failed to add labels: {}", response_error(response).await);
+        }
+
+        let labels: Vec<GitHubPrLabelApi> = response.json().await?;
+        Ok(labels
+            .into_iter()
+            .map(|label| GitHubPrLabel {
+                id: label.id,
+                name: label.name,
+                description: label.description,
+                color: label.color,
+            })
+            .collect())
+    }
+
+    /// Remove one label from a pull request.
+    pub async fn remove_label_from_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        label: &str,
+    ) -> Result<()> {
+        let mut url = reqwest::Url::parse(&format!(
+            "{}/repos/{}/{}/issues/{}/labels",
+            self.base_url, owner, repo, pr_number
+        ))?;
+        // Label names may contain spaces or unicode; push() percent-encodes.
+        url.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("Invalid GitHub base URL"))?
+            .push(label);
+
+        let response = self.client.delete(url).send().await?;
+
+        if !response.status().is_success() {
+            bail!("Failed to remove label: {}", response_error(response).await);
+        }
+
+        Ok(())
+    }
+
+    /// List users who can be assigned (and requested for review) on the repo.
+    pub async fn list_assignable_users(&self, owner: &str, repo: &str) -> Result<Vec<GitHubUser>> {
+        let url = format!("{}/repos/{}/{}/assignees", self.base_url, owner, repo);
+
+        let mut users = Vec::new();
+        for page in 1usize.. {
+            let response = self
+                .client
+                .get(&url)
+                .query(&[("per_page", "100"), ("page", &page.to_string())])
+                .send()
+                .await?;
+
+            ensure_success(&response)?;
+
+            let page_users: Vec<GitHubApiUser> = response.json().await?;
+            let last_page = page_users.len() < 100;
+            users.extend(page_users.into_iter().map(GitHubUser::from));
+            if last_page {
+                break;
+            }
+        }
+
+        Ok(users)
+    }
+
+    /// Request reviews from the given users on a pull request.
+    pub async fn request_reviewers(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        reviewers: &[String],
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/requested_reviewers",
+            self.base_url, owner, repo, pr_number
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&ReviewersBody { reviewers })
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "Failed to request reviewers: {}",
+                response_error(response).await
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Withdraw review requests for the given users on a pull request.
+    pub async fn remove_requested_reviewers(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        reviewers: &[String],
+    ) -> Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/requested_reviewers",
+            self.base_url, owner, repo, pr_number
+        );
+
+        let response = self
+            .client
+            .delete(&url)
+            .json(&ReviewersBody { reviewers })
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "Failed to withdraw review request: {}",
+                response_error(response).await
+            );
+        }
+
+        Ok(())
+    }
+
     /// List the submitted reviews on a pull request (approvals, change
     /// requests, review comments), oldest first. Paginated.
     pub async fn list_pull_request_reviews(
@@ -1300,6 +1484,11 @@ pub struct PullRequestComment {
     pub created_at: Option<String>,
     pub modified_at: Option<String>,
     pub html_url: String,
+}
+
+#[derive(Serialize)]
+struct ReviewersBody<'a> {
+    reviewers: &'a [String],
 }
 
 /// A submitted review on a pull request, from `GET /pulls/{n}/reviews`.
