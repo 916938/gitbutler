@@ -343,6 +343,11 @@ export const CommitRow: FC<
 			operand={operand}
 			isChecked={isChecked}
 			isHighlighted={isHighlighted}
+			onShiftSelect={
+				isDefaultMode && canCheck
+					? () => checkCommit({ commitId: commit.id, shiftKey: true })
+					: undefined
+			}
 			onContextMenu={(event) => {
 				void showNativeContextMenu(event, menuItems);
 			}}
@@ -374,7 +379,9 @@ export const CommitRow: FC<
 					/>
 					<Tooltip.Portal>
 						<Tooltip.Positioner sideOffset={4}>
-							<Tooltip.Popup render={<TooltipPopup kbd={outlineHotkeys.checkCommit.hotkey} />}>
+							<Tooltip.Popup
+								render={<TooltipPopup kbd={outlineHotkeys.checkCommit.hotkey} kbdScope="outline" />}
+							>
 								{outlineHotkeys.checkCommit.meta.name}
 							</Tooltip.Popup>
 						</Tooltip.Positioner>

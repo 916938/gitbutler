@@ -59,12 +59,22 @@ export type SelectionState = {
 
 type DetailsSelectionScope = Extract<SelectionScope, "uncommitted-files" | "outline">;
 
-type CheckableOperand = Extract<Operand, { _tag: "Commit" | "File" }>;
+type CheckableOperand = Extract<Operand, { _tag: "Commit" | "File" | "Hunk" }>;
 
 export type BranchTab = "diff" | "pr";
 
+/**
+ * A conflict checked for a batch resolution. Ids survive the rewrites that
+ * compact hunk positions, so checks carry across; the commit id is remapped.
+ */
+type CheckedConflict = { commitId: string; path: string; id: string };
+
+const conflictCheckKey = ({ commitId, path, id }: CheckedConflict): string =>
+	`${commitId}\u0000${path}\u0000${id}`;
+
 type WorkspaceState = {
 	checkedOperands: Record<string, CheckableOperand>;
+	checkedConflicts: Record<string, CheckedConflict>;
 	detailsSelectionScope: DetailsSelectionScope | null;
 	/**
 	 * Branch segments whose commits are hidden, keyed by full ref name.
@@ -88,6 +98,16 @@ type WorkspaceState = {
 	 */
 	uncommittedFilesFilter: string | null;
 	filesFilter: string | null;
+	/**
+	 * Directories whose contents the tree view hides, keyed by directory path.
+	 *
+	 * Collapsed rather than expanded, as with {@link WorkspaceState.foldedSegments}:
+	 * a tree opens showing everything, so it is the hiding that is worth recording.
+	 * One set per list, as with the filters — the two lists hold different files
+	 * and each is somewhere the user is looking separately.
+	 */
+	uncommittedFilesCollapsedDirectories: Record<string, true>;
+	filesCollapsedDirectories: Record<string, true>;
 };
 
 const createInitialSelectionState = (): SelectionState => ({
@@ -99,6 +119,7 @@ const createInitialSelectionState = (): SelectionState => ({
 
 const createInitialWorkspaceState = (): WorkspaceState => ({
 	checkedOperands: {},
+	checkedConflicts: {},
 	detailsSelectionScope: null,
 	foldedSegments: {},
 	highlightedCommitIds: [],
@@ -107,6 +128,8 @@ const createInitialWorkspaceState = (): WorkspaceState => ({
 	selection: createInitialSelectionState(),
 	uncommittedFilesFilter: null,
 	filesFilter: null,
+	uncommittedFilesCollapsedDirectories: {},
+	filesCollapsedDirectories: {},
 });
 
 export type OutlineTab = "workspace" | "upstream" | "branches";
@@ -166,9 +189,6 @@ export const projectReducers = {
 	},
 	toggleUpstreamSegment: (state: ProjectState, { segmentId }: { segmentId: string }) => {
 		upstreamReducers.toggleSegment(state.upstream, { segmentId });
-	},
-	toggleUpstreamIncoming: (state: ProjectState) => {
-		upstreamReducers.toggleIncoming(state.upstream);
 	},
 	selectFiles: (state: ProjectState, { selection }: { selection: string | null }) => {
 		const workspaceState = state.workspace;
@@ -377,6 +397,18 @@ export const projectReducers = {
 	clearCheckedOperands: (state: ProjectState) => {
 		state.workspace.checkedOperands = {};
 	},
+	checkConflict: (
+		state: ProjectState,
+		{ conflict, checked }: { conflict: CheckedConflict; checked: boolean },
+	) => {
+		const key = conflictCheckKey(conflict);
+		if (checked) state.workspace.checkedConflicts[key] = conflict;
+		else delete state.workspace.checkedConflicts[key];
+	},
+	clearCheckedConflicts: (state: ProjectState) => {
+		if (Object.keys(state.workspace.checkedConflicts).length === 0) return;
+		state.workspace.checkedConflicts = {};
+	},
 	updateRewrittenCommitReferences: (
 		state: ProjectState,
 		{ replacedCommits }: { replacedCommits: Record<string, string> },
@@ -395,18 +427,40 @@ export const projectReducers = {
 
 		branchesReducers.updateRewrittenCommitReferences(state.branches, { replacedCommits });
 
+		for (const [key, conflict] of Object.entries(workspaceState.checkedConflicts)) {
+			const newId = replacedCommits[conflict.commitId];
+			if (newId === undefined) continue;
+			delete workspaceState.checkedConflicts[key];
+			const moved = { ...conflict, commitId: newId };
+			workspaceState.checkedConflicts[conflictCheckKey(moved)] = moved;
+		}
+
 		for (const [key, operand] of Object.entries(workspaceState.checkedOperands)) {
 			let newOperand: CheckableOperand | null = null;
 			if (operand._tag === "Commit") {
 				const newId = replacedCommits[operand.commitId];
 				if (newId !== undefined)
 					newOperand = commitOperand({ commitId: newId, changeId: operand.changeId });
-			} else if (operand.parent._tag === "Commit") {
+			} else if (operand._tag === "File" && operand.parent._tag === "Commit") {
 				const newId = replacedCommits[operand.parent.commitId];
 				if (newId !== undefined) {
 					newOperand = fileOperand({
 						parent: commitFileParent({ commitId: newId, changeId: operand.parent.changeId }),
 						path: operand.path,
+					});
+				}
+			} else if (operand._tag === "Hunk" && operand.parent.parent._tag === "Commit") {
+				const newId = replacedCommits[operand.parent.parent.commitId];
+				if (newId !== undefined) {
+					newOperand = hunkOperand({
+						...operand,
+						parent: {
+							...operand.parent,
+							parent: commitFileParent({
+								commitId: newId,
+								changeId: operand.parent.parent.changeId,
+							}),
+						},
 					});
 				}
 			}
@@ -488,6 +542,16 @@ export const projectReducers = {
 
 		workspaceState.filesFilter = filter;
 	},
+	toggleUncommittedFilesDirectoryCollapsed: (state: ProjectState, { path }: { path: string }) => {
+		const collapsed = state.workspace.uncommittedFilesCollapsedDirectories;
+		if (collapsed[path]) delete collapsed[path];
+		else collapsed[path] = true;
+	},
+	toggleFilesDirectoryCollapsed: (state: ProjectState, { path }: { path: string }) => {
+		const collapsed = state.workspace.filesCollapsedDirectories;
+		if (collapsed[path]) delete collapsed[path];
+		else collapsed[path] = true;
+	},
 	setBranchSearch: (state: ProjectState, { search }: { search: string }) => {
 		branchesReducers.setSearch(state.branches, { search });
 	},
@@ -501,6 +565,14 @@ const selectCheckedOperands = createSelector(
 	(checkedOperands): Array<CheckableOperand> => Object.values(checkedOperands),
 );
 
+/** The checks belonging to `commitId`, so a different commit reads as none. */
+const selectCheckedConflictsFor = createSelector(
+	(state: ProjectState) => state.workspace.checkedConflicts,
+	(_state: ProjectState, commitId: string) => commitId,
+	(checkedConflicts, commitId): Array<CheckedConflict> =>
+		Object.values(checkedConflicts).filter((conflict) => conflict.commitId === commitId),
+);
+
 const selectCheckedOperandKeys = createSelector(
 	(state: ProjectState) => state.workspace.checkedOperands,
 	(checkedOperands): Set<string> => new Set(Object.keys(checkedOperands)),
@@ -511,6 +583,7 @@ type GroupedCheckedOperands = {
 	uncommittedFiles: Array<FileOperand>;
 	filesByCommitId: Map<string, Array<FileOperand>>;
 	filesByBranchRef: Map<string, Array<FileOperand>>;
+	hunksByFileParent: Map<string, Array<HunkOperand>>;
 };
 
 const selectGroupedCheckedOperands = createSelector(
@@ -540,6 +613,11 @@ const selectGroupedCheckedOperands = createSelector(
 						}
 						break;
 					}
+					case "Hunk": {
+						const parentKey = operandIdentityKey(operand.parent.parent);
+						acc.hunksByFileParent.getOrInsert(parentKey, []).push(operand);
+						break;
+					}
 					default:
 						operand satisfies never;
 				}
@@ -551,6 +629,7 @@ const selectGroupedCheckedOperands = createSelector(
 				uncommittedFiles: [],
 				filesByCommitId: new Map(),
 				filesByBranchRef: new Map(),
+				hunksByFileParent: new Map(),
 			},
 		),
 );
@@ -582,6 +661,10 @@ export const projectSelectors = {
 	selectDetailsSelectionScope: (state: ProjectState) => state.workspace.detailsSelectionScope,
 	selectUncommittedFilesFilter: (state: ProjectState) => state.workspace.uncommittedFilesFilter,
 	selectFilesFilter: (state: ProjectState) => state.workspace.filesFilter,
+	selectUncommittedFilesCollapsedDirectories: (state: ProjectState) =>
+		state.workspace.uncommittedFilesCollapsedDirectories,
+	selectFilesCollapsedDirectories: (state: ProjectState) =>
+		state.workspace.filesCollapsedDirectories,
 	selectSelectionUncommittedFiles: (
 		state: ProjectState,
 		navigationIndex: NavigationIndex<string>,
@@ -591,6 +674,10 @@ export const projectSelectors = {
 			state.workspace.selection.uncommittedFiles,
 			(path) => path,
 		),
+	/** A primitive, so checking one conflict re-renders one card. */
+	selectIsConflictChecked: (state: ProjectState, conflict: CheckedConflict): boolean =>
+		conflictCheckKey(conflict) in state.workspace.checkedConflicts,
+	selectCheckedConflicts: selectCheckedConflictsFor,
 	selectIsSelectedOutline: (
 		state: ProjectState,
 		navigationIndex: NavigationIndex<Operand>,
@@ -623,6 +710,8 @@ export const projectSelectors = {
 			state.workspace.selection.diff,
 			hunkOperandIdentityKey,
 		),
+	/** The diff selection as stored, without resolving it against a navigation index. */
+	selectStoredDiffSelection: (state: ProjectState) => state.workspace.selection.diff,
 	selectOutlineModeState: (state: ProjectState) => state.workspace.mode,
 	selectFoldedSegments: (state: ProjectState) => state.workspace.foldedSegments,
 	selectSegmentFolded: (state: ProjectState, branchRef: string) =>
@@ -642,7 +731,9 @@ export const projectSelectors = {
 			? null
 			: selectGroupedCheckedOperands(state).commits.length > 0
 				? "Commit"
-				: "File",
+				: selectGroupedCheckedOperands(state).hunksByFileParent.size > 0
+					? "Hunk"
+					: "File",
 	selectCanCheckCommits: (state: ProjectState) =>
 		selectCheckedOperands(state).length === selectGroupedCheckedOperands(state).commits.length,
 	selectCanCheckFiles: (state: ProjectState, fileParent: FileParent) => {
@@ -662,6 +753,16 @@ export const projectSelectors = {
 			case "Branch":
 				return false;
 		}
+	},
+	selectCanCheckHunks: (state: ProjectState, fileParent: FileParent) => {
+		// We currently don't support any operations on branch hunks.
+		if (fileParent._tag === "Branch") return false;
+
+		return (
+			selectCheckedOperands(state).length ===
+			(selectGroupedCheckedOperands(state).hunksByFileParent.get(operandIdentityKey(fileParent))
+				?.length ?? 0)
+		);
 	},
 	...getBranchesSelectors((state: ProjectState) => state.branches),
 	...getUpstreamSelectors((state: ProjectState) => state.upstream),

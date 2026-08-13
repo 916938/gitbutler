@@ -1071,6 +1071,7 @@ dependencies = [
  "but-api-macros",
  "but-ctx",
  "but-error",
+ "but-schemars",
  "futures",
  "gix",
  "napi",
@@ -1380,6 +1381,7 @@ dependencies = [
  "gix",
  "itertools",
  "petgraph",
+ "sapling-renderdag",
  "snapbox",
  "tracing",
 ]
@@ -1451,6 +1453,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-openai",
+ "but-core",
  "but-secret",
  "but-tools",
  "futures",
@@ -1462,6 +1465,7 @@ dependencies = [
  "strum 0.27.2",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1497,15 +1501,20 @@ dependencies = [
  "anyhow",
  "but-api",
  "but-askpass",
+ "but-core",
  "but-ctx",
+ "but-llm",
  "but-path",
+ "but-secret",
  "but-settings",
  "gitbutler-watcher",
+ "gix",
  "napi",
  "napi-build",
  "napi-derive",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -1547,8 +1556,10 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "but-path",
+ "but-schemars",
  "but-testsupport",
  "gix",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tracing",
@@ -1699,6 +1710,7 @@ dependencies = [
  "but-core",
  "but-ctx",
  "but-db",
+ "but-graph",
  "but-oplog",
  "but-rebase",
  "but-testsupport",
@@ -1776,7 +1788,6 @@ dependencies = [
  "gitbutler-git",
  "gitbutler-reference",
  "gitbutler-repo",
- "gitbutler-stack",
  "gix",
  "indexmap 2.14.0",
  "itertools",
@@ -3831,7 +3842,7 @@ dependencies = [
 [[package]]
 name = "git2"
 version = "0.21.0"
-source = "git+https://github.com/gitbutlerapp/git2-rs?rev=efce108bf14cb1708cfc4c80f2ddf3244a2635ff#efce108bf14cb1708cfc4c80f2ddf3244a2635ff"
+source = "git+https://github.com/gitbutlerapp/git2-rs?rev=a87a7bb3f6843504339fe7434ee0732a3e968f3e#a87a7bb3f6843504339fe7434ee0732a3e968f3e"
 dependencies = [
  "bitflags 2.13.0",
  "libc",
@@ -3890,7 +3901,6 @@ dependencies = [
  "but-testsupport",
  "but-workspace",
  "ctor 0.6.3",
- "git2",
  "gitbutler-branch",
  "gitbutler-commit",
  "gitbutler-operating-modes",
@@ -3898,11 +3908,8 @@ dependencies = [
  "gitbutler-project",
  "gitbutler-reference",
  "gitbutler-repo",
- "gitbutler-stack",
  "gitbutler-workspace",
  "gix",
- "glob",
- "itertools",
  "md5",
  "pretty_assertions",
  "schemars 1.2.1",
@@ -4050,6 +4057,7 @@ dependencies = [
  "but-serde",
  "but-testsupport",
  "but-utils",
+ "git2",
  "gitbutler-cherry-pick",
  "gitbutler-repo",
  "gix",
@@ -4132,7 +4140,6 @@ name = "gitbutler-stack"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bstr",
  "but-askpass",
  "but-core",
  "but-ctx",
@@ -4210,10 +4217,13 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "but-path",
+ "but-schemars",
  "but-secret",
+ "but-testsupport",
  "but-utils",
  "keyring",
  "reqwest",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "serial_test",
@@ -4251,11 +4261,11 @@ dependencies = [
  "anyhow",
  "but-core",
  "but-ctx",
- "but-meta",
  "but-oxidize",
  "git2",
  "gitbutler-cherry-pick",
  "gix",
+ "tempfile",
 ]
 
 [[package]]
@@ -6281,7 +6291,7 @@ dependencies = [
 [[package]]
 name = "libgit2-sys"
 version = "0.18.5+1.9.4"
-source = "git+https://github.com/gitbutlerapp/git2-rs?rev=efce108bf14cb1708cfc4c80f2ddf3244a2635ff#efce108bf14cb1708cfc4c80f2ddf3244a2635ff"
+source = "git+https://github.com/gitbutlerapp/git2-rs?rev=a87a7bb3f6843504339fe7434ee0732a3e968f3e#a87a7bb3f6843504339fe7434ee0732a3e968f3e"
 dependencies = [
  "cc",
  "libc",

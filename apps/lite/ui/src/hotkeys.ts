@@ -118,16 +118,14 @@ export const workspaceHotkeys = {
 		},
 	},
 	focusHorizontalSelectionScopeLeft: {
-		hotkey: "Mod+Alt+ArrowLeft",
+		hotkey: "ArrowLeft",
 	},
 	focusHorizontalSelectionScopeRight: {
-		hotkey: "Mod+Alt+ArrowRight",
+		hotkey: "ArrowRight",
 	},
-	focusVerticalSelectionScopeUp: {
-		hotkey: "Mod+Alt+ArrowUp",
-	},
-	focusVerticalSelectionScopeDown: {
-		hotkey: "Mod+Alt+ArrowDown",
+	openInTerminal: {
+		hotkey: "Mod+Shift+T",
+		meta: { group: "Workspace", name: "Open project in terminal" },
 	},
 	settings: {
 		hotkey: "Mod+,",
@@ -224,6 +222,10 @@ export const outlineHotkeys = {
 		hotkey: "T",
 		meta: { group: "Workspace", name: "Jump to branch" },
 	},
+	toggleFoldBranch: {
+		hotkey: "Z",
+		meta: { group: "Branch", name: "Fold/unfold commits" },
+	},
 	uncommitCommit: {
 		hotkey: "Mod+Alt+Backspace",
 		meta: { group: "Commit", name: "Uncommit" },
@@ -264,6 +266,10 @@ export const changesFileHotkeys = {
 	openInEditor: {
 		hotkey: "E",
 		meta: { group: "File", name: "Open in editor" },
+	},
+	toggleFoldDirectory: {
+		hotkey: "Z",
+		meta: { group: "File", name: "Fold/unfold directory" },
 	},
 	uncommit: {
 		hotkey: "Mod+Alt+Backspace",
@@ -308,13 +314,16 @@ export const operationHotkeys = {
 } satisfies Record<string, HotkeyWithMeta>;
 
 export const diffHotkeys = {
-	foldFile: {
-		hotkey: "Mod+Alt+[",
-		meta: { group: "Diff", name: "Fold" },
+	checkHunk: {
+		hotkey: "Space",
+		meta: { group: "Diff", name: "Check hunk" },
 	},
-	unfoldFile: {
-		hotkey: "Mod+Alt+]",
-		meta: { group: "Diff", name: "Unfold" },
+	toggleFoldFile: {
+		hotkey: "Z",
+		meta: { group: "Diff", name: "Fold/unfold file" },
+	},
+	toggleReviewedFile: {
+		hotkey: "R",
 	},
 	toggleDiffStyle: {
 		hotkey: "Mod+B",

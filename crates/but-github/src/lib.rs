@@ -20,11 +20,14 @@ pub use client::{
 mod token;
 pub use token::GithubAccountIdentifier;
 
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Verification {
     pub user_code: String,
     pub device_code: String,
 }
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(Verification);
 
 /// Detect GitHub's OAuth error shape (e.g. `device_flow_disabled`, `authorization_pending`) before falling back to the expected payload, so the real cause surfaces instead of a generic "missing field" serde error.
 fn parse_github_oauth_response<T: serde::de::DeserializeOwned>(body: &str) -> Result<T> {
@@ -364,42 +367,32 @@ pub mod json {
 
     use crate::{AuthStatusResponse, AuthenticatedUser};
 
-    /// Serializable version of [`AuthStatusResponse`] with exposed access token.
+    /// Serializable version of [`AuthStatusResponse`], without the access token.
     ///
-    /// This struct is used for API responses where the access token needs to be
-    /// sent as a plain string. Field names are converted to camelCase for JSON.
+    /// The credential is stored by the backend as part of the call, so the caller is told
+    /// who authenticated and nothing more. Field names are camelCase for JSON.
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(rename = "GithubAuthStatusResponseSensitive")
-    )]
     #[serde(rename_all = "camelCase")]
-    pub struct AuthStatusResponseSensitive {
-        /// The GitHub access token as a plain string (sensitive data).
-        pub access_token: String,
-        /// The GitHub username/login.
+    pub struct GithubAuthStatusResponse {
         pub login: String,
-        /// The user's display name, if available.
         pub name: Option<String>,
-        /// The user's email address, if available.
         pub email: Option<String>,
-        /// The GitHub Enterprise host, if this is an enterprise account.
+        /// The enterprise or self-hosted host, when there is one.
         pub host: Option<String>,
     }
 
-    impl From<AuthStatusResponse> for AuthStatusResponseSensitive {
+    impl From<AuthStatusResponse> for GithubAuthStatusResponse {
         fn from(
             AuthStatusResponse {
-                access_token,
                 login,
                 name,
                 email,
                 host,
+                ..
             }: AuthStatusResponse,
         ) -> Self {
-            AuthStatusResponseSensitive {
-                access_token: access_token.0,
+            GithubAuthStatusResponse {
                 login,
                 name,
                 email,
@@ -409,7 +402,7 @@ pub mod json {
     }
 
     #[cfg(feature = "export-schema")]
-    but_schemars::register_sdk_type!(AuthStatusResponseSensitive);
+    but_schemars::register_sdk_type!(GithubAuthStatusResponse);
 
     /// Serializable version of [`AuthenticatedUser`] with exposed access token.
     ///
@@ -417,12 +410,8 @@ pub mod json {
     /// exposed as plain strings for API responses. Field names are converted to camelCase for JSON.
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(rename = "GithubAuthenticatedUserSensitive")
-    )]
     #[serde(rename_all = "camelCase")]
-    pub struct AuthenticatedUserSensitive {
+    pub struct GithubAuthenticatedUserSensitive {
         /// The GitHub access token as a plain string (sensitive data).
         pub access_token: String,
         /// The GitHub username/login.
@@ -435,7 +424,7 @@ pub mod json {
         pub email: Option<String>,
     }
 
-    impl From<AuthenticatedUser> for AuthenticatedUserSensitive {
+    impl From<AuthenticatedUser> for GithubAuthenticatedUserSensitive {
         fn from(
             AuthenticatedUser {
                 access_token,
@@ -445,7 +434,7 @@ pub mod json {
                 email,
             }: AuthenticatedUser,
         ) -> Self {
-            AuthenticatedUserSensitive {
+            GithubAuthenticatedUserSensitive {
                 access_token: access_token.0,
                 login,
                 avatar_url,
@@ -456,7 +445,7 @@ pub mod json {
     }
 
     #[cfg(feature = "export-schema")]
-    but_schemars::register_sdk_type!(AuthenticatedUserSensitive);
+    but_schemars::register_sdk_type!(GithubAuthenticatedUserSensitive);
 }
 
 #[cfg(test)]

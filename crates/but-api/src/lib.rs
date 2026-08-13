@@ -72,7 +72,11 @@ pub mod panic_capture;
 #[cfg(feature = "export-schema")]
 pub mod watcher;
 
-mod workspace_state;
+/// The tag vocabulary clients cache API results under.
+pub mod tags;
+
+/// Functions for workspace state.
+pub mod workspace_state;
 
 /// Represents the workspace for the frontend
 ///
@@ -92,4 +96,7 @@ pub struct WorkspaceState {
     /// for more detail.
     #[cfg(feature = "graph-workspace")]
     pub graph_workspace: but_workspace::ui::workspace::DetailedGraphWorkspace,
+    /// True if a checkout occurred, and a conflict occurred during that
+    /// checkout.
+    pub checkout_conflict_occurred: bool,
 }

@@ -10,7 +10,6 @@
 import { Toast } from "@base-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Match } from "effect";
-import type { QueryKey } from "#ui/api/queries.ts";
 import { rejectedChangesToastOptions } from "#ui/operations/toastOptions.tsx";
 import type { DiffSpec, InsertSide, RelativeTo } from "@gitbutler/but-sdk";
 import { type Operand, operandEquals, operandFileParent } from "#ui/operands.ts";
@@ -56,7 +55,7 @@ type Operation =
 	  }
 	| {
 			_tag: "SquashCommit";
-			sourceCommitIds: Array<string>;
+			subjectCommitIds: Array<string>;
 			destinationCommitId: string;
 	  }
 	| { _tag: "UndoCommit"; subjectCommitIds: Array<string>; assignTo: string | null }
@@ -108,8 +107,9 @@ const executeOperation = async ({
 			SquashCommit: (operation) =>
 				window.lite.commitSquash({
 					projectId,
-					sourceCommitIds: operation.sourceCommitIds,
-					destinationCommitId: operation.destinationCommitId,
+					subjectCommitIds: operation.subjectCommitIds,
+					targetCommitId: operation.destinationCommitId,
+					howToCombineMessages: "KeepBoth",
 					dryRun,
 				}),
 			UndoCommit: (operation) =>
@@ -200,7 +200,7 @@ export const useDryRunOperation = ({
 
 	return useQuery({
 		enabled: !!operation,
-		queryKey: ["dryRun" satisfies QueryKey, projectId, operation, changes],
+		queryKey: ["dryRun", projectId, operation, changes],
 		queryFn: () => {
 			if (!operation) return null;
 			return executeOperation({
@@ -296,7 +296,7 @@ const squashOperation = ({
 		return {
 			operation: {
 				_tag: "SquashCommit",
-				sourceCommitIds: sources.map((source) => source.commitId),
+				subjectCommitIds: sources.map((source) => source.commitId),
 				destinationCommitId: target.commitId,
 			},
 			label: "Squash",

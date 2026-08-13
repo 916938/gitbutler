@@ -58,6 +58,18 @@ export declare function applyBranchIntegration(projectId: string, branch: string
 export declare function assignHunk(projectId: string, assignments: Array<HunkAssignmentRequest>): Promise<void>
 
 /**
+ * Returns an unused short branch name derived from the configured Git author,
+ * like `jd-branch-1`.
+ *
+ * This is the very name [`branch_create()`] falls back to when `new_ref` is
+ * omitted, so callers can show the branch they are about to create before it
+ * exists. Uniqueness only holds at the time of the call: the name is
+ * deduplicated against local branches and the short names of remote-tracking
+ * branches, both of which can change afterwards.
+ */
+export declare function branchCannedName(projectId: string): Promise<string>
+
+/**
  * Checks out an existing local branch and returns the resulting workspace state.
  *
  * This acquires exclusive worktree access from `ctx`, updates the worktree and
@@ -189,6 +201,27 @@ export declare function changesInWorktree(projectId: string, changesSource: Chan
 export declare function changesInWorktreeWithPerm(projectId: string, changesSource: ChangesSource, computeDepsAndAssignments: boolean): Promise<WorktreeChanges>
 
 /**
+ * Checks the status of a GitHub device OAuth authorization.
+ *
+ * Polls the GitHub API to check if the user has completed the device authorization flow.
+ * If successful, stores the access token and returns the authenticated user information.
+ *
+ * # Arguments
+ *
+ * * `device_code` - The device code received from [`init_github_device_oauth`]
+ *
+ * # Returns
+ *
+ * * `Ok(_)` - The user completed the flow; the account and its token are stored
+ * * `Err(_)` - If the authorization is pending, denied, or the request fails
+ *
+ * For lower-level implementation details, see [`but_github::check_github_auth_status()`].
+ */
+export declare function checkGithubAuthStatus(deviceCode: string): Promise<GithubAuthStatusResponse>
+
+export declare function checkSigningSettings(projectId: string): Promise<boolean>
+
+/**
  * Archive the comment with the given `id`, hiding it from all future listings.
  * Returns `false` if the comment does not exist or was already archived.
  */
@@ -229,6 +262,19 @@ export declare function commitAmend(projectId: string, commitId: string, changes
  * oplog snapshot on success.
  */
 export declare function commitCherryPick(projectId: string, sourceCommitIds: Array<string>, relativeTo: RelativeTo, side: InsertSide, dryRun: boolean): Promise<CommitCherryPickResult>
+
+/**
+ * Return the conflicts of the conflicted commit `commit_id` without entering
+ * edit mode or touching the working tree.
+ *
+ * Hunks are identified by `(path, 1-based index)`; the extraction is
+ * deterministic, so the same commit id always yields the same hunks and
+ * `resolve_commit_conflict_hunks()` can be called with indices from this
+ * result. Fails for commits whose conflicts have no hunk representation
+ * (deletions/renames, binaries, oversized files, marker-like content) — those
+ * need manual resolution in edit mode.
+ */
+export declare function commitConflicts(projectId: string, commitId: string): Promise<CommitConflicts>
 
 /**
  * Insert a new commit built from the `changes` of `changes_source` and record
@@ -370,8 +416,14 @@ export declare function createReviewComment(projectId: string, reviewId: number,
  */
 export declare function currentForgeLogin(projectId: string): Promise<string | null>
 
+export declare function deleteAllData(): Promise<void>
+
+export declare function deleteProject(projectId: ProjectHandleOrLegacyProjectId): Promise<void>
+
 /** Delete a top-level conversation comment on a review. */
 export declare function deleteReviewComment(projectId: string, commentId: number): Promise<void>
+
+export declare function deleteUser(): Promise<void>
 
 /**
  * Discard all worktree changes that match the specs in `worktree_changes`.
@@ -412,8 +464,108 @@ export declare function forgeInfo(projectId: string): Promise<ForgeInfo | null>
  */
 export declare function forgeProvider(projectId: string): Promise<ForgeName | null>
 
+/**
+ * Removes stored credentials for a specific Bitbucket account.
+ *
+ * # Arguments
+ *
+ * * `account` - Identifier for the Bitbucket account
+ *
+ * # Returns
+ *
+ * * `Ok(())` - Always succeeds, even if no token was found
+ */
+export declare function forgetBitbucketAccount(account: BitbucketAccountIdentifier): Promise<void>
+
+/**
+ * Removes stored credentials for a specific GitHub account.
+ *
+ * Deletes the access token associated with the specified GitHub account identifier.
+ * This is used when users want to sign out or remove an account.
+ *
+ * # Arguments
+ *
+ * * `account` - Identifier for the GitHub account (github.com or enterprise)
+ *
+ * # Returns
+ *
+ * * `Ok(())` - Always succeeds, even if no token was found
+ */
+export declare function forgetGithubAccount(account: GithubAccountIdentifier): Promise<void>
+
+/**
+ * Removes stored credentials for a specific GitLab account.
+ *
+ * Deletes the access token associated with the specified GitLab account identifier.
+ * This is used when users want to sign out or remove an account.
+ *
+ * # Arguments
+ *
+ * * `account` - Identifier for the GitLab account (gitlab.com or self-hosted)
+ *
+ * # Returns
+ *
+ * * `Ok(())` - Always succeeds, even if no token was found
+ */
+export declare function forgetGitlabAccount(account: GitlabAccountIdentifier): Promise<void>
+
+/**
+ * Retrieves the authenticated user information for a Bitbucket account.
+ *
+ * # Arguments
+ *
+ * * `account` - Identifier for the Bitbucket account to query
+ *
+ * # Returns
+ *
+ * * `Ok(Some(AuthenticatedUser))` - User information
+ * * `Ok(None)` - No credentials stored for this account
+ * * `Err(_)` - If the API request fails or credentials are invalid
+ */
+export declare function getBbUser(account: BitbucketAccountIdentifier): Promise<BitbucketAuthenticatedUserSensitive | null>
+
+export declare function getGbConfig(projectId: string): Promise<GitConfigSettings>
+
+/**
+ * Retrieves the authenticated user information for a GitHub account.
+ *
+ * Fetches the stored credentials and current user profile for the specified GitHub account.
+ * Returns `None` if no credentials are stored for the account.
+ *
+ * # Arguments
+ *
+ * * `account` - Identifier for the GitHub account to query
+ *
+ * # Returns
+ *
+ * * `Ok(Some(AuthenticatedUser))` - User information with access token
+ * * `Ok(None)` - No credentials stored for this account
+ * * `Err(_)` - If the API request fails or credentials are invalid
+ */
+export declare function getGhUser(account: GithubAccountIdentifier): Promise<GithubAuthenticatedUserSensitive | null>
+
+/**
+ * Retrieves the authenticated user information for a GitLab account.
+ *
+ * Fetches the stored credentials and current user profile for the specified GitLab account.
+ * Returns `None` if no credentials are stored for the account.
+ *
+ * # Arguments
+ *
+ * * `account` - Identifier for the GitLab account to query
+ *
+ * # Returns
+ *
+ * * `Ok(Some(AuthenticatedUser))` - User information
+ * * `Ok(None)` - No credentials stored for this account
+ * * `Err(_)` - If the API request fails or credentials are invalid
+ */
+export declare function getGlUser(account: GitlabAccountIdentifier): Promise<GitlabAuthenticatedUserSensitive | null>
+
 /** Get the initial upstream integration script for `branch`. */
 export declare function getInitialBranchIntegration(projectId: string, branch: string, strategy: BranchIntegrationStrategy | null): Promise<InitialBranchIntegration>
+
+export declare function getLoginToken(): Promise<LoginToken>
 
 /**
  * Get the snapshot that a redo operation should restore to.
@@ -431,11 +583,27 @@ export declare function getReviewBaseRepoUrl(projectId: string, reviewId: number
 export declare function getReviewMergeStatus(projectId: string, reviewId: number): Promise<ReviewMergeStatus>
 
 /**
+ * Returns all available terminal options for the given platform.
+ *
+ * The list is empty if the `platform` isn't one of `linux`, `macos` or `windows`, case-sensitive.
+ *
+ * ## Why Legacy?
+ *
+ * It's born as a port from the frontend, which means it's frontend centric and serves mostly that right now.
+ * But it could be generalised as more consumers join in.
+ * Big question is if the backend shouldn't just know the platform… If it is needed, it should be an enum here.
+ */
+export declare function getTerminalOptionsForPlatform(platform: string): Promise<Array<TerminalOption>>
+
+/**
  * Get the snapshot that an undo operation should restore to.
  *
  * This handles multiple consecutive undos.
  */
 export declare function getUndoTargetSnapshot(projectId: string): Promise<Snapshot | null>
+
+/** The signed-in account, or `None`. Credentials stay in this process. */
+export declare function getUserProfileLocal(): Promise<UserProfile | null>
 
 /**
  * Return the current detailed graph workspace for the frontend.
@@ -444,6 +612,10 @@ export declare function getUndoTargetSnapshot(projectId: string): Promise<Snapsh
  * mutate the cached [`WorkspaceState`] returned by mutation APIs.
  */
 export declare function getWorkspace(projectId: string): Promise<DetailedGraphWorkspace>
+
+export declare function gitTestFetch(projectId: string, remoteName: string, action: string | null): Promise<void>
+
+export declare function gitTestPush(projectId: string, remoteName: string, branchName: string): Promise<void>
 
 export declare function headInfo(projectId: string): Promise<RefInfo>
 
@@ -455,6 +627,23 @@ export declare function headInfo(projectId: string): Promise<RefInfo>
  * `None`, the namespace defaults to the SDK's compiled GitButler app channel.
  */
 export declare function initApplicationNamespace(identifier: string | null): Promise<void>
+
+/**
+ * Starts the GitHub device OAuth flow.
+ *
+ * This starts the OAuth device authorization flow, which allows users to authenticate
+ * by visiting a URL and entering a code. Returns verification details including the
+ * user code and verification URL.
+ *
+ * # Returns
+ *
+ * * `Ok(Verification)` - Contains the user code, device code, and verification URL
+ * * `Err(_)` - If the OAuth initialization request fails
+ *
+ * For lower-level implementation details,
+ * see [`but_github::init_github_device_oauth()`].
+ */
+export declare function initGithubDeviceOauth(): Promise<Verification>
 
 /** Get the list of review template paths for the given project. */
 export declare function listAvailableReviewTemplates(projectId: string): Promise<Array<string>>
@@ -468,6 +657,42 @@ export declare function listCommentReactions(projectId: string, commentId: numbe
 
 /** List all editors that can be opened from a GUI client. */
 export declare function listEditors(): Promise<Array<Editor>>
+
+/**
+ * Lists all Bitbucket accounts with stored credentials.
+ *
+ * # Returns
+ *
+ * * `Ok(Vec<BitbucketAccountIdentifier>)` - List of all known accounts
+ * * `Err(_)` - If storage access fails
+ */
+export declare function listKnownBitbucketAccounts(): Promise<Array<BitbucketAccountIdentifier>>
+
+/**
+ * Lists all GitHub accounts with stored credentials.
+ *
+ * Returns identifiers for all GitHub accounts (github.com and enterprise) that have
+ * stored access tokens in the application.
+ *
+ * # Returns
+ *
+ * * `Ok(Vec<GithubAccountIdentifier>)` - List of all known accounts
+ * * `Err(_)` - If storage access fails
+ */
+export declare function listKnownGithubAccounts(): Promise<Array<GithubAccountIdentifier>>
+
+/**
+ * Lists all GitLab accounts with stored credentials.
+ *
+ * Returns identifiers for all GitLab accounts (gitlab.com and self-hosted) that have
+ * stored access tokens in the application.
+ *
+ * # Returns
+ *
+ * * `Ok(Vec<GitlabAccountIdentifier>)` - List of all known accounts
+ * * `Err(_)` - If storage access fails
+ */
+export declare function listKnownGitlabAccounts(): Promise<Array<GitlabAccountIdentifier>>
 
 /** List all programs that can be opened from a GUI client. */
 export declare function listPrograms(): Promise<Array<Program>>
@@ -496,6 +721,9 @@ export declare function listReviewSubmissions(projectId: string, reviewId: numbe
 /** List the pushed commits and review requests on a review's timeline. */
 export declare function listReviewTimelineEvents(projectId: string, reviewId: number): Promise<Array<ForgeReviewTimelineEvent>>
 
+/** Complete a login and persist the account, so the token never leaves this process. */
+export declare function loginAndPersist(token: string): Promise<UserProfile>
+
 /** Merge a review on the forge. */
 export declare function mergeReview(projectId: string, reviewId: number, mergeMethod: ReviewMergeMethod | null): Promise<void>
 
@@ -519,6 +747,53 @@ export declare function moveBranch(projectId: string, subjectBranch: string, tar
  * [`list_programs`] provides the available `program_id`s.
  */
 export declare function openInProgram(projectId: string, programId: string, path: string, lineNr: number | null): Promise<void>
+
+/**
+ * Opens a terminal application at the specified directory path.
+ *
+ * # Parameters
+ * - `terminal_id`: Identifier for the terminal application to open.
+ * - `path`: The directory path where the terminal should open.
+ *   It's a string as it's passed from the frontend, but ideally we'd manage to keep the original bytes.
+ *
+ * # Supported Terminals
+ *
+ * **macOS:**
+ * - `terminal` - Terminal.app
+ * - `iterm2` - iTerm2
+ * - `ghostty` - Ghostty
+ * - `warp` - Warp
+ * - `alacritty-mac` - Alacritty
+ * - `wezterm-mac` - WezTerm
+ * - `hyper` - Hyper
+ * - `kitty` - Kitty
+ *
+ * **Windows:**
+ * - `wt` - Windows Terminal
+ * - `powershell` - PowerShell
+ * - `cmd` - Command Prompt
+ *
+ * **Linux:**
+ * - `ptyxis` - Ptyxis
+ * - `gnome-terminal` - GNOME Terminal
+ * - `konsole` - KDE Konsole
+ * - `xfce4-terminal` - XFCE Terminal
+ * - `alacritty` - Alacritty
+ * - `ghostty` - Ghostty
+ * - `warp` - Warp
+ * - `hyper` - Hyper
+ * - `wezterm` - WezTerm
+ * - `kitty` - Kitty
+ * - `cosmic-term` - COSMIC Terminal
+ *
+ * # Errors
+ * Returns an error if:
+ * - The terminal application is not installed or not found in PATH
+ * - The specified path does not exist or is not accessible
+ * - The terminal_id is not recognized for the current platform
+ * - On all platforms, only spawn failures are detected; the terminal's later exit status is not checked
+ */
+export declare function openInTerminal(terminalId: string, path: string): Promise<void>
 
 /**
  * Find the final snapshot that a restore snapshot will restore from.
@@ -585,6 +860,21 @@ export declare function removeReviewReaction(projectId: string, reviewId: number
 export declare function requestReview(projectId: string, reviewId: number, logins: Array<string>): Promise<void>
 
 /**
+ * Apply `specs` to the conflicted commit `commit_id` and rebase descendants.
+ *
+ * Resolving a subset of the conflicts rewrites the commit into a conflicted
+ * commit with only the remaining conflicts; resolving all of them rewrites it
+ * into a normal commit. Either way the commit id changes — address follow-up
+ * resolutions to the returned `new_commit`. An oplog snapshot records an undo
+ * point. Nothing is written if any spec fails validation.
+ *
+ * [`HunkResolution::Ai`] specs are sent to the configured LLM first (no
+ * worktree lock is held during the model call); AI configuration is only
+ * required when such a spec is present.
+ */
+export declare function resolveCommitConflictHunks(projectId: string, commitId: string, specs: Array<ResolutionSpec>): Promise<HunkResolutionResult>
+
+/**
  * Restores the project to a specific snapshot using a specific kind of restore. This operation
  * also creates a new snapshot in the oplog.
  */
@@ -606,6 +896,8 @@ export declare function reviewApply(projectId: string, reviewId: number): Promis
  * from the git config.
  */
 export declare function reviewTemplate(projectId: string): Promise<ReviewTemplateInfo | null>
+
+export declare function setGbConfig(projectId: string, config: GitConfigSettings): Promise<void>
 
 /**
  * Set the remote used to publish branches without changing the default target.
@@ -640,6 +932,59 @@ export declare function setReviewTemplate(projectId: string, templatePath: strin
 export declare function setTargetRefAndInitProject(projectId: string, targetRef: string, pushRemote: string | null): Promise<void>
 
 /**
+ * Stores an Atlassian API token for Bitbucket Cloud.
+ *
+ * Bitbucket Cloud authenticates over HTTP Basic where the username is the
+ * Atlassian account email and the password is the API token (with scopes).
+ * Validates and stores the provided token, then returns the authenticated user.
+ *
+ * # Arguments
+ *
+ * * `email` - The Atlassian account email (HTTP Basic username)
+ * * `access_token` - The Bitbucket API token to store (wrapped in Sensitive)
+ *
+ * # Returns
+ *
+ * * `Ok(_)` - The token is valid and stored
+ * * `Err(_)` - If the token is invalid or storage fails
+ */
+export declare function storeBitbucketApiToken(email: string, accessToken: string): Promise<BitbucketAuthStatusResponse>
+
+/**
+ * Stores a GitHub Personal Access Token (PAT) for github.com.
+ *
+ * Validates and stores the provided PAT, then retrieves and returns the authenticated
+ * user information. The token is securely stored in the application's data directory.
+ *
+ * # Arguments
+ *
+ * * `access_token` - The GitHub PAT to store (wrapped in Sensitive to prevent logging)
+ *
+ * # Returns
+ *
+ * * `Ok(_)` - The token is valid and stored
+ * * `Err(_)` - If the token is invalid or storage fails
+ */
+export declare function storeGithubPat(accessToken: string): Promise<GithubAuthStatusResponse>
+
+/**
+ * Stores a GitLab Personal Access Token (PAT) for gitlab.com.
+ *
+ * Validates and stores the provided PAT, then retrieves and returns the authenticated
+ * user information. The token is securely stored in the application's data directory.
+ *
+ * # Arguments
+ *
+ * * `access_token` - The GitLab PAT to store (wrapped in Sensitive to prevent logging)
+ *
+ * # Returns
+ *
+ * * `Ok(_)` - The token is valid and stored
+ * * `Err(_)` - If the token is invalid or storage fails
+ */
+export declare function storeGitlabPat(accessToken: string): Promise<GitlabAuthStatusResponse>
+
+/**
  * Tears off a branch using the behavior described by [`tear_off_branch_with_perm()`].
  *
  * This acquires exclusive worktree access from `ctx`, tears `subject_branch`
@@ -669,15 +1014,15 @@ export declare function treeChangeDiffs(projectId: string, change: TreeChange): 
 export declare function unapplyStack(projectId: string, stackId: string): Promise<void>
 
 /**
- * Change the branch name from `branch_name` to `new_name` in the stack
- * identified by `stack_id`.
+ * Change the profile on gitbutler.com and keep the stored account in step.
  *
- * This acquires exclusive worktree access from `ctx` before applying the
- * rename.
- *
- * See [`update_branch_name_with_perm()`] for the underlying mutation.
+ * The API call alone would leave the local copy stale, so the name shown next to the
+ * picture would still be the old one until the next sign-in.
  */
-export declare function updateBranchName(projectId: string, stackId: string, branchName: string, newName: string): Promise<BranchReference>
+export declare function updateProfileAndPersist(params: UpdateUserParams): Promise<UserProfile>
+
+/** Change the stored settings of a project, leaving absent fields as they were. */
+export declare function updateProjectSettings(projectId: ProjectHandleOrLegacyProjectId, settings: ProjectSettingsUpdate): Promise<void>
 
 /**
  * Update arbitrary fields of a single review (title, body, state, target base).
@@ -776,6 +1121,36 @@ export declare class WatcherHandle {
   get active(): boolean
 }
 
+export interface AiConfiguration {
+  provider: 'openai' | 'anthropic' | 'ollama' | 'lmstudio' | 'openrouter'
+  openaiKeyOption: 'butlerAPI' | 'bringYourOwn'
+  openaiModel: string
+  openaiCustomEndpoint?: string
+  openaiHasApiKey: boolean
+  anthropicKeyOption: 'butlerAPI' | 'bringYourOwn'
+  anthropicModel: string
+  anthropicHasApiKey: boolean
+  ollamaEndpoint: string
+  ollamaModel: string
+  lmstudioEndpoint: string
+  lmstudioModel: string
+}
+
+export interface AiConfigurationUpdate {
+  provider: 'openai' | 'anthropic' | 'ollama' | 'lmstudio'
+  openaiKeyOption: 'butlerAPI' | 'bringYourOwn'
+  openaiModel: string
+  openaiCustomEndpoint?: string
+  openaiApiKey?: string
+  anthropicKeyOption: 'butlerAPI' | 'bringYourOwn'
+  anthropicModel: string
+  anthropicApiKey?: string
+  ollamaEndpoint: string
+  ollamaModel: string
+  lmstudioEndpoint: string
+  lmstudioModel: string
+}
+
 /** Any fork link line. */
 export const ANY_FORK: number
 
@@ -811,6 +1186,9 @@ export declare function askpassSubmitPromptResponse(id: string, response?: strin
 /** The target node of this link line is the child of this column. */
 export const CHILD: number
 
+/** Read application-global AI configuration without exposing stored secrets. */
+export declare function getAiConfiguration(): Promise<AiConfiguration>
+
 /** Get the application settings. */
 export declare function getAppSettings(): Promise<AppSettings>
 
@@ -841,6 +1219,9 @@ export const LEFT_MERGE_ANCESTOR: number
 /** The child of this cell is linked to parents on the left. */
 export const LEFT_MERGE_PARENT: number
 
+/** Clear application-global AI configuration and stored provider API keys. */
+export declare function resetAiConfiguration(): Promise<AiConfiguration>
+
 /** Any right fork link line. */
 export const RIGHT_FORK: number
 
@@ -858,6 +1239,12 @@ export const RIGHT_MERGE_ANCESTOR: number
 
 /** The child of this cell is linked to parents on the right. */
 export const RIGHT_MERGE_PARENT: number
+
+/** Stream a text response from the configured provider. */
+export declare function streamAiResponse(systemMessage: string, prompt: string, onToken: ((err: Error | null, arg: string) => void)): Promise<string>
+
+/** Validate and save one complete application-global AI configuration. */
+export declare function updateAiConfiguration(update: AiConfigurationUpdate): Promise<AiConfiguration>
 
 /** Update feature flags; unset fields are left unchanged. */
 export declare function updateFeatureFlags(update: FeatureFlagsUpdate): Promise<void>
@@ -1044,15 +1431,15 @@ export type BitbucketAccountIdentifier = {
   };
 };
 
-/** Serializable version of [`AuthStatusResponse`] with exposed access token. */
-export type BitbucketAuthStatusResponseSensitive = {
-  /** The Bitbucket access token as a plain string (sensitive data). */
-  accessToken: string;
-  /** The Bitbucket username. */
+/**
+ * Serializable version of [`AuthStatusResponse`], without the access token.
+ *
+ * The credential is stored by the backend as part of the call, so the caller is told
+ * who authenticated and nothing more. Field names are camelCase for JSON.
+ */
+export type BitbucketAuthStatusResponse = {
   username: string;
-  /** The user's display name, if available. */
   name: string | null;
-  /** The Atlassian account email used for authentication. */
   email: string | null;
 };
 
@@ -1414,7 +1801,7 @@ export type Claude = {
  */
 export type Code = "Validation" | "RepoOwnership" | "ProjectGitAuth" | "DefaultTargetNotFound" | "CommitSigningFailed" | "CommitMergeConflictFailure" | "ProjectMissing" | "AuthorMissing" | "BranchNotFound" | "SecretKeychainNotFound" | "MissingLoginKeychain" | "GitForcePushProtection" | "NetworkError" | "ProjectDatabaseIncompatible" | "DefaultTerminalNotFound" | "Unknown" | "GitNonFastForward" | "CliInstallCancelled" | "GitHubTokenExpired" | "PreconditionFailed" | "EditorExitedWithNonZeroStatus";
 
-/** Commit that is a part of a [`StackBranch`](gitbutler_stack::StackBranch) and, as such, containing state derived in relation to the specific branch. */
+/** Commit that is part of a legacy stack branch and contains state derived in relation to it. */
 export type Commit = {
   /** The OID of the commit. */
   id: string;
@@ -1469,6 +1856,16 @@ export type CommitCherryPickResult = {
   newCommits: Array<string>;
   /** Workspace state after the cherry-pick. */
   workspace: WorkspaceState;
+};
+
+/** JSON transport type for the conflicts of a conflicted commit. */
+export type CommitConflicts = {
+  /** The conflicted commit. */
+  commitId: string;
+  /** The conflicted files that decompose into hunks, sorted by path. */
+  files: Array<ConflictedFile>;
+  /** Conflicted files that need manual resolution in edit mode. */
+  manual: Array<ManualConflict>;
 };
 
 /** JSON transport type for creating a commit in the rebase graph. */
@@ -1555,6 +1952,63 @@ export type ConflictEntryPresence = {
   ours: boolean;
   theirs: boolean;
   ancestor: boolean;
+};
+
+/**
+ * One conflicted region of a file, with the content of each side and a few
+ * lines of surrounding context.
+ */
+export type ConflictHunk = {
+  /**
+   * Survives the rewrites resolving causes, unlike `hunks` positions: a
+   * hash of the three sides — which narrowing keeps, unlike contexts —
+   * plus an occurrence counter. Treat an id that stops matching as dropped.
+   */
+  id: string;
+  /**
+   * The 1-based line where the conflicted region starts, counted in the
+   * intended result — the merge with every conflict taking the commit's
+   * side, the new side of [`ConflictedFile::change`] — so anchors land in
+   * the diff the caller renders.
+   *
+   * [`ConflictedFile::change`]: super::ConflictedFile::change
+   */
+  line: number;
+  /** Unconflicted lines directly before the conflict, clamped to the previous conflict. */
+  contextBefore: string;
+  /** The content of the *ours* side, i.e. the new base the commit is rebased onto. */
+  ours: string;
+  /** The content of the common ancestor, if the merge produced diff3-style markers. */
+  base: string | null;
+  /** The content of the *theirs* side, i.e. the conflicted commit's own version. */
+  theirs: string;
+  /** Unconflicted lines directly after the conflict, clamped to the next conflict. */
+  contextAfter: string;
+};
+
+/** One conflicted file and its conflicts, in file order. */
+export type ConflictedFile = {
+  /** The repo-relative path of the file. */
+  path: string;
+  /**
+   * The file's change from the commit's parent to its intended result: the
+   * merge with every conflict taking the commit's side. The old side is the
+   * parent's actual content, so clean edits attribute as in any diff; the
+   * new side is not applied — the commit fell back to the parent at every
+   * conflict — which the caller should say next to each conflict hunk.
+   */
+  change: TreeChange;
+  /**
+   * The conflicts of the file; hunks are addressed by their 1-based
+   * position in this list.
+   */
+  hunks: Array<ConflictHunk>;
+  /**
+   * The file's content with diff3 conflict markers, labeled for display.
+   * Scanning its marker blocks in order yields exactly `hunks`, so a
+   * renderer that parses markers can address conflict N as hunk N+1.
+   */
+  mergedText: string;
 };
 
 /** A stack that conflicted while applying a branch. */
@@ -2107,21 +2561,16 @@ export type GithubAccountIdentifier = {
 };
 
 /**
- * Serializable version of [`AuthStatusResponse`] with exposed access token.
+ * Serializable version of [`AuthStatusResponse`], without the access token.
  *
- * This struct is used for API responses where the access token needs to be
- * sent as a plain string. Field names are converted to camelCase for JSON.
+ * The credential is stored by the backend as part of the call, so the caller is told
+ * who authenticated and nothing more. Field names are camelCase for JSON.
  */
-export type GithubAuthStatusResponseSensitive = {
-  /** The GitHub access token as a plain string (sensitive data). */
-  accessToken: string;
-  /** The GitHub username/login. */
+export type GithubAuthStatusResponse = {
   login: string;
-  /** The user's display name, if available. */
   name: string | null;
-  /** The user's email address, if available. */
   email: string | null;
-  /** The GitHub Enterprise host, if this is an enterprise account. */
+  /** The enterprise or self-hosted host, when there is one. */
   host: string | null;
 };
 
@@ -2158,21 +2607,16 @@ export type GitlabAccountIdentifier = {
 };
 
 /**
- * Serializable version of [`AuthStatusResponse`] with exposed access token.
+ * Serializable version of [`AuthStatusResponse`], without the access token.
  *
- * This struct is used for API responses where the access token needs to be
- * sent as a plain string. Field names are converted to camelCase for JSON.
+ * The credential is stored by the backend as part of the call, so the caller is told
+ * who authenticated and nothing more. Field names are camelCase for JSON.
  */
-export type GitlabAuthStatusResponseSensitive = {
-  /** The GitLab access token as a plain string (sensitive data). */
-  accessToken: string;
-  /** The GitLab username. */
+export type GitlabAuthStatusResponse = {
   username: string;
-  /** The user's display name, if available. */
   name: string | null;
-  /** The user's email address, if available. */
   email: string | null;
-  /** The self-hosted GitLab host, if this is a self-hosted instance. */
+  /** The enterprise or self-hosted host, when there is one. */
   host: string | null;
 };
 
@@ -2328,6 +2772,39 @@ export type HunkLockTarget = {
   subject: string;
 } | {
   type: "unidentified";
+};
+
+/** How to resolve a single conflict hunk. */
+export type HunkResolution = {
+  type: "ours";
+} | {
+  type: "theirs";
+} | {
+  type: "content";
+  subject: string;
+} | {
+  type: "ai";
+};
+
+/** JSON transport type for the outcome of applying per-hunk resolutions. */
+export type HunkResolutionResult = {
+  /** The conflicted commit the resolutions were applied to. */
+  commitId: string;
+  /** The rewritten commit. Still conflicted when `remaining` is non-empty. */
+  newCommit: string;
+  /** How many conflicts were resolved. */
+  resolved: number;
+  /**
+   * Whether the fully resolved commit ended up with the same tree as
+   * its parent — the resolutions dropped all of its changes.
+   */
+  commitEmptied: boolean;
+  /** The conflicts that remain, per file. */
+  remaining: Array<RemainingConflicts>;
+  /** Conflicted files that need manual resolution in edit mode. */
+  manual: Array<ManualConflict>;
+  /** Workspace state after the apply. */
+  workspace: WorkspaceState;
 };
 
 /** A way to indicate that a path in the index isn't suitable for committing and needs to be dealt with. */
@@ -2542,6 +3019,36 @@ export type ListedStack = {
 /** JSON transport type for how a branch stack relates to the workspace. */
 export type ListedStackStatus = "applied" | "unapplied" | "target" | "standalone";
 
+/** Response from `POST /api/login/token.json`. */
+export type LoginToken = {
+  /**
+   * Polling token returned by the API for completing login.
+   *
+   * This value is sensitive. Although it is obtained via a server-side HTTP
+   * call, this struct may be returned from backend commands to browser-based
+   * frontends, so callers must avoid exposing or logging it unnecessarily.
+   */
+  token: string;
+  /** Token shown to the user after authentication on gitbutler.com. */
+  browser_token: string;
+  /** Expiration timestamp. */
+  expires: string;
+  /** The full URL to redirect the user's browser to for login. */
+  url: string;
+};
+
+/**
+ * A conflicted file with no hunk representation — a side deletion or rename, a
+ * non-blob entry, a binary, or one too large to splice — which therefore needs
+ * manual resolution in edit mode.
+ */
+export type ManualConflict = {
+  /** The repo-relative path of the file. */
+  path: string;
+  /** Why it cannot be resolved automatically, for display to the user. */
+  reason: string;
+};
+
 /**
  * An optional full reference name accepted as a string like `refs/heads/main`,
  * for use as a parameter transport via `#[but_api(...)]`.
@@ -2613,7 +3120,7 @@ export type OperatingMode = {
   subject: EditModeMetadata;
 };
 
-export type OperationKind = "CreateCommit" | "CreateBranch" | "StashIntoBranch" | "SetBaseBranch" | "MergeUpstream" | "UpdateWorkspaceBase" | "MoveHunk" | "UpdateBranchName" | "UpdateBranchNotes" | "ReorderBranches" | "UpdateBranchRemoteName" | "GenericBranchUpdate" | "DeleteBranch" | "ApplyBranch" | "DiscardLines" | "DiscardHunk" | "DiscardFile" | "DiscardChanges" | "Discard" | "AmendCommit" | "Absorb" | "AutoCommit" | "UndoCommit" | "DiscardCommit" | "UnapplyBranch" | "CherryPick" | "SquashCommit" | "UpdateCommitMessage" | "MoveCommit" | "MoveBranch" | "TearOffBranch" | "ReorderCommit" | "InsertBlankCommit" | "MoveCommitFile" | "FileChanges" | "EnterEditMode" | "ResolveConflictsAi" | "SyncWorkspace" | "CreateDependentBranch" | "RemoveDependentBranch" | "UpdateDependentBranchName" | "UpdateDependentBranchDescription" | "UpdateDependentBranchPrNumber" | "AutoHandleChangesBefore" | "AutoHandleChangesAfter" | "SplitBranch" | "CleanWorkspace" | "OnDemandSnapshot" | "Unknown" | "RestoreFromSnapshotViaUndo" | "RestoreFromSnapshotViaRedo" | "RestoreFromSnapshot";
+export type OperationKind = "CreateCommit" | "CreateBranch" | "StashIntoBranch" | "SetBaseBranch" | "MergeUpstream" | "UpdateWorkspaceBase" | "MoveHunk" | "UpdateBranchName" | "UpdateBranchNotes" | "ReorderBranches" | "UpdateBranchRemoteName" | "GenericBranchUpdate" | "DeleteBranch" | "ApplyBranch" | "DiscardLines" | "DiscardHunk" | "DiscardFile" | "DiscardChanges" | "Discard" | "AmendCommit" | "Absorb" | "AutoCommit" | "UndoCommit" | "DiscardCommit" | "UnapplyBranch" | "CherryPick" | "SquashCommit" | "UpdateCommitMessage" | "MoveCommit" | "MoveBranch" | "TearOffBranch" | "ReorderCommit" | "InsertBlankCommit" | "MoveCommitFile" | "FileChanges" | "EnterEditMode" | "ResolveConflicts" | "ResolveConflictsAi" | "SyncWorkspace" | "CreateDependentBranch" | "RemoveDependentBranch" | "UpdateDependentBranchName" | "UpdateDependentBranchDescription" | "UpdateDependentBranchPrNumber" | "AutoHandleChangesBefore" | "AutoHandleChangesAfter" | "SplitBranch" | "CleanWorkspace" | "OnDemandSnapshot" | "Unknown" | "RestoreFromSnapshotViaUndo" | "RestoreFromSnapshotViaRedo" | "RestoreFromSnapshot";
 
 /** What kind of apply operation completed. */
 export type OutcomeStatus = "alreadyApplied" | "applied" | "conflictAborted";
@@ -2668,6 +3175,31 @@ export type ProjectForFrontend = {
   forge_review_template_path: string | null;
   /** Tell if the project is known to be open in a Window in the frontend. */
   is_open: boolean;
+};
+
+/**
+ * JSON input for `project_id` parameters.
+ *
+ * This accepts a [`ProjectHandle`] in all builds, and also accepts a legacy [`LegacyProjectId`]
+ * when the `legacy` feature is enabled.
+ *
+ * Its serialized form is a plain string — see the `Serialize`/`Deserialize` impls below —
+ * so it describes itself to schemars as one, and API consumers pass an ordinary string.
+ */
+export type ProjectHandleOrLegacyProjectId = string;
+
+/**
+ * The stored project fields a settings UI can change. An absent field is left alone.
+ *
+ * A transport DTO rather than [`gitbutler_project::UpdateRequest`], which reaches into
+ * `ApiProject`, `FetchResult` and `ForgeUser` and carries fetch bookkeeping no settings
+ * screen should be able to write.
+ */
+export type ProjectSettingsUpdate = {
+  title: string | null;
+  description: string | null;
+  forcePushProtection: boolean | null;
+  omitCertificateCheck: boolean | null;
 };
 
 /**
@@ -2802,6 +3334,14 @@ export type RelativeTo = {
   subject: Array<number>;
 };
 
+/** Conflicts still unresolved in a file after an apply. */
+export type RemainingConflicts = {
+  /** The repo-relative path of the file. */
+  path: string;
+  /** How many conflicts remain in it. */
+  hunks: number;
+};
+
 export type RemoteCommit = {
   id: string;
   description: string;
@@ -2840,6 +3380,19 @@ export type RepoPermissions = {
   push: boolean;
   triage: boolean;
   pull: boolean;
+};
+
+/**
+ * One conflict to resolve, addressed by path and 1-based hunk index as
+ * returned by `commit_conflicts()`.
+ */
+export type ResolutionSpec = {
+  /** The repo-relative path of the conflicted file. */
+  path: string;
+  /** The 1-based index of the conflict within the file. */
+  hunk: number;
+  /** How to resolve it. */
+  resolution: HunkResolution;
 };
 
 /** How one conflicted file was resolved, for display to the user. */
@@ -3063,7 +3616,7 @@ export type StackDetails = {
 };
 
 /**
- * Represents a lightweight version of a [`gitbutler_stack::Stack`] for listing.
+ * Represents a lightweight version of a legacy stack for listing.
  * NOTE: this is a UI type mostly because it's still modeled after the legacy stack with StackId, something that doesn't exist anymore.
  */
 export type StackEntry = {
@@ -3142,6 +3695,12 @@ export type Target = {
   remoteTrackingRef: RemoteTrackingReference;
   /** The amount of commits that aren't reachable by any segment in the workspace, they are in its future. */
   commitsAhead: number;
+  /**
+   * Whether the stored target commit is where the target ref points right now.
+   *
+   * Only a workspace update advances the stored target, so `false` means an update has work to do.
+   */
+  isCurrent: boolean;
 };
 
 /** JSON transport type for a commit on the target branch's first-parent line. */
@@ -3205,6 +3764,19 @@ export type TelemetrySettings = {
 export type TelemetryUpdate = {
   appMetricsEnabled?: boolean | null;
   appErrorReportingEnabled?: boolean | null;
+};
+
+/** Configuration for a terminal application. */
+export type TerminalOption = {
+  /** The name of the process/program to run. */
+  identifier: string;
+  /** Human-readable terminal name shown to users in picker and settings UI. */
+  displayName: string;
+  /**
+   * Operating-system family this option applies to: `macos`, `windows`, or
+   * `linux`.
+   */
+  platform: string;
 };
 
 export type Trailer = {
@@ -3363,6 +3935,21 @@ export type UnifiedPatch = {
   };
 };
 
+/** Parameters for updating the user profile. */
+export type UpdateUserParams = {
+  name: string | null;
+  website: string | null;
+  twitter: string | null;
+  bluesky: string | null;
+  timezone: string | null;
+  location: string | null;
+  email_share: boolean | null;
+  /** Base64-encoded avatar image bytes. */
+  avatar_base64: string | null;
+  /** Original filename of the avatar (e.g. "photo.png"). */
+  avatar_filename: string | null;
+};
+
 /**
  * Commit that is only at the remote.
  * Unlike the `Commit` struct, there is no knowledge of GitButler concepts like conflicted state etc.
@@ -3380,6 +3967,27 @@ export type UpstreamCommit = {
   author: Author;
   /** The GitButler change-id associated with this commit, if available. */
   changeId: string | null;
+};
+
+/**
+ * The signed-in account, without any credential.
+ *
+ * `json::UserWithSecretsSensitive` carries the GitButler and GitHub access tokens
+ * because desktop calls the GitButler API from its frontend. A client that does not
+ * should not be handed long-lived credentials to display a name and a picture.
+ */
+export type UserProfile = {
+  id: number;
+  name: string | null;
+  login: string | null;
+  email: string | null;
+  picture: string;
+  githubUsername: string | null;
+};
+
+export type Verification = {
+  user_code: string;
+  device_code: string;
 };
 
 /** Git files activity. Supplies the head sha */
@@ -3453,6 +4061,11 @@ export type WorkspaceState = {
    * rendered graph projection.
    */
   graphWorkspace: DetailedGraphWorkspace;
+  /**
+   * True if a checkout occurred, and a conflict occurred during that
+   * checkout.
+   */
+  checkoutConflictOccurred: boolean;
 };
 
 /** Same as `but_core::ui::WorktreeChanges`, but with the addition of hunk assignments. */

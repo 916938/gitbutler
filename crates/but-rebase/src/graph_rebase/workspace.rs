@@ -11,12 +11,13 @@ use but_core::{
     RefMetadata, WORKSPACE_REF_NAME,
     branch::resolve_tracking_branch_ref_name,
     changeset::{
-        ChangeIdMode, Identity, changeset_identifier, create_similarity_lut, lookup_similar,
+        ChangeIdMode, Identity, changeset_identifier, compute_upstream_commits_lut,
+        identify_matching_content, lookup_similar,
     },
     ui::{CommitState, PushStatus},
 };
 use but_graph::workspace::commit::is_managed_workspace_by_message;
-use gix::prelude::ObjectIdExt;
+use gix::{prelude::ObjectIdExt, refs::FullNameRef};
 use petgraph::{Direction, visit::EdgeRef as _};
 
 use crate::graph_rebase::{
@@ -270,10 +271,20 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
     }
 
     /// The target commit's node, if a target is configured and present.
-    fn target_selector(&self) -> Option<Selector> {
+    pub fn target_selector(&self) -> Option<Selector> {
         let target = self.workspace.graph.project_meta.target_commit_id?;
         let selector = self.try_select_commit(target)?;
         self.history.normalize_selector(selector).ok()
+    }
+
+    /// The target ref.
+    pub fn target_ref(&self) -> Option<&FullNameRef> {
+        self.workspace
+            .graph
+            .project_meta
+            .target_ref
+            .as_ref()
+            .map(|r| r.as_ref())
     }
 
     /// Compute the per-reference status for every local-branch reference in the
@@ -381,12 +392,8 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
         }
         let upstream_ids = self.pick_ids(upstream.into_iter())?;
         let workspace_ids = self.pick_ids(nodes.iter().copied())?;
-        let content = but_core::changeset::compute_similarity_by_commit_ids(
-            self.repo(),
-            &upstream_ids,
-            &workspace_ids,
-            true,
-        )?;
+        let upstream_lut = self.similarity_lut(&upstream_ids)?;
+        let content = identify_matching_content(self.repo(), &upstream_lut, &workspace_ids)?;
 
         let reference_names: HashMap<Selector, gix::refs::FullName> = nodes
             .iter()
@@ -402,9 +409,7 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
                 return Ok(true);
             }
             Ok(match self.lookup_step(selector)? {
-                Step::Pick(Pick { id, .. }) => {
-                    content.matches_by_workspace_commit.contains_key(&id)
-                }
+                Step::Pick(Pick { id, .. }) => content.contains_key(&id),
                 _ => false,
             })
         };
@@ -516,18 +521,7 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
 
     /// Build a changeset-similarity lookup table over `commit_ids`.
     fn similarity_lut(&self, commit_ids: &[gix::ObjectId]) -> Result<Identity> {
-        let cost_info = (
-            commit_ids.len(),
-            self.repo().index_or_empty()?.entries().len(),
-        );
-        create_similarity_lut(
-            self.repo(),
-            commit_ids
-                .iter()
-                .filter_map(|id| but_core::Commit::from_id(id.attach(self.repo())).ok()),
-            cost_info,
-            true,
-        )
+        compute_upstream_commits_lut(self.repo(), commit_ids)
     }
 
     /// The id of the commit in `lut` that is content-equivalent to the commit

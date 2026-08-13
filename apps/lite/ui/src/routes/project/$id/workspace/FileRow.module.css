@@ -2,6 +2,11 @@
 	margin-inline-start: 6px;
 }
 
+/* Leading the name, so the separator does the spacing rather than a margin. */
+.pathLead {
+	margin-inline-end: 0;
+}
+
 .statusBadge {
 	flex-shrink: 0;
 	align-self: center;
@@ -25,32 +30,6 @@
 
 	&[data-status-type="Rename"] {
 		color: var(--change-status-rename);
-	}
-}
-
-.iconWithCheckbox {
-	display: grid;
-
-	& > * {
-		grid-area: 1 / 1;
-	}
-}
-
-.icon {
-	align-self: center;
-}
-
-.checkbox {
-	opacity: 0;
-
-	&[data-checked],
-	.row:hover &,
-	&:focus {
-		opacity: 1;
-	}
-
-	&[data-disabled] {
-		display: none;
 	}
 }
 

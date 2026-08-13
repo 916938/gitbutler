@@ -1,5 +1,6 @@
 import { useDiscardWorktreeChanges } from "#ui/api/mutations.ts";
 import { Icon } from "#ui/components/Icon.tsx";
+import { SelectionScopeKbd } from "#ui/components/SelectionScopeKbd.tsx";
 import { createDiffSpec } from "#ui/operations/diff-specs.ts";
 import {
 	nativeMenuItem,
@@ -19,6 +20,7 @@ import type { FC } from "react";
 import { getRowButtonClassName } from "../Row-utils.ts";
 import { ChangeStats } from "../ChangeStats.tsx";
 import { RowToolbar, SectionHeaderRow } from "../Row.tsx";
+import { useFileDisplayModeMenuItems } from "../useFileDisplayModeMenuItems.ts";
 import { useQueries } from "@tanstack/react-query";
 import { treeChangeDiffsQueryOptions } from "#ui/api/queries.ts";
 
@@ -38,6 +40,7 @@ export const UncommittedChangesRow: FC<{
 	);
 	const { isPending: isDiscardWorktreeChangesPending, mutate: discardWorktreeChanges } =
 		useDiscardWorktreeChanges();
+	const fileDisplayModeMenuItems = useFileDisplayModeMenuItems();
 
 	const dispatch = useAppDispatch();
 	const enterAbsorbMode = (source: Operand, sourceTarget: AbsorptionTarget) => {
@@ -61,7 +64,7 @@ export const UncommittedChangesRow: FC<{
 	const discardChanges = () => {
 		discardWorktreeChanges({
 			projectId,
-			changes: changes.map((change) => createDiffSpec(change, [])),
+			worktreeChanges: changes.map((change) => createDiffSpec(change, [])),
 		});
 	};
 
@@ -81,11 +84,14 @@ export const UncommittedChangesRow: FC<{
 			enabled: changes.length > 0 && !isDiscardWorktreeChangesPending,
 			onSelect: discardChanges,
 		}),
+		nativeMenuSeparator,
+		...fileDisplayModeMenuItems,
 	];
 
 	return (
 		<SectionHeaderRow
 			label="Uncommitted"
+			childrenBefore={<SelectionScopeKbd hotkey="1" scope="uncommitted-files" />}
 			onContextMenu={(event) => {
 				void showNativeContextMenu(event, menuItems);
 			}}

@@ -26,11 +26,34 @@ const selectionScopeChildren: Partial<Record<SelectionScope, Set<SelectionScope>
 const isSelectionScope = (id: string): id is SelectionScope => allSelectionScopes.has(id);
 
 export const getFocusedSelectionScope = (activeElement: Element | null): SelectionScope | null => {
-	const selectionScope = activeElement?.matches("[data-selection-scope]")
-		? activeElement.getAttribute("data-selection-scope")
-		: undefined;
+	// closest() so focus on a control inside a pane (a row button, the diff
+	// scroller) still reports that pane's scope.
+	const selectionScope = activeElement
+		?.closest("[data-selection-scope]")
+		?.getAttribute("data-selection-scope");
 	if (selectionScope == undefined) return null;
 	return isSelectionScope(selectionScope) ? selectionScope : null;
+};
+
+/** Whether keyboard focus currently sits inside the given selection scope. */
+export const isFocusWithinSelectionScope = (scope: SelectionScope): boolean =>
+	document.activeElement?.closest(`[data-selection-scope="${scope}"]`) != null;
+
+/**
+ * Whether bare-arrow pane navigation may act for the current focus. Widgets
+ * with their own arrow keys keep them: anything outside every pane (dialogs,
+ * toasts), toolbars (which rove with arrows wherever they live), and the
+ * details header chrome — focus that resolves to the "details" scope itself
+ * rather than one of its child panes. Body counts as navigable so the keys
+ * can enter a pane when nothing holds focus.
+ */
+const paneNavigationAllowed = (): boolean => {
+	const activeElement = document.activeElement;
+	if (activeElement === null || activeElement === document.body) return true;
+	if (activeElement.closest('[role="toolbar"]') !== null) return false;
+
+	const scope = getFocusedSelectionScope(activeElement);
+	return scope !== null && scope !== "details";
 };
 
 const findFocusTarget = (parent: ParentNode, scope: SelectionScope): HTMLElement | null => {
@@ -63,40 +86,36 @@ export const focusHorizontalSelectionScope = ({
 	outlineSelectionScope: Extract<SelectionScope, "uncommitted-files" | "outline"> | null;
 	outlineVisible: boolean;
 }) => {
+	if (!paneNavigationAllowed()) return;
+
 	const currentSelectionScope = getFocusedSelectionScope(document.activeElement);
 	const currentOutlineSelectionScope =
 		currentSelectionScope === "uncommitted-files" || currentSelectionScope === "outline"
 			? currentSelectionScope
 			: outlineSelectionScope;
 
+	// "details" resolves to whichever of its child scopes is mounted (diff or
+	// pr tab), so the rightmost slot works on both tabs.
 	const orderedSelectionScopes: Array<SelectionScope> = [
 		...(outlineVisible ? [currentOutlineSelectionScope ?? "outline"] : []),
 		...(filesVisible ? (["files"] satisfies Array<SelectionScope>) : []),
-		"diff",
+		"details",
 	];
+	const positionScope =
+		currentSelectionScope === "diff" || currentSelectionScope === "pr"
+			? "details"
+			: currentSelectionScope;
 
-	if (currentSelectionScope === null || !orderedSelectionScopes.includes(currentSelectionScope)) {
+	if (positionScope === null || !orderedSelectionScopes.includes(positionScope)) {
 		const nextSelectionScope: SelectionScope | undefined =
 			offset === 1 ? orderedSelectionScopes.at(0) : orderedSelectionScopes.at(-1);
 
 		if (nextSelectionScope !== undefined) focusSelectionScope(nextSelectionScope);
 	} else {
-		const nextIndex = orderedSelectionScopes.indexOf(currentSelectionScope) + offset;
+		const nextIndex = orderedSelectionScopes.indexOf(positionScope) + offset;
 		const nextSelectionScope = nextIndex < 0 ? undefined : orderedSelectionScopes.at(nextIndex);
 		if (nextSelectionScope !== undefined) focusSelectionScope(nextSelectionScope);
 	}
-};
-
-export const focusVerticalSelectionScope = (offset: -1 | 1) => {
-	const currentSelectionScope = getFocusedSelectionScope(document.activeElement);
-	const orderedSelectionScopes: Array<SelectionScope> = ["uncommitted-files", "outline"];
-	const currentIndex =
-		currentSelectionScope === null ? -1 : orderedSelectionScopes.indexOf(currentSelectionScope);
-	if (currentIndex === -1) return;
-
-	const nextIndex = currentIndex + offset;
-	const nextSelectionScope = nextIndex < 0 ? undefined : orderedSelectionScopes.at(nextIndex);
-	if (nextSelectionScope !== undefined) focusSelectionScope(nextSelectionScope);
 };
 
 /**
@@ -129,6 +148,7 @@ export const useNavigationIndexHotkeys = <T>({
 	ref,
 	selectSectionPredicate,
 	operationSourcesForItem,
+	onEdgeSpill,
 	getKey,
 }: {
 	navigationIndex: NavigationIndex<T>;
@@ -140,6 +160,12 @@ export const useNavigationIndexHotkeys = <T>({
 	selectSectionPredicate?: (item: T) => boolean;
 	/** When omitted, the selection operation hotkeys (move, cut) are not registered. */
 	operationSourcesForItem?: (item: T) => Array<Operand>;
+	/**
+	 * Called with the direction when arrow navigation hits the pane's edge (or
+	 * the pane is empty). Wired by whichever component stacks this pane against
+	 * a neighbor, so crossing the boundary can enter the adjacent pane.
+	 */
+	onEdgeSpill?: (offset: -1 | 1) => void;
 	getKey: (item: T) => string;
 }) => {
 	const dispatch = useAppDispatch();
@@ -149,7 +175,10 @@ export const useNavigationIndexHotkeys = <T>({
 			selection === null
 				? navigationIndex.items.at(offset === 1 ? 0 : -1)
 				: getAdjacent({ navigationIndex, selection, offset, getKey });
-		if (newItem === null || newItem === undefined) return;
+		if (newItem === null || newItem === undefined) {
+			onEdgeSpill?.(offset);
+			return;
+		}
 		select(newItem);
 	};
 

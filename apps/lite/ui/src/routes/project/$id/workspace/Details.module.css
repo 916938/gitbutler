@@ -41,7 +41,7 @@
 	display: grid;
 	/* Match regular button height. */
 	grid-template-rows: 28px;
-	grid-template-columns: auto 1fr;
+	grid-template-columns: auto auto 1fr;
 	column-gap: 8px;
 	align-items: center;
 }
@@ -66,7 +66,7 @@
 	/* With a separate header above (commit/branch views), use tighter padding. */
 	padding: 10px;
 	gap: 12px;
-	border-bottom: 1px solid var(--border-3);
+	border-bottom: 1px solid var(--border-section);
 
 	/* No files panel to the left, so align with the panel padding. */
 	&.filesHidden {
@@ -87,7 +87,7 @@
 }
 
 .panels {
-	border-top: 1px solid var(--border-3);
+	border-top: 1px solid var(--border-section);
 
 	/* No header above in the lone layout; the border would shift content down 1px. */
 	.containerLone & {
@@ -100,16 +100,6 @@
 	display: grid;
 	grid-template-rows: auto minmax(0, 1fr);
 	grid-template-columns: minmax(0, 1fr);
-}
-
-.resizeHandle {
-	width: 1px;
-	background-color: var(--border-3);
-
-	&[data-separator="hover"],
-	&[data-separator="active"] {
-		background-color: var(--border-2);
-	}
 }
 
 .loadingTab {
@@ -148,6 +138,29 @@
 
 .diffContentsContainer {
 	display: grid;
+	/* Bound the row to the pane. Left to size itself, it takes the height of the
+	   ruler's canvas — which has no height of its own but its bitmap's, which the
+	   painter sizes from this row. At a fractional device pixel ratio the rounding
+	   in that loop doesn't cancel and the pane grows a little on every frame. */
+	grid-template-rows: minmax(0, 1fr);
+	/* Code, then the minimap ruler — which collapses the column when it has
+	   nothing to map. */
+	grid-template-columns: minmax(0, 1fr) auto;
+
+	&:has([data-minimap-navigable="true"]) .diffContents {
+		/* The ruler's edge, drawn from the code's side of it. The ruler ends where
+		   its map does — at a fixed scale a short diff doesn't reach the foot of the
+		   pane — while this column always fills the row, so the line runs unbroken
+		   from here. */
+		border-right: 1px solid var(--border-section);
+		/* Drop the native scrollbar only while the minimap is showing, so a diff too
+		   short to map keeps one. */
+		scrollbar-width: none;
+
+		&::-webkit-scrollbar {
+			display: none;
+		}
+	}
 }
 
 .diffContents {
@@ -164,8 +177,8 @@
 
 	diffs-container {
 		--diffs-selection-number-fg: var(--text-1);
-		border-top: 1px solid var(--border-3);
-		border-bottom: 1px solid var(--border-3);
+		border-top: 1px solid var(--border-section);
+		border-bottom: 1px solid var(--border-section);
 
 		/* Hide the first diff's top border so it doesn't double up with the container above. */
 		&:first-child {
@@ -261,7 +274,7 @@
 
 .fileHeader {
 	display: grid;
-	grid-template-columns: auto 1fr auto auto auto;
+	grid-template-columns: auto 1fr auto auto auto auto;
 	column-gap: 12px;
 	align-items: center;
 	justify-content: space-between;
@@ -274,8 +287,53 @@
 	}
 }
 
+/* A folded file's header stands in for its hidden, selected hunks. A plain
+   accent bar marks it for now; positioned absolutely so the layout is
+   untouched. */
+.fileHeaderSelected {
+	position: relative;
+
+	&::before {
+		position: absolute;
+		width: 3px;
+		inset: 4px auto 4px 0;
+		border-radius: 0 2px 2px 0;
+		/* The row-selection fill, dimmed like row selections in a blurred
+		   panel; full strength while the diff pane owns focus. */
+		background-color: color-mix(var(--fill-gray-bg) var(--opacity-bg-selected-blur), transparent);
+		content: "";
+	}
+
+	[data-selection-focus-styles="true"] [data-selection-scope="diff"]:focus-within &::before {
+		background-color: var(--fill-gray-bg);
+	}
+}
+
 .fileHeaderActions {
 	display: flex;
+}
+
+.fileReview {
+	--button-height: 22px;
+	--button-gap: 6px;
+}
+
+.fileReviewIndicator {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	border-radius: var(--radius-xs);
+	background-color: var(--bg-1);
+	box-shadow: inset 0 0 0 1px var(--border-2);
+
+	[aria-pressed="true"] &,
+	[aria-pressed="mixed"] & {
+		background-color: var(--fill-pop-bg);
+		box-shadow: inset 0 0 0 1px var(--fill-pop-bg);
+		color: var(--fill-pop-fg);
+	}
 }
 
 .filePath {
@@ -321,6 +379,9 @@
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
+	/* Match the branch header's tabs row (regular button height) so both
+	   header variants end at the same line. */
+	min-height: 28px;
 	gap: 8px;
 	color: var(--text-3);
 }
@@ -347,4 +408,20 @@
 
 .commitConflictBadge {
 	flex-shrink: 0;
+}
+
+/* Holds the conflict bar above the diff as one child of `.panel`, whose grid
+   sizes exactly two rows — a third child would take the diff's. */
+.diffArea {
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
+	min-height: 0;
+}
+
+/* Grid items floor at min-content, so without this the diff sizes to its whole
+   length and the row scrolls the minimap away with it instead of the code area
+   scrolling beneath a pinned ruler. */
+.diffArea > * {
+	min-height: 0;
 }

@@ -1,7 +1,7 @@
+import { assert } from "#ui/assert.ts";
 import { hash } from "#ui/hash.ts";
 import {
 	contiguousSelectionsFromHunk,
-	firstContiguousSelectionFromHunk,
 	rangeFromLineGroups,
 	synthesizeFilePatch,
 } from "#ui/hunk.ts";
@@ -13,16 +13,47 @@ import {
 	type HunkOperand,
 	weakFileIdentityKey,
 } from "#ui/operands.ts";
-import type { NavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { buildIndexByKey, type NavigationIndex } from "#ui/workspace/navigation-index.ts";
 import type { TreeChange, UnifiedPatch } from "@gitbutler/but-sdk";
-import { processFile, type CodeViewDiffItem, type CodeViewLineSelection } from "@pierre/diffs";
+import {
+	processFile,
+	type CodeViewDiffItem,
+	type CodeViewLayout,
+	type CodeViewLineSelection,
+	type VirtualFileMetrics,
+} from "@pierre/diffs";
 
 export type Annotation = { _tag: "local"; id: string };
 
-type DiffViewDeps = {
+/**
+ * Layout and metrics handed to CodeView. Shared because the minimap models item
+ * positions from the same numbers, and would drift silently if they diverged.
+ */
+export const codeViewLayout: CodeViewLayout = {
+	paddingTop: 0,
+	// Match --panel-padding-block.
+	paddingBottom: 12,
+	gap: 10,
+};
+
+export const codeViewItemMetrics = {
+	diffHeaderHeight: 38,
+	paddingBottom: 9,
+} satisfies Partial<VirtualFileMetrics>;
+
+type PrepareDiffFilesDeps = {
 	fileParent: FileParent;
 	changes: Array<TreeChange>;
 	treeChangeDiffs: Array<UnifiedPatch | null>;
+};
+
+export type PreparedDiffFile = {
+	file: FileOperand;
+	fileId: string;
+	change: TreeChange;
+	treeChangeDiff: UnifiedPatch | null;
+	patch: string;
+	version: number;
 };
 
 export type DiffViewFile = {
@@ -60,6 +91,38 @@ const parseFileDiff = (
 	return parsed;
 };
 
+/**
+ * Prepare stable file IDs and patch versions once for both review state and
+ * the rendered diff. Parsing remains separate so single-file mode only builds
+ * Pierre's diff shape for the selected file.
+ */
+export const prepareDiffFiles = ({
+	fileParent,
+	changes,
+	treeChangeDiffs,
+}: PrepareDiffFilesDeps): Array<PreparedDiffFile> =>
+	changes.map((change, index) => {
+		const file: FileOperand = { parent: fileParent, path: change.path };
+		const treeChangeDiff = treeChangeDiffs[index] ?? null;
+		const patch = synthesizeFilePatch(
+			change,
+			treeChangeDiff?.type === "Patch" ? treeChangeDiff.subject.hunks : [],
+		);
+
+		return {
+			file,
+			fileId: weakFileIdentityKey(file),
+			change,
+			treeChangeDiff,
+			patch,
+			version: hash(patch),
+		};
+	});
+
+export const parsePreparedDiffFile = (
+	file: PreparedDiffFile,
+): CodeViewDiffItem<Annotation>["fileDiff"] => parseFileDiff(file.patch, String(file.version));
+
 type DiffFileNavigation = {
 	itemId: string;
 	firstHunk: HunkOperand | null;
@@ -85,7 +148,7 @@ export const getDiffFileNavigation = ({
 		if (fstDiffHunk) {
 			const fstHunk = parseFileDiff(synthesizeFilePatch(change, [fstDiffHunk]), itemId).hunks[0];
 			if (fstHunk) {
-				const fstSelection = firstContiguousSelectionFromHunk(fstHunk);
+				const fstSelection = contiguousSelectionsFromHunk(fstHunk).next().value;
 				if (fstSelection) {
 					return {
 						itemId,
@@ -105,7 +168,7 @@ export const getDiffFileNavigation = ({
 };
 
 /** Build relationships between our SDK data and Pierre's view. */
-export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDeps): DiffView => {
+export const getDiffView = (files: Array<PreparedDiffFile>): DiffView => {
 	const navigationIndex: NavigationIndex<HunkOperand> = {
 		items: [],
 		indexByKey: new Map(),
@@ -117,24 +180,13 @@ export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDe
 	const fileByPath = new Map<string, DiffViewFile>();
 	const hunkByKey = new Map<string, DiffViewHunk>();
 
-	for (const [ci, change] of changes.entries()) {
-		const mdiff = treeChangeDiffs[ci];
-
-		const file: FileOperand = {
-			parent: fileParent,
-			path: change.path,
-		};
-
-		const combinedFilePatch = synthesizeFilePatch(
-			change,
-			mdiff?.type === "Patch" ? mdiff.subject.hunks : [],
-		);
-		const version = hash(combinedFilePatch);
+	for (const prepared of files) {
+		const { file, fileId, change, treeChangeDiff: mdiff, version } = prepared;
 		const item: CodeViewDiffItem<Annotation> = {
 			type: "diff",
-			id: weakFileIdentityKey(file),
+			id: fileId,
 			version,
-			fileDiff: parseFileDiff(combinedFilePatch, String(version)),
+			fileDiff: parsePreparedDiffFile(prepared),
 		};
 
 		items.push(item);
@@ -143,7 +195,7 @@ export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDe
 			operand: file,
 			item,
 			change,
-			patch: mdiff ?? null,
+			patch: mdiff,
 			hunks: [],
 		};
 
@@ -188,4 +240,29 @@ export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDe
 		hunkByKey,
 		navigationIndex,
 	};
+};
+
+/**
+ * The navigation index with folded files' hunks removed — except each folded
+ * file's first hunk, which stands in for the file the way a folded branch
+ * keeps its branch row. j/k then stop once per folded file instead of walking
+ * its hidden hunks, and z can unfold from the keyboard.
+ */
+export const withoutFoldedHunks = (
+	navigationIndex: NavigationIndex<HunkOperand>,
+	hunkByKey: DiffView["hunkByKey"],
+	collapsedItems: Set<string>,
+): NavigationIndex<HunkOperand> => {
+	if (collapsedItems.size === 0) return navigationIndex;
+
+	const items = navigationIndex.items.filter((hunk) => {
+		const key = hunkOperandIdentityKey(hunk);
+		const file = hunkByKey.get(key)?.file;
+		return (
+			file === undefined ||
+			!collapsedItems.has(file.item.id) ||
+			hunkOperandIdentityKey(assert(file.hunks[0]).operand) === key
+		);
+	});
+	return { items, indexByKey: buildIndexByKey(items, hunkOperandIdentityKey) };
 };

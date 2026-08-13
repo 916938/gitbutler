@@ -11,17 +11,17 @@ import { decodeBytes } from "#ui/api/bytes.ts";
 import {
 	focusHorizontalSelectionScope,
 	focusSelectionScope,
-	focusVerticalSelectionScope,
 	getFocusedSelectionScope,
 	type SelectionScope,
 } from "#ui/selection-scopes.ts";
 import { projectSlice } from "#ui/projects/state.ts";
 import { interfaceSlice } from "#ui/interface/state.ts";
 import { PickerDialog } from "#ui/components/PickerDialog.tsx";
+import { ResizeHandle } from "#ui/components/ResizeHandle.tsx";
 import { globalHotkeys, workspaceHotkeys } from "#ui/hotkeys.ts";
 import { writeLastOpenedProject } from "#ui/project.ts";
 import { useAppDispatch, useAppSelector } from "#ui/store.ts";
-import type { ProjectForFrontend, RefInfo, WorktreeChanges } from "@gitbutler/but-sdk";
+import type { ProjectForFrontend, RefInfo, TreeChange, WorktreeChanges } from "@gitbutler/but-sdk";
 import { useHotkey, useHotkeys, type UseHotkeyDefinition } from "@tanstack/react-hotkeys";
 import {
 	QueryErrorResetBoundary,
@@ -32,7 +32,7 @@ import {
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { Match } from "effect";
 import { type FC, Activity, useDeferredValue, useRef } from "react";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { Group, Panel, useDefaultLayout } from "react-resizable-panels";
 import {
 	branchOperand,
 	commitOperand,
@@ -48,6 +48,14 @@ import {
 import { Details, type DiffViewerHandle } from "./Details.tsx";
 import { getDiffFileNavigation } from "./diff-view.ts";
 import { pathMatchesFilter } from "./file-row.ts";
+import {
+	buildFileTreeRows,
+	fileTreeNavigationIndex,
+	selectedFilePath,
+	type FileDisplayMode,
+	type FileTreeRow,
+} from "./file-tree.ts";
+import { useFileDisplayMode } from "./useFileDisplayMode.ts";
 import styles from "./WorkspacePage.module.css";
 import { useActiveElement } from "#ui/focus.ts";
 import { ApplyBranchPicker } from "./ApplyBranchPicker.tsx";
@@ -58,7 +66,7 @@ import { getOperations } from "#ui/operations/operation.ts";
 import { buildIndexByKey, type NavigationIndex } from "#ui/workspace/navigation-index.ts";
 import { OperationControls } from "#ui/routes/project/$id/workspace/OperationControls.tsx";
 import { WorkspacePageErrorBoundary } from "./WorkspacePageErrorBoundary.tsx";
-import { Settings } from "./Settings.tsx";
+import { Settings } from "./Settings/Settings.tsx";
 import { useBranchesOutline } from "./useBranchesOutline.ts";
 import { useUpstreamOutline } from "./useUpstreamOutline.ts";
 import type { OutlineMode } from "#ui/outline/mode.ts";
@@ -96,6 +104,22 @@ const useWorkspaceHotkeys = (projectId: string) => {
 	const { isPending: isRestoreSnapshotPending, mutate: restoreSnapshot } = useRestoreSnapshot({
 		projectId,
 	});
+
+	// Shared by the arrow keys and their h/l aliases so the pairs cannot diverge.
+	const focusPane = (offset: -1 | 1) => {
+		focusHorizontalSelectionScope({
+			filesVisible,
+			offset,
+			outlineSelectionScope,
+			outlineVisible,
+		});
+	};
+	const focusPaneLeft = () => {
+		focusPane(-1);
+	};
+	const focusPaneRight = () => {
+		focusPane(1);
+	};
 
 	useHotkeys([
 		{
@@ -184,42 +208,28 @@ const useWorkspaceHotkeys = (projectId: string) => {
 		),
 		{
 			hotkey: workspaceHotkeys.focusHorizontalSelectionScopeLeft.hotkey,
-			callback: () => {
-				focusHorizontalSelectionScope({
-					filesVisible,
-					offset: -1,
-					outlineSelectionScope,
-					outlineVisible,
-				});
+			callback: focusPaneLeft,
+			options: {
+				conflictBehavior: "allow",
 			},
+		},
+		{
+			hotkey: "H",
+			callback: focusPaneLeft,
 			options: {
 				conflictBehavior: "allow",
 			},
 		},
 		{
 			hotkey: workspaceHotkeys.focusHorizontalSelectionScopeRight.hotkey,
-			callback: () => {
-				focusHorizontalSelectionScope({
-					filesVisible,
-					offset: 1,
-					outlineSelectionScope,
-					outlineVisible,
-				});
-			},
+			callback: focusPaneRight,
 			options: {
 				conflictBehavior: "allow",
 			},
 		},
 		{
-			hotkey: workspaceHotkeys.focusVerticalSelectionScopeUp.hotkey,
-			callback: () => focusVerticalSelectionScope(-1),
-			options: {
-				conflictBehavior: "allow",
-			},
-		},
-		{
-			hotkey: workspaceHotkeys.focusVerticalSelectionScopeDown.hotkey,
-			callback: () => focusVerticalSelectionScope(1),
+			hotkey: "L",
+			callback: focusPaneRight,
 			options: {
 				conflictBehavior: "allow",
 			},
@@ -232,19 +242,23 @@ const hasAnyOperation = (sources: Array<Operand>, target: Operand) => {
 	return !!operations.into || !!operations.above || !!operations.below;
 };
 
-const buildUncommittedFilesNavigationIndex = ({
+const buildUncommittedFileRows = ({
 	worktreeChanges,
 	filter,
+	mode,
+	collapsedDirectories,
 }: {
 	worktreeChanges: WorktreeChanges | undefined;
 	filter: string | null;
-}): NavigationIndex<string> => {
-	const items =
-		worktreeChanges?.changes.flatMap((change) =>
-			pathMatchesFilter(change.path, filter) ? change.path : [],
-		) ?? [];
-	return { items, indexByKey: buildIndexByKey(items, (path) => path) };
-};
+	mode: FileDisplayMode;
+	collapsedDirectories: Record<string, true>;
+}): Array<FileTreeRow<TreeChange>> =>
+	buildFileTreeRows({
+		items:
+			worktreeChanges?.changes.filter((change) => pathMatchesFilter(change.path, filter)) ?? [],
+		mode,
+		collapsedDirectories,
+	});
 
 const buildOutlineNavigationIndex = ({
 	headInfo,
@@ -379,7 +393,11 @@ const WorkspacePage: FC = () => {
 
 		if (renderAllFiles) {
 			didScrollToViaFileRef.current = true;
-			viewerRef.current?.scrollTo({
+			const viewer = viewerRef.current?.getInstance();
+			// Details selection is deferred, so the ref may still point at a viewer without this file.
+			if (!viewer?.getItem(itemId)) return;
+
+			viewer.scrollTo({
 				type: "item",
 				id: itemId,
 			});
@@ -519,10 +537,19 @@ const WorkspacePage: FC = () => {
 	const uncommittedFilesFilter = useAppSelector((state) =>
 		projectSlice.selectors.selectUncommittedFilesFilter(state, projectId),
 	);
-	const uncommittedFilesNavigationIndex = buildUncommittedFilesNavigationIndex({
+	const uncommittedFilesDisplayMode = useFileDisplayMode();
+	const uncommittedFilesCollapsedDirectories = useAppSelector((state) =>
+		projectSlice.selectors.selectUncommittedFilesCollapsedDirectories(state, projectId),
+	);
+	const uncommittedFileRows = buildUncommittedFileRows({
 		worktreeChanges,
 		filter: uncommittedFilesFilter,
+		mode: uncommittedFilesDisplayMode,
+		collapsedDirectories: uncommittedFilesCollapsedDirectories,
 	});
+	// Directories take the cursor as files do, so the index follows the layout the
+	// list renders — and a collapsed directory takes its files out of it too.
+	const uncommittedFilesNavigationIndex = fileTreeNavigationIndex(uncommittedFileRows);
 	const uncommittedTreeChangeDiffs = useQueries({
 		queries:
 			worktreeChanges?.changes.map((change) =>
@@ -536,9 +563,12 @@ const WorkspacePage: FC = () => {
 	});
 
 	const onActiveUncommittedFileSelection = (selection: string) => {
+		// A directory row stands for the first file below it, so activating a
+		// folder still gives the details pane somewhere to go.
+		const path = selectedFilePath(uncommittedFileRows, selection);
 		// Indexed against the worktree changes rather than the navigation index,
 		// which the file filter can narrow out from under them.
-		const index = worktreeChanges?.changes.findIndex((change) => change.path === selection) ?? -1;
+		const index = worktreeChanges?.changes.findIndex((change) => change.path === path) ?? -1;
 		const change = index === -1 ? undefined : worktreeChanges?.changes[index];
 		const treeChangeDiff = index === -1 ? undefined : uncommittedTreeChangeDiffs?.[index];
 		const navigation =
@@ -586,6 +616,25 @@ const WorkspacePage: FC = () => {
 	const deferredDetailsSelection = useDeferredValue(detailsSelection);
 
 	const { data: projects } = useSuspenseQuery(listProjectsQueryOptions);
+	const project = projects.find((candidate) => candidate.id === projectId);
+	// Names the project group in settings. The route has already established it resolves.
+	const projectName = project?.title ?? "";
+	// Resolved here rather than in the handler, so the hotkey can disable itself when
+	// there is no terminal chosen yet rather than failing on activation.
+	const { data: terminalId } = useQuery({
+		...guiSettingsQueryOptions,
+		select: (cfg) => cfg.terminalId ?? "",
+	});
+
+	const canOpenTerminal = project !== undefined && terminalId !== undefined && terminalId !== "";
+	useHotkey(
+		workspaceHotkeys.openInTerminal.hotkey,
+		() => {
+			if (!canOpenTerminal) return;
+			void window.lite.openInTerminal({ terminalId, path: project.path });
+		},
+		{ enabled: canOpenTerminal, meta: workspaceHotkeys.openInTerminal.meta },
+	);
 
 	useHotkey(globalHotkeys.selectProject.hotkey, openProjectPicker, {
 		enabled: projects.length > 0,
@@ -634,7 +683,7 @@ const WorkspacePage: FC = () => {
 							onActiveFileSelection={onActiveUncommittedFileSelection}
 						/>
 					</Panel>
-					<Separator className={styles.resizeHandle} />
+					<ResizeHandle />
 				</Activity>
 
 				<Panel
@@ -671,7 +720,14 @@ const WorkspacePage: FC = () => {
 							onOpenChange={setProjectPickerOpen}
 						/>
 					),
-					Settings: () => <Settings open onOpenChange={setSettingsOpen} />,
+					Settings: () => (
+						<Settings
+							open
+							projectId={projectId}
+							projectName={projectName}
+							onOpenChange={setSettingsOpen}
+						/>
+					),
 				}),
 			)}
 		</>

@@ -21,6 +21,7 @@ import { ChangeStats } from "./ChangeStats.tsx";
 import type { LineStats } from "./lineStats.ts";
 import { getRowButtonClassName } from "./Row-utils.ts";
 import { RowToolbar, SectionHeaderRow } from "./Row.tsx";
+import { useFileDisplayModeMenuItems } from "./useFileDisplayModeMenuItems.ts";
 
 export const ChangesHeaderRow: FC<{
 	projectId: string;
@@ -38,6 +39,7 @@ export const ChangesHeaderRow: FC<{
 		useDiscardWorktreeChanges();
 
 	const diffSpecs = () => changes.map((change) => createDiffSpec(change, []));
+	const fileDisplayModeMenuItems = useFileDisplayModeMenuItems();
 
 	const menuItems: Array<NativeMenuItem> = nativeMenuItemsFromGroups([
 		...Match.value(fileParent).pipe(
@@ -75,7 +77,7 @@ export const ChangesHeaderRow: FC<{
 						nativeMenuItem({
 							label: "Discard Changes",
 							enabled: changes.length > 0 && !isDiscardWorktreeChangesPending,
-							onSelect: () => discardWorktreeChanges({ projectId, changes: diffSpecs() }),
+							onSelect: () => discardWorktreeChanges({ projectId, worktreeChanges: diffSpecs() }),
 						}),
 					],
 				],
@@ -91,6 +93,7 @@ export const ChangesHeaderRow: FC<{
 					window.lite.clipboardWriteText(changes.map((change) => change.path).join("\n")),
 			}),
 		],
+		fileDisplayModeMenuItems,
 	]);
 
 	return (

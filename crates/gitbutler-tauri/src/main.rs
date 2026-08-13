@@ -286,10 +286,8 @@ fn main() -> anyhow::Result<()> {
                 branch::tauri_apply::apply,
                 branch::tauri_get_initial_branch_integration::get_initial_branch_integration,
                 branch::tauri_apply_branch_integration::apply_branch_integration,
-                legacy::stack::tauri_create_reference::create_reference,
                 legacy::stack::tauri_create_branch::create_branch,
                 legacy::stack::tauri_remove_branch::remove_branch,
-                legacy::stack::tauri_update_branch_name::update_branch_name,
                 legacy::secret::tauri_secret_get_global::secret_get_global,
                 legacy::secret::tauri_secret_set_global::secret_set_global,
                 legacy::secret::tauri_secret_delete_global::secret_delete_global,
@@ -385,6 +383,8 @@ fn main() -> anyhow::Result<()> {
                 workspace::tauri_workspace_fetch_status::workspace_fetch_status,
                 land::tauri_branch_land::branch_land,
                 resolve::tauri_resolve_commit_conflicts_ai::resolve_commit_conflicts_ai,
+                resolve::tauri_commit_conflicts::commit_conflicts,
+                resolve::tauri_resolve_commit_conflict_hunks::resolve_commit_conflict_hunks,
                 platform::tauri_build_type::build_type,
             ])
             .menu(menu::build)

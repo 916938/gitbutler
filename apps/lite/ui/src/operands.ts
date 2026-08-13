@@ -61,7 +61,7 @@ export const hunkOperand = ({
 	parent,
 	isResultOfBinaryToTextConversion,
 	...lineSelection
-}: HunkOperand): Operand => ({
+}: HunkOperand): Extract<Operand, { _tag: "Hunk" }> => ({
 	_tag: "Hunk",
 	parent,
 	isResultOfBinaryToTextConversion,
@@ -105,7 +105,7 @@ const fileParentIdentityKey = (fp: FileParent): string => {
 	}
 };
 
-const weakFileParentIdentityKey = (fp: FileParent): string => {
+export const weakFileParentIdentityKey = (fp: FileParent): string => {
 	switch (fp._tag) {
 		case "UncommittedChanges":
 			return uncommittedChangesIdentityKey;
@@ -153,6 +153,16 @@ export const operandFileParent = (operand: Operand): FileParent | null =>
 		}),
 		Match.orElse(() => null),
 	);
+
+/**
+ * The operands if they are all files under `fileParent`, none otherwise. Checking is confined to
+ * one parent at a time, so a set that isn't wholly ours belongs to another list, and its paths
+ * would resolve against the wrong parent.
+ */
+export const filesUnder = (operands: Array<Operand>, fileParent: FileParent): Array<Operand> =>
+	operands.every((operand) => operand._tag === "File" && operandEquals(operand.parent, fileParent))
+		? operands
+		: [];
 
 export const operandContains = (a: Operand, b: Operand) => {
 	const bFileParent = operandFileParent(b);

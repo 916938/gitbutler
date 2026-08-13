@@ -1,4 +1,319 @@
-use crate::utils::Sandbox;
+use super::util::{find_branch, status_json_with_files};
+use crate::utils::{CommandExt as _, Sandbox};
+
+#[test]
+fn commits_a_dirty_file_on_a_new_branch_in_single_branch_mode() {
+    let env = Sandbox::open_with_default_settings("one-fork");
+    env.but("config feature single-branch enable")
+        .assert()
+        .success();
+    env.file("ad-hoc.txt", "content\n");
+
+    env.but("status --files")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ zz [uncommitted]
+┊   xt A ad-hoc.txt
+┊
+┊╭┄ ma [main]
+┊●   nmy M (no changes)
+├╯
+┊
+┴ e31e6ca (common base) 2000-01-02 add init
+
+Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "message" <id>` to commit them
+
+"#]]);
+
+    let diff = env
+        .but("--json diff")
+        .allow_json()
+        .output()
+        .expect("diff should succeed");
+    let diff: serde_json::Value =
+        serde_json::from_slice(&diff.stdout).expect("diff output should be JSON");
+    let changes = diff["changes"]
+        .as_array()
+        .expect("diff.changes should be an array");
+    assert_eq!(changes.len(), 1, "the dirty file should be the only change");
+    assert_eq!(changes[0]["path"], "ad-hoc.txt");
+    let change_id = changes[0]["id"]
+        .as_str()
+        .expect("the dirty file should have a CLI ID");
+
+    env.but(format!(
+        "commit -b feature -m 'add ad-hoc file' {change_id}"
+    ))
+    .assert()
+    .success()
+    .stderr_eq(snapbox::str![])
+    .stdout_eq(snapbox::str![[r#"
+Created commit 1 on new branch 'feature'
+
+"#]]);
+
+    env.but("status --files")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ zz [uncommitted] (no changes)
+┊
+┊╭┄ at [feature]
+┊●   1 add ad-hoc file
+┊│     1:x A ad-hoc.txt
+┊│
+┊├┄ ma [main]
+┊●   nmy M (no changes)
+├╯
+┊
+┴ e31e6ca (common base) 2000-01-02 add init
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    let status = status_json_with_files(&env);
+    assert_eq!(
+        status["uncommittedChanges"].as_array().map(Vec::len),
+        Some(0),
+        "the committed file should no longer be dirty"
+    );
+    let branch = find_branch(&status, "feature");
+    assert_eq!(branch["commits"].as_array().map(Vec::len), Some(1));
+    assert_eq!(branch["commits"][0]["changes"][0]["filePath"], "ad-hoc.txt");
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "feature",
+        "creating the branch should check it out in single-branch mode"
+    );
+    assert_eq!(env.invoke_git("show feature:ad-hoc.txt"), "content");
+    assert!(
+        env.open_repo()
+            .try_find_reference(but_core::WORKSPACE_REF_NAME)
+            .unwrap()
+            .is_none(),
+        "the commit journey must remain outside managed workspace mode"
+    );
+}
+
+#[test]
+fn commits_on_the_checked_out_branch_in_single_branch_mode() {
+    let env = Sandbox::open_with_default_settings("one-fork");
+    env.but("config feature single-branch enable")
+        .assert()
+        .success();
+    let old_head = env.invoke_git("rev-parse HEAD");
+    env.file("existing.txt", "content\n");
+
+    env.but("status")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ zz [uncommitted]
+┊   pr A existing.txt
+┊
+┊╭┄ ma [main]
+┊●   nmy M (no changes)
+├╯
+┊
+┴ e31e6ca (common base) 2000-01-02 add init
+
+Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "message" <id>` to commit them
+
+"#]]);
+
+    env.but("commit -m 'commit on main'")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on branch 'main'
+
+"#]]);
+
+    env.but("status")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ zz [uncommitted] (no changes)
+┊
+┊╭┄ ma [main]
+┊●   1 commit on main
+┊●   nmy M (no changes)
+├╯
+┊
+┴ e31e6ca (common base) 2000-01-02 add init
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "main",
+        "committing to the checked-out branch should keep it checked out"
+    );
+    assert_eq!(
+        env.invoke_git("rev-parse HEAD^"),
+        old_head,
+        "the commit should advance the checked-out branch"
+    );
+    assert_eq!(env.invoke_git("show HEAD:existing.txt"), "content");
+    assert!(
+        env.open_repo()
+            .try_find_reference(but_core::WORKSPACE_REF_NAME)
+            .unwrap()
+            .is_none(),
+        "committing to an existing branch must not create a managed workspace"
+    );
+}
+
+#[test]
+fn commits_at_each_branch_in_an_existing_single_branch_stack() {
+    let env = Sandbox::open_with_default_settings("one-fork");
+    env.but("config feature single-branch enable")
+        .assert()
+        .success();
+
+    env.but("branch new middle").assert().success();
+    env.but("commit --empty -b middle -m 'middle base'")
+        .assert()
+        .success();
+    env.but("branch new top").assert().success();
+    env.but("commit --empty -b top -m 'top base'")
+        .assert()
+        .success();
+
+    env.file("bottom.txt", "bottom\n");
+    env.but("status")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ zz [uncommitted]
+┊   tk A bottom.txt
+┊
+┊╭┄ to [top]
+┊●   1#0 top base (no changes)
+┊│
+┊├┄ mi [middle]
+┊●   1#1 middle base (no changes)
+┊│
+┊├┄ ma [main]
+┊●   nmy M (no changes)
+├╯
+┊
+┴ e31e6ca (common base) 2000-01-02 add init
+
+Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "message" <id>` to commit them
+
+"#]]);
+
+    env.but("commit -b main -m 'bottom position'")
+        .assert()
+        .success();
+    env.file("middle.txt", "middle\n");
+    env.but("commit -b middle -m 'middle position'")
+        .assert()
+        .success();
+    env.file("top.txt", "top\n");
+    env.but("commit -b top -m 'top position'")
+        .assert()
+        .success();
+
+    env.but("status")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ zz [uncommitted] (no changes)
+┊
+┊╭┄ to [top]
+┊●   1#0 top position
+┊●   1#1 top base (no changes)
+┊│
+┊├┄ mi [middle]
+┊●   1#2 middle position
+┊●   1#3 middle base (no changes)
+┊│
+┊├┄ ma [main]
+┊●   1#4 bottom position
+┊●   nmy M (no changes)
+├╯
+┊
+┴ e31e6ca (common base) 2000-01-02 add init
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("log --format=%s --reverse origin/main..top"),
+        "M\nbottom position\nmiddle base\nmiddle position\ntop base\ntop position",
+        "commits should remain ordered at the bottom, middle, and top branch positions"
+    );
+    assert_eq!(
+        env.invoke_git("show -s --format=%s main"),
+        "bottom position"
+    );
+    assert_eq!(
+        env.invoke_git("show -s --format=%s middle"),
+        "middle position"
+    );
+    assert_eq!(env.invoke_git("show -s --format=%s top"), "top position");
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "top",
+        "committing lower in the stack should preserve the checked-out top branch"
+    );
+    assert!(
+        env.open_repo()
+            .try_find_reference(but_core::WORKSPACE_REF_NAME)
+            .unwrap()
+            .is_none(),
+        "stacked commits must remain outside managed workspace mode"
+    );
+}
+
+#[test]
+fn commits_on_top_of_a_checked_out_managed_workspace_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.but("config feature single-branch enable")
+        .assert()
+        .success();
+    env.invoke_git("checkout A");
+    env.file("outside-workspace.txt", "content\n");
+
+    env.but("commit -b feature -m 'commit outside workspace'")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on new branch 'feature'
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "feature",
+        "the new branch should be checked out"
+    );
+    assert_eq!(
+        env.invoke_git("rev-parse feature^"),
+        env.invoke_git("rev-parse A"),
+        "the new branch should be based on the previously checked-out branch"
+    );
+    assert_eq!(
+        env.invoke_git("show feature:outside-workspace.txt"),
+        "content"
+    );
+}
 
 #[test]
 fn no_message_nothing_to_commit() {
@@ -554,7 +869,6 @@ fn newly_created_branches_are_included_in_json_output() {
 #[test]
 fn empty_flag_to_force_empty_commit_when_changes_exist() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
-    env.setup_metadata(&["A"]);
 
     env.file(
         "changes",
@@ -581,6 +895,24 @@ fn empty_flag_to_force_empty_commit_when_changes_exist() {
 Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "message" <id>` to commit them
 
 "#]]);
+}
+
+#[test]
+fn empty_commit_ignores_metadata_for_missing_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&["A"]);
+
+    env.but("commit -m 'empty commit' --empty")
+        .assert()
+        .success();
+
+    assert!(
+        env.open_repo()
+            .try_find_reference("refs/heads/A")
+            .expect("reference lookup succeeds")
+            .is_none(),
+        "oplog preparation must not recreate a branch from stale metadata"
+    );
 }
 
 #[test]

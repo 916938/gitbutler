@@ -27,7 +27,8 @@
 	}
 
 	&:disabled,
-	&[data-disabled] {
+	&[data-disabled],
+	form:invalid &[type="submit"] {
 		opacity: 0.5;
 	}
 
@@ -106,7 +107,7 @@
 }
 
 :where(.outline) {
-	--button-border: 1px solid color-mix(in srgb, var(--fill-gray-bg) 30%, transparent);
+	--button-border: 1px solid color-mix(in srgb, var(--fill-gray-bg) 26%, transparent);
 	--button-bg: transparent;
 	--button-fg: color-mix(in srgb, var(--text-1) 90%, transparent);
 	--button-hover-fg: var(--text-1);
@@ -114,7 +115,7 @@
 }
 
 :where(.outline-inverted) {
-	--button-border: 1px solid color-mix(in srgb, var(--fill-gray-fg) 30%, transparent);
+	--button-border: 1px solid color-mix(in srgb, var(--fill-gray-fg) 26%, transparent);
 	--button-bg: transparent;
 	--button-fg: color-mix(in srgb, var(--text-1-invert) 90%, transparent);
 	--button-hover-fg: var(--text-1-invert);

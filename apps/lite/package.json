@@ -21,9 +21,10 @@
 		"dev:electron": "pnpm prepare-askpass && pnpm build:electron && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist/electron/main.js --inspect=9229 --remote-debugging-port=9222",
 		"build": "pnpm build:ui && pnpm build:electron",
 		"build:ui": "vite build --config ui/vite.config.ts",
-		"build:electron": "tsgo -p electron/tsconfig.json",
-		"check": "tsgo -p ui/tsconfig.json --noEmit && tsgo -p electron/tsconfig.json --noEmit",
+		"build:electron": "vite build --config electron/vite.config.ts && vite build --config electron/vite.main.config.ts",
+		"check": "tsgo -p ui/tsconfig.json --noEmit && tsgo -p electron/tsconfig.json --noEmit && tsgo -p e2e/tsconfig.json --noEmit",
 		"test": "vitest run --config ui/vite.config.ts",
+		"test:e2e": "pnpm prepare-askpass --debug && pnpm build:electron && playwright test --config ./e2e/playwright.config.ts",
 		"bundle": "pnpm build && pnpm prepare-askpass && electron-builder",
 		"bundle-local": "CHANNEL=${CHANNEL:-} pnpm -F @gitbutler/but-sdk build && CHANNEL=${CHANNEL:-} pnpm bundle -c.mac.entitlements=resources/entitlements.mac.local.plist -c.mac.entitlementsInherit=resources/entitlements.mac.local.plist",
 		"bundle-local-nightly": "CHANNEL=nightly pnpm -F @gitbutler/but-sdk build:release && CHANNEL=nightly pnpm bundle -c.mac.entitlements=resources/entitlements.mac.local.plist -c.mac.entitlementsInherit=resources/entitlements.mac.local.plist",
@@ -33,6 +34,9 @@
 	},
 	"build": {
 		"appId": "com.gitbutler.lite",
+		"electronLanguages": [
+			"en-US"
+		],
 		"electronFuses": {
 			"runAsNode": false,
 			"enableCookieEncryption": true,
@@ -68,7 +72,12 @@
 		"files": [
 			"dist/ui/**/*",
 			"dist/electron/**/*",
-			"package.json"
+			"package.json",
+			"!node_modules/**/*",
+			"node_modules/@gitbutler/but-sdk/package.json",
+			"node_modules/@gitbutler/but-sdk/src/generated/linear/index.js",
+			"node_modules/@gitbutler/but-sdk/src/generated/linear/apiParamNames.js",
+			"node_modules/@gitbutler/but-sdk/src/generated/linear/*.node"
 		],
 		"mac": {
 			"icon": "resources/icons/macos/icon.icon",
@@ -126,9 +135,9 @@
 		"@base-ui/react": "^1.6.0",
 		"@base-ui/utils": "^0.3.1",
 		"@gitbutler/but-sdk": "workspace:*",
-		"@gitbutler/design-core": "3.10.8",
-		"@pierre/diffs": "^1.2.12",
-		"@pierre/theming": "^0.0.2",
+		"@gitbutler/design-core": "3.11.4",
+		"@pierre/diffs": "^1.3.5",
+		"@pierre/theming": "^1.0.1",
 		"@reduxjs/toolkit": "catalog:redux",
 		"@suspensive/react-query": "npm:@suspensive/react-query-5@^3.21.2",
 		"@tanstack/react-hotkeys": "^0.10.0",
@@ -150,10 +159,12 @@
 		"react-resizable-panels": "^4.11.2",
 		"rehype-raw": "^7.0.0",
 		"rehype-sanitize": "^6.0.0",
+		"remark-gemoji": "^8.0.0",
 		"remark-gfm": "^4.0.1",
 		"shiki": "^4.3.0"
 	},
 	"devDependencies": {
+		"@playwright/test": "catalog:",
 		"@storybook/addon-designs": "^11.1.3",
 		"@storybook/addon-docs": "^10.3.3",
 		"@storybook/react-vite": "^10.3.6",
@@ -167,7 +178,7 @@
 		"babel-plugin-react-compiler": "^1.0.0",
 		"concurrently": "^9.2.1",
 		"cross-env": "^10.1.0",
-		"electron": "^43.0.0",
+		"electron": "^43.3.0",
 		"electron-builder": "^26.9.0",
 		"eslint-plugin-react-you-might-not-need-an-effect": "^1.0.0",
 		"fast-check": "^4.9.0",

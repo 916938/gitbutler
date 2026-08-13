@@ -19,10 +19,19 @@ const isFromInteractiveDescendant = (event: MouseEvent<HTMLDivElement>): boolean
 	return interactiveElement !== null && event.currentTarget.contains(interactiveElement);
 };
 
+const isFromNonRowBody = (event: MouseEvent<HTMLDivElement>): boolean => {
+	if (!(event.target instanceof Element)) return false;
+	const interactiveElement = event.target.closest(
+		"a, button, input, select, textarea, [contenteditable]",
+	);
+	return interactiveElement !== null && event.currentTarget.contains(interactiveElement);
+};
+
 export const Row: FC<
 	{
 		isSelected?: boolean;
 		onSelect?: () => void;
+		onShiftSelect?: () => void;
 		/** @default false */
 		isHighlighted?: boolean;
 		/**
@@ -37,6 +46,7 @@ export const Row: FC<
 > = ({
 	isSelected,
 	onSelect,
+	onShiftSelect,
 	isHighlighted,
 	isChecked,
 	interactive = true,
@@ -81,12 +91,10 @@ export const Row: FC<
 			onClick={(event) => {
 				props.onClick?.(event);
 
-				if (
-					!event.defaultPrevented &&
-					// Prevent clicks on interactive descendants from stealing selection.
-					!isFromInteractiveDescendant(event)
-				)
-					onSelect?.();
+				if (event.defaultPrevented || isFromInteractiveDescendant(event)) return;
+
+				if (event.shiftKey && onShiftSelect && !isFromNonRowBody(event)) onShiftSelect();
+				else onSelect?.();
 			}}
 		/>
 	);
@@ -159,6 +167,13 @@ export const RowMeta: FC<ComponentProps<"div">> = (props) => (
 	<RowLabelFooter {...props} className={classes(props.className, "text-13", styles.meta)} />
 );
 
+/** The dot drawn between {@link RowMeta} items. */
+export const RowMetaSeparator: FC = () => (
+	<span aria-hidden className={classes(styles.metaSeparator, "text-12")}>
+		•
+	</span>
+);
+
 export const RowLabel: FC<
 	{ heading?: boolean; singleLine?: boolean } & useRender.ComponentProps<"div">
 > = ({ heading, singleLine, render, ...props }) =>
@@ -178,17 +193,22 @@ export const RowLabel: FC<
  * A non-interactive row that acts as a section header (e.g. "Stacks", "Uncommitted changes").
  *
  * `children` are rendered inside the label container next to the heading (e.g. badges),
- * while `actions` are rendered outside of it (e.g. a toolbar).
+ * while `actions` are rendered outside of it (e.g. a toolbar). `childrenBefore` are rendered before
+ * the heading.
  */
 export const SectionHeaderRow: FC<
-	{ label: ReactNode; actions?: ReactNode } & Omit<
+	{ label: ReactNode; actions?: ReactNode; childrenBefore?: ReactNode } & Omit<
 		ComponentProps<typeof Row>,
 		"interactive" | "onSelect" | "isSelected"
 	>
-> = ({ label, actions, children, ...props }) => (
+> = ({ label, actions, children, childrenBefore, ...props }) => (
 	<Row {...props} className={classes(props.className, styles.sectionHeader)} interactive={false}>
 		<RowLabelContainer>
-			<RowLabel heading>{label}</RowLabel>
+			{childrenBefore}
+
+			<RowLabel heading singleLine>
+				{label}
+			</RowLabel>
 
 			{children}
 		</RowLabelContainer>

@@ -1,10 +1,16 @@
+import { ResizeHandle } from "#ui/components/ResizeHandle.tsx";
 import { Scroller } from "#ui/components/Scroller.tsx";
 import { SuspenseQuery } from "@suspensive/react-query";
-import { useOpenInProgram, useSaveGUISettings } from "#ui/api/mutations.ts";
+import {
+	useOpenInProgram,
+	useResolveCommitConflictHunks,
+	useSaveGUISettings,
+} from "#ui/api/mutations.ts";
 import {
 	branchDiffQueryOptions,
 	changesInWorktreeQueryOptions,
 	commentsQueryOptions,
+	commitConflictsQueryOptions,
 	commitDetailsWithLineStatsQueryOptions,
 	forgeInfoOptions,
 	guiSettingsQueryOptions,
@@ -27,6 +33,7 @@ import {
 	type HunkOperand,
 	type Operand,
 	weakCommitIdentityKey,
+	weakFileParentIdentityKey,
 } from "#ui/operands.ts";
 import type { BranchTab } from "#ui/projects/project.ts";
 import { projectSlice } from "#ui/projects/state.ts";
@@ -34,6 +41,7 @@ import { interfaceSlice } from "#ui/interface/state.ts";
 import { Badge } from "#ui/components/Badge.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
+import { SelectionScopeKbd } from "#ui/components/SelectionScopeKbd.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { ToggleGroupStyles, ToggleStyles } from "#ui/components/ToggleGroup.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
@@ -44,19 +52,25 @@ import {
 	PullRequestForm,
 	PullRequestPrimaryAction,
 } from "#ui/routes/project/$id/workspace/PullRequestTab.tsx";
-import { useAppDispatch, useAppSelector } from "#ui/store.ts";
+import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
 import { classes } from "#ui/components/classes.ts";
 import { Toggle, ToggleGroup, Toolbar, Tooltip } from "@base-ui/react";
-import type { CommitDetails, TreeChange } from "@gitbutler/but-sdk";
-import type {
-	CodeViewDiffItem,
-	CodeView as CodeViewClass,
-	CodeViewLineSelection,
-	GetHoveredLineResult,
-	DiffLineAnnotation,
+import type { CommitDetails, ConflictedFile, ManualConflict, TreeChange } from "@gitbutler/but-sdk";
+import {
+	type CodeViewDiffItem,
+	type CodeView as CodeViewClass,
+	type CodeViewLineSelection,
+	type GetHoveredLineResult,
+	type DiffLineAnnotation,
+	isDiffAnnotation,
 } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
-import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useQuery,
+	useSuspenseQueries,
+	useSuspenseQuery,
+} from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { Match } from "effect";
 import {
@@ -71,7 +85,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { Group, Panel, useDefaultLayout } from "react-resizable-panels";
 import styles from "./Details.module.css";
 import { diffHotkeys, workspaceHotkeys } from "#ui/hotkeys.ts";
 import { useHotkeys } from "@tanstack/react-hotkeys";
@@ -92,10 +106,17 @@ import {
 	pathMatchesFilter,
 	type FileRowItem,
 } from "./file-row.ts";
+import {
+	buildFileTreeRows,
+	fileTreeNavigationIndex,
+	selectedFilePath,
+	type FileDisplayMode,
+	type FileTreeRow,
+} from "./file-tree.ts";
+import { useFileDisplayMode } from "./useFileDisplayMode.ts";
 import { FileFilterRow } from "./FileFilterRow.tsx";
 import { useFileFilter } from "./useFileFilter.ts";
-import { contiguousSelectionByLine } from "#ui/hunk.ts";
-import { buildIndexByKey, type NavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { contiguousSelectionByLine, wholeHunkSelectionByLine } from "#ui/hunk.ts";
 import { showNativeContextMenu, showNativeMenuFromTrigger } from "#ui/native-menu.ts";
 import { useFileMenuItems } from "#ui/routes/project/$id/workspace/useFileMenuItems.ts";
 import { useMergedRefs } from "@base-ui/utils/useMergedRefs";
@@ -104,16 +125,19 @@ import type { GUISettings } from "#electron/settings.ts";
 import { defaultSettings } from "#ui/settings.ts";
 import type { IconName } from "#ui/components/iconNames.ts";
 import { combineHashes, hash } from "#ui/hash.ts";
+import { compareFilePaths } from "#ui/file-order.ts";
 import { assert } from "#ui/assert.ts";
 import {
 	type DiffLineContextMenuTarget,
 	useDiffLineContextMenu,
 } from "./diff-line-context-menu.ts";
+import { diffGutterUnsafeCSS, useDiffGutterCheckboxes } from "./diff-gutter.ts";
 import { useDiffHunkDrag } from "./diff-hunk-drag.ts";
 import type { DiffLineTarget } from "./diff-line-target.ts";
 import { useHunkMenuItems } from "./useHunkMenuItems.ts";
 import { ChangeTypeBadge } from "./ChangeTypeBadge.tsx";
 import { AnnotationCard } from "#ui/routes/project/$id/workspace/AnnotationCard.tsx";
+import { ConflictBar } from "#ui/routes/project/$id/workspace/ConflictBar.tsx";
 import {
 	annotationSideToDiffSide,
 	annotationsByPathForScope,
@@ -123,10 +147,23 @@ import {
 import { FileIcon } from "#ui/components/FileIcon.tsx";
 import {
 	type Annotation,
+	codeViewItemMetrics,
+	codeViewLayout,
 	type DiffView,
 	getDiffView,
 	hunkOperandIdentityKey,
+	prepareDiffFiles,
+	withoutFoldedHunks,
 } from "./diff-view.ts";
+import { DiffMinimap } from "./DiffMinimap.tsx";
+import { getMinimapFiles, measureWrapColumns, type MinimapSelection } from "./diff-minimap.ts";
+import { checkedRange, navigationIndexRange } from "#ui/checking.ts";
+import {
+	type ReviewedFileVersions,
+	reviewedFilesQueryOptions,
+	type SetFilesReviewedInput,
+	useSetFilesReviewed,
+} from "#ui/reviewed-files.ts";
 
 export type DiffViewerHandle = CodeViewHandle<Annotation>;
 
@@ -135,27 +172,39 @@ export type DiffViewerHandle = CodeViewHandle<Annotation>;
 type PanelId = "files-panel" | "diff-panel";
 
 const EMPTY_ANNOTATIONS_BY_PATH: LocalAnnotationsByPath = new Map();
+const EMPTY_CONFLICTS: Array<ConflictedFile> = [];
+const EMPTY_MANUAL: Array<ManualConflict> = [];
 
-const diffDefaults = {
-	diffBackground: true,
-	diffOverflow: "scroll",
-	diffStyle: "split",
-} satisfies Partial<GUISettings>;
+const isInteractiveElement = (target: EventTarget): boolean =>
+	target instanceof Element &&
+	target.matches(
+		'a, button, input, select, textarea, [contenteditable]:not([contenteditable="false"])',
+	);
 
 const getCommitFileRowItems = ({
 	commitDetails,
+	manual = EMPTY_MANUAL,
 }: {
 	commitDetails: CommitDetails;
+	/**
+	 * Conflicted files the resolve API cannot address. They have no diff to
+	 * show, which is exactly what a conflict row is — so they keep the commit
+	 * visibly conflicted while pointing at the files that need edit mode.
+	 */
+	manual?: Array<ManualConflict>;
 }): Array<FileRowItem> => {
-	const conflictedPaths = commitDetails.conflictEntries
-		? globalThis.Array.from(
-				new Set([
-					...commitDetails.conflictEntries.ancestorEntries,
-					...commitDetails.conflictEntries.ourEntries,
-					...commitDetails.conflictEntries.theirEntries,
-				]),
-			).toSorted((a, b) => a.localeCompare(b))
-		: [];
+	const conflictedPaths = globalThis.Array.from(
+		new Set([
+			...(commitDetails.conflictEntries
+				? [
+						...commitDetails.conflictEntries.ancestorEntries,
+						...commitDetails.conflictEntries.ourEntries,
+						...commitDetails.conflictEntries.theirEntries,
+					]
+				: []),
+			...manual.map((file) => file.path),
+		]),
+	).toSorted((a, b) => a.localeCompare(b));
 	const conflictedPathSet = new Set(conflictedPaths);
 
 	return [
@@ -199,7 +248,7 @@ const withAnnotations = (
 		// Annotations move when their backend anchor drifts, so the version must cover their
 		// positions and identities, not just their count.
 		const annoHash = hash(
-			annotations.map((a) => `${a.metadata.id}:${a.side}:${a.lineNumber}`).join(),
+			persistedAnnotations.map((a) => `${a.id}:${a.side}:${a.lineNumber}`).join(),
 		);
 
 		const version = item.version;
@@ -214,7 +263,7 @@ const withAnnotations = (
 });
 
 const DiffContents: FC<{
-	localAnnotationFormId: string;
+	activeFileItemId: string | null;
 	selectionScopeRef: RefObject<HTMLDivElement | null>;
 	onViewerFileSelection: (path: string) => void;
 	fileParent: FileParent;
@@ -224,10 +273,14 @@ const DiffContents: FC<{
 	diffBackgrounds?: GUISettings["diffBackground"];
 	diffOverflow?: GUISettings["diffOverflow"];
 	diffStyle?: GUISettings["diffStyle"];
+	reviewedFiles: ReviewedFileVersions;
+	manualCollapseByItem: Map<string, boolean>;
+	setManualCollapse: (itemId: string, collapsed: boolean | undefined) => void;
+	setFilesReviewed: (input: SetFilesReviewedInput) => void;
 	viewerRef: RefObject<CodeViewHandle<Annotation> | null>;
 	didScrollToViaFileRef: RefObject<boolean>;
 }> = ({
-	localAnnotationFormId,
+	activeFileItemId,
 	selectionScopeRef,
 	onViewerFileSelection,
 	fileParent,
@@ -237,10 +290,13 @@ const DiffContents: FC<{
 	diffBackgrounds,
 	diffOverflow,
 	diffStyle,
+	reviewedFiles,
+	manualCollapseByItem,
+	setManualCollapse,
+	setFilesReviewed,
 	viewerRef,
 	didScrollToViaFileRef,
 }) => {
-	const [collapsedItems, setCollapsedItems] = useState<Set<string>>(new Set());
 	const newFocusableAnnotationIdRef = useRef<string | null>(null);
 	const dispatch = useAppDispatch();
 	const { mutate: createComment } = useCommentCreate();
@@ -251,28 +307,68 @@ const DiffContents: FC<{
 			editor: editors?.find((editor) => editor.id === cfg.editorId),
 			diffFontFamily: cfg.diffFontFamily,
 			diffFontSize: cfg.diffFontSize,
+			diffLigatures: cfg.diffLigatures,
 			diffTabSize: cfg.diffTabSize,
+			lineDiffType: cfg.lineDiffType,
 			theme: cfg.theme,
 		}),
 	});
 	const { mutate: openInProgram } = useOpenInProgram();
 	const hunkMenuItems = useHunkMenuItems({ projectId });
+	const store = useAppStore();
+	const hunkCheckRangeAnchor = useRef<string>(null);
+	const hunkCheckRangeEnd = useRef<string>(null);
+
+	const collapsedItems: Set<string> = new Set(
+		items.flatMap((item) => {
+			const manuallyCollapsed = manualCollapseByItem.get(item.id);
+			if (manuallyCollapsed !== undefined) return manuallyCollapsed ? item.id : [];
+
+			const file = fileByItemId.get(item.id);
+			if (!file) return [];
+
+			const {
+				change: { path },
+				item: { version },
+			} = file;
+			if (version === undefined) return [];
+
+			const reviewedLatestVersion = reviewedFiles.get(path)?.has(version);
+			return reviewedLatestVersion ? item.id : [];
+		}),
+	);
+	const visibleNavigationIndex = withoutFoldedHunks(navigationIndex, hunkByKey, collapsedItems);
 
 	const diffSelection = useAppSelector((state) =>
-		projectSlice.selectors.selectSelectionDiff(state, projectId, navigationIndex),
+		projectSlice.selectors.selectSelectionDiff(state, projectId, visibleNavigationIndex),
+	);
+	const hasStoredDiffSelection = useAppSelector(
+		(state) => projectSlice.selectors.selectStoredDiffSelection(state, projectId) !== null,
+	);
+	const canCheckHunks = useAppSelector((state) =>
+		projectSlice.selectors.selectCanCheckHunks(state, projectId, fileParent),
 	);
 	const diffSelectionHunk =
 		diffSelection !== null ? hunkByKey.get(hunkOperandIdentityKey(diffSelection)) : null;
 	const selectedRange = diffSelection
 		? (hunkByKey.get(hunkOperandIdentityKey(diffSelection))?.selectedLines ?? null)
 		: null;
+	// A primitive, null while the selection sits on a visible hunk, so the item
+	// list and header closures below only pick up new identities when a folded
+	// file gains or loses the selection — not on every j/k move.
+	const selectedFoldedFileId =
+		diffSelectionHunk != null && collapsedItems.has(diffSelectionHunk.file.item.id)
+			? diffSelectionHunk.file.item.id
+			: null;
 
 	useLayoutEffect(() => {
-		if (!diffSelectionHunk) return;
+		// The resolved hunk can belong to another file when the active file is hunkless.
+		const itemId = activeFileItemId ?? diffSelectionHunk?.file.item.id;
+		if (itemId === undefined) return;
 
 		viewerRef.current?.scrollTo({
 			type: "item",
-			id: diffSelectionHunk.file.item.id,
+			id: itemId,
 			align: "start",
 			behavior: "instant",
 		});
@@ -294,7 +390,7 @@ const DiffContents: FC<{
 	};
 
 	useNavigationIndexHotkeys({
-		navigationIndex,
+		navigationIndex: visibleNavigationIndex,
 		projectId,
 		group: "Diff",
 		select: selectDiff,
@@ -305,30 +401,81 @@ const DiffContents: FC<{
 		},
 		ref: selectionScopeRef,
 		getKey: hunkOperandIdentityKey,
-		operationSourcesForItem: (hunk) => [hunkOperand(hunk)],
+		operationSourcesForItem: (hunk) => {
+			const source = hunkOperand(hunk);
+			const state = store.getState();
+			return projectSlice.selectors.selectOperandChecked(state, projectId, source)
+				? projectSlice.selectors.selectCheckedOperands(state, projectId)
+				: [source];
+		},
 	});
+
+	function toggleSelectedHunkChecked(event: KeyboardEvent): void {
+		if (diffSelection === null || event.composedPath().some(isInteractiveElement)) return;
+
+		event.preventDefault();
+		event.stopPropagation();
+		checkHunk({ operand: diffSelection, shiftKey: event.shiftKey });
+	}
 
 	useHotkeys([
 		{
-			hotkey: diffHotkeys.foldFile.hotkey,
-			callback: () =>
-				!!diffSelectionHunk && handleSetCollapsed(diffSelectionHunk.file.item.id)(true),
+			hotkey: diffHotkeys.checkHunk.hotkey,
+			callback: toggleSelectedHunkChecked,
 			options: {
-				enabled: !!diffSelectionHunk && !collapsedItems.has(diffSelectionHunk.file.item.id),
 				conflictBehavior: "allow",
+				enabled: diffSelection !== null && canCheckHunks,
+				preventDefault: false,
+				stopPropagation: false,
 				target: selectionScopeRef,
-				meta: diffHotkeys.foldFile.meta,
+				meta: diffHotkeys.checkHunk.meta,
 			},
 		},
 		{
-			hotkey: diffHotkeys.unfoldFile.hotkey,
-			callback: () =>
-				!!diffSelectionHunk && handleSetCollapsed(diffSelectionHunk.file.item.id)(false),
+			hotkey: "Shift+Space",
+			callback: toggleSelectedHunkChecked,
 			options: {
-				enabled: !!diffSelectionHunk && collapsedItems.has(diffSelectionHunk.file.item.id),
+				conflictBehavior: "allow",
+				enabled: diffSelection !== null && canCheckHunks,
+				preventDefault: false,
+				stopPropagation: false,
+				target: selectionScopeRef,
+			},
+		},
+		{
+			hotkey: diffHotkeys.toggleFoldFile.hotkey,
+			callback: () => {
+				if (!diffSelectionHunk) return;
+
+				handleSetCollapsed(diffSelectionHunk.file.item.id)(
+					!collapsedItems.has(diffSelectionHunk.file.item.id),
+				);
+			},
+			options: {
+				// A stored selection, not the resolver's first-hunk fallback: after
+				// scrolling with nothing selected, folding the fallback would fold a
+				// file far off-screen. j/k (which stores a selection) is the way in.
+				enabled: hasStoredDiffSelection && !!diffSelectionHunk,
 				conflictBehavior: "allow",
 				target: selectionScopeRef,
-				meta: diffHotkeys.unfoldFile.meta,
+				meta: diffHotkeys.toggleFoldFile.meta,
+			},
+		},
+		{
+			hotkey: diffHotkeys.toggleReviewedFile.hotkey,
+			callback: () => {
+				if (!diffSelectionHunk) return;
+
+				const { id, version } = diffSelectionHunk.file.item;
+				if (version === undefined) throw new Error("Diff view item missing version");
+
+				const { path } = diffSelectionHunk.file.change;
+				handleSetReviewed(id, path, version)(!reviewedFiles.get(path)?.has(version));
+			},
+			options: {
+				enabled: hasStoredDiffSelection && !!diffSelectionHunk,
+				conflictBehavior: "allow",
+				target: selectionScopeRef,
 			},
 		},
 		{
@@ -409,15 +556,14 @@ const DiffContents: FC<{
 		itemId,
 		lineNumber,
 		side,
+		lineType,
 	}: DiffLineTarget): HunkOperand | null => {
 		const file = fileByItemId.get(itemId);
 		if (file?.patch?.type !== "Patch") return null;
 
-		const selection = contiguousSelectionByLine({
-			hunks: file.item.fileDiff.hunks,
-			line: lineNumber,
-			side,
-		});
+		const query = { hunks: file.item.fileDiff.hunks, line: lineNumber, side };
+		const selection =
+			lineType === "context" ? wholeHunkSelectionByLine(query) : contiguousSelectionByLine(query);
 		if (!selection) return null;
 
 		return {
@@ -429,6 +575,55 @@ const DiffContents: FC<{
 			isResultOfBinaryToTextConversion: file.patch.subject.isResultOfBinaryToTextConversion,
 		};
 	};
+
+	const hunkRangeResolver = navigationIndexRange<HunkOperand, string>({
+		navigationIndex: visibleNavigationIndex,
+		getKey: (key) => key,
+		filterMap: hunkOperandIdentityKey,
+	});
+	const getCheckedHunkRange = checkedRange(hunkRangeResolver);
+
+	function checkHunk({ operand, shiftKey }: { operand: HunkOperand; shiftKey: boolean }): void {
+		const checkedHunks = projectSlice.selectors
+			.selectCheckedOperands(store.getState(), projectId)
+			.filter((operand) => operand._tag === "Hunk");
+		const checkedHunksByKey = new Map(
+			checkedHunks.map((operand) => [hunkOperandIdentityKey(operand), operand]),
+		);
+		const previous = new Set(checkedHunksByKey.keys());
+		const nextHunkRange = getCheckedHunkRange({
+			checked: previous,
+			rangeAnchor: hunkCheckRangeAnchor.current,
+			rangeEnd: hunkCheckRangeEnd.current,
+		})({
+			item: hunkOperandIdentityKey(operand),
+			shiftKey,
+		});
+
+		hunkCheckRangeAnchor.current = nextHunkRange.rangeAnchor;
+		hunkCheckRangeEnd.current = nextHunkRange.rangeEnd;
+
+		dispatch(
+			projectSlice.actions.checkOperands({
+				projectId,
+				operands: Array.from(nextHunkRange.checked.difference(previous)).flatMap((key) => {
+					const hunk = hunkByKey.get(key);
+					return hunk ? [hunkOperand(hunk.operand)] : [];
+				}),
+				checked: true,
+			}),
+		);
+		dispatch(
+			projectSlice.actions.checkOperands({
+				projectId,
+				operands: Array.from(previous.difference(nextHunkRange.checked)).flatMap((key) => {
+					const hunk = checkedHunksByKey.get(key);
+					return hunk ? [hunk] : [];
+				}),
+				checked: false,
+			}),
+		);
+	}
 
 	const handleLineContextMenu = ({ event, ...target }: DiffLineContextMenuTarget): void => {
 		const file = fileByItemId.get(target.itemId);
@@ -455,161 +650,214 @@ const DiffContents: FC<{
 		projectId,
 		getHunkOperand: getHunkOperandAtLine,
 	});
+	const { onPostRender: handleDiffPostRender, portals: diffGutterPortals } =
+		useDiffGutterCheckboxes(handleHunkPostRender, getHunkOperandAtLine, projectId, checkHunk);
 
-	const handleSetCollapsed = (itemId: string) => (collapsed: boolean) => {
-		const s = new Set(collapsedItems);
+	const handOffCollapsedSelection = (itemId: string): void => {
+		// Folding hides the selected hunk's lines; hand the selection to the
+		// file's first hunk, which stands in for the folded file, and keep the
+		// header in view. The stored selection is read off the store rather than
+		// captured, so this callback's identity does not churn with j/k moves.
+		const stored = projectSlice.selectors.selectStoredDiffSelection(store.getState(), projectId);
+		const storedFile = stored && hunkByKey.get(hunkOperandIdentityKey(stored))?.file;
+		if (storedFile?.item.id !== itemId) return;
 
-		if (collapsed) s.add(itemId);
-		else s.delete(itemId);
-
-		setCollapsedItems(s);
+		dispatch(
+			projectSlice.actions.selectDiff({
+				projectId,
+				selection: assert(storedFile.hunks[0]).operand,
+			}),
+		);
+		viewerRef.current?.scrollTo({ type: "item", id: itemId, align: "nearest" });
 	};
 
+	const handleSetCollapsed = (itemId: string) => (collapsed: boolean) => {
+		setManualCollapse(itemId, collapsed);
+		if (collapsed && !collapsedItems.has(itemId)) handOffCollapsedSelection(itemId);
+	};
+
+	const handleSetReviewed =
+		(itemId: string, path: string, version: number) => (reviewed: boolean) => {
+			setFilesReviewed({
+				projectId,
+				contextId: weakFileParentIdentityKey(fileParent),
+				files: [{ path, version }],
+				reviewed,
+			});
+			setManualCollapse(itemId, undefined);
+			if (reviewed && !collapsedItems.has(itemId)) handOffCollapsedSelection(itemId);
+		};
+
 	// We must change the version for updates to the collapsed property to be respected. The versions
-	// should be as stable as possible, collapsed or not, for performance.
-	const enhanceCollapsed = <T,>(item: CodeViewDiffItem<T>): CodeViewDiffItem<T> => ({
+	// should be as stable as possible, collapsed or not, for performance. The selected flag is
+	// hashed in so the header re-renders when the selection enters or leaves a folded file.
+	const enhanceCollapsed = <T,>(
+		item: CodeViewDiffItem<T>,
+		selected: boolean,
+	): CodeViewDiffItem<T> => ({
 		...item,
 		collapsed: true,
 		// We always use versions.
-		version: combineHashes(assert(item.version), 1),
+		version: combineHashes(assert(item.version), selected ? 2 : 1),
 	});
+
+	// Hoisted from the JSX so the rebuild runs when folds or the folded
+	// selection change, not on every render of this component.
+	const displayItems =
+		collapsedItems.size === 0
+			? items
+			: items.map((item) =>
+					collapsedItems.has(item.id)
+						? enhanceCollapsed(item, item.id === selectedFoldedFileId)
+						: item,
+				);
 
 	return items.length === 0 ? (
 		<p className="text-13">No changes.</p>
 	) : (
-		<CodeView
-			ref={viewerRef}
-			renderCustomHeader={(item) => {
-				if (item.type === "file") throw new Error("Only diff items may be rendered");
-
-				const file = fileByItemId.get(item.id);
-
-				// CodeView may briefly hold onto stale snapshots of our data.
-				if (!file) return <div style={{ height: 38 }} />;
-
-				return (
-					<DiffFileHeader
-						projectId={projectId}
-						item={item}
-						operand={file.operand}
-						change={file.change}
-						hasDiff={item.fileDiff.hunks.length !== 0}
-						collapsed={item.collapsed ?? false}
-						setCollapsed={handleSetCollapsed(item.id)}
-					/>
-				);
-			}}
-			renderGutterUtility={(getHoveredLine, item) => {
-				// We don't currently support annotations on branches.
-				if (fileParent._tag === "Branch") return;
-
-				const handleClick = () => {
-					const badlyTypedLine = getHoveredLine();
-					if (!badlyTypedLine || !("side" in badlyTypedLine)) return;
-					const line = badlyTypedLine as GetHoveredLineResult<"diff">;
+		<>
+			<CodeView
+				ref={viewerRef}
+				renderCustomHeader={(item) => {
+					if (item.type === "file") throw new Error("Only diff items may be rendered");
 
 					const file = fileByItemId.get(item.id);
-					if (!file) return;
+					// CodeView may briefly hold onto stale snapshots of our data.
+					if (!file) return <div style={{ height: codeViewItemMetrics.diffHeaderHeight }} />;
 
-					const id = crypto.randomUUID();
-					newFocusableAnnotationIdRef.current = id;
+					const { version } = file.item;
+					if (version === undefined) throw new Error("Diff view item missing version");
 
-					createComment({
-						projectId,
-						comment: {
-							id,
-							path: file.operand.path,
-							commitChangeId: fileParent._tag === "Commit" ? fileParent.changeId : null,
-							side: annotationSideToDiffSide(line.side),
-							lineNumber: line.lineNumber,
-							payload: "",
-						},
-					});
-				};
+					const allReviewedVersions = reviewedFiles.get(file.change.path);
+					const hasReviewedThisVersion = !!allReviewedVersions?.has(version);
+					const reviewState =
+						allReviewedVersions !== undefined
+							? hasReviewedThisVersion
+								? "reviewed"
+								: "changed"
+							: null;
 
-				return (
-					<button
-						type="button"
-						onClick={handleClick}
-						aria-label="Annotate"
-						className={classes(
-							getButtonClassName({ variant: "pop", size: "small", iconOnly: true }),
-							styles.annotate,
-						)}
-					>
-						<Icon name="plus" />
-					</button>
-				);
-			}}
-			renderAnnotation={(anno, item) => {
-				if (!("side" in anno)) throw new Error("Only diff items may be rendered");
+					return (
+						<DiffFileHeader
+							projectId={projectId}
+							item={item}
+							operand={file.operand}
+							change={file.change}
+							hasDiff={item.fileDiff.hunks.length !== 0}
+							collapsed={item.collapsed ?? false}
+							reviewState={reviewState}
+							selected={item.id === selectedFoldedFileId}
+							setCollapsed={handleSetCollapsed(item.id)}
+							setReviewed={handleSetReviewed(item.id, file.change.path, version)}
+						/>
+					);
+				}}
+				renderGutterUtility={(getHoveredLine, item) => {
+					// We don't currently support annotations on branches.
+					if (fileParent._tag === "Branch") return;
 
-				const file = fileByItemId.get(item.id);
-				if (!file) return null;
+					const handleClick = () => {
+						const badlyTypedLine = getHoveredLine();
+						if (!badlyTypedLine || !("side" in badlyTypedLine)) return;
+						const line = badlyTypedLine as GetHoveredLineResult<"diff">;
 
-				const annotations = annotationsByPath.get(file.operand.path) ?? [];
-				const annotation = annotations.find(({ id }) => id === anno.metadata.id);
-				if (!annotation) return null;
+						const file = fileByItemId.get(item.id);
+						if (!file) return;
 
-				return (
-					<AnnotationCard
-						projectId={projectId}
-						formId={localAnnotationFormId}
-						annotation={annotation}
-						path={file.operand.path}
-						fileParent={fileParent}
-						annotationsByPath={annotationsByPath}
-						focusAnnotationIdRef={newFocusableAnnotationIdRef}
-						selectionScopeRef={selectionScopeRef}
-					/>
-				);
-			}}
-			onScroll={selectFileAtViewportTop}
-			className={styles.diffContents}
-			items={
-				collapsedItems.size === 0
-					? items
-					: items.map((item) => (collapsedItems.has(item.id) ? enhanceCollapsed(item) : item))
-			}
-			selectedLines={selectedRange}
-			onSelectedLinesChange={handleLinesSelected}
-			options={{
-				diffStyle: diffStyle ?? diffDefaults.diffStyle,
-				disableBackground: !(diffBackgrounds ?? diffDefaults.diffBackground),
-				overflow: diffOverflow ?? diffDefaults.diffOverflow,
-				themeType: settings?.theme ?? defaultSettings.theme,
-				stickyHeaders: true,
-				enableLineSelection: true,
-				// Manually wire these up instead of using renderGutterUtility to separate annotations from
-				// selections.
-				onLineEnter: ({ numberElement }) => {
-					const slot = document.createElement("slot");
-					slot.name = "gutter-utility-slot";
-					slot.setAttribute("data-gutter-utility-slot", "");
-					numberElement.appendChild(slot);
-				},
-				onLineLeave: ({ numberElement }) => {
-					numberElement.querySelector(':scope > slot[name="gutter-utility-slot"]')?.remove();
-				},
-				layout: {
-					paddingTop: 0,
-					// Match --panel-padding-block.
-					paddingBottom: 12,
-					gap: 10,
-				},
-				// This appears to validate before our custom header has been slotted, in which case - if
-				// our metrics are correct - we should see deltas in multiples of our custom header height
-				// as defined in the metrics. We'll see an additional set of logs if there are other issues
-				// with our metrics.
-				__devOnlyValidateItemHeights: false,
-				onPostRender: handleHunkPostRender,
-				itemMetrics: {
-					diffHeaderHeight: 38,
-					paddingBottom: 9,
-				},
-				unsafeCSS: `
+						const id = crypto.randomUUID();
+						newFocusableAnnotationIdRef.current = id;
+
+						createComment({
+							projectId,
+							comment: {
+								id,
+								path: file.operand.path,
+								commitChangeId: fileParent._tag === "Commit" ? fileParent.changeId : null,
+								side: annotationSideToDiffSide(line.side),
+								lineNumber: line.lineNumber,
+								payload: "",
+							},
+						});
+					};
+
+					return (
+						<button
+							type="button"
+							onClick={handleClick}
+							aria-label="Annotate"
+							className={classes(
+								getButtonClassName({ variant: "pop", size: "small", iconOnly: true }),
+								styles.annotate,
+							)}
+						>
+							<Icon name="plus" />
+						</button>
+					);
+				}}
+				renderAnnotation={(anno, item) => {
+					if (!isDiffAnnotation<Annotation>(anno))
+						throw new Error("Only diff items may be rendered");
+
+					const file = fileByItemId.get(item.id);
+					if (!file) return null;
+
+					const annotations = annotationsByPath.get(file.operand.path) ?? [];
+					const annotationId = anno.metadata.id;
+					const annotation = annotations.find(({ id }) => id === annotationId);
+					if (!annotation) return null;
+
+					return (
+						<AnnotationCard
+							projectId={projectId}
+							annotation={annotation}
+							path={file.operand.path}
+							fileParent={fileParent}
+							annotationsByPath={annotationsByPath}
+							focusAnnotationIdRef={newFocusableAnnotationIdRef}
+							selectionScopeRef={selectionScopeRef}
+						/>
+					);
+				}}
+				onScroll={selectFileAtViewportTop}
+				className={styles.diffContents}
+				items={displayItems}
+				selectedLines={selectedRange}
+				onSelectedLinesChange={handleLinesSelected}
+				options={{
+					diffStyle: diffStyle ?? defaultSettings.diffStyle,
+					disableBackground: !(diffBackgrounds ?? defaultSettings.diffBackground),
+					lineDiffType: settings?.lineDiffType ?? defaultSettings.lineDiffType,
+					overflow: diffOverflow ?? defaultSettings.diffOverflow,
+					themeType: settings?.theme ?? defaultSettings.theme,
+					stickyHeaders: true,
+					enableLineSelection: true,
+					// Manually wire these up instead of using renderGutterUtility to separate annotations from
+					// selections.
+					onLineEnter: ({ numberElement }) => {
+						const slot = document.createElement("slot");
+						slot.name = "gutter-utility-slot";
+						slot.setAttribute("data-gutter-utility-slot", "");
+						numberElement.appendChild(slot);
+					},
+					onLineLeave: ({ numberElement }) => {
+						numberElement.querySelector(':scope > slot[name="gutter-utility-slot"]')?.remove();
+					},
+					layout: codeViewLayout,
+					// This appears to validate before our custom header has been slotted, in which case - if
+					// our metrics are correct - we should see deltas in multiples of our custom header height
+					// as defined in the metrics. We'll see an additional set of logs if there are other issues
+					// with our metrics.
+					__devOnlyValidateItemHeights: false,
+					onPostRender: handleDiffPostRender,
+					itemMetrics: codeViewItemMetrics,
+					unsafeCSS: `
           :host {
             background-color: transparent;
+            /* Inherited, so this reaches the code inside the shadow root — which is the
+               only way in, since ligatures are not one of Pierre's options. */
+            font-variant-ligatures: ${
+							(settings?.diffLigatures ?? defaultSettings.diffLigatures) ? "normal" : "none"
+						};
           }
 
           [data-diffs-header="custom"] {
@@ -628,14 +876,19 @@ const DiffContents: FC<{
 
             cursor: default;
           }
+
+          ${diffGutterUnsafeCSS}
         `,
-			}}
-			style={{
-				"--diffs-font-family": settings?.diffFontFamily ?? defaultSettings.diffFontFamily,
-				"--diffs-font-size": `${settings?.diffFontSize ?? defaultSettings.diffFontSize}px`,
-				"--diffs-tab-size": `${settings?.diffTabSize ?? defaultSettings.diffTabSize}`,
-			}}
-		/>
+				}}
+				style={{
+					"--diffs-font-family": settings?.diffFontFamily ?? defaultSettings.diffFontFamily,
+					"--diffs-font-size": `${settings?.diffFontSize ?? defaultSettings.diffFontSize}px`,
+					"--diffs-tab-size": `${settings?.diffTabSize ?? defaultSettings.diffTabSize}`,
+				}}
+			/>
+
+			{diffGutterPortals}
+		</>
 	);
 };
 
@@ -646,7 +899,11 @@ type DiffFileHeaderProps = {
 	change: TreeChange;
 	hasDiff: boolean;
 	collapsed: boolean;
+	reviewState: "reviewed" | "changed" | null;
+	/** Whether the folded file's stand-in hunk holds the diff selection. */
+	selected: boolean;
 	setCollapsed: (collapsed: boolean) => void;
+	setReviewed: (reviewed: boolean) => void;
 };
 
 const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
@@ -661,8 +918,13 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 	const directoryPath = lastSepIdx !== -1 ? p.change.path.slice(0, lastSepIdx) : null;
 	const fileName = lastSepIdx !== -1 ? p.change.path.slice(lastSepIdx + 1) : p.change.path;
 
-	const collapseHotkey = p.collapsed ? diffHotkeys.unfoldFile : diffHotkeys.foldFile;
-	const collapseLabel = collapseHotkey.meta.name;
+	const collapseLabel = p.collapsed ? "Unfold" : "Fold";
+	const reviewLabel =
+		p.reviewState === "reviewed"
+			? "Reviewed"
+			: p.reviewState === "changed"
+				? "Needs review"
+				: "Not reviewed";
 
 	return (
 		<OperationSourceC projectId={p.projectId} source={fileOperand(p.operand)} outline="inside">
@@ -670,7 +932,11 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 				onContextMenu={(event) => {
 					void showNativeContextMenu(event, menuItems);
 				}}
-				className={classes(styles.fileHeader, (p.collapsed || !p.hasDiff) && styles.lone)}
+				className={classes(
+					styles.fileHeader,
+					(p.collapsed || !p.hasDiff) && styles.lone,
+					p.selected && styles.fileHeaderSelected,
+				)}
 			>
 				<Tooltip.Root>
 					<Tooltip.Trigger
@@ -683,7 +949,9 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 					</Tooltip.Trigger>
 					<Tooltip.Portal>
 						<Tooltip.Positioner sideOffset={4}>
-							<Tooltip.Popup render={<TooltipPopup kbd={collapseHotkey.hotkey} />}>
+							<Tooltip.Popup
+								render={<TooltipPopup kbd={diffHotkeys.toggleFoldFile.hotkey} kbdScope="diff" />}
+							>
 								{collapseLabel}
 							</Tooltip.Popup>
 						</Tooltip.Positioner>
@@ -694,6 +962,22 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 					{fileName}
 					{directoryPath !== null && <span className={styles.pathInit}>{directoryPath}</span>}
 				</h4>
+				<button
+					type="button"
+					aria-pressed={p.reviewState === "changed" ? "mixed" : p.reviewState === "reviewed"}
+					className={classes(
+						getButtonClassName({ variant: "outline", size: "small" }),
+						styles.fileReview,
+					)}
+					onClick={() => p.setReviewed(p.reviewState !== "reviewed")}
+				>
+					<span className={styles.fileReviewIndicator} aria-hidden="true">
+						{p.reviewState !== null && (
+							<Icon size={10} name={p.reviewState === "reviewed" ? "tick" : "minus"} />
+						)}
+					</span>
+					{reviewLabel}
+				</button>
 				<ChangeTypeBadge type={p.item.fileDiff.type} />
 				<span>
 					<span className={styles.fileDiffAdded}>+{p.item.fileDiff.additionLines.length}</span>{" "}
@@ -765,7 +1049,7 @@ const DiffOverflowToggle: FC<
 					<Toggle
 						{...toggleProps}
 						aria-label="Toggle line wrapping"
-						pressed={(diffOverflow ?? diffDefaults.diffOverflow) === "wrap"}
+						pressed={(diffOverflow ?? defaultSettings.diffOverflow) === "wrap"}
 						onPressedChange={(pressed) =>
 							saveGUISettings({ diffOverflow: pressed ? "wrap" : "scroll" })
 						}
@@ -797,7 +1081,7 @@ const DiffBackgroundsToggle: FC<
 					<Toggle
 						{...toggleProps}
 						aria-label="Toggle diff backgrounds"
-						pressed={diffBackgrounds ?? diffDefaults.diffBackground}
+						pressed={diffBackgrounds ?? defaultSettings.diffBackground}
 						onPressedChange={(enabled) => saveGUISettings({ diffBackground: enabled })}
 					/>
 				}
@@ -830,7 +1114,7 @@ const DiffStyleToggleGroup: FC<
 					<ToggleGroup
 						{...toggleGroupProps}
 						aria-label={diffHotkeys.toggleDiffStyle.meta.name}
-						value={[diffStyle ?? diffDefaults.diffStyle]}
+						value={[diffStyle ?? defaultSettings.diffStyle]}
 						onValueChange={(value: Array<NonNullable<GUISettings["diffStyle"]>>) => {
 							const head = value[0];
 							if (head === undefined) return;
@@ -851,10 +1135,41 @@ const DiffStyleToggleGroup: FC<
 	);
 };
 
+/**
+ * Kept whole and out of the component so the compiler can memoise the layout on
+ * its inputs; derived in render, the rows — and the navigation index built from
+ * them — take a fresh identity every time anything else about the pane changes.
+ *
+ * The filter narrows the file list only; the diff itself keeps every file, so
+ * the list stays a way of reaching a file rather than a way of hiding one.
+ */
+const buildFilesRows = ({
+	filesItems,
+	filter,
+	mode,
+	collapsedDirectories,
+}: {
+	filesItems: Array<FileRowItem>;
+	filter: string | null;
+	mode: FileDisplayMode;
+	collapsedDirectories: Record<string, true>;
+}): Array<FileTreeRow<FileRowItem>> =>
+	buildFileTreeRows({
+		items: filesItems.filter((item) => pathMatchesFilter(item.path, filter)),
+		mode,
+		collapsedDirectories,
+	});
+
 const Diff: FC<{
 	changes: Array<TreeChange>;
 	filesVisible: boolean;
 	filesItems: Array<FileRowItem>;
+	/** The selected commit's unresolved conflicts, if it has any. */
+	conflicts?: Array<ConflictedFile>;
+	/** Its conflicted files that can only be resolved in edit mode. */
+	manualConflicts?: Array<ManualConflict>;
+	/** True while `conflicts` still shows the replaced commit's hunks. */
+	conflictsStale?: boolean;
 	onActiveFileSelection: (itemId: string, firstHunk: HunkOperand | null) => void;
 	onPassiveFileSelection: (selection: string) => void;
 	selection: Operand;
@@ -863,9 +1178,12 @@ const Diff: FC<{
 	didScrollToViaFileRef: RefObject<boolean>;
 	headerSlot?: ReactNode;
 }> = ({
-	changes,
+	changes: unsortedChanges,
 	filesVisible,
 	filesItems,
+	conflicts = EMPTY_CONFLICTS,
+	manualConflicts = EMPTY_MANUAL,
+	conflictsStale = false,
 	onPassiveFileSelection,
 	selection,
 	projectId,
@@ -874,9 +1192,28 @@ const Diff: FC<{
 	didScrollToViaFileRef,
 	headerSlot,
 }) => {
-	const localAnnotationFormId = useId();
 	const selectionScopeRef = useRef<HTMLDivElement>(null);
 	const dispatch = useAppDispatch();
+	const { mutate: setFilesReviewed } = useSetFilesReviewed();
+	const [manualCollapseByItem, setManualCollapseByItem] = useState<Map<string, boolean>>(new Map());
+	const setManualCollapse = (itemId: string, collapsed: boolean | undefined): void => {
+		setManualCollapseByItem((current) => {
+			if (collapsed === current.get(itemId)) return current;
+
+			const next = new Map(current);
+			if (collapsed === undefined) next.delete(itemId);
+			else next.set(itemId, collapsed);
+			return next;
+		});
+	};
+	// One mutation for the batch bar and every card, so `isPending` means "a
+	// resolution is in flight" rather than "this one's is". Each apply rewrites
+	// the commit, and a second started meanwhile would address the id it replaced.
+	const { mutate: resolveConflict, isPending: resolvingConflict } = useResolveCommitConflictHunks();
+	const changes = useMemo(
+		() => unsortedChanges.toSorted((a, b) => compareFilePaths(a.path, b.path)),
+		[unsortedChanges],
+	);
 
 	const { data: renderAllFiles } = useSuspenseQuery({
 		...guiSettingsQueryOptions,
@@ -896,14 +1233,24 @@ const Diff: FC<{
 	const filesFilter = useAppSelector((state) =>
 		projectSlice.selectors.selectFilesFilter(state, projectId),
 	);
-	// The filter narrows the file list only; the diff itself keeps every file, so
-	// the list stays a way of reaching a file rather than a way of hiding one.
-	const filteredFilesItems = filesItems.filter((item) => pathMatchesFilter(item.path, filesFilter));
-	const files = filteredFilesItems.map((item) => item.path);
-	const filesNavigationIndex: NavigationIndex<string> = {
-		items: files,
-		indexByKey: buildIndexByKey(files, (path) => path),
-	};
+	const fileDisplayMode = useFileDisplayMode();
+	const filesCollapsedDirectories = useAppSelector((state) =>
+		projectSlice.selectors.selectFilesCollapsedDirectories(state, projectId),
+	);
+	// As with `fileParent` below, the compiler leaves this derivation outside its
+	// memo blocks here, and the rows carry the identity the file list and its
+	// navigation index are keyed on — so it is memoised by hand.
+	const filesRows = useMemo(
+		() =>
+			buildFilesRows({
+				filesItems,
+				filter: filesFilter,
+				mode: fileDisplayMode,
+				collapsedDirectories: filesCollapsedDirectories,
+			}),
+		[filesItems, filesFilter, fileDisplayMode, filesCollapsedDirectories],
+	);
+	const filesNavigationIndex = useMemo(() => fileTreeNavigationIndex(filesRows), [filesRows]);
 	const filesSelection = useAppSelector((state) =>
 		projectSlice.selectors.selectSelectionFiles(state, projectId, filesNavigationIndex),
 	);
@@ -922,6 +1269,10 @@ const Diff: FC<{
 			),
 		[selection],
 	);
+	const reviewedFilesContextId = weakFileParentIdentityKey(fileParent);
+	const { data: reviewedFiles } = useSuspenseQuery(
+		reviewedFilesQueryOptions(projectId, reviewedFilesContextId),
+	);
 
 	// Eagerly fetch all diffs regardless of unidiff setting, both for UX and for the total line
 	// stats.
@@ -938,25 +1289,77 @@ const Diff: FC<{
 		select: (comments) => annotationsByPathForScope(comments, fileParent),
 	});
 
-	const diffViewSansAnno = useMemo(() => {
-		const selectedFile = selection._tag === "File" ? selection.path : filesSelection;
-		const selectedFileIdx = changes.findIndex((change) => change.path === selectedFile);
+	// A directory row stands for the first file below it, so the diff has
+	// something to show while the cursor rests on a folder.
+	const activeFilePath =
+		selection._tag === "File" ? selection.path : selectedFilePath(filesRows, filesSelection);
 
-		return getDiffView({
-			fileParent,
-			changes: renderAllFiles ? changes : changes.slice(selectedFileIdx, selectedFileIdx + 1),
-			treeChangeDiffs: renderAllFiles
-				? treeChangeDiffs
-				: treeChangeDiffs.slice(selectedFileIdx, selectedFileIdx + 1),
-		});
-	}, [fileParent, renderAllFiles, selection, filesSelection, changes, treeChangeDiffs]);
+	// Keyed on the file's index, not its path: scrolling moves the selection, so
+	// keying on path reparsed every file per boundary crossed. `null` is
+	// render-all, distinct from the -1 of a path matching no file.
+	const shownFileIndex = renderAllFiles
+		? null
+		: changes.findIndex((change) => change.path === activeFilePath);
+	const preparedDiffFiles = useMemo(
+		() => prepareDiffFiles({ fileParent, changes, treeChangeDiffs }),
+		[fileParent, changes, treeChangeDiffs],
+	);
+
+	const diffViewSansAnno = useMemo(
+		() =>
+			getDiffView(
+				shownFileIndex === null
+					? preparedDiffFiles
+					: preparedDiffFiles.slice(shownFileIndex, shownFileIndex + 1),
+			),
+		[shownFileIndex, preparedDiffFiles],
+	);
 
 	const diffView = withAnnotations(diffViewSansAnno, annotationsByPath);
+	const activeFileItemId =
+		activeFilePath === null
+			? null
+			: (diffViewSansAnno.fileByPath.get(activeFilePath)?.item.id ?? null);
 
-	const activateFile = (selection: string) => {
+	const allFilesReviewed =
+		preparedDiffFiles.length > 0 &&
+		preparedDiffFiles.every(({ change, version }) => reviewedFiles.get(change.path)?.has(version));
+
+	const toggleAllFilesReviewed = (): void => {
+		setManualCollapseByItem(new Map());
+		setFilesReviewed({
+			projectId,
+			contextId: reviewedFilesContextId,
+			files: preparedDiffFiles.map(({ change, version }) => ({ path: change.path, version })),
+			reviewed: !allFilesReviewed,
+		});
+	};
+
+	// The diff panel resolves this selection for the viewer; the ruler wants it in
+	// file line numbers, which is what the hunk's own range already holds.
+	const diffSelection = useAppSelector((state) =>
+		projectSlice.selectors.selectSelectionDiff(state, projectId, diffViewSansAnno.navigationIndex),
+	);
+	const minimapSelection = useMemo((): MinimapSelection | null => {
+		if (!diffSelection) return null;
+
+		const key = hunkOperandIdentityKey(diffSelection);
+		const selected = diffViewSansAnno.hunkByKey.get(key)?.selectedLines;
+		if (!selected) return null;
+
+		return {
+			itemId: selected.id,
+			side: selected.range.side ?? "additions",
+			start: selected.range.start,
+			end: selected.range.end,
+		};
+	}, [diffSelection, diffViewSansAnno]);
+
+	const activateRow = (selection: string) => {
 		onPassiveFileSelection(selection);
 
-		const file = diffViewSansAnno.fileByPath.get(selection);
+		const path = selectedFilePath(filesRows, selection);
+		const file = path === null ? undefined : diffViewSansAnno.fileByPath.get(path);
 		if (!file) return;
 
 		onActiveFileSelection(file.item.id, file.hunks[0]?.operand ?? null);
@@ -970,8 +1373,8 @@ const Diff: FC<{
 		inputId: "files-filter-input",
 		scope: "files",
 		selection: filesSelection,
-		firstPath: filteredFilesItems[0]?.path,
-		onEnterList: activateFile,
+		firstPath: filesRows[0]?.path,
+		onEnterList: activateRow,
 		panelRef: filesPanelRef,
 		listRef: filesTreeRef,
 		enabled: filesVisible && changes.length > 0,
@@ -983,6 +1386,8 @@ const Diff: FC<{
 			diffBackground: cfg.diffBackground,
 			diffOverflow: cfg.diffOverflow,
 			diffStyle: cfg.diffStyle,
+			diffTabSize: cfg.diffTabSize,
+			minimap: cfg.minimap,
 		}),
 	});
 
@@ -990,6 +1395,45 @@ const Diff: FC<{
 
 	const diffContentsEl = useRef<HTMLElement | null>(null);
 	const [canUseSplitDiff, setCanUseSplitDiff] = useState<boolean | undefined>();
+	const [wrapColumns, setWrapColumns] = useState<number | null>(null);
+
+	// Wrapping stretches a long line over several rows, which the minimap has to
+	// model or its marks drift down the file it is mapping.
+	const wraps = (diffSettings?.diffOverflow ?? defaultSettings.diffOverflow) === "wrap";
+
+	// Split and unified lay hunks out differently, so the minimap has to model
+	// whichever style the viewer is actually rendering.
+	const diffStyle = canUseSplitDiff
+		? (diffSettings?.diffStyle ?? defaultSettings.diffStyle)
+		: "unified";
+
+	const tabSize = diffSettings?.diffTabSize ?? defaultSettings.diffTabSize;
+
+	// The minimap maps whatever the viewer holds — every file, or the one file
+	// shown at a time. Keyed on that file's index rather than its path so the
+	// map doesn't rebuild as scrolling moves the selection through the list.
+	const shownIndex = renderAllFiles
+		? -1
+		: changes.findIndex((change) => change.path === activeFilePath);
+
+	const minimapShown = diffSettings?.minimap ?? defaultSettings.minimap;
+	// Modelling the map reads every line of the diff, so a ruler nobody asked for
+	// shouldn't be parsed for either.
+	const minimapFiles = useMemo(
+		() =>
+			minimapShown
+				? getMinimapFiles({
+						files:
+							shownIndex < 0
+								? preparedDiffFiles
+								: preparedDiffFiles.slice(shownIndex, shownIndex + 1),
+						diffStyle,
+						tabSize,
+						wrapColumns,
+					})
+				: [],
+		[minimapShown, shownIndex, preparedDiffFiles, diffStyle, tabSize, wrapColumns],
+	);
 
 	useHotkeys([
 		{
@@ -997,7 +1441,9 @@ const Diff: FC<{
 			callback: () =>
 				saveGUISettings({
 					diffStyle:
-						(diffSettings?.diffStyle ?? diffDefaults.diffStyle) === "split" ? "unified" : "split",
+						(diffSettings?.diffStyle ?? defaultSettings.diffStyle) === "split"
+							? "unified"
+							: "split",
 				}),
 			options: {
 				conflictBehavior: "allow",
@@ -1007,21 +1453,34 @@ const Diff: FC<{
 		},
 	]);
 
+	// Both of these are facts about the rendered pane rather than about the diff,
+	// so they are measured on the same resize rather than derived.
 	useLayoutEffect(() => {
 		const el = diffContentsEl.current;
 		if (!el) return;
 
-		const measureCanUseSplitDiff = () => el.getBoundingClientRect().width >= 700;
+		const measure = () => {
+			setCanUseSplitDiff(el.getBoundingClientRect().width >= 700);
 
-		setCanUseSplitDiff(measureCanUseSplitDiff());
+			if (!wraps) {
+				setWrapColumns(null);
+				return;
+			}
 
-		const resizeObserver = new ResizeObserver(() => {
-			setCanUseSplitDiff(measureCanUseSplitDiff());
-		});
+			// Held only once it can be read: a resize that lands between renders would
+			// otherwise drop the count and unwrap the whole model for a frame.
+			const viewer = viewerRef.current?.getInstance();
+			const columns = viewer ? measureWrapColumns(viewer) : null;
+			if (columns !== null) setWrapColumns(columns);
+		};
+
+		measure();
+
+		const resizeObserver = new ResizeObserver(measure);
 		resizeObserver.observe(el);
 
 		return () => resizeObserver.disconnect();
-	}, [diffContentsEl]);
+	}, [diffContentsEl, viewerRef, wraps, diffViewSansAnno]);
 
 	const layoutId = `project=${projectId}:details`;
 	const panelIds: Array<PanelId> = filesVisible ? ["files-panel", "diff-panel"] : ["diff-panel"];
@@ -1032,8 +1491,6 @@ const Diff: FC<{
 
 	return (
 		<div className={styles.diffTab}>
-			<form id={localAnnotationFormId} hidden />
-
 			<Group
 				id={layoutId}
 				className={styles.panels}
@@ -1046,7 +1503,7 @@ const Diff: FC<{
 							id={"files-panel" satisfies PanelId}
 							className={styles.panel}
 							defaultSize={320}
-							minSize={180}
+							minSize={220}
 							groupResizeBehavior="preserve-pixel-size"
 						>
 							<div className={styles.filesPanelContent} ref={filesPanelRef}>
@@ -1067,10 +1524,16 @@ const Diff: FC<{
 									viewportClassName={styles.diffFiles}
 								>
 									<FilesTree
-										data-selection-scope={"files" satisfies SelectionScope}
-										onFileSelection={activateFile}
+										selectionScope="files"
+										onRowSelection={activateRow}
 										projectId={projectId}
-										items={filteredFilesItems}
+										rows={filesRows}
+										collapsedDirectories={filesCollapsedDirectories}
+										onToggleDirectoryCollapsed={(path) =>
+											dispatch(
+												projectSlice.actions.toggleFilesDirectoryCollapsed({ projectId, path }),
+											)
+										}
 										selection={filesSelection}
 										navigationIndex={filesNavigationIndex}
 										fileParent={fileParent}
@@ -1084,7 +1547,7 @@ const Diff: FC<{
 								</Scroller>
 							</div>
 						</Panel>
-						<Separator className={styles.resizeHandle} />
+						<ResizeHandle />
 					</>
 				)}
 
@@ -1099,6 +1562,13 @@ const Diff: FC<{
 						)}
 
 						<Toolbar.Root aria-label="Diff controls" className={styles.diffControls}>
+							<Toolbar.Button
+								className={getButtonClassName({ variant: "outline" })}
+								disabled={preparedDiffFiles.length === 0}
+								onClick={toggleAllFilesReviewed}
+							>
+								{allFilesReviewed ? "Mark all unreviewed" : "Mark all reviewed"}
+							</Toolbar.Button>
 							<ToggleGroupStyles>
 								<Toolbar.Button
 									render={
@@ -1134,27 +1604,59 @@ const Diff: FC<{
 						</Toolbar.Root>
 					</div>
 
-					<div
-						data-selection-scope={"diff" satisfies SelectionScope}
-						// oxlint-disable-next-line jsx_a11y/no-noninteractive-tabindex -- Revisit this when we add hunk/line selection.
-						tabIndex={0}
-						className={styles.diffContentsContainer}
-						ref={useMergedRefs(selectionScopeRef, diffContentsEl, useAutofocusSelectionScope())}
-					>
-						<DiffContents
-							localAnnotationFormId={localAnnotationFormId}
-							onViewerFileSelection={onPassiveFileSelection}
-							fileParent={fileParent}
-							projectId={projectId}
-							diffView={diffView}
-							annotationsByPath={annotationsByPath}
-							diffBackgrounds={diffSettings?.diffBackground}
-							diffOverflow={diffSettings?.diffOverflow}
-							diffStyle={canUseSplitDiff ? diffSettings?.diffStyle : "unified"}
-							selectionScopeRef={selectionScopeRef}
-							viewerRef={viewerRef}
-							didScrollToViaFileRef={didScrollToViaFileRef}
-						/>
+					{/* One panel child, so `.panel`'s two-row grid still sizes the
+					    diff: the bar is an auto row inside this, not a third row
+					    that would take the diff's. */}
+					<div className={styles.diffArea}>
+						{fileParent._tag === "Commit" && (
+							<ConflictBar
+								projectId={projectId}
+								commitId={fileParent.commitId}
+								conflicts={conflicts}
+								manual={manualConflicts}
+								busy={resolvingConflict || conflictsStale}
+								onResolve={(specs) =>
+									resolveConflict({ projectId, commitId: fileParent.commitId, specs })
+								}
+							/>
+						)}
+
+						<div
+							data-selection-scope={"diff" satisfies SelectionScope}
+							// oxlint-disable-next-line jsx_a11y/no-noninteractive-tabindex -- Revisit this when we add hunk/line selection.
+							tabIndex={0}
+							className={styles.diffContentsContainer}
+							ref={useMergedRefs(selectionScopeRef, diffContentsEl, useAutofocusSelectionScope())}
+						>
+							<DiffContents
+								activeFileItemId={activeFileItemId}
+								onViewerFileSelection={onPassiveFileSelection}
+								fileParent={fileParent}
+								projectId={projectId}
+								diffView={diffView}
+								annotationsByPath={annotationsByPath}
+								diffBackgrounds={diffSettings?.diffBackground}
+								diffOverflow={diffSettings?.diffOverflow}
+								diffStyle={diffStyle}
+								reviewedFiles={reviewedFiles}
+								manualCollapseByItem={manualCollapseByItem}
+								setManualCollapse={setManualCollapse}
+								setFilesReviewed={setFilesReviewed}
+								selectionScopeRef={selectionScopeRef}
+								viewerRef={viewerRef}
+								didScrollToViaFileRef={didScrollToViaFileRef}
+							/>
+
+							{minimapShown && (
+								<DiffMinimap
+									viewerRef={viewerRef}
+									files={minimapFiles}
+									diffStyle={diffStyle}
+									annotationsByPath={annotationsByPath}
+									selection={minimapSelection}
+								/>
+							)}
+						</div>
 					</div>
 				</Panel>
 			</Group>
@@ -1215,6 +1717,7 @@ const CommitDetailsSkeleton: FC = () => {
 					{detailsFullWindow && <TopLeftControls />}
 
 					<div className={styles.title}>
+						<SelectionScopeKbd hotkey="0" scope="details" />
 						<Icon name="commit" />
 						<h3 className={classes("text-15", "text-semibold")}>Loading…</h3>
 					</div>
@@ -1247,6 +1750,35 @@ const CommitDetails: FC<{
 		commitDetailsWithLineStatsQueryOptions({ projectId, commitId: selection.commitId }),
 	);
 
+	const { data: conflictsData, isPlaceholderData: conflictsStale } = useQuery({
+		...commitConflictsQueryOptions({
+			projectId,
+			commitId: selection.commitId,
+			enabled: commitDetails.commit.hasConflicts,
+		}),
+		// A resolution rewrites the commit and re-keys this query; holding the
+		// previous result keeps the bar — and the open resolution dialog —
+		// mounted across the refetch instead of flashing them away. Rewrites
+		// are the only bridge: selecting another commit remounts this component.
+		// While the placeholder shows, the hunks belong to the replaced commit,
+		// so resolution actions are held busy rather than let address dead ids.
+		placeholderData: keepPreviousData,
+	});
+	// The placeholder outlives the last conflict, so a commit that just
+	// normalized must not keep reporting the resolved ones.
+	const conflicts = commitDetails.commit.hasConflicts ? conflictsData : undefined;
+
+	// The commit's changes as they are: the auto-resolution falls back to the
+	// parent at every conflict, so a conflicted region contributes nothing here
+	// until it is resolved toward the intended side — the bar flags it and
+	// hosts the resolution dialog.
+	const changes = commitDetails.changes;
+
+	const filesItems = useMemo(
+		() => getCommitFileRowItems({ commitDetails, manual: conflicts?.manual }),
+		[commitDetails, conflicts],
+	);
+
 	const fmtDate = new Intl.DateTimeFormat(undefined, {
 		day: "2-digit",
 		month: "2-digit",
@@ -1269,6 +1801,7 @@ const CommitDetails: FC<{
 					{detailsFullWindow && <TopLeftControls />}
 
 					<div className={styles.title}>
+						<SelectionScopeKbd hotkey="0" scope="details" />
 						<Icon name="commit" />
 						<h3 className={classes(styles.titleContentWrapper, "text-15", "text-semibold")}>
 							<span className={styles.titleContent}>
@@ -1348,9 +1881,12 @@ const CommitDetails: FC<{
 			</div>
 
 			<Diff
-				changes={commitDetails.changes}
+				changes={changes}
 				filesVisible={filesVisible}
-				filesItems={getCommitFileRowItems({ commitDetails })}
+				filesItems={filesItems}
+				conflicts={conflicts?.files}
+				manualConflicts={conflicts?.manual}
+				conflictsStale={conflictsStale}
 				onPassiveFileSelection={selectFile}
 				selection={selection}
 				projectId={projectId}
@@ -1469,6 +2005,7 @@ const BranchDetails: FC<{
 					{detailsFullWindow && <TopLeftControls />}
 
 					<div className={styles.title}>
+						<SelectionScopeKbd hotkey="0" scope="details" />
 						<Icon name="branch" />
 						<h3 className={classes("text-15", "text-semibold")}>{branchName}</h3>
 					</div>
@@ -1624,6 +2161,7 @@ const FileDetailsSkeleton: FC = () => {
 					{detailsFullWindow && <TopLeftControls />}
 
 					<div className={styles.title}>
+						<SelectionScopeKbd hotkey="0" scope="details" />
 						<Icon name="file" />
 						<h3 className={classes("text-15", "text-semibold")}>Uncommitted</h3>
 					</div>
@@ -1666,6 +2204,7 @@ const FileDetails: FC<{
 			{detailsFullWindow && <TopLeftControls />}
 
 			<div className={styles.title}>
+				<SelectionScopeKbd hotkey="0" scope="details" />
 				<Icon name="file-diff" />
 				<h3 className={classes("text-15", "text-semibold")}>Uncommitted</h3>
 			</div>

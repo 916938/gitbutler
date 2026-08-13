@@ -136,6 +136,44 @@ fn can_undo_but_discard_rename() {
 }
 
 #[test]
+fn can_undo_but_discard_commit() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    let commit_id = env
+        .open_repo()
+        .rev_parse_single("HEAD^{/add second}")
+        .unwrap()
+        .detach();
+
+    run_mutate_undo_roundtrip_test(&env, |env| {
+        env.but(format!("discard {}", commit_id.to_hex()))
+            .assert()
+            .success();
+    });
+}
+
+#[test]
+fn can_undo_but_discard_commit_that_caused_conflict() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    env.file("second", "update second");
+
+    let commit_id = env
+        .open_repo()
+        .rev_parse_single("HEAD^{/add second}")
+        .unwrap()
+        .detach();
+
+    run_mutate_undo_roundtrip_test(&env, |env| {
+        env.but(format!("discard {}", commit_id.to_hex()))
+            .assert()
+            .success();
+    });
+}
+
+#[test]
 fn can_undo_unapply() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
@@ -470,4 +508,16 @@ a135744 2000-01-02 00:00:00 [COMMIT] Created commit
 29b25c0 2000-01-02 00:00:00 [COMMIT] Created commit
 
 "#]]);
+}
+
+#[test]
+fn can_undo_but_clean() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    env.but("branch new empty-branch").assert().success();
+
+    run_mutate_undo_roundtrip_test(&env, |env| {
+        env.but("clean").assert().success();
+    });
 }

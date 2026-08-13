@@ -202,12 +202,20 @@ pub(crate) fn app_settings() -> Result<&'static AppSettings> {
 
 /// Handle `args` which must be what's passed by `std::env::args_os()`.
 pub async fn handle_args(args: impl Iterator<Item = OsString>) -> Result<()> {
-    let args: Vec<_> = args.collect();
+    let mut args: Vec<_> = args.collect();
 
     // Check if version is requested
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         let version = option_env!("VERSION").unwrap_or("dev");
         println!("but {version}");
+        return Ok(());
+    }
+
+    let watwat = expand_watwat(&mut args);
+    if watwat && args::find_subcommand(&args).is_none() {
+        println!(
+            "Something went watwat?\n\n  but watwat <command> [arguments...]\n\nReruns the command with maximum tracing and the full error chain.\nFor an archive: but-debug dump diagnostics"
+        );
         return Ok(());
     }
 
@@ -293,6 +301,7 @@ pub async fn handle_args(args: impl Iterator<Item = OsString>) -> Result<()> {
     but_secret::secret::set_application_namespace(namespace);
 
     let mut out = OutputChannel::new(output_format);
+    out.set_full_error_chain(watwat);
     #[cfg(feature = "legacy")]
     if matches!(
         &args.cmd,
@@ -394,6 +403,18 @@ pub async fn handle_args(args: impl Iterator<Item = OsString>) -> Result<()> {
         }
         Ok(()) => Ok(()),
     }
+}
+
+/// Turn `but watwat <command>` into `<command>` with maximum tracing.
+fn expand_watwat(args: &mut [OsString]) -> bool {
+    let Some((index, command)) = args::find_subcommand(args) else {
+        return false;
+    };
+    if command != "watwat" {
+        return false;
+    }
+    args[index] = "-tttt".into();
+    true
 }
 
 /// Expand aliases in the argument list.
@@ -865,7 +886,7 @@ async fn match_subcommand(
     // If `Some`, and if result is `Ok`, this is passed to
     // `run_status_after_if_requested()`.
     let mut status_after_data: Option<bool> = None;
-    let _ws: Option<WorkspaceState> = match cmd {
+    let ws: Option<WorkspaceState> = match cmd {
         Subcommands::Metrics { .. }
         | Subcommands::Gui { .. }
         | Subcommands::Completions { .. }
@@ -1049,12 +1070,9 @@ async fn match_subcommand(
             None
         }
         #[cfg(feature = "legacy")]
-        Subcommands::Pull { check } => {
-            command::legacy::pull::handle(&mut ctx, out, check)
-                .await
-                .emit_metrics(metrics_ctx)?;
-            None
-        }
+        Subcommands::Pull { check } => command::legacy::pull::handle(&mut ctx, out, check)
+            .await
+            .emit_metrics(metrics_ctx)?,
         #[cfg(feature = "legacy")]
         Subcommands::Fetch => {
             use std::fmt::Write;
@@ -1068,8 +1086,7 @@ async fn match_subcommand(
             )?;
             command::legacy::pull::handle(&mut ctx, out, true)
                 .await
-                .emit_metrics(metrics_ctx)?;
-            None
+                .emit_metrics(metrics_ctx)?
         }
         #[cfg(feature = "legacy")]
         Subcommands::Clean {
@@ -1095,8 +1112,7 @@ async fn match_subcommand(
                     include_upstream,
                 },
             )
-            .emit_metrics(metrics_ctx)?;
-            None
+            .emit_metrics(metrics_ctx)?
         }
         #[cfg(feature = "legacy")]
         Subcommands::Worktree(worktree::Platform { cmd }) => {
@@ -1675,6 +1691,12 @@ async fn match_subcommand(
     };
 
     #[cfg(feature = "legacy")]
+    if let Some(ws) = ws
+        && ws.checkout_conflict_occurred
+    {
+        command::legacy::conflict_notice::report_checkout_conflict(out);
+    }
+    #[cfg(feature = "legacy")]
     if let Some(conflicts_before) = newly_conflicted_data {
         command::legacy::conflict_notice::report_newly_conflicted(&ctx, out, conflicts_before);
     }
@@ -1847,6 +1869,25 @@ mod tests {
 
     fn os_args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(|arg| OsString::from(*arg)).collect()
+    }
+
+    #[test]
+    fn watwat_enables_maximum_tracing() {
+        let mut args = os_args(&["but", "-C", "repo", "watwat", "status", "--verbose"]);
+
+        assert!(expand_watwat(&mut args), "watwat should be recognized");
+        assert_eq!(
+            args,
+            os_args(&["but", "-C", "repo", "-tttt", "status", "--verbose"])
+        );
+    }
+
+    #[test]
+    fn ordinary_commands_are_unchanged_by_watwat_expansion() {
+        let mut args = os_args(&["but", "status"]);
+
+        assert!(!expand_watwat(&mut args), "status is not watwat");
+        assert_eq!(args, os_args(&["but", "status"]));
     }
 
     #[test]
