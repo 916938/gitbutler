@@ -158,7 +158,7 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 **版本**: `0.22.0+deepseek`  
 **大小**: 49.0 MB (压缩后)  
 **平台**: Windows x86_64  
-**构建时间**: 2026-08-07 06:15
+**构建时间**: 2026-08-07 06:26
 
 ### 包含文件
 
