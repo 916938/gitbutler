@@ -9,6 +9,7 @@ describe("getEditorUri", () => {
 		"cursor",
 		"windsurf",
 		"trae",
+		"trae-cn",
 		"antigravity-ide",
 	])("%s keeps query parameters", (schemeId) => {
 		expect(

@@ -70,6 +70,7 @@
 		{ schemeIdentifer: "zed", displayName: "Zed" },
 		{ schemeIdentifer: "cursor", displayName: "Cursor" },
 		{ schemeIdentifer: "trae", displayName: "Trae" },
+		{ schemeIdentifer: "trae-cn", displayName: "Trae CN" },
 		{ schemeIdentifer: "antigravity-ide", displayName: "Antigravity IDE" },
 	];
 	const editorOptionsForSelect = editorOptions.map((option) => ({
