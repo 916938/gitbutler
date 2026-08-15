@@ -197,6 +197,27 @@ A wrong resolution is reverted with `but undo`.
 
 `but status` marks uncommitted files with unresolved merge conflicts `{conflicted}`; they are excluded from committable changes and outside `but resolve` mode. Edit the file to the wanted contents (or delete it), then `but resolve <path>...` to mark it resolved with that state; it then shows as an ordinary uncommitted change.
 
+### Set up GitButler on an existing repo
+
+Commands fail with "Setup required: Not currently on a gitbutler/\* branch" until the project is initialized. Run `but setup` once, then use `but` normally.
+
+`but setup` switches to the `gitbutler/workspace` branch via a checkout, so it **fails when there are uncommitted changes** ("Uncommitted files would be overwritten by checkout: ..."). Do not hand-revert or discard the work. Instead:
+
+1. Back up the listed dirty files outside the repo (copy them aside).
+2. Restore each to its committed state so the tree is clean — use byte-exact restores like `git show HEAD:<path> > <path>` (a plain overwrite can leave CRLF/newline diffs that still block the checkout).
+3. `but setup`.
+4. Copy the backups back into place; they reappear as uncommitted changes in the now-initialized workspace, ready for `but commit`.
+
+After setup you are on `gitbutler/workspace` with the dirty files restored — commit them with the normal `but diff` + `but commit` flow.
+
+### `but` cannot scan the working tree
+
+If any command aborts with "Failed to read the directory at '<path>' Access is denied. (os error 5)" (or a similar permission/scan error), `but` cannot walk the tree. It is usually a stray local dir (caches like `.pytest_cache/`, tool state like `.codegraph/`) with broken ACLs, not a GitButler problem. Exclude it locally so the scan skips it — append the path to `.git/info/exclude` (untracked, repo-local) — then rerun the command. Prefer `.git/info/exclude` over `.gitignore` when the exclusion is only about unblocking your local scan and should not be committed.
+
+### "Could not find a merge-base" when creating a branch
+
+`but commit -b <new-branch> ...` can fail with "Could not find a merge-base between commits ..." when the new branch would be rooted on history unrelated to the workspace target. Don't retry with the same new name. Commit onto a branch that is **already applied and shares the workspace base** (check `but status` — apply an existing branch or target one it lists) instead of spawning a fresh, unrelated branch.
+
 ## Git-to-But Map
 
 | git | but |

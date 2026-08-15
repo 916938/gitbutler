@@ -593,6 +593,19 @@ Rerunning `but setup` on an already-configured project also repairs a missing de
 example if `virtual_branches.toml` was reset while the target survived in Git config — so it is the
 recovery path when target configuration looks broken.
 
+**Setup requires a clean tree.** `but setup` switches to `gitbutler/workspace` with a checkout, so
+uncommitted changes make it fail: `Uncommitted files would be overwritten by checkout: "<path>", ...`.
+Do not discard or hand-revert the work. Restore the tree losslessly, set up, then bring the work back:
+
+1. Copy the listed dirty files to a location outside the repo.
+2. Restore each to its committed state so the tree is clean. Use a byte-exact restore —
+   `git show HEAD:<path> > <path>` — rather than an editor/PowerShell rewrite, which can leave a
+   CRLF or trailing-newline diff that still blocks the checkout. Delete any brand-new (untracked)
+   files you backed up.
+3. Run `but setup` — it now succeeds and lands you on `gitbutler/workspace`.
+4. Copy the backups back over the restored files. They resurface as uncommitted changes in the
+   initialized workspace; commit them with `but diff` + `but commit`.
+
 ### `but teardown`
 
 Exit GitButler mode and return to normal git workflow.
@@ -642,6 +655,27 @@ but skill check
 but skill check --update
 but skill install --detect
 ```
+
+### Setup & environment troubleshooting
+
+Environment-level failures that block `but` before any real operation runs:
+
+- **"Setup required: Not currently on a gitbutler/\* branch" / "No GitButler project found"** — the
+  repo is not initialized (or you left `gitbutler/workspace`). Run `but setup` (see above); its
+  clean-tree requirement and the lossless backup/restore flow are documented under `but setup`.
+- **"Failed to read the directory at '<path>' ... Access is denied. (os error 5)"** (or any
+  permission/scan error naming a directory) — `but` cannot walk the working tree, so every command
+  aborts. The culprit is usually an untracked local dir with broken ACLs (tool caches like
+  `.pytest_cache/`, index state like `.codegraph/`), not GitButler. You often cannot `takeown`/
+  delete/move it either. Unblock the scan by excluding the path locally: append it to
+  `.git/info/exclude` (repo-local, untracked, never committed), then rerun. Prefer
+  `.git/info/exclude` over `.gitignore` for exclusions whose only purpose is unblocking your local
+  scan.
+- **"Could not find a merge-base between commits ..." on `but commit -b <new-branch>`** — the new
+  branch would root on history unrelated to the workspace target, so no common ancestor exists. Do
+  not retry with the same new name. Run `but status`, then commit onto a branch that is already
+  applied and shares the workspace base (apply an existing one or target a branch `status` lists)
+  instead of spawning a fresh unrelated branch.
 
 ## Selected Options
 
