@@ -9,7 +9,7 @@ use crate::support::graph_dag;
 
 #[test]
 fn drop_and_add_regular_refs() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -36,31 +36,32 @@ fn drop_and_add_regular_refs() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉merged[🌳]
-●    ·8a6c109 (⌂|1)
+●    ·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -80,25 +81,25 @@ fn drop_and_add_regular_refs() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉merged[🌳]
-●    ·8a6c109 (⌂|1)
+●    ·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
 │ ◎ │  new-reference
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -107,7 +108,7 @@ fn drop_and_add_regular_refs() -> anyhow::Result<()> {
 
 #[test]
 fn drop_head_ref() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -134,31 +135,32 @@ fn drop_head_ref() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉merged[🌳]
-●    ·8a6c109 (⌂|1)
+●    ·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -169,25 +171,25 @@ fn drop_head_ref() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
-●    👉·8a6c109 (⌂|1)
+●    👉·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -196,7 +198,7 @@ fn drop_head_ref() -> anyhow::Result<()> {
 
 #[test]
 fn overriding_references() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -223,31 +225,32 @@ fn overriding_references() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉merged[🌳]
-●    ·8a6c109 (⌂|1)
+●    ·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -276,25 +279,25 @@ fn overriding_references() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
-●    👉·8a6c109 (⌂|1)
+●    👉·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -317,26 +320,26 @@ fn overriding_references() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
-●    👉·8a6c109 (⌂|1)
+●    👉·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
 │ ◎ │  merged[🌳]
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -352,26 +355,26 @@ fn overriding_references() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
-●    👉·8a6c109 (⌂|1)
+●    👉·8a6c109 (⌂)
 ├─╮
 ◎ │  A
-● │    ·62b409a (⌂|1)
+● │    ·62b409a (⌂)
 ├───╮
 ◎ │ │  merged[🌳]
-● │ │  ·592abec (⌂|1)
+● │ │  ·592abec (⌂)
 │ │ ◎  B
-│ │ ●  ·f16dddf (⌂|1)
+│ │ ●  ·f16dddf (⌂)
 ├───╯
 │ ◎  C
-│ ●    ·7ed512a (⌂|1)
+│ ●    ·7ed512a (⌂)
 │ ├─╮
-│ ● │  ·35ee481 (⌂|1)
+│ ● │  ·35ee481 (⌂)
 ├─╯ │
 │   ◎  D
-│   ●  ·ecb1877 (⌂|1)
+│   ●  ·ecb1877 (⌂)
 ├───╯
 ◎  main
-●  🏁·965998b (⌂|1)
+●  🏁·965998b (⌂)
 "#]]
     );
 

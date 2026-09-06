@@ -25,8 +25,10 @@ pub use queries::legacy::HeadStatus;
 /// Lifecycle
 impl Workspace {
     /// Redo the graph traversal with the same settings as before, but use the latest
-    /// data from `repo`, `meta` and `project_meta` to do it.
+    /// data from `repo`, `meta`, `project_meta` and `db` to do it.
     /// This is useful to make this instance represent changes to `repo` or `meta`.
+    /// Worktree tips are [discovered](crate::init::Options::worktrees) afresh from
+    /// `db` rather than reusing the previous traversal's, as they may have changed.
     ///
     /// Pass a freshly read `project_meta` to pick up target changes as well, or
     /// `self.graph.project_meta.clone()` to deliberately keep the current one,
@@ -42,8 +44,9 @@ impl Workspace {
         repo: &gix::Repository,
         meta: &impl RefMetadata,
         project_meta: but_core::ref_metadata::ProjectMeta,
+        db: &mut but_db::DbHandle,
     ) -> anyhow::Result<()> {
-        let graph = Graph::from_head(repo, meta, project_meta, self.graph.options.clone())?;
+        let graph = Graph::from_head(repo, meta, project_meta, db, self.graph.options.clone())?;
         *self = graph.into_workspace()?;
         Ok(())
     }
@@ -101,12 +104,23 @@ impl Workspace {
     /// Unlike [`Self::metadata`], applied stacks absent from the projection are
     /// treated as outside the workspace, and branches absent from a projected
     /// stack are excluded.
+    ///
+    /// Branches checked out in linked worktrees are deliberately absent from
+    /// projected stacks, but they remain part of their recorded stack - being
+    /// checked out elsewhere is transient state, not a workspace change - so
+    /// they count as present here.
     pub fn metadata_from_projection(
         &self,
     ) -> anyhow::Result<Option<but_core::ref_metadata::Workspace>> {
         let Some(mut metadata) = self.metadata.clone() else {
             return Ok(None);
         };
+        let worktree_refs: std::collections::BTreeSet<&gix::refs::FullName> = self
+            .graph
+            .worktree_tips
+            .iter()
+            .filter_map(|tip| tip.ref_name.as_ref())
+            .collect();
         for stack in &mut metadata.stacks {
             if !stack.workspacecommit_relation.is_in_workspace() {
                 continue;
@@ -118,19 +132,27 @@ impl Workspace {
                             stack
                                 .branches
                                 .iter()
-                                .any(|branch| branch.ref_name.as_ref() == projected_ref)
+                                .any(|branch| branch.ref_name == projected_ref)
                         })
                     })
             }) else {
+                if stack
+                    .branches
+                    .iter()
+                    .any(|branch| worktree_refs.contains(&branch.ref_name))
+                {
+                    continue;
+                }
                 stack.workspacecommit_relation =
                     but_core::ref_metadata::WorkspaceCommitRelation::Outside;
                 continue;
             };
             stack.branches.retain(|branch| {
-                projected_stack
-                    .segments
-                    .iter()
-                    .any(|segment| segment.ref_name() == Some(branch.ref_name.as_ref()))
+                worktree_refs.contains(&branch.ref_name)
+                    || projected_stack
+                        .segments
+                        .iter()
+                        .any(|segment| segment.ref_name() == Some(branch.ref_name.as_ref()))
             });
         }
         self.reconcile_metadata(&mut metadata)?;
@@ -238,7 +260,7 @@ impl Workspace {
             return false;
         };
 
-        t.ref_name.as_ref() == name
+        t.ref_name == name
             || self
                 .graph
                 .lookup_sibling_segment(t.segment_index)
@@ -473,9 +495,8 @@ impl Workspace {
             },
         );
         format!(
-            "{meta}{sign}:{id}:{name} <> ✓{target}{bound}",
+            "{meta}{sign}:{name} <> ✓{target}{bound}",
             meta = if self.metadata.is_some() { "📕" } else { "" },
-            id = self.id.index(),
             bound = self
                 .lower_bound
                 .map(|base| format!(" on {}", base.to_hex_with_len(7)))

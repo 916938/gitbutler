@@ -249,6 +249,9 @@ impl Snapshot {
             reference.name().to_owned(),
             &*sideeffect_free_meta,
             project_meta,
+            // A throwaway handle: this side-effect free view must not touch the
+            // project database, and worktree discovery stays off.
+            &mut but_db::DbHandle::new_at_path(":memory:")?,
             but_graph::init::Options::limited(),
         )?;
         graph.into_workspace()
@@ -480,8 +483,9 @@ impl RefMetadata for VirtualBranchesTomlMetadata {
         }
         let previous_content = self.snapshot.content.clone();
 
-        // Find exactly one stack-id per branch name, and assign all branches to it.
         // `stacks` is the target state, and we have to make an actual stack look like it.
+        // Branch names are not globally unique: each stack keeps the head it already owns,
+        // and duplicate names in other stacks stay where they are.
         let mut seen_stack_ids = HashSet::new();
         for stack in &value.stacks {
             if stack.branches.is_empty() {
@@ -500,6 +504,16 @@ impl RefMetadata for VirtualBranchesTomlMetadata {
                 .contains_key(&stack.id)
                 .then_some(stack.id);
             for stack_branch in &stack.branches {
+                // Duplicate names can exist in other stacks as stale leftovers, which
+                // `reconcile_projected_stacks` tolerates. When this stack already has its
+                // own head for the name, keep it: the by-order lookup below would find the
+                // lowest-ordered copy instead and move it here, taking it away from the
+                // stack that legitimately holds it.
+                if stack_id.is_some_and(|stack_id| {
+                    stack_has_head(self.data(), stack_id, stack_branch.ref_name.as_ref())
+                }) {
+                    continue;
+                }
                 let branch = self.branch(stack_branch.ref_name.as_ref())?;
                 if branch.is_default() {
                     branches_to_create.push(stack_branch);
@@ -757,7 +771,7 @@ impl RefMetadata for VirtualBranchesTomlMetadata {
 }
 
 /// Ref metadata backed by legacy TOML for historical workspace metadata and by
-/// the project database for ad-hoc branch order metadata.
+/// the project database for branch order shared with ad-hoc projections.
 pub struct BranchOrderMetadata {
     legacy: VirtualBranchesTomlMetadata,
     db: Option<but_db::DbHandle>,
@@ -811,7 +825,18 @@ impl RefMetadata for BranchOrderMetadata {
     }
 
     fn set_workspace(&mut self, value: &Self::Handle<Workspace>) -> anyhow::Result<()> {
-        self.legacy.set_workspace(value)
+        self.legacy.set_workspace(value)?;
+        if !self.read_only {
+            for stack in &value.stacks {
+                let order = stack
+                    .branches
+                    .iter()
+                    .map(|branch| branch.ref_name.clone())
+                    .collect::<Vec<_>>();
+                self.set_branch_stack_order(&order)?;
+            }
+        }
+        Ok(())
     }
 
     fn set_branch(&mut self, value: &Self::Handle<Branch>) -> anyhow::Result<()> {
@@ -1090,6 +1115,20 @@ fn default_workspace() -> Workspace {
 
 fn full_branch_name(name: &str) -> Option<gix::refs::FullName> {
     gix::refs::FullName::try_from(format!("refs/heads/{name}")).ok()
+}
+
+fn stack_has_head(
+    data: &VirtualBranches,
+    stack_id: StackId,
+    ref_name: &gix::refs::FullNameRef,
+) -> bool {
+    let short_name = ref_name.shorten();
+    data.branches.get(&stack_id).is_some_and(|stack| {
+        stack
+            .heads
+            .iter()
+            .any(|head| short_name == head.name.as_str())
+    })
 }
 
 fn stack_head_oid(

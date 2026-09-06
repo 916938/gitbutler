@@ -67,6 +67,13 @@ fn resolve(
                     .map(|source| ResolvedCliIdArg::UncommittedHunkOrFile(Box::new(source))),
             );
         }
+        // A source can expand to nothing, e.g. a worktree without changes, and
+        // squash classification requires at least one source.
+        if resolved_sources.is_empty() {
+            return Err(crate::bad_input("No changes to amend")
+                .hint("Run `but status` to show applicable targets")
+                .into());
+        }
         resolved_sources
     };
     let sources = resolved_sources
@@ -86,6 +93,7 @@ fn resolve(
         .with_hint(|| hint.clone())?;
     let target = match squash::resolve_target(
         target.as_ref(),
+        &[],
         HowToRewordTarget::UseTargetMessage,
         head_info,
         repo,
@@ -97,10 +105,14 @@ fn resolve(
                     bad_input("--target cannot be an empty branch").into()
                 }
                 ResolveTargetError::NotFound => bad_input("target not found").hint(hint).into(),
+                ResolveTargetError::AnonymousSegment(id) => {
+                    crate::args::atoms::anonymous_segment_error(&id)
+                }
                 ResolveTargetError::UseTargetMessageUnavailable
                 | ResolveTargetError::UseSourceMessageUnavailable
                 | ResolveTargetError::NoMessageUnavailable
                 | ResolveTargetError::MessageUnavailable
+                | ResolveTargetError::OwnedByAnotherWorktree { .. }
                 | ResolveTargetError::InvalidTarget => bad_input(target_hint)
                     .hint(CliIdArg::TARGET_MISSING_HINT)
                     .into(),

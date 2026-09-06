@@ -71,6 +71,82 @@ fn reports_clipping_and_accepts_a_zero_limit() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Without a forge cache entry, a GitHub merge-button commit still names the
+/// pull request it landed, read from its own message.
+#[test]
+fn github_merge_commit_names_its_pull_request_from_the_message() -> anyhow::Result<()> {
+    let (repo, tmp) = repo_with_feature_branch()?;
+    git_at_dir(tmp.path())
+        .args([
+            "config",
+            "remote.origin.url",
+            "git@github.com:owner/repo.git",
+        ])
+        .run();
+    write_file(tmp.path(), "file.txt", "three\n")?;
+    git_at_dir(tmp.path())
+        .args([
+            "commit",
+            "-am",
+            "Merge pull request #42 from owner/topic\n\nAdd the third line\n",
+        ])
+        .run();
+    git_at_dir(tmp.path())
+        .args(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        .run();
+    git_at_dir(tmp.path()).args(["switch", "feature"]).run();
+    git_at_dir(tmp.path())
+        .args(["switch", "-c", "gitbutler/workspace"])
+        .run();
+    git_at_dir(tmp.path())
+        .args([
+            "commit",
+            "--allow-empty",
+            "-m",
+            "GitButler Workspace Commit",
+        ])
+        .run();
+    drop(repo);
+
+    let mut ctx =
+        but_ctx::Context::from_repo_for_testing(open_repo(tmp.path())?)?.with_memory_app_cache();
+    let target_ref = gix::refs::FullName::try_from("refs/remotes/origin/main")?;
+    but_api::workspace::set_target_ref_and_init_project(&mut ctx, target_ref.as_ref(), None)?;
+
+    let page = but_api::target_commits::workspace_target_commits(&ctx, None, None)?;
+    let reviews: Vec<_> = page
+        .commits
+        .iter()
+        .map(|commit| {
+            commit.review.as_ref().map(|review| {
+                (
+                    review.number,
+                    review.title.as_str(),
+                    review.html_url.as_str(),
+                    review.unit_symbol.as_str(),
+                    review.source_branch.as_str(),
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        reviews,
+        [
+            Some((
+                42,
+                "Add the third line",
+                "https://github.com/owner/repo/pull/42",
+                "#",
+                "topic"
+            )),
+            None,
+            None,
+        ],
+        "only the merge commit names a review; plain commits stay unannotated"
+    );
+    Ok(())
+}
+
 /// A still-applied stack landed upstream through a merge commit: the workspace
 /// lower bound becomes the stack tip, which sits on the merge's *second*
 /// parent and is never met by the first-parent walk. The stack's base bounds
@@ -172,6 +248,92 @@ fn continuation_excludes_its_cursor_and_reports_more_history() -> anyhow::Result
     assert!(
         page.has_more,
         "the repository has more history below this page"
+    );
+    Ok(())
+}
+
+/// Paging below the tip of a shallow clone stops at the missing parent instead of failing.
+#[test]
+fn continuation_stops_gracefully_in_a_shallow_clone() -> anyhow::Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let remote_dir = tmp.path().join("remote");
+    std::fs::create_dir(&remote_dir)?;
+    git_at_dir(&remote_dir)
+        .args(["init", "-b", "main", "--object-format=sha1"])
+        .run();
+    write_file(&remote_dir, "file", "initial\n")?;
+    git_at_dir(&remote_dir).args(["add", "file"]).run();
+    git_at_dir(&remote_dir)
+        .args(["commit", "-m", "initial"])
+        .run();
+    write_file(&remote_dir, "file", "second\n")?;
+    git_at_dir(&remote_dir)
+        .args(["commit", "-am", "second"])
+        .run();
+
+    // `--depth` is ignored for local path clones, so use the file protocol.
+    let clone_dir = tmp.path().join("clone");
+    let remote_url = format!("file://{}", remote_dir.display());
+    git_at_dir(tmp.path())
+        .args(["clone", "--depth", "1", &remote_url])
+        .arg(&clone_dir)
+        .run();
+
+    let mut ctx =
+        but_ctx::Context::from_repo_for_testing(open_repo(&clone_dir)?)?.with_memory_app_cache();
+    let target_ref = gix::refs::FullName::try_from("refs/remotes/origin/main")?;
+    but_api::workspace::set_target_ref_and_init_project(&mut ctx, target_ref.as_ref(), None)?;
+    let head_id = ctx.repo.get()?.head_id()?.detach();
+
+    let page =
+        but_api::target_commits::workspace_target_commits(&ctx, Some(HexHash(head_id)), Some(100))?;
+    assert!(
+        page.commits.is_empty(),
+        "the tip's parent is missing, so nothing lies below it"
+    );
+    assert!(!page.has_more, "a missing parent ends the history");
+    Ok(())
+}
+
+/// With an ordinary branch checked out, the listing walks the persisted GitButler target,
+/// not the checked-out branch's own upstream.
+#[test]
+fn ordinary_checkout_lists_the_persisted_target() -> anyhow::Result<()> {
+    let (repo, tmp) = repo_with_feature_branch()?;
+    drop(repo);
+    // `feature` tracks a remote branch of its own, and the target moves on past it.
+    for args in [
+        vec!["switch", "feature"],
+        vec!["update-ref", "refs/remotes/origin/feature", "feature"],
+        vec!["config", "branch.feature.remote", "origin"],
+        vec!["config", "branch.feature.merge", "refs/heads/feature"],
+        vec!["update-ref", "refs/remotes/origin/main", "main"],
+    ] {
+        git_at_dir(tmp.path()).args(args).run();
+    }
+
+    let mut ctx =
+        but_ctx::Context::from_repo_for_testing(open_repo(tmp.path())?)?.with_memory_app_cache();
+    let target_ref = gix::refs::FullName::try_from("refs/remotes/origin/main")?;
+    but_api::workspace::set_target_ref_and_init_project(&mut ctx, target_ref.as_ref(), None)?;
+    let (main_tip, feature_tip) = {
+        let repo = ctx.repo.get()?;
+        (
+            repo.rev_parse_single("refs/remotes/origin/main")?.detach(),
+            repo.rev_parse_single("refs/remotes/origin/feature")?
+                .detach(),
+        )
+    };
+    assert_ne!(
+        main_tip, feature_tip,
+        "the branch upstream must differ from the target to tell them apart"
+    );
+
+    let page = but_api::target_commits::workspace_target_commits(&ctx, None, Some(1))?;
+    assert_eq!(
+        page.commits.first().map(|entry| entry.commit.id),
+        Some(main_tip),
+        "the target history starts at the persisted target, not the branch upstream"
     );
     Ok(())
 }

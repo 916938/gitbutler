@@ -77,7 +77,7 @@ pub(crate) fn update_workspace_commit_from_workspace(
     let workspace_filepath = repo.path().join("workspace");
     let mut prev_branch = read_workspace_file(&workspace_filepath)?;
     if let Some(branch) = &prev_branch
-        && branch.head != GITBUTLER_WORKSPACE_REFERENCE.to_string()
+        && branch.head != but_core::WORKSPACE_REF_NAME
     {
         // we are moving from a regular branch to our gitbutler workspace branch, write a file to
         // .git/workspace with the previous head and name
@@ -189,8 +189,14 @@ pub(crate) fn update_workspace_commit_from_workspace(
     repo.set_head(&GITBUTLER_WORKSPACE_REFERENCE.clone().to_string())?;
 
     // Install managed hooks to prevent accidental git commits on workspace branch
-    if let Err(e) = gitbutler_repo::managed_hooks::install_managed_hooks(&gix_repo) {
-        tracing::warn!("Failed to install managed hooks: {}", e);
+    match gitbutler_repo::managed_hooks::install_managed_hooks(&gix_repo) {
+        Ok(gitbutler_repo::managed_hooks::HookInstallationResult::PartialSuccess { warnings }) => {
+            for warning in warnings {
+                tracing::warn!("Managed hooks installed with warnings: {warning}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Failed to install managed hooks: {}", e),
     }
 
     let mut index = repo.index()?;

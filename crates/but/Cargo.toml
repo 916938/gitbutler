@@ -27,7 +27,6 @@ legacy = [
     "dep:but-action",
     "dep:but-hunk-dependency",
     "dep:but-gerrit",
-    "dep:but-worktrees",
     "dep:gitbutler-project",
     "dep:gitbutler-commit",
     "dep:gitbutler-branch",
@@ -56,6 +55,7 @@ but-update.workspace = true
 but-installer.workspace = true
 but-path.workspace = true
 but-ctx.workspace = true
+but-project-handle.workspace = true
 but-rebase.workspace = true
 but-github.workspace = true
 but-gitlab.workspace = true
@@ -74,14 +74,13 @@ but-comments.workspace = true
 but-db.workspace = true
 but-error.workspace = true
 
+but-oplog.workspace = true
+
 # What follows is *basically* newly written crates that are built on top of legacy,
 # so need some refactoring/rethinking to become usable.
 but-action = { workspace = true, optional = true }
-# Still uses `gitbutler-stack`, but otherwise it is non-legacy.
 but-hunk-assignment.workspace = true
 but-gerrit = { workspace = true, optional = true }
-but-worktrees = { workspace = true, optional = true }
-
 gitbutler-project = { workspace = true, optional = true }
 gitbutler-commit = { workspace = true, optional = true }
 gitbutler-branch = { workspace = true, optional = true }
@@ -94,7 +93,7 @@ gitbutler-git = { workspace = true, optional = true }
 gitbutler-watcher = { workspace = true, optional = true }
 
 schemars.workspace = true
-posthog-rs = { git = "https://github.com/gitbutlerapp/posthog-rs", rev = "664c9245f79aaedcdd025b9f3c141b62bb866b8e" }
+posthog-rs = { version = "0.23.3", default-features = false, features = ["async-client"] }
 serde.workspace = true
 shell-words.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "io-std"] }
@@ -151,12 +150,12 @@ ratatui-textarea = "0.8.0"
 arboard = { version = "3.6.1", default-features = false }
 textwrap = "0.16.2"
 syntect = { version = "5.3.0", default-features = false, features = [
-    "default-syntaxes",
     "default-themes",
     "regex-onig",
     "metadata",
     "html",
 ] }
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-onig"] }
 tracing-appender = "0.2.5"
 fuzzy-matcher = "0.3.7"
 indexmap.workspace = true

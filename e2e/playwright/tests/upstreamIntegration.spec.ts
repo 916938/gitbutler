@@ -1,4 +1,5 @@
 import { createNewBranch } from "../src/branch.ts";
+import { expect } from "../src/expect.ts";
 import { applyUpstream, openWorkspace } from "../src/setup.ts";
 import { test } from "../src/test.ts";
 import {
@@ -9,7 +10,7 @@ import {
 	waitForTestId,
 	waitForTestIdToNotExist,
 } from "../src/util.ts";
-import { expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 
 async function syncAndIntegrate(page: Page) {
@@ -138,6 +139,44 @@ test("should reparent workspace commit to advanced target after integrating all 
 
 	await waitForTestIdToNotExist(page, "stack");
 	await expectWorkspaceCommitParentToBeOriginMaster(localClone);
+	expect(git(localClone, ["rev-parse", "master"])).toBe(
+		git(localClone, ["rev-parse", "origin/master"]),
+	);
+});
+
+test("should preserve a diverged local target branch during upstream integration", async ({
+	page,
+	gitbutler,
+}) => {
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+
+	await gitbutler.runScript("project-with-remote-branches.sh");
+	await applyUpstream(gitbutler, "branch1");
+	await openWorkspace(page);
+
+	const oldMaster = git(localClone, ["rev-parse", "master"]);
+	const localMaster = git(localClone, [
+		"-c",
+		"user.name=GitButler",
+		"-c",
+		"user.email=gitbutler@example.com",
+		"commit-tree",
+		"master^{tree}",
+		"-p",
+		oldMaster,
+		"-m",
+		"local master",
+	]);
+	git(localClone, ["update-ref", "refs/heads/master", localMaster]);
+
+	await gitbutler.runScript(
+		"project-with-remote-branches__fast-forward-base-through-branch1-and-add-commit.sh",
+	);
+	await syncAndIntegrate(page);
+
+	await waitForTestIdToNotExist(page, "stack");
+	expect(git(localClone, ["rev-parse", "master"])).toBe(localMaster);
+	expect(git(localClone, ["rev-parse", "origin/master"])).not.toBe(localMaster);
 });
 
 test("should reparent workspace commit to advanced merge target after integrating all stacks", async ({
@@ -224,10 +263,12 @@ test("should keep the remaining stack when only one of two stacks is integrated"
 	await expectWorkspaceCommitToStayParentedToRemainingStack(localClone);
 });
 
-test("should handle the update of the workspace with two integrated stacks gracefully", async ({
+test("should keep the empty workspace when both applied stacks are integrated", async ({
 	page,
 	gitbutler,
 }) => {
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+
 	await gitbutler.runScript("project-with-stacks.sh");
 	await applyUpstream(gitbutler, "branch1", "branch2");
 	await openWorkspace(page);
@@ -239,7 +280,8 @@ test("should handle the update of the workspace with two integrated stacks grace
 	await syncAndIntegrate(page);
 
 	await expect(stack(page)).toHaveCount(0);
-	await waitForTestIdToNotExist(page, "integrate-upstream-commits-button");
+	await expectWorkspaceCommitParentToBeOriginMaster(localClone);
+	expect(git(localClone, ["symbolic-ref", "--short", "HEAD"])).toBe("gitbutler/workspace");
 });
 
 test("should update an empty workspace when the target ref advances", async ({

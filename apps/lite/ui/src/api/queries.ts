@@ -1,56 +1,15 @@
 import type { PayloadFor } from "#electron/ipc.ts";
 import { aggregateCIChecks } from "#ui/ci.ts";
 import { clampAutoFetch, defaultSettings } from "#ui/settings.ts";
-import type { ForgeReview } from "@gitbutler/but-sdk";
-import { apiProvides } from "@gitbutler/but-sdk/cache-tags";
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import type { ForgeReview, TreeChange, UnifiedPatch } from "@gitbutler/but-sdk";
+import {
+	experimental_streamedQuery,
+	hashKey,
+	infiniteQueryOptions,
+	queryOptions,
+} from "@tanstack/react-query";
 import * as ms from "ms";
-
-/**
- * The project queries are the endpoints declaring `provides` in Rust — using a
- * name the backend doesn't declare is a type error. Keyed `[key, projectId,
- * ...]`; the fixed position is what lets an invalidation reach a whole query
- * root holding nothing but a project id.
- */
-export type ProjectQueryKey = keyof typeof apiProvides;
-
-// `Object.keys` erases key types; the record's keys are exactly these.
-export const projectQueryKeys = Object.keys(apiProvides) as ReadonlyArray<ProjectQueryKey>;
-
-/** Keyed without a project id, so no project event can invalidate them. */
-type GlobalQueryKey =
-	| "aiConfiguration"
-	| "editors"
-	| "terminals"
-	| "forgeAccounts"
-	| "userProfile"
-	| "projects"
-	| "guiSettings";
-
-/**
- * Client state kept in the query cache, so nothing declares for them. `dryRun`
- * memoizes an imperative preview: its key carries the operation and changes it
- * was measured against, and nothing refreshes it in place.
- */
-type LocalQueryKey =
-	| "commitMessageDraft"
-	| "dryRun"
-	| "prMergeMethod"
-	| "prDraft"
-	| "reviewedFiles";
-
-export type QueryKey = ProjectQueryKey | GlobalQueryKey | LocalQueryKey;
-
-declare module "@tanstack/react-query" {
-	interface Register {
-		/**
-		 * Every query key in the app starts with one of ours, so a typo is a type
-		 * error wherever a key is written — building one, invalidating it, or
-		 * reading it back — without each site having to say so.
-		 */
-		queryKey: readonly [QueryKey, ...ReadonlyArray<unknown>];
-	}
-}
+import pMap from "p-map";
 
 /**
  * The name the backend would generate for a branch created right now. Used to
@@ -60,31 +19,50 @@ declare module "@tanstack/react-query" {
  */
 export const branchCannedNameQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["branchCannedName", projectId],
+		queryKey: [projectId, "branchCannedName"],
 		queryFn: () => window.lite.branchCannedName(projectId),
 	});
 
 export const branchDetailsQueryOptions = ({ projectId, ...params }: PayloadFor<"branchDetails">) =>
 	queryOptions({
-		queryKey: ["branchDetails", projectId, params],
+		queryKey: [projectId, "branchDetails", params],
 		queryFn: () => window.lite.branchDetails({ projectId, ...params }),
 	});
 
 export const branchDiffQueryOptions = ({ projectId, ...params }: PayloadFor<"branchDiff">) =>
 	queryOptions({
-		queryKey: ["branchDiff", projectId, params],
+		queryKey: [projectId, "branchDiff", params],
 		queryFn: () => window.lite.branchDiff({ projectId, ...params }),
 	});
 
 export const branchListQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["branchList", projectId],
+		queryKey: [projectId, "branchList"],
 		queryFn: () => window.lite.branchList(projectId),
+	});
+
+export const operationsLogQueryOptions = (
+	projectId: string,
+	includeKind: PayloadFor<"listSnapshots">["includeKind"] = null,
+	excludeKind: PayloadFor<"listSnapshots">["excludeKind"] = null,
+) =>
+	infiniteQueryOptions({
+		queryKey: [projectId, "listSnapshots", includeKind, excludeKind],
+		queryFn: ({ pageParam }) =>
+			window.lite.listSnapshots({
+				projectId,
+				limit: 100,
+				sha: pageParam,
+				includeKind,
+				excludeKind,
+			}),
+		initialPageParam: null as string | null,
+		getNextPageParam: (page) => (page.length === 100 ? page.at(-1)?.commitId : undefined),
 	});
 
 export const changesInWorktreeQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["changesInWorktree", projectId],
+		queryKey: [projectId, "changesInWorktree"],
 		queryFn: () =>
 			window.lite.changesInWorktree({
 				projectId,
@@ -95,8 +73,24 @@ export const changesInWorktreeQueryOptions = (projectId: string) =>
 
 export const commentsQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["commentsList", projectId],
+		queryKey: [projectId, "commentsList"],
 		queryFn: () => window.lite.commentsList(projectId),
+	});
+
+export const workspaceFileQueryOptions = ({
+	projectId,
+	version,
+	...params
+}: PayloadFor<"getWorkspaceFile"> & { version: number }) =>
+	queryOptions({
+		queryKey: [projectId, "getWorkspaceFile", params, version],
+		queryFn: () => window.lite.getWorkspaceFile({ projectId, ...params }),
+	});
+
+export const blobFileQueryOptions = ({ projectId, ...params }: PayloadFor<"getBlobFile">) =>
+	queryOptions({
+		queryKey: [projectId, "getBlobFile", params],
+		queryFn: () => window.lite.getBlobFile({ projectId, ...params }),
 	});
 
 export const commitDetailsWithLineStatsQueryOptions = ({
@@ -104,7 +98,7 @@ export const commitDetailsWithLineStatsQueryOptions = ({
 	...params
 }: PayloadFor<"commitDetailsWithLineStats">) =>
 	queryOptions({
-		queryKey: ["commitDetailsWithLineStats", projectId, params],
+		queryKey: [projectId, "commitDetailsWithLineStats", params],
 		queryFn: () => window.lite.commitDetailsWithLineStats({ projectId, ...params }),
 	});
 
@@ -121,7 +115,7 @@ export const commitConflictsQueryOptions = ({
 	...params
 }: PayloadFor<"commitConflicts"> & { enabled: boolean }) =>
 	queryOptions({
-		queryKey: ["commitConflicts", projectId, params],
+		queryKey: [projectId, "commitConflicts", params],
 		queryFn: () => window.lite.commitConflicts({ projectId, ...params }),
 		enabled,
 		staleTime: Infinity,
@@ -133,63 +127,91 @@ export const commitConflictsQueryOptions = ({
 
 export const forgeInfoOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["forgeInfo", projectId],
+		queryKey: [projectId, "forgeInfo"],
 		queryFn: () => window.lite.forgeInfo(projectId),
+	});
+
+/**
+ * Which mode the repository is in. Kept fresh two ways: the edit-mode
+ * mutations declare they invalidate it, and the `gitHead` watcher event
+ * pushes the mode it carries — so entering edit mode from a terminal
+ * flips the app too.
+ */
+export const operatingModeQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: [projectId, "operatingMode"],
+		queryFn: () => window.lite.operatingMode(projectId),
+	});
+
+/** The edited commit's files as the edit session started, with their conflict states. */
+export const editInitialIndexStateQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: [projectId, "editInitialIndexState"],
+		queryFn: () => window.lite.editInitialIndexState(projectId),
+	});
+
+/** What the user has changed since entering edit mode. */
+export const editChangesFromInitialQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: [projectId, "editChangesFromInitial"],
+		queryFn: () => window.lite.editChangesFromInitial(projectId),
 	});
 
 export const headInfoQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["headInfo", projectId],
+		queryKey: [projectId, "headInfo"],
 		queryFn: () => window.lite.headInfo(projectId),
 	});
 
 export const getReviewQueryOptions = ({ projectId, reviewId }: PayloadFor<"getReview">) =>
 	queryOptions({
-		queryKey: ["getReview", projectId, reviewId],
+		queryKey: [projectId, "getReview", reviewId],
 		queryFn: () => window.lite.getReview({ projectId, reviewId }),
 	});
 
 export const workspaceTargetCommitsQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["workspaceTargetCommits", projectId],
+		queryKey: [projectId, "workspaceTargetCommits"],
 		queryFn: () => window.lite.workspaceTargetCommits({ projectId, from: null, limit: null }),
 	});
 
 /**
- * A fetch can turn a reviewed branch into an integrated one while the backend
- * forge cache still holds the pre-merge review, leaving the branch unmatched
- * to the commit that landed it in the Upstream tab. Refresh those reviews
- * (repopulating the backend cache) so the target-commit listing can be
- * re-read afterwards. Runs from the fetch watcher, so a review that never
- * resolves is retried at most once per fetch, and the listing itself stays a
- * purely local call. Failures degrade to unannotated commits.
+ * What each "load older commits" adds. Asking is deliberate, so a page should
+ * cover ground rather than need pressing repeatedly.
  */
-export const refreshIntegratedReviews = async (
-	client: QueryClient,
-	projectId: string,
-): Promise<void> => {
-	const headInfo = await client.fetchQuery({ ...headInfoQueryOptions(projectId), staleTime: 0 });
-	const reviewIds = new Set(
-		headInfo.stacks.flatMap((stack) =>
-			stack.segments.flatMap((segment) => {
-				const reviewId = segment.metadata?.review.pullRequest;
-				return segment.pushStatus === "integrated" && reviewId != null ? [reviewId] : [];
+const olderTargetCommitsPageSize = 25;
+
+/**
+ * Target history continuing below where the base listing stops, walked from a
+ * commit-id cursor. `from` is exclusive: the backend starts at that commit's
+ * first parent, so passing the base listing's last commit continues the line
+ * without repeating it.
+ *
+ * Fetched only on demand: consumers keep it disabled and call `fetchNextPage`
+ * when the user asks, so nothing below the workspace's fork points loads
+ * unbidden.
+ *
+ * Keyed under the base listing's own root, so whatever invalidates the target
+ * line — a fetch, a workspace update — reaches the pages hanging off it too.
+ */
+export const olderTargetCommitsInfiniteQueryOptions = (projectId: string, from: string) =>
+	infiniteQueryOptions({
+		queryKey: [projectId, "workspaceTargetCommits", { olderThan: from }],
+		queryFn: ({ pageParam }) =>
+			window.lite.workspaceTargetCommits({
+				projectId,
+				from: pageParam,
+				limit: olderTargetCommitsPageSize,
 			}),
-		),
-	);
-	await Promise.allSettled(
-		[...reviewIds].flatMap((reviewId) => {
-			const options = getReviewQueryOptions({ projectId, reviewId });
-			return client.getQueryData<ForgeReview>(options.queryKey)?.mergedAt != null
-				? []
-				: [client.fetchQuery({ ...options, staleTime: Number.POSITIVE_INFINITY })];
-		}),
-	);
-};
+		enabled: false,
+		initialPageParam: from,
+		getNextPageParam: (lastPage) =>
+			lastPage.hasMore ? lastPage.commits.at(-1)?.commit.id : undefined,
+	});
 
 export const workspaceFetchStatusQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["workspaceFetchStatus", projectId],
+		queryKey: [projectId, "workspaceFetchStatus"],
 		queryFn: () => window.lite.workspaceFetchStatus(projectId),
 	});
 
@@ -206,7 +228,7 @@ export const workspaceFetchQueryOptions = (
 	}
 
 	return queryOptions({
-		queryKey: ["workspaceFetchFromRemotes", projectId],
+		queryKey: [projectId, "workspaceFetchFromRemotes"],
 		queryFn: () =>
 			window.lite.workspaceFetchFromRemotes({ projectId, action: null }).then(
 				// RQ treats undefined results in queries as errors.
@@ -234,14 +256,14 @@ export const listReviewCommentsQueryOptions = ({
 	reviewId,
 }: PayloadFor<"listReviewComments">) =>
 	queryOptions({
-		queryKey: ["listReviewComments", projectId, reviewId],
+		queryKey: [projectId, "listReviewComments", reviewId],
 		queryFn: () => window.lite.listReviewComments({ projectId, reviewId }),
 		...forgePoll,
 	});
 
 export const gbConfigQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["getGbConfig", projectId],
+		queryKey: [projectId, "getGbConfig"],
 		queryFn: () => window.lite.getGbConfig(projectId),
 	});
 
@@ -251,7 +273,7 @@ export const gbConfigQueryOptions = (projectId: string) =>
  */
 export const signingSettingsQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["checkSigningSettings", projectId],
+		queryKey: [projectId, "checkSigningSettings"],
 		queryFn: () => window.lite.checkSigningSettings(projectId),
 		enabled: false,
 		retry: false,
@@ -260,7 +282,7 @@ export const signingSettingsQueryOptions = (projectId: string) =>
 
 export const currentForgeLoginQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["currentForgeLogin", projectId],
+		queryKey: [projectId, "currentForgeLogin"],
 		queryFn: () => window.lite.currentForgeLogin(projectId),
 		// Resolved from local account storage; changes only on re-auth.
 		staleTime: Number.POSITIVE_INFINITY,
@@ -269,7 +291,7 @@ export const currentForgeLoginQueryOptions = (projectId: string) =>
 /** Gate on the forge being GitHub; other forges reject this call. */
 export const repoLabelsQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["listRepoLabels", projectId],
+		queryKey: [projectId, "listRepoLabels"],
 		queryFn: () => window.lite.listRepoLabels(projectId),
 		// Label definitions rarely change.
 		staleTime: 5 * 60_000,
@@ -278,7 +300,7 @@ export const repoLabelsQueryOptions = (projectId: string) =>
 /** Gate on the forge being GitHub; other forges reject this call. */
 export const reviewerCandidatesQueryOptions = (projectId: string) =>
 	queryOptions({
-		queryKey: ["listReviewerCandidates", projectId],
+		queryKey: [projectId, "listReviewerCandidates"],
 		queryFn: () => window.lite.listReviewerCandidates(projectId),
 		// Collaborator lists rarely change.
 		staleTime: 5 * 60_000,
@@ -290,8 +312,16 @@ export const listReviewSubmissionsQueryOptions = ({
 	reviewId,
 }: PayloadFor<"getReview">) =>
 	queryOptions({
-		queryKey: ["listReviewSubmissions", projectId, reviewId],
+		queryKey: [projectId, "listReviewSubmissions", reviewId],
 		queryFn: () => window.lite.listReviewSubmissions({ projectId, reviewId }),
+		...forgePoll,
+	});
+
+/** This query should be gated by PR capability lest it fail. */
+export const listReviewThreadsQueryOptions = ({ projectId, reviewId }: PayloadFor<"getReview">) =>
+	queryOptions({
+		queryKey: [projectId, "listReviewThreads", reviewId],
+		queryFn: () => window.lite.listReviewThreads({ projectId, reviewId }),
 		...forgePoll,
 	});
 
@@ -301,7 +331,7 @@ export const listReviewTimelineEventsQueryOptions = ({
 	reviewId,
 }: PayloadFor<"getReview">) =>
 	queryOptions({
-		queryKey: ["listReviewTimelineEvents", projectId, reviewId],
+		queryKey: [projectId, "listReviewTimelineEvents", reviewId],
 		queryFn: () => window.lite.listReviewTimelineEvents({ projectId, reviewId }),
 		...forgePoll,
 	});
@@ -309,7 +339,7 @@ export const listReviewTimelineEventsQueryOptions = ({
 /** This query should be gated by PR capability lest it fail. */
 export const listReviewReactionsQueryOptions = ({ projectId, reviewId }: PayloadFor<"getReview">) =>
 	queryOptions({
-		queryKey: ["listReviewReactions", projectId, reviewId],
+		queryKey: [projectId, "listReviewReactions", reviewId],
 		queryFn: () => window.lite.listReviewReactions({ projectId, reviewId }),
 		...forgePoll,
 	});
@@ -327,7 +357,7 @@ export const listCommentReactionsQueryOptions = ({
 	commentId: number;
 }) =>
 	queryOptions({
-		queryKey: ["listCommentReactions", projectId, commentId],
+		queryKey: [projectId, "listCommentReactions", commentId],
 		queryFn: () => window.lite.listCommentReactions({ projectId, commentId }),
 		staleTime: 60_000,
 	});
@@ -337,7 +367,7 @@ export const getReviewMergeStatusQueryOptions = ({
 	reviewId,
 }: PayloadFor<"getReview">) =>
 	queryOptions({
-		queryKey: ["getReviewMergeStatus", projectId, reviewId],
+		queryKey: [projectId, "getReviewMergeStatus", reviewId],
 		queryFn: () => window.lite.getReviewMergeStatus({ projectId, reviewId }),
 		staleTime: ({ state: { data } }) => (data?.isMergeable ? 30_000 : 10_000),
 		// Mergeability flips from the forge side (checks finish, approvals
@@ -350,7 +380,7 @@ export const getReviewMergeStatusQueryOptions = ({
 /** This query should be gated by PR capability lest it fail. */
 export const listReviewsQueryOptions = ({ projectId, ...params }: PayloadFor<"listReviews">) =>
 	queryOptions({
-		queryKey: ["listReviews", projectId, params],
+		queryKey: [projectId, "listReviews", params],
 		queryFn: () => window.lite.listReviews({ projectId, ...params }),
 		select: (reviews) => {
 			const reviewsBySourceBranch = new Map<string, ForgeReview>();
@@ -413,6 +443,21 @@ export const listProjectsQueryOptions = queryOptions({
 	queryFn: () => window.lite.listProjectsStateless(),
 });
 
+/**
+ * Repo-level metadata from the forge for one project. Needs forge credentials
+ * and a recognised remote, so it fails for a purely local repo — callers treat
+ * a failure as "not known" rather than an error worth showing.
+ */
+export const repoInfoQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: [projectId, "getRepoInfo"],
+		queryFn: () => window.lite.getRepoInfo(projectId),
+		// Visibility and permissions change on the forge, not here, so there is
+		// nothing local to invalidate on — age it out instead.
+		staleTime: 60 * 60_000,
+		retry: false,
+	});
+
 export const listEditorsQueryOptions = queryOptions({
 	queryKey: ["editors"],
 	queryFn: () => window.lite.listEditors(),
@@ -428,7 +473,7 @@ export const listCIChecksQueryOptions = ({
 	polling: "passive" | "priority";
 }) =>
 	queryOptions({
-		queryKey: ["listCiChecks", projectId, reference],
+		queryKey: [projectId, "listCiChecks", reference],
 		queryFn: async () => {
 			// Aggregated data is needed in queryFn to adjust refetching behaviour. Aggregating here, for
 			// use as mentioned and also at call sites, is more efficient.
@@ -485,13 +530,70 @@ export const listCIChecksQueryOptions = ({
 
 export const treeChangeDiffsQueryOptions = ({ projectId, change }: PayloadFor<"treeChangeDiffs">) =>
 	queryOptions({
-		queryKey: ["treeChangeDiffs", projectId, change],
+		queryKey: [projectId, "treeChangeDiffs", change],
 		queryFn: () => window.lite.treeChangeDiffs({ projectId, change }),
 	});
 
+/**
+ * Idiomatic usage of useQuery may rerender frequently for some UX requirements. The query must hash
+ * the full key again on each render.
+ *
+ * Its stable, value-based hasher requires traversing every change. Hashing a ~5k-file query key was
+ * benchmarked at ~20ms. This cost is virtually eliminated by reusing a previously-cached hash.
+ *
+ * The payload has no stable aggregate identifier we could use instead.
+ */
+const treeChangeDiffHashes = new WeakMap<Array<TreeChange>, string>();
+
+export const treeChangesDiffsQueryOptions = ({
+	projectId,
+	changes,
+}: {
+	projectId: string;
+	changes: Array<TreeChange>;
+}) => {
+	const queryKey = [projectId, "treeChangeDiffs", changes] as const;
+
+	// We don't expect to ever see the same changes reference across projects.
+	// This can use getOrInsertComputed once our version of Node.js has caught up.
+	let queryHash = treeChangeDiffHashes.get(changes);
+	if (queryHash === undefined) {
+		queryHash = hashKey(queryKey);
+		treeChangeDiffHashes.set(changes, queryHash);
+	}
+
+	return queryOptions({
+		queryKey,
+		queryHash,
+		queryFn: experimental_streamedQuery<Array<UnifiedPatch | null>, Array<UnifiedPatch | null>>({
+			initialValue: [],
+			refetchMode: "replace",
+			reducer: (results, batch) => results.concat(batch),
+			async *streamFn({ signal }) {
+				// Use half the logical cores to parallelize native diffs with room for UI work. This is a
+				// rough first pass and can be reduced should there be resource contention.
+				const concurrency = Math.max(1, Math.floor(navigator.hardwareConcurrency / 2));
+
+				// Grow publications so rebuilding the accumulated view stays linear overall.
+				for (
+					let batchStart = 0, batchSize = 64;
+					batchStart < changes.length;
+					batchStart += batchSize, batchSize *= 2
+				) {
+					yield await pMap(
+						changes.slice(batchStart, batchStart + batchSize),
+						(change) => window.lite.treeChangeDiffs({ projectId, change }),
+						{ concurrency, signal },
+					);
+				}
+			},
+		}),
+	});
+};
+
 export const absorptionPlanQueryOptions = ({ projectId, target }: PayloadFor<"absorptionPlan">) =>
 	queryOptions({
-		queryKey: ["absorptionPlan", projectId, target],
+		queryKey: [projectId, "absorptionPlan", target],
 		queryFn: () => window.lite.absorptionPlan({ projectId, target }),
 	});
 

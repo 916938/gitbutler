@@ -5,7 +5,9 @@ use nonempty::NonEmpty;
 use crate::{
     CliId,
     command::legacy::{
-        discard::{self, DiscardOperation, DiscardOutcome, UncommittedSelection},
+        discard::{
+            self, CommittedDiscardSource, DiscardOperation, DiscardOutcome, UncommittedSelection,
+        },
         status::{
             output::StatusOutputLineData,
             tui::{
@@ -169,8 +171,10 @@ impl App {
                                 anyhow::bail!("BUG: branch discard returned an unexpected outcome")
                             };
 
-                            messages
-                                .push(Message::Reload(select_after_reload, ReloadCause::Mutation));
+                            messages.extend([
+                                Message::EnterNormalModeAfterConfirmingOperation,
+                                Message::Reload(select_after_reload, ReloadCause::Mutation),
+                            ]);
                             drop(drop_to_be_discarded);
                             Ok(())
                         },
@@ -184,7 +188,7 @@ impl App {
                         commit_id: committed_file.commit_id,
                         change_id: committed_file.change_id.clone(),
                     };
-                    let path = committed_file.path.to_owned();
+                    let committed_file = committed_file.clone();
 
                     self.to_be_discarded =
                         Vec::from([Selectable::CommittedFile(committed_file.clone())]);
@@ -192,18 +196,22 @@ impl App {
                         message_on_drop::message_on_drop(Message::DropToBeDiscarded, messages);
 
                     Confirm::new(
-                        NonEmpty::new(format!("Discard changes to {path}?").into()),
+                        NonEmpty::new(
+                            format!("Discard changes to {}?", committed_file.path).into(),
+                        ),
                         self.theme,
                         move |ctx, messages| {
-                            let DiscardOutcome::CommittedFiles {
+                            let DiscardOutcome::CommittedChanges {
                                 source: _,
                                 paths: _,
                                 new_commit,
                             } = run_discard(
                                 ctx,
-                                DiscardOperation::CommittedFiles {
+                                DiscardOperation::Committed {
                                     source: commit,
-                                    paths: NonEmpty::new(path),
+                                    changes: NonEmpty::new(CommittedDiscardSource::File(
+                                        committed_file,
+                                    )),
                                 },
                             )?
                             else {
@@ -228,7 +236,12 @@ impl App {
                         },
                     )
                 }
-                CliId::Stack { .. } | CliId::PathPrefix { .. } => return Ok(()),
+                CliId::AnonymousSegment(..)
+                | CliId::CommittedHunk(..)
+                | CliId::Stack { .. }
+                | CliId::PathPrefix { .. }
+                | CliId::WorktreeUncommitted { .. }
+                | CliId::Worktree { .. } => return Ok(()),
             },
         });
 
@@ -236,11 +249,24 @@ impl App {
     }
 
     pub fn handle_discard_marks(&mut self, messages: &mut Vec<Message>) -> anyhow::Result<()> {
-        let Mode::Normal(normal_mode) = &*self.mode else {
-            return Ok(());
+        let marks = match &*self.mode {
+            Mode::Normal(normal_mode) => &normal_mode.marks,
+            Mode::Branch(branch_mode) => &branch_mode.marks,
+
+            Mode::Squash(..)
+            | Mode::InlineReword(..)
+            | Mode::Command(..)
+            | Mode::Commit(..)
+            | Mode::Move(..)
+            | Mode::Details(..)
+            | Mode::Stack(..)
+            | Mode::MoveStack(..)
+            | Mode::PickChanges(..)
+            | Mode::Jump(..)
+            | Mode::CherryPick(..) => return Ok(()),
         };
 
-        let operation = match &normal_mode.marks {
+        let operation = match marks {
             Marks::Empty => return Ok(()),
             Marks::Commits(commits) => DiscardOperation::Commits(commits.clone()),
             Marks::Branches(branches) => {
@@ -268,20 +294,19 @@ impl App {
                         .all(|file| file.commit_id == source.commit_id),
                     "BUG: marked committed files must come from one commit"
                 );
-                let paths = files.clone().map(|file| file.path);
-                DiscardOperation::CommittedFiles { source, paths }
+                let changes = files.clone().map(CommittedDiscardSource::File);
+                DiscardOperation::Committed { source, changes }
             }
         };
 
-        self.to_be_discarded = normal_mode
-            .marks
+        self.to_be_discarded = marks
             .iter()
             .map(|mark| mark.to_owned().into_selectable())
             .collect::<Vec<_>>();
 
         let select_after_reload = self
             .cursor
-            .select_after_discarded_marks(&self.status_lines, &normal_mode.marks);
+            .select_after_discarded_marks(&self.status_lines, marks);
 
         let drop_to_be_discarded =
             message_on_drop::message_on_drop(Message::DropToBeDiscarded, messages);
@@ -300,7 +325,7 @@ impl App {
                             .copied()
                             .unwrap_or(commit_id)
                     }),
-                    DiscardOutcome::CommittedFiles {
+                    DiscardOutcome::CommittedChanges {
                         source,
                         paths: _,
                         new_commit,
@@ -320,6 +345,7 @@ impl App {
 
                 messages.extend([
                     Message::ClearMarks,
+                    Message::EnterNormalModeAfterConfirmingOperation,
                     Message::Reload(select_after_reload, ReloadCause::Mutation),
                 ]);
 

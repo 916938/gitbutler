@@ -1,4 +1,5 @@
 import type { LocalAnnotationsByPath } from "#ui/annotation.ts";
+import type { ThreadsByPath } from "#ui/review-threads.ts";
 import { FileIcon } from "#ui/components/FileIcon.tsx";
 import type { GUISettings } from "#electron/settings.ts";
 import type { CodeViewHandle } from "@pierre/diffs/react";
@@ -9,7 +10,9 @@ import {
 	useLayoutEffect,
 	useRef,
 	useState,
+	useSyncExternalStore,
 } from "react";
+import type { SearchMarks } from "./diff-search-marks.ts";
 import type { Annotation } from "./diff-view.ts";
 import {
 	getMinimapGeometry,
@@ -50,8 +53,26 @@ export const DiffMinimap: FC<{
 	files: Array<MinimapFile>;
 	diffStyle: GUISettings["diffStyle"];
 	annotationsByPath: LocalAnnotationsByPath;
+	threadsByPath: ThreadsByPath;
 	selection: MinimapSelection | null;
-}> = ({ viewerRef, files, diffStyle, annotationsByPath, selection }) => {
+	/**
+	 * Subscribed to rather than passed as matches, so a keystroke in the search
+	 * bar repaints this ruler without re-rendering the diff pane around it.
+	 */
+	searchMarks: {
+		subscribe: (listener: () => void) => () => void;
+		getSnapshot: () => SearchMarks;
+	};
+}> = ({
+	viewerRef,
+	files,
+	diffStyle,
+	annotationsByPath,
+	threadsByPath,
+	selection,
+	searchMarks,
+}) => {
+	const marks = useSyncExternalStore(searchMarks.subscribe, searchMarks.getSnapshot);
 	const rulerRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const markerRef = useRef<HTMLDivElement>(null);
@@ -68,7 +89,14 @@ export const DiffMinimap: FC<{
 		scale: number;
 		scrollable: number;
 	} | null>(null);
-	const dataRef = useRef({ files, diffStyle, annotationsByPath, selection });
+	const dataRef = useRef({
+		files,
+		diffStyle,
+		annotationsByPath,
+		threadsByPath,
+		selection,
+		marks,
+	});
 	const geometryRef = useRef<MinimapGeometry | null>(null);
 	const layoutRef = useRef<MinimapLayout | null>(null);
 	/** Where the map is wound to, which it keeps until the lens runs out of ruler. */
@@ -95,6 +123,25 @@ export const DiffMinimap: FC<{
 		let lastOffset: number | null = null;
 		let lastScrollTop: number | null = null;
 
+		// Shown while the diff scrolls or the pointer is on it; hidden again
+		// after a moment of stillness.
+		let shown = false;
+		let pointed = false;
+		let linger: ReturnType<typeof setTimeout> | null = null;
+		const settle = (): void => {
+			linger = null;
+			if (pointed || !shown) return;
+			shown = false;
+			rulerRef.current?.setAttribute("data-minimap-awake", "false");
+		};
+		const wake = (): void => {
+			if (linger !== null) clearTimeout(linger);
+			linger = setTimeout(settle, 1200);
+			if (shown) return;
+			shown = true;
+			rulerRef.current?.setAttribute("data-minimap-awake", "true");
+		};
+
 		/**
 		 * What the ruler was last told, so a frame that would repeat itself doesn't
 		 * dirty style for nothing — the paint reads layout back, and a write between
@@ -117,7 +164,7 @@ export const DiffMinimap: FC<{
 
 		const draw = (layout: MinimapLayout): void => {
 			const data = dataRef.current;
-			const { files, diffStyle, annotationsByPath, selection } = data;
+			const { files, diffStyle, annotationsByPath, threadsByPath, selection, marks } = data;
 			const geometry = getMinimapGeometry(viewer, files);
 
 			geometryRef.current = geometry;
@@ -127,7 +174,14 @@ export const DiffMinimap: FC<{
 			const overlays =
 				lastOverlays !== null && lastData === data && sameMinimapGeometry(lastGeometry, geometry)
 					? lastOverlays
-					: getMinimapOverlays({ files, geometry, annotationsByPath, selection });
+					: getMinimapOverlays({
+							files,
+							geometry,
+							annotationsByPath,
+							threadsByPath,
+							selection,
+							searchMarks: marks,
+						});
 
 			lastData = data;
 			lastGeometry = geometry;
@@ -150,7 +204,10 @@ export const DiffMinimap: FC<{
 			const scrollTop = viewer.getScrollTop();
 			const scrolled = lastScrollTop !== null && scrollTop !== lastScrollTop;
 			lastScrollTop = scrollTop;
-			if (scrolled) freeRef.current = false;
+			if (scrolled) {
+				freeRef.current = false;
+				wake();
+			}
 
 			const moved = scrolled && !grabRef.current ? "draws" : freeRef.current ? "free" : "holds";
 			const layout = getMinimapLayout(viewer, track, scrollTop, offsetRef.current, moved);
@@ -229,6 +286,22 @@ export const DiffMinimap: FC<{
 		};
 		ruler?.addEventListener("wheel", onWheel, { passive: false });
 
+		// A hidden ruler takes no pointer events, so hovering can only hold it
+		// up, never summon it.
+		const onEnter = (): void => {
+			pointed = true;
+			if (linger !== null) {
+				clearTimeout(linger);
+				linger = null;
+			}
+		};
+		const onLeave = (): void => {
+			pointed = false;
+			if (shown && linger === null) linger = setTimeout(settle, 1200);
+		};
+		ruler?.addEventListener("pointerenter", onEnter);
+		ruler?.addEventListener("pointerleave", onLeave);
+
 		// Canvas colours are sampled, not live CSS, so they need reading again and
 		// repainting when the tokens behind them resolve differently.
 		const scheme = globalThis.matchMedia("(prefers-color-scheme: dark)");
@@ -257,11 +330,14 @@ export const DiffMinimap: FC<{
 		return () => {
 			resyncRef.current = null;
 			if (frame !== null) cancelAnimationFrame(frame);
+			if (linger !== null) clearTimeout(linger);
 			unsubscribe();
 			resizeObserver.disconnect();
 			scheme.removeEventListener("change", onScheme);
 			pixels?.removeEventListener("change", onPixels);
 			ruler?.removeEventListener("wheel", onWheel);
+			ruler?.removeEventListener("pointerenter", onEnter);
+			ruler?.removeEventListener("pointerleave", onLeave);
 		};
 	}, [viewerRef]);
 
@@ -273,10 +349,19 @@ export const DiffMinimap: FC<{
 			previous.files !== files ||
 			previous.diffStyle !== diffStyle ||
 			previous.annotationsByPath !== annotationsByPath ||
-			previous.selection !== selection;
+			previous.threadsByPath !== threadsByPath ||
+			previous.selection !== selection ||
+			previous.marks !== marks;
 		if (!changed) return;
 
-		dataRef.current = { files, diffStyle, annotationsByPath, selection };
+		dataRef.current = {
+			files,
+			diffStyle,
+			annotationsByPath,
+			threadsByPath,
+			selection,
+			marks,
+		};
 		resyncRef.current?.();
 	});
 

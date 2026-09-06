@@ -163,10 +163,14 @@ impl App {
                     textarea: Box::new(textarea),
                 }
             }
-            CliId::UncommittedHunkOrFile(..)
+            CliId::AnonymousSegment(..)
+            | CliId::UncommittedHunkOrFile(..)
             | CliId::PathPrefix { .. }
             | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
             | CliId::Uncommitted { .. }
+            | CliId::Worktree { .. }
+            | CliId::WorktreeUncommitted { .. }
             | CliId::Stack { .. } => return Ok(()),
         };
 

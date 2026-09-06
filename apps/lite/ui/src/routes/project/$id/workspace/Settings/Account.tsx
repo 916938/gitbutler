@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type FC } from "react";
 import type { UserProfile } from "@gitbutler/but-sdk";
-import { userProfileQueryOptions } from "#ui/api/queries.ts";
+import { aiConfigurationQueryOptions, userProfileQueryOptions } from "#ui/api/queries.ts";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { errorMessageForToast } from "#ui/errors.ts";
@@ -42,14 +42,29 @@ const SignedOut: FC = () => {
 		setError(null);
 		try {
 			const login = await window.lite.getLoginToken();
-			await window.lite.openInWebBrowser(login.url);
+			// Names the client for the login page, as apps/desktop does with its
+			// build type. Without it the page can only offer a token to copy.
+			const url = new URL(login.url);
+			url.searchParams.set("bt", "release");
+			await window.lite.openInWebBrowser(url.toString());
+			// The page sends the account back over `but://login`, which the main
+			// process persists, so this waits for the account to appear rather
+			// than for a reply of its own.
 			await pollUntilSuccess({
-				attempt: () => window.lite.loginAndPersist(login.token),
+				attempt: async () => {
+					// Signed out reads as `null` rather than an error, which would end
+					// the poll on its first try. The message is only ever seen if the
+					// poll then runs out of time, so it reads as the failure.
+					const profile = await window.lite.getUserProfileLocal();
+					if (profile === null) throw new Error("The browser did not finish signing in");
+					return profile;
+				},
 				intervalMs: pollIntervalMs,
 				timeoutMs: pollTimeoutMs,
 				signal: controller.signal,
 			});
 			await client.invalidateQueries({ queryKey: userProfileQueryOptions.queryKey });
+			await client.invalidateQueries({ queryKey: aiConfigurationQueryOptions.queryKey });
 		} catch (caught) {
 			// Abandoning is not a failure to report.
 			if (!controller.signal.aborted) setError(errorMessageForToast(caught));
@@ -148,6 +163,7 @@ const SignedIn: FC<{ profile: UserProfile }> = ({ profile }) => {
 		try {
 			await window.lite.deleteUser();
 			await client.invalidateQueries({ queryKey: userProfileQueryOptions.queryKey });
+			await client.invalidateQueries({ queryKey: aiConfigurationQueryOptions.queryKey });
 		} catch (caught) {
 			// Otherwise the click leaves a rejected promise and the account still showing.
 			setError(errorMessageForToast(caught));

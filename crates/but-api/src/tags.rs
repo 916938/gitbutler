@@ -47,6 +47,8 @@ cache_tags! {
     Diffs,
     /// Uncommitted file changes with their assignments.
     WorktreeChanges,
+    /// The linked-worktree listing with its archived state.
+    Worktrees,
     /// Where uncommitted changes would absorb into existing commits.
     AbsorptionPlan,
     /// GitButler's own diff comments.
@@ -61,6 +63,8 @@ cache_tags! {
     ReviewTimeline,
     /// A forge review's submissions.
     ReviewSubmissions,
+    /// A forge review's diff-anchored comment threads.
+    ReviewThreads,
     /// Whether a forge review can merge.
     MergeStatus,
     /// CI check runs.
@@ -75,6 +79,8 @@ cache_tags! {
     ReviewerCandidates,
     /// Which forge the repository talks to.
     ForgeInfo,
+    /// Repo-level metadata from the forge: permissions, fork and visibility.
+    RepoInfo,
     /// Who the current project is logged in as on its forge.
     ForgeLogin,
     /// The forge accounts known to the app.
@@ -85,4 +91,9 @@ cache_tags! {
     SigningSettings,
     /// The projects known to the app.
     Projects,
+    /// The app's AI provider configuration.
+    AiConfiguration,
+    /// Which mode the repository is in (open workspace, edit mode, ...) and
+    /// the edit session's own state.
+    OperatingMode,
 }

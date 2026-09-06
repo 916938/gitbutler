@@ -24,7 +24,7 @@ use ratatui::{
 use syntect::{easy::HighlightLines, highlighting, parsing::SyntaxSet};
 
 use crate::{
-    CliId,
+    ChangeSourceId, CliId,
     command::legacy::{
         discard::{DiscardOperation, DiscardOutcome, UncommittedSelection},
         status::tui::{
@@ -363,26 +363,38 @@ impl Details {
                     },
                 )
             }
-            CliId::Stack { .. } => {
-                self.reset_line_reader();
-                self.clear_lines();
-                self.reset_scroll();
-                let section_added = push_line(
-                    &mut self.lines,
-                    &mut self.sections,
-                    DetailsLine::Text {
-                        id: None,
-                        cli_id: None,
-                        line: Line::from("(stack assignments are not supported)")
-                            .style(self.theme.hint),
-                        skip_when_copying_hunk: false,
+            CliId::WorktreeUncommitted { name, .. } => {
+                let name = name.clone();
+                self.poll_render_thread(
+                    ctx,
+                    None,
+                    selection_did_change,
+                    move |ctx, theme, id_gen, line_writer, options| {
+                        diff_rendering::render_uncommitted_source(
+                            ctx,
+                            ChangeSourceId::Worktree(name),
+                            theme,
+                            id_gen,
+                            options,
+                            line_writer,
+                        )
                     },
-                );
-                if section_added {
-                    self.select_first_section_if_pending();
-                } else {
-                    self.clear_pending_first_section_selection();
-                }
+                )
+            }
+            CliId::Worktree { .. } => {
+                self.diff_not_supported("(a worktree reference has no diff of its own)");
+                Ok(true)
+            }
+            CliId::AnonymousSegment(..) => {
+                self.diff_not_supported("(anonymous branches must be named with `but reword` before viewing their diff)");
+                Ok(true)
+            }
+            CliId::Stack { .. } => {
+                self.diff_not_supported("(viewing diffs for stacks is not supported)");
+                Ok(true)
+            }
+            CliId::CommittedHunk(..) => {
+                self.diff_not_supported("(viewing diffs for committed hunks is not supported)");
                 Ok(true)
             }
             CliId::PathPrefix { .. } => {
@@ -392,6 +404,27 @@ impl Details {
                 self.clear_pending_first_section_selection();
                 Ok(true)
             }
+        }
+    }
+
+    fn diff_not_supported(&mut self, msg: &'static str) {
+        self.reset_line_reader();
+        self.clear_lines();
+        self.reset_scroll();
+        let section_added = push_line(
+            &mut self.lines,
+            &mut self.sections,
+            DetailsLine::Text {
+                id: None,
+                cli_id: None,
+                line: Line::from(msg).style(self.theme.hint),
+                skip_when_copying_hunk: false,
+            },
+        );
+        if section_added {
+            self.select_first_section_if_pending();
+        } else {
+            self.clear_pending_first_section_selection();
         }
     }
 
@@ -1236,10 +1269,14 @@ impl Details {
         };
         match status_selection {
             CliId::UncommittedHunkOrFile(..) | CliId::Uncommitted { .. } => true,
-            CliId::PathPrefix { .. }
+            CliId::AnonymousSegment(..)
+            | CliId::PathPrefix { .. }
             | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
             | CliId::Branch(..)
             | CliId::Commit { .. }
+            | CliId::Worktree { .. }
+            | CliId::WorktreeUncommitted { .. }
             | CliId::Stack { .. } => false,
         }
     }
@@ -1487,7 +1524,10 @@ impl Details {
             let parent_hunk = synthetic_parent_hunk(
                 &sections_for_file_cli_ids.head.id,
                 0,
-                sections_for_file_cli_ids.flat_map(|hunk| hunk.hunks.clone()),
+                sections_for_file_cli_ids
+                    .clone()
+                    .flat_map(|hunk| hunk.hunks.clone()),
+                sections_for_file_cli_ids.head.source.clone(),
             );
             if all_sections_marked {
                 marks.insert_mark(parent_hunk)?;
@@ -2039,6 +2079,7 @@ mod tests {
                 },
             }),
             is_entire_file: false,
+            source: crate::ChangeSourceId::Head,
         })
     }
 

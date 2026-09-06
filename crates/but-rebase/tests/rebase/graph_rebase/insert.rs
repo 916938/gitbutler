@@ -10,7 +10,7 @@ use crate::utils::{fixture_writable, standard_options};
 /// Inserting below a merge commit should inherit all of it's parents
 #[test]
 fn insert_below_merge_commit() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("merge-in-the-middle")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("merge-in-the-middle")?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -32,12 +32,13 @@ fn insert_below_merge_commit() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let merge_id = repo.rev_parse_single("HEAD~")?;
 
@@ -61,16 +62,16 @@ fn insert_below_merge_commit() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    ├── ·f699c45 (⌂|1)
-    └── ·16b7c68 (⌂|1)
+    ├── ·f699c45 (⌂)
+    └── ·16b7c68 (⌂)
         └── ►:1[1]:anon:
-            └── ·8ca0053 (⌂|1)
+            └── ·8ca0053 (⌂)
                 ├── ►:2[2]:A
-                │   └── ·add59d2 (⌂|1)
+                │   └── ·add59d2 (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+                │           └── 🏁·8f0d338 (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·984fd1c (⌂|1)
+                    └── ·984fd1c (⌂)
                         └── →:4: (main)
 
 "#]]
@@ -112,7 +113,7 @@ fn insert_below_merge_commit() -> Result<()> {
 /// Inserting below a merge commit should inherit all of it's parents
 #[test]
 fn insert_below_merge_commit_excluded_mappings() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("merge-in-the-middle")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("merge-in-the-middle")?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -134,12 +135,13 @@ fn insert_below_merge_commit_excluded_mappings() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let merge_id = repo.rev_parse_single("HEAD~")?;
 
@@ -167,16 +169,16 @@ fn insert_below_merge_commit_excluded_mappings() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    ├── ·f699c45 (⌂|1)
-    └── ·16b7c68 (⌂|1)
+    ├── ·f699c45 (⌂)
+    └── ·16b7c68 (⌂)
         └── ►:1[1]:anon:
-            └── ·8ca0053 (⌂|1)
+            └── ·8ca0053 (⌂)
                 ├── ►:2[2]:A
-                │   └── ·add59d2 (⌂|1)
+                │   └── ·add59d2 (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+                │           └── 🏁·8f0d338 (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·984fd1c (⌂|1)
+                    └── ·984fd1c (⌂)
                         └── →:4: (main)
 
 "#]]
@@ -217,7 +219,7 @@ fn insert_below_merge_commit_excluded_mappings() -> Result<()> {
 /// Inserting above a commit should inherit it's parents
 #[test]
 fn insert_above_commit_with_two_children() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("merge-in-the-middle")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("merge-in-the-middle")?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -239,12 +241,13 @@ fn insert_above_commit_with_two_children() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let base_id = repo.rev_parse_single("base")?;
 
@@ -268,16 +271,16 @@ fn insert_above_commit_with_two_children() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    └── ·42f9ff4 (⌂|1)
+    └── ·42f9ff4 (⌂)
         └── ►:1[1]:anon:
-            └── ·5219d30 (⌂|1)
+            └── ·5219d30 (⌂)
                 ├── ►:2[2]:A
-                │   └── ·72d9d9b (⌂|1)
+                │   └── ·72d9d9b (⌂)
                 │       └── ►:4[3]:main
-                │           ├── ·3dc4e45 (⌂|1)
-                │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+                │           ├── ·3dc4e45 (⌂)
+                │           └── 🏁·8f0d338 (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·df0cf44 (⌂|1)
+                    └── ·df0cf44 (⌂)
                         └── →:4: (main)
 
 "#]]

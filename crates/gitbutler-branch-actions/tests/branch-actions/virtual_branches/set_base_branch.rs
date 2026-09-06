@@ -1,10 +1,37 @@
 use super::*;
 use but_core::RefMetadata as _;
 use gitbutler_oplog::OplogExt as _;
+use gix::bstr::ByteSlice as _;
+
+fn reflog_identity_for_message(
+    repo: &gix::Repository,
+    reference_name: &gix::refs::FullNameRef,
+    message: &str,
+) -> (gix::bstr::BString, gix::bstr::BString) {
+    let reference = repo.find_reference(reference_name).unwrap();
+    let mut log = reference.log_iter();
+    let mut entries = log.rev().unwrap().unwrap();
+    entries
+        .find_map(|entry| {
+            let entry = entry.unwrap();
+            (entry.message == message.as_bytes().as_bstr()).then(|| {
+                (
+                    entry.signature.name.to_owned(),
+                    entry.signature.email.to_owned(),
+                )
+            })
+        })
+        .unwrap()
+}
 
 #[test]
-fn success() {
-    let Test { ctx, .. } = &mut Test::default();
+fn uses_configured_committer_for_reflog() {
+    let Test { repo, ctx, .. } = &mut Test::default();
+
+    std::fs::write(repo.path().join("feature.txt"), "feature").unwrap();
+
+    let expected_committer_identity =
+        ("gitbutler-test".into(), "gitbutler-test@example.com".into());
 
     let mut guard = ctx.exclusive_worktree_access();
     gitbutler_branch_actions::set_base_branch(
@@ -13,6 +40,141 @@ fn success() {
         guard.write_permission(),
     )
     .unwrap();
+    drop(guard);
+
+    let workspace_ref: gix::refs::FullName = but_core::WORKSPACE_REF_NAME.try_into().unwrap();
+    let stack_ref_name = ctx
+        .meta()
+        .unwrap()
+        .workspace(workspace_ref.as_ref())
+        .unwrap()
+        .stacks[0]
+        .ref_name()
+        .unwrap()
+        .clone();
+    let repo = ctx.repo.get().unwrap();
+    assert_eq!(
+        reflog_identity_for_message(&repo, stack_ref_name.as_ref(), "initialize stack"),
+        expected_committer_identity,
+        "onboarding uses the configured committer for its reflog"
+    );
+}
+
+#[test]
+fn unrelated_target_is_an_actionable_precondition_failure() {
+    let Test { repo, ctx, .. } = &mut Test::default();
+    let gix_repo = repo.open();
+    gix_repo
+        .commit(
+            "refs/remotes/origin/unrelated",
+            "unrelated root",
+            gix_repo.object_hash().empty_tree(),
+            std::iter::empty::<gix::ObjectId>(),
+        )
+        .unwrap();
+
+    let mut guard = ctx.exclusive_worktree_access();
+    let err = gitbutler_branch_actions::set_base_branch(
+        ctx,
+        &"refs/remotes/origin/unrelated".parse().unwrap(),
+        guard.write_permission(),
+    )
+    .unwrap_err();
+    drop(guard);
+
+    assert!(
+        gix_repo
+            .try_find_reference(but_core::WORKSPACE_REF_NAME)
+            .unwrap()
+            .is_none(),
+        "rejecting an unrelated target must not initialize the workspace"
+    );
+    assert_eq!(
+        err.custom_context().map(|ctx| ctx.code),
+        Some(Code::PreconditionFailed),
+        "an unrelated target is a recoverable selection problem"
+    );
+    assert!(
+        err.to_string()
+            .contains("Fetch more history or choose another branch"),
+        "the error tells onboarding how the user can recover"
+    );
+}
+
+#[test]
+fn works_without_git_identity() {
+    for branch_matches_target in [true, false] {
+        let Test { repo, ctx, .. } = &mut Test::default();
+
+        if !branch_matches_target {
+            repo.checkout(&"refs/heads/feature".parse().unwrap());
+        }
+        std::fs::write(repo.path().join("feature.txt"), "feature").unwrap();
+        repo.commit_all("feature");
+
+        but_core::git_config::edit_repo_config(
+            &repo.open(),
+            gix::config::Source::Local,
+            |config| {
+                config.remove_section("user", None::<&gix::bstr::BStr>);
+                config.remove_section("author", None::<&gix::bstr::BStr>);
+                config.remove_section("committer", None::<&gix::bstr::BStr>);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let fallback_committer_identity = {
+            let mut context_repo = ctx.repo.get_mut().unwrap();
+            context_repo.reload().unwrap();
+            let committer = context_repo.committer().transpose().unwrap().unwrap();
+            (committer.name.to_owned(), committer.email.to_owned())
+        };
+        assert_eq!(
+            fallback_committer_identity,
+            (
+                gitbutler_repo::GITBUTLER_COMMIT_AUTHOR_NAME.into(),
+                gitbutler_repo::GITBUTLER_COMMIT_AUTHOR_EMAIL.into(),
+            ),
+            "the context provides GitButler's fallback committer"
+        );
+
+        let mut guard = ctx.exclusive_worktree_access();
+        gitbutler_branch_actions::set_base_branch(
+            ctx,
+            &"refs/remotes/origin/master".parse().unwrap(),
+            guard.write_permission(),
+        )
+        .unwrap();
+        drop(guard);
+
+        let workspace_ref: gix::refs::FullName = but_core::WORKSPACE_REF_NAME.try_into().unwrap();
+        let created_ref = if branch_matches_target {
+            ctx.meta()
+                .unwrap()
+                .workspace(workspace_ref.as_ref())
+                .unwrap()
+                .stacks[0]
+                .ref_name()
+                .unwrap()
+                .clone()
+        } else {
+            workspace_ref
+        };
+        let repo = ctx.repo.get().unwrap();
+        assert_eq!(
+            reflog_identity_for_message(
+                &repo,
+                created_ref.as_ref(),
+                if branch_matches_target {
+                    "initialize stack"
+                } else {
+                    "initialize workspace"
+                },
+            ),
+            fallback_committer_identity,
+            "identity-free onboarding uses GitButler for its reflog"
+        );
+    }
 }
 
 #[test]
@@ -264,7 +426,8 @@ fn fills_missing_target_commit_id_from_existing_target_ref() {
 
     assert_eq!(
         ctx.project_meta().unwrap().target_commit_id,
-        Some(expected_target_id)
+        Some(expected_target_id),
+        "the missing target commit is repaired from the configured target"
     );
 }
 

@@ -522,23 +522,221 @@ pub fn list_forge_reviews_with_cache(
 ) -> Result<Vec<ForgeReview>> {
     let cache_config = cache_config.unwrap_or_default();
     let reviews = match cache_config {
-        CacheConfig::CacheOnly => crate::list_cached_forge_reviews(db)?,
+        // The cache also retains settled reviews for the branch association;
+        // the listing serves only the open ones, matching a fresh sync.
+        CacheConfig::CacheOnly => crate::list_cached_forge_reviews(db)?
+            .into_iter()
+            .filter(ForgeReview::is_open)
+            .collect(),
         CacheConfig::CacheWithFallback { max_age_seconds } => {
             let cached = crate::db::reviews_from_cache(db)?;
             if let Some(reviews) =
                 cached.fresh_rows(max_age_seconds, chrono::Local::now().naive_local())
             {
-                return Ok(reviews);
+                return Ok(reviews.into_iter().filter(ForgeReview::is_open).collect());
             }
-            let reviews = list_forge_reviews(preferred_forge_user, forge_repo_info, storage)?;
-            crate::db::cache_reviews(db, &reviews).ok();
-            reviews
+            match sync_listed_reviews(preferred_forge_user, forge_repo_info, storage, db) {
+                Ok(reviews) => reviews,
+                Err(err) => {
+                    let cached_open: Vec<ForgeReview> = crate::list_cached_forge_reviews(db)?
+                        .into_iter()
+                        .filter(ForgeReview::is_open)
+                        .collect();
+                    if serves_stale_reviews(&err, !cached_open.is_empty()) {
+                        cached_open
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
         }
         CacheConfig::NoCache => {
-            let reviews = list_forge_reviews(preferred_forge_user, forge_repo_info, storage)?;
-            crate::db::cache_reviews(db, &reviews).ok();
-            reviews
+            sync_listed_reviews(preferred_forge_user, forge_repo_info, storage, db)?
         }
+    };
+    Ok(reviews)
+}
+
+/// Whether a failed live refresh should keep serving the last known open
+/// reviews instead of surfacing the error. Explicit `NoCache` reads never
+/// come here and still surface every failure.
+///
+/// Missing credentials say nothing about the forge's state, so the cached
+/// listing stays valid even when it is empty. A network error is transient,
+/// but an empty cache has no "confirmed empty at time T" watermark worth
+/// serving, so cold listings still surface the failure. Anything else
+/// (404, invalid tokens, API errors) can require user action and is
+/// returned. The providers tag their errors with these codes.
+fn serves_stale_reviews(err: &anyhow::Error, has_open_reviews: bool) -> bool {
+    use but_error::AnyhowContextExt as _;
+    match err.custom_context().map(|ctx| ctx.code) {
+        Some(but_error::Code::ForgeNotAuthenticated) => true,
+        Some(but_error::Code::NetworkError) => has_open_reviews,
+        _ => false,
+    }
+}
+
+/// Fetch the open listing and fold it into the cache, recording the fate of
+/// any cached open review the listing no longer contains.
+///
+/// Such a review has merged, been closed, or been deleted on the forge, and
+/// the reconcile pass in [`crate::db::cache_reviews`] would delete its row
+/// while still marked open — losing the branch association for good, leaving
+/// an integrated branch with no way back to its landed review. When that is
+/// about to happen (and only then — most syncs change nothing and cost no
+/// extra request), one page of the forge's most recently updated settled
+/// reviews covers everything that merged or closed since the last sync. The
+/// fates ride in the same reconcile transaction, after the listing, so a
+/// stale open listing cannot overwrite a fate just learned. A failed sweep
+/// degrades to the pre-sweep behavior — the vanished row is deleted once its
+/// grace expires — rather than blocking the sync.
+fn sync_listed_reviews(
+    preferred_forge_user: Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    storage: &but_forge_storage::Controller,
+    db: &mut but_db::DbHandle,
+) -> Result<Vec<ForgeReview>> {
+    let reviews = list_forge_reviews(&preferred_forge_user, forge_repo_info, storage)?;
+    let cached_states = crate::db::cached_review_states(db).unwrap_or_default();
+    let mut to_cache = reviews.clone();
+    if open_review_vanished(&cached_states, &reviews) {
+        let settled =
+            list_recently_settled_reviews(&preferred_forge_user, forge_repo_info, storage)
+                .unwrap_or_default();
+        to_cache.extend(
+            fates_to_record(&settled, &cached_states)
+                .into_iter()
+                .cloned(),
+        );
+    }
+    crate::db::cache_reviews(db, &to_cache).ok();
+    Ok(reviews)
+}
+
+/// Whether some review the cache still holds as open is absent from the
+/// fresh open listing — the moment its fate needs recording.
+fn open_review_vanished(cached_states: &[(i64, bool)], listing: &[ForgeReview]) -> bool {
+    let listed = listing
+        .iter()
+        .map(|review| review.number)
+        .collect::<std::collections::HashSet<_>>();
+    cached_states
+        .iter()
+        .any(|(number, settled)| !settled && !listed.contains(number))
+}
+
+/// The settled reviews worth recording ahead of a reconcile pass: those the
+/// cache tracks as open, whose fate is now known. Reviews the cache never
+/// saw are left out — associations key on branch name, so recording other
+/// people's reviews would claim same-named local branches — and reviews
+/// already settled in the cache need no re-write.
+fn fates_to_record<'a>(
+    settled: &'a [ForgeReview],
+    cached_states: &[(i64, bool)],
+) -> Vec<&'a ForgeReview> {
+    let cached_open = cached_states
+        .iter()
+        .filter(|(_, settled)| !settled)
+        .map(|(number, _)| *number)
+        .collect::<std::collections::HashSet<_>>();
+    settled
+        .iter()
+        .filter(|review| !review.is_open() && cached_open.contains(&review.number))
+        .collect()
+}
+
+/// One page of the forge's most recently updated merged/closed reviews,
+/// newest first. Forges without an implementation report nothing, which
+/// leaves their reconcile behavior as it was.
+fn list_recently_settled_reviews(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReview>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    let reviews = match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user
+                .as_ref()
+                .and_then(|user| user.github().cloned());
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let storage = storage.clone();
+
+            let pulls = std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to create a runtime for the settled-review sweep: {e}"
+                        )
+                    })?
+                    .block_on(but_github::pr::list_recently_closed(
+                        preferred_account.as_ref(),
+                        &owner,
+                        &repo,
+                        &storage,
+                    ))
+            })
+            .join()
+            .map_err(|e| anyhow::anyhow!("Failed to join thread: {e:?}"))??;
+
+            pulls.into_iter().map(ForgeReview::from).collect()
+        }
+        ForgeName::GitLab => {
+            let preferred_account = preferred_forge_user
+                .as_ref()
+                .and_then(|user| user.gitlab().cloned());
+            let project_id = GitLabProjectId::new(owner, repo);
+            let storage = storage.clone();
+
+            let mrs = std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to create a runtime for the settled-review sweep: {e}"
+                        )
+                    })?
+                    .block_on(but_gitlab::mr::list_recently_closed(
+                        preferred_account.as_ref(),
+                        project_id,
+                        &storage,
+                    ))
+            })
+            .join()
+            .map_err(|e| anyhow::anyhow!("Failed to join thread: {e:?}"))??;
+
+            mrs.into_iter().map(ForgeReview::from).collect()
+        }
+        ForgeName::Bitbucket => {
+            let preferred_account = preferred_forge_user
+                .as_ref()
+                .and_then(|user| user.bitbucket().cloned());
+            let workspace = owner.clone();
+            let repo_slug = repo.clone();
+            let storage = storage.clone();
+
+            let prs = std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to create a runtime for the settled-review sweep: {e}"
+                        )
+                    })?
+                    .block_on(but_bitbucket::pr::list_recently_closed(
+                        preferred_account.as_ref(),
+                        &workspace,
+                        &repo_slug,
+                        &storage,
+                    ))
+            })
+            .join()
+            .map_err(|e| anyhow::anyhow!("Failed to join thread: {e:?}"))??;
+
+            prs.into_iter().map(ForgeReview::from).collect()
+        }
+        _ => Vec::new(),
     };
     Ok(reviews)
 }
@@ -673,7 +871,7 @@ pub async fn check_forge_account_is_valid(
 }
 
 fn list_forge_reviews(
-    preferred_forge_user: Option<crate::ForgeUser>,
+    preferred_forge_user: &Option<crate::ForgeUser>,
     forge_repo_info: &crate::forge::ForgeRepoInfo,
     storage: &but_forge_storage::Controller,
 ) -> Result<Vec<ForgeReview>> {
@@ -1441,6 +1639,173 @@ pub async fn list_review_comments(
     }
 }
 
+/// Which side of the diff a thread hangs on: `old` line numbers count in
+/// the pre-image, `new` in the post-image. Same axis as a local diff
+/// comment, so both can be anchored the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeReviewThreadSide {
+    Old,
+    New,
+}
+
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(ForgeReviewThreadSide);
+
+/// A diff-anchored conversation on a review: where in the diff it hangs,
+/// whether it has been resolved, and the comments left in it. Fetched
+/// fresh from the forge; not cached.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeReviewThread {
+    /// The forge's thread identifier, opaque and only meaningful to it.
+    pub id: String,
+    /// Path the thread hangs on, as the forge spells it.
+    pub path: String,
+    /// The line in the current diff, or `None` once the thread is outdated.
+    pub line: Option<i64>,
+    /// First line of a multi-line thread; equals `line` for a single one.
+    pub start_line: Option<i64>,
+    /// Where the thread was left, which survives the diff moving on.
+    pub original_line: Option<i64>,
+    pub side: ForgeReviewThreadSide,
+    /// Whether someone marked the conversation done.
+    pub is_resolved: bool,
+    /// Whether the diff the thread was left on has since changed.
+    pub is_outdated: bool,
+    pub comments: Vec<ForgeReviewThreadComment>,
+}
+
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(ForgeReviewThread);
+
+/// One comment inside a review thread.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeReviewThreadComment {
+    /// Forge-assigned identifier of the comment.
+    pub id: i64,
+    /// The comment text, as forge-flavored markdown.
+    pub body: String,
+    pub author: Option<ForgeReviewUser>,
+    /// ISO 8601 timestamp of when the comment was created.
+    pub created_at: Option<String>,
+    /// ISO 8601 timestamp of the comment's last edit.
+    pub modified_at: Option<String>,
+    /// The URL to view this comment in a web browser.
+    pub html_url: String,
+    /// The diff the comment was anchored to, as a unified hunk.
+    pub diff_hunk: Option<String>,
+    /// The review submission this comment was posted under, which is what
+    /// files it under a verdict rather than standing on its own.
+    pub review_id: Option<i64>,
+}
+
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(ForgeReviewThreadComment);
+
+impl From<but_github::PullRequestReviewThread> for ForgeReviewThread {
+    fn from(thread: but_github::PullRequestReviewThread) -> Self {
+        ForgeReviewThread {
+            id: thread.id,
+            path: thread.path,
+            line: thread.line,
+            start_line: thread.start_line,
+            original_line: thread.original_line,
+            side: if thread.diff_side == "LEFT" {
+                ForgeReviewThreadSide::Old
+            } else {
+                ForgeReviewThreadSide::New
+            },
+            is_resolved: thread.is_resolved,
+            is_outdated: thread.is_outdated,
+            comments: thread
+                .comments
+                .into_iter()
+                .map(ForgeReviewThreadComment::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<but_github::PullRequestReviewThreadComment> for ForgeReviewThreadComment {
+    fn from(comment: but_github::PullRequestReviewThreadComment) -> Self {
+        ForgeReviewThreadComment {
+            id: comment.id,
+            body: comment.body,
+            author: comment.author.map(ForgeReviewUser::from),
+            created_at: comment.created_at,
+            modified_at: comment.modified_at,
+            html_url: comment.html_url,
+            diff_hunk: comment.diff_hunk,
+            review_id: comment.review_id,
+        }
+    }
+}
+
+/// Reply into an existing review thread, returning the comment it made.
+///
+/// Addressed by the thread's own forge id rather than the review number: a
+/// reply belongs to a conversation, not to the review it hangs on.
+pub async fn create_review_thread_reply(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    thread_id: &str,
+    body: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<ForgeReviewThreadComment> {
+    let crate::forge::ForgeRepoInfo { forge, .. } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let comment = but_github::pr::create_review_thread_reply(
+                preferred_account,
+                thread_id,
+                body,
+                storage,
+            )
+            .await?;
+            Ok(comment.into())
+        }
+        // A write, so it fails loudly rather than reading as empty.
+        _ => Err(anyhow::anyhow!(
+            "Review thread replies for forge {forge:?} are not implemented yet."
+        )),
+    }
+}
+
+/// List the diff-anchored review threads on a review, oldest first. Each
+/// call hits the forge fresh (no DB cache).
+pub async fn list_review_threads(
+    preferred_forge_user: &Option<crate::ForgeUser>,
+    forge_repo_info: &crate::forge::ForgeRepoInfo,
+    review_number: usize,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<ForgeReviewThread>> {
+    let crate::forge::ForgeRepoInfo {
+        forge, owner, repo, ..
+    } = forge_repo_info;
+    match forge {
+        ForgeName::GitHub => {
+            let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
+            let threads = but_github::pr::list_review_threads(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                storage,
+            )
+            .await?;
+            Ok(threads.into_iter().map(Into::into).collect())
+        }
+        // Read as empty rather than erroring; see list_review_comments.
+        _ => Ok(Vec::new()),
+    }
+}
+
 /// One individual reaction, with who left it and the forge id that
 /// addresses its removal. `kind` is the forge's native reaction name — an
 /// open set; unknown kinds pass through rather than being dropped.
@@ -1804,13 +2169,14 @@ pub async fn get_review_merge_status(
     match forge {
         ForgeName::GitHub => {
             let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.github());
-            let pr_number = review_number
-                .try_into()
-                .context("PR: Failed to cast usize to i64, somehow")?;
-            let status = but_github::GitHubClient::from_storage(storage, preferred_account)?
-                .get_pull_request_merge_status(owner, repo, pr_number)
-                .await
-                .context("Failed to fetch PR merge status")?;
+            let status = but_github::pr::get_merge_status(
+                preferred_account,
+                owner,
+                repo,
+                review_number,
+                storage,
+            )
+            .await?;
             Ok(ReviewMergeStatus {
                 mergeable_state: status.mergeable_state,
                 comments_count: status.comments_count,
@@ -1820,13 +2186,13 @@ pub async fn get_review_merge_status(
         ForgeName::GitLab => {
             let preferred_account = preferred_forge_user.as_ref().and_then(|user| user.gitlab());
             let project_id = GitLabProjectId::new(owner, repo);
-            let mr_iid = review_number
-                .try_into()
-                .context("MR: Failed to cast usize to i64, somehow")?;
-            let status = but_gitlab::GitLabClient::from_storage(storage, preferred_account)?
-                .get_merge_request_merge_status(project_id, mr_iid)
-                .await
-                .context("Failed to fetch MR merge status")?;
+            let status = but_gitlab::mr::get_merge_status(
+                preferred_account,
+                project_id,
+                review_number,
+                storage,
+            )
+            .await?;
             Ok(ReviewMergeStatus {
                 mergeable_state: status.mergeable_state,
                 comments_count: status.comments_count,
@@ -3199,6 +3565,145 @@ mod tests {
         Path::new(path)
     }
 
+    fn cached_review(number: i64, merged_at: Option<&str>, closed_at: Option<&str>) -> ForgeReview {
+        ForgeReview {
+            html_url: format!("https://github.com/o/r/pull/{number}"),
+            number,
+            title: format!("PR {number}"),
+            body: None,
+            author: None,
+            labels: vec![],
+            draft: false,
+            source_branch: format!("branch-{number}"),
+            target_branch: "main".to_string(),
+            sha: "0000000000000000000000000000000000000000".to_string(),
+            integration_commit_shas: vec![],
+            created_at: None,
+            modified_at: None,
+            merged_at: merged_at.map(Into::into),
+            closed_at: closed_at.map(Into::into),
+            repository_ssh_url: None,
+            repository_https_url: None,
+            repo_owner: None,
+            head_repo_is_fork: false,
+            reviewers: vec![],
+            auto_merge_enabled: false,
+            unit_symbol: "#".to_string(),
+            last_sync_at: chrono::NaiveDateTime::default(),
+        }
+    }
+
+    #[test]
+    fn only_cached_open_reviews_get_their_fate_recorded() {
+        let timestamp = Some("2026-08-24T00:00:00Z");
+        let settled = vec![
+            cached_review(1, timestamp, None), // merged, cache tracks it as open
+            cached_review(2, timestamp, None), // merged, cache never saw it
+            cached_review(3, None, timestamp), // closed unmerged, cache tracks it as open
+            cached_review(4, timestamp, None), // merged, fate already recorded
+            cached_review(5, None, None),      // still open (a forge listing quirk)
+        ];
+        let cached_states = [(1, false), (3, false), (4, true), (9, false)];
+
+        let recorded: Vec<i64> = fates_to_record(&settled, &cached_states)
+            .iter()
+            .map(|review| review.number)
+            .collect();
+
+        assert_eq!(
+            recorded,
+            vec![1, 3],
+            "a tracked review's fate is recorded once; unknown reviews would claim same-named local branches and already-settled rows need no re-write"
+        );
+    }
+
+    #[test]
+    fn a_sweep_is_due_exactly_when_a_cached_open_review_left_the_listing() {
+        let listing = vec![cached_review(1, None, None)];
+
+        assert!(
+            !open_review_vanished(&[(1, false), (2, true)], &listing),
+            "still-listed and already-settled rows demand no sweep request"
+        );
+        assert!(
+            open_review_vanished(&[(1, false), (3, false)], &listing),
+            "an open row missing from the listing is about to be deleted, so its fate must be swept first"
+        );
+    }
+
+    #[test]
+    fn missing_credentials_do_not_turn_a_stale_cache_into_an_empty_listing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut db = but_db::DbHandle::new_in_directory(tmp.path()).unwrap();
+        // No accounts are stored, so client construction fails before any
+        // network request — the listing must not pretend the forge is empty.
+        let storage = but_forge_storage::Controller::from_path(tmp.path());
+        // `cached_review` stamps `last_sync_at` at the epoch, well past the
+        // fallback window, so the cached read attempts a live refresh.
+        db.forge_reviews_mut()
+            .unwrap()
+            .set_all(vec![cached_review(1, None, None).try_into().unwrap()])
+            .unwrap();
+
+        let reviews = list_forge_reviews_with_cache(
+            None,
+            &repo_info("owner", "repo"),
+            &storage,
+            &mut db,
+            Some(CacheConfig::CacheWithFallback {
+                max_age_seconds: 300,
+            }),
+        )
+        .unwrap();
+
+        let listed: Vec<i64> = reviews.iter().map(|review| review.number).collect();
+        assert_eq!(
+            listed,
+            vec![1],
+            "a failed credential lookup must serve the last known open reviews"
+        );
+        let persisted: Vec<i64> = crate::list_cached_forge_reviews(&db)
+            .unwrap()
+            .iter()
+            .map(|review| review.number)
+            .collect();
+        assert_eq!(
+            persisted,
+            vec![1],
+            "a failed credential lookup must not delete the last known open reviews"
+        );
+    }
+
+    #[test]
+    fn only_outage_shaped_sync_failures_serve_the_stale_cache() {
+        let not_authenticated =
+            anyhow::anyhow!("no accounts").context(but_error::Context::new_static(
+                but_error::Code::ForgeNotAuthenticated,
+                "Not authenticated.",
+            ));
+        let network = anyhow::anyhow!("connection refused").context(
+            but_error::Context::new_static(but_error::Code::NetworkError, "Unable to connect."),
+        );
+        let api_failure = anyhow::anyhow!("Failed to list open pull requests: 500");
+
+        assert!(
+            serves_stale_reviews(&not_authenticated, false),
+            "missing credentials say nothing about the forge, even an empty cache stays valid"
+        );
+        assert!(
+            serves_stale_reviews(&network, true),
+            "a transient outage must not wipe out the last known open reviews"
+        );
+        assert!(
+            !serves_stale_reviews(&network, false),
+            "an empty cache has nothing usable, cold listings still surface the outage"
+        );
+        assert!(
+            !serves_stale_reviews(&api_failure, true),
+            "a forge-side failure can require user action and must be surfaced"
+        );
+    }
+
     #[test]
     fn github_submission_states_map_and_unknowns_drop() {
         use ForgeReviewSubmissionState as S;
@@ -3212,6 +3717,59 @@ mod tests {
         // The caller's own draft, and any state GitHub adds later, are omitted.
         assert_eq!(github_submission_state("PENDING"), None);
         assert_eq!(github_submission_state("APPROVED_WITH_COMMENTS"), None);
+    }
+
+    #[test]
+    fn github_review_threads_map_side_and_outdated_anchor() {
+        let thread = |diff_side: &str, line: Option<i64>| but_github::PullRequestReviewThread {
+            id: "PRRT_1".to_string(),
+            is_resolved: true,
+            is_outdated: line.is_none(),
+            path: "src/lib.rs".to_string(),
+            line,
+            start_line: line,
+            original_line: Some(42),
+            diff_side: diff_side.to_string(),
+            comments: Vec::new(),
+        };
+
+        let current = ForgeReviewThread::from(thread("RIGHT", Some(17)));
+        assert_eq!(current.side, ForgeReviewThreadSide::New);
+        assert_eq!(current.line, Some(17));
+        assert!(
+            current.is_resolved,
+            "resolution carries over from the forge"
+        );
+
+        let outdated = ForgeReviewThread::from(thread("LEFT", None));
+        assert_eq!(outdated.side, ForgeReviewThreadSide::Old);
+        assert_eq!(
+            (outdated.line, outdated.original_line),
+            (None, Some(42)),
+            "an outdated thread keeps only where it was originally left"
+        );
+    }
+
+    #[test]
+    fn github_thread_comments_keep_their_review() {
+        let comment = but_github::PullRequestReviewThreadComment {
+            id: 1,
+            body: "@you take a look".to_string(),
+            author: None,
+            created_at: Some("2026-08-29T09:36:02Z".to_string()),
+            modified_at: None,
+            html_url: "https://example.invalid/c/1".to_string(),
+            diff_hunk: Some("@@ -1 +1 @@".to_string()),
+            review_id: Some(99),
+        };
+
+        let mapped = ForgeReviewThreadComment::from(comment);
+        assert_eq!(
+            mapped.review_id,
+            Some(99),
+            "the submission id is what files a thread under its verdict"
+        );
+        assert_eq!(mapped.body, "@you take a look");
     }
 
     fn repo_info(owner: &str, repo: &str) -> crate::forge::ForgeRepoInfo {

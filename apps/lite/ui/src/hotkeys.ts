@@ -30,7 +30,7 @@ export type CommandGroup =
 	| "Operations log"
 	| "Stack"
 	| "Uncommitted changes"
-	| "Outline"
+	| "Sidebar"
 	| "Workspace";
 
 declare module "@tanstack/react-hotkeys" {
@@ -83,6 +83,10 @@ export const globalHotkeys = {
 	commandPalette: {
 		hotkey: "Mod+K",
 	},
+	operationsLog: {
+		hotkey: "Mod+Shift+O",
+		meta: { group: "Operations log", name: "Show operations log" },
+	},
 	redo: {
 		hotkey: "Mod+Shift+Z",
 		meta: { group: "Operations log", name: "Redo" },
@@ -106,6 +110,14 @@ export const workspaceHotkeys = {
 		hotkey: "Mod+N",
 		meta: { group: "Workspace", name: "Add new branch" },
 	},
+	/**
+	 * The shifted counterpart of `createIndependentBranch`: the same act, but
+	 * leaving the workspace for the new branch rather than adding it alongside.
+	 */
+	createBranchAndSwitch: {
+		hotkey: "Mod+Shift+N",
+		meta: { group: "Workspace", name: "Add new branch and switch to it" },
+	},
 	fetchFromRemotes: {
 		hotkey: "Alt+Shift+F",
 		meta: { group: "Workspace", name: "Fetch" },
@@ -117,10 +129,10 @@ export const workspaceHotkeys = {
 			name: "Update workspace (rebases all stacks)",
 		},
 	},
-	focusHorizontalSelectionScopeLeft: {
+	focusHorizontalScopeLeft: {
 		hotkey: "ArrowLeft",
 	},
-	focusHorizontalSelectionScopeRight: {
+	focusHorizontalScopeRight: {
 		hotkey: "ArrowRight",
 	},
 	openInTerminal: {
@@ -135,20 +147,28 @@ export const workspaceHotkeys = {
 		hotkey: "F",
 		meta: { group: "Diff", name: "Toggle files" },
 	},
-	toggleOutline: {
+	toggleSidebar: {
 		hotkey: ".",
-		meta: { group: "Global", name: "Toggle outline" },
+		meta: { group: "Global", name: "Toggle sidebar" },
 	},
 } satisfies Record<string, HotkeyWithMeta>;
 
 export const branchesHotkeys = {
+	copy: {
+		hotkey: "Mod+C",
+		meta: { group: "Sidebar", name: "Copy" },
+	},
 	deleteBranchRef: {
 		hotkey: globalThis.window.lite.platform === "darwin" ? "Mod+Backspace" : "Delete",
 		meta: { group: "Branch", name: "Delete branch reference" },
 	},
 } satisfies Record<string, HotkeyWithMeta>;
 
-export const outlineHotkeys = {
+export const sidebarHotkeys = {
+	copy: {
+		hotkey: "Mod+C",
+		meta: { group: "Sidebar", name: "Copy" },
+	},
 	checkCommit: {
 		hotkey: "Space",
 		meta: { group: "Commit", name: "Check commit" },
@@ -246,6 +266,14 @@ export const changesHotkeys = {
 	},
 } satisfies Record<string, HotkeyWithMeta>;
 
+/** What the platform calls revealing a file in its file manager. */
+export const revealInFolderLabel =
+	globalThis.window.lite.platform === "darwin"
+		? "Reveal in Finder"
+		: globalThis.window.lite.platform === "win32"
+			? "Show in File Explorer"
+			: "Show in File Manager";
+
 export const changesFileHotkeys = {
 	absorb: {
 		hotkey: "A",
@@ -267,6 +295,10 @@ export const changesFileHotkeys = {
 		hotkey: "E",
 		meta: { group: "File", name: "Open in editor" },
 	},
+	revealInFolder: {
+		hotkey: "Shift+E",
+		meta: { group: "File", name: revealInFolderLabel },
+	},
 	toggleFoldDirectory: {
 		hotkey: "Z",
 		meta: { group: "File", name: "Fold/unfold directory" },
@@ -279,6 +311,11 @@ export const changesFileHotkeys = {
 
 export const pullRequestHotkeys = {
 	update: {
+		hotkey: "Mod+Enter",
+	},
+	/* Same chord as `update`, but bound on the comment composer rather than the
+	   description form, so only the focused one fires. */
+	comment: {
 		hotkey: "Mod+Enter",
 	},
 } satisfies Record<string, HotkeyWithMeta>;
@@ -302,6 +339,12 @@ export const operationHotkeys = {
 	confirmTransfer: {
 		hotkey: "Mod+V",
 	},
+	selectCopy: {
+		hotkey: "C",
+	},
+	selectMove: {
+		hotkey: "M",
+	},
 	selectAbove: {
 		hotkey: "A",
 	},
@@ -314,9 +357,25 @@ export const operationHotkeys = {
 } satisfies Record<string, HotkeyWithMeta>;
 
 export const diffHotkeys = {
+	absorb: {
+		hotkey: "A",
+		meta: { group: "Diff", name: "Absorb hunk" },
+	},
+	addComment: {
+		hotkey: "C",
+		meta: { group: "Diff", name: "Add comment" },
+	},
 	checkHunk: {
 		hotkey: "Space",
-		meta: { group: "Diff", name: "Check hunk" },
+		meta: { group: "Diff", name: "Check selected lines" },
+	},
+	previousFile: {
+		hotkey: "Alt+Shift+ArrowUp",
+		meta: { group: "Diff", name: "Previous file" },
+	},
+	nextFile: {
+		hotkey: "Alt+Shift+ArrowDown",
+		meta: { group: "Diff", name: "Next file" },
 	},
 	toggleFoldFile: {
 		hotkey: "Z",
@@ -332,5 +391,13 @@ export const diffHotkeys = {
 	openInEditor: {
 		hotkey: "E",
 		meta: { group: "Diff", name: "Open in editor" },
+	},
+	revealInFolder: {
+		hotkey: "Shift+E",
+		meta: { group: "Diff", name: revealInFolderLabel },
+	},
+	search: {
+		hotkey: "Mod+F",
+		meta: { group: "Diff", name: "Search diff" },
 	},
 } satisfies Record<string, HotkeyWithMeta>;

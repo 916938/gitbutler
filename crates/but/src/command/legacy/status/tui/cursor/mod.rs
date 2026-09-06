@@ -18,8 +18,8 @@ use crate::{
             },
             mode::ModeRef,
             render::{
-                cherry_pick_operation_display, commit_operation_display, move_operation_display,
-                reorder_operation_display, stack_operation_display,
+                branch_operation_display, cherry_pick_operation_display, commit_operation_display,
+                move_operation_display, reorder_operation_display, stack_operation_display,
             },
         },
     },
@@ -86,11 +86,19 @@ impl Cursor {
     ) -> CliResult<Option<Self>> {
         let hint = "`TARGET` can be a commit, branch, committed file, uncommitted file, or uncommitted hunk";
         match &target {
-            ResolvedCliIdArg::Commit(..)
+            ResolvedCliIdArg::AnonymousSegment(..)
+            | ResolvedCliIdArg::Commit(..)
             | ResolvedCliIdArg::Branch(..)
+            | ResolvedCliIdArg::Worktree(..)
+            | ResolvedCliIdArg::WorktreeUncommitted(..)
             | ResolvedCliIdArg::Uncommitted
             | ResolvedCliIdArg::UncommittedHunkOrFile(..)
             | ResolvedCliIdArg::CommittedFile(..) => {}
+            ResolvedCliIdArg::CommittedHunk(..) => {
+                return Err(bad_input("Selecting committed hunks is not supported")
+                    .hint(hint)
+                    .into());
+            }
             ResolvedCliIdArg::PathPrefix { .. } => {
                 return Err(bad_input("Selecting path prefixes is not supported")
                     .hint(hint)
@@ -108,21 +116,29 @@ impl Cursor {
                 ResolvedCliIdArg::UncommittedHunkOrFile(hunk) if !hunk.is_entire_file => {
                     match &**cli_id {
                         CliId::UncommittedHunkOrFile(file) => hunk_is_child_of(file, hunk),
-                        CliId::PathPrefix { .. }
+                        CliId::AnonymousSegment(..)
+                        | CliId::PathPrefix { .. }
                         | CliId::CommittedFile { .. }
+                        | CliId::CommittedHunk { .. }
                         | CliId::Branch(..)
                         | CliId::Commit { .. }
                         | CliId::Uncommitted { .. }
+                        | CliId::Worktree { .. }
+                        | CliId::WorktreeUncommitted { .. }
                         | CliId::Stack { .. } => false,
                     }
                 }
-                ResolvedCliIdArg::Commit(..)
+                ResolvedCliIdArg::AnonymousSegment(..)
+                | ResolvedCliIdArg::Commit(..)
                 | ResolvedCliIdArg::Branch(..)
                 | ResolvedCliIdArg::UncommittedHunkOrFile(..)
                 | ResolvedCliIdArg::CommittedFile(..)
                 | ResolvedCliIdArg::Uncommitted
                 | ResolvedCliIdArg::PathPrefix { .. }
-                | ResolvedCliIdArg::Stack { .. } => target == **cli_id,
+                | ResolvedCliIdArg::Worktree(..)
+                | ResolvedCliIdArg::WorktreeUncommitted(..)
+                | ResolvedCliIdArg::Stack { .. }
+                | ResolvedCliIdArg::CommittedHunk(..) => target == **cli_id,
             })
         }) else {
             return Ok(None);
@@ -459,13 +475,16 @@ impl Cursor {
                     committed_file: CommittedFileId { commit_id, .. },
                     id: _,
                 }) => show_files.show_files_for(*commit_id),
-                Some(CliId::UncommittedHunkOrFile(..))
+                Some(CliId::AnonymousSegment(..))
+                | Some(CliId::UncommittedHunkOrFile(..))
                 | Some(CliId::PathPrefix { .. })
                 | Some(CliId::Branch(..))
                 | Some(CliId::Commit { .. })
                 | Some(CliId::Uncommitted { .. })
+                | Some(CliId::Worktree { .. })
+                | Some(CliId::WorktreeUncommitted { .. })
                 | Some(CliId::Stack { .. }) => matches!(show_files, FilesStatusFlag::All),
-                None => false,
+                Some(CliId::CommittedHunk(..)) | None => false,
             };
 
             if !file_is_visible {
@@ -485,6 +504,8 @@ impl Cursor {
                 StatusOutputLineData::Commit { .. }
                 | StatusOutputLineData::Branch { .. }
                 | StatusOutputLineData::StagedChanges { .. }
+                | StatusOutputLineData::Worktree { .. }
+                | StatusOutputLineData::WorktreeUncommitted { .. }
                 | StatusOutputLineData::UncommittedChanges { .. } => line.data.cli_id(),
                 StatusOutputLineData::UpdateNotice
                 | StatusOutputLineData::Connector
@@ -690,6 +711,107 @@ impl Cursor {
 
         None
     }
+
+    // TODO(david): ideally the data we get from status would contain enough information that we
+    // didn't have to essentially parse the lines.
+    pub fn lines_part_of_current_branch<'a>(
+        self,
+        mode: &Mode,
+        lines: impl IntoIterator<Item = &'a StatusOutputLineData>,
+    ) -> Option<Vec<bool>> {
+        if !matches!(mode, Mode::Branch(_)) {
+            return None;
+        }
+
+        let mut out = Vec::new();
+        let mut connectors_before_section_end = 0;
+        let mut inside_current_branch = false;
+
+        let mut iter = itertools::peek_nth(lines.into_iter().enumerate());
+        while let Some((idx, line)) = iter.next() {
+            if idx == self.0 && matches!(line, StatusOutputLineData::Branch { .. }) {
+                inside_current_branch = true;
+            }
+
+            out.push(inside_current_branch);
+
+            if matches!(line, StatusOutputLineData::UpstreamChanges) {
+                // at the end of an upstream commits section is a connector that shouldn't break
+                // the section:
+                //
+                //     ┊╭┄ br [branch]
+                //     ┊┊
+                //     ┊╭┄┄ (upstream: on origin/branch)
+                //     ┊●   ceed3a00ee (no commit message)
+                //     ┊│     M a/b/c/d.rs
+                //     ┊-
+                //     ┊◐   abc (no commit message)
+                //     ├╯
+                connectors_before_section_end += 1;
+            } else if matches!(line, StatusOutputLineData::WorktreeUncommitted { .. })
+                && inside_current_branch
+            {
+                // A worktree lane opens on its uncommitted area and closes on `├╯`, so every lane
+                // nested in the selected branch adds exactly one connector to cross before the
+                // branch's own closing connector is reached. The reference row sits inside the
+                // lane and never opens one:
+                //
+                //     ┊╭┄ br [branch]
+                //     ┊┊
+                //     ┊┊╭┄ wt:@ {worktree uncommitted}
+                //     ┊┊├┄ wt {worktree}
+                //     ┊┊●   abc (no commit message)
+                //     ┊├╯
+                //     ┊●   abc (no commit message)
+                //     ├╯
+                connectors_before_section_end += 1;
+            }
+
+            if let Some((_, next)) = iter.peek_nth(0) {
+                match next {
+                    StatusOutputLineData::Connector | StatusOutputLineData::BetweenStacks => {
+                        if let Some((_, next2)) = iter.peek_nth(1)
+                            && matches!(
+                                next2,
+                                StatusOutputLineData::UpstreamChanges
+                                    | StatusOutputLineData::WorktreeUncommitted { .. }
+                            )
+                        {
+                            // a connector that opens a nested section rather than closing this one
+                        } else if connectors_before_section_end > 0 {
+                            // Nested sections can have separators before their own closing
+                            // connector. Consume only the connector currently being crossed.
+                            connectors_before_section_end -= 1;
+                        } else {
+                            inside_current_branch = false;
+                        }
+                    }
+
+                    StatusOutputLineData::MergeBase | StatusOutputLineData::Branch { .. } => {
+                        inside_current_branch = false;
+                    }
+
+                    StatusOutputLineData::Commit { .. }
+                    | StatusOutputLineData::UpdateNotice
+                    | StatusOutputLineData::StagedChanges { .. }
+                    | StatusOutputLineData::StagedFile { .. }
+                    | StatusOutputLineData::UncommittedChanges { .. }
+                    | StatusOutputLineData::Worktree { .. }
+                    | StatusOutputLineData::WorktreeUncommitted { .. }
+                    | StatusOutputLineData::UncommittedFile { .. }
+                    | StatusOutputLineData::CommitMessage
+                    | StatusOutputLineData::EmptyCommitMessage
+                    | StatusOutputLineData::File { .. }
+                    | StatusOutputLineData::UpstreamChanges
+                    | StatusOutputLineData::Warning
+                    | StatusOutputLineData::Hint
+                    | StatusOutputLineData::NoAssignmentsUnstaged => {}
+                }
+            }
+        }
+
+        Some(out)
+    }
 }
 
 /// Finds the start index of the nearest section at or before `idx`.
@@ -753,36 +875,41 @@ fn first_selectable_in_section(
 
 /// Short IDs are recomputed on reload, so compare the underlying entity instead.
 pub(super) fn same_entity_for_reload(previous: &CliId, current: &CliId) -> bool {
-    match (previous, current) {
-        (CliId::UncommittedHunkOrFile(previous), CliId::UncommittedHunkOrFile(current)) => {
-            if previous.is_entire_file != current.is_entire_file {
-                return false;
-            }
-            if previous.is_entire_file {
-                let previous = previous.hunks.first();
-                let current = current.hunks.first();
-                previous.hunk.path == current.hunk.path
+    match previous {
+        CliId::UncommittedHunkOrFile(previous) => {
+            if let CliId::UncommittedHunkOrFile(current) = current {
+                if previous.is_entire_file != current.is_entire_file {
+                    return false;
+                }
+                if previous.is_entire_file {
+                    previous.source == current.source
+                        && previous.hunks.first().hunk.path == current.hunks.first().hunk.path
+                } else {
+                    previous == current
+                }
             } else {
-                previous == current
+                false
             }
         }
-        (
-            CliId::PathPrefix {
-                hunks: previous, ..
-            },
-            CliId::PathPrefix { hunks: current, .. },
-        ) => previous == current,
-        (
-            CliId::CommittedFile {
-                committed_file:
-                    CommittedFileId {
-                        commit_id: previous_commit_id,
-                        path: previous_path,
-                        change_id: previous_change_id,
-                    },
-                id: _,
-            },
-            CliId::CommittedFile {
+        CliId::PathPrefix {
+            hunks: previous, ..
+        } => {
+            if let CliId::PathPrefix { hunks: current, .. } = current {
+                previous == current
+            } else {
+                false
+            }
+        }
+        CliId::CommittedFile {
+            committed_file:
+                CommittedFileId {
+                    commit_id: previous_commit_id,
+                    path: previous_path,
+                    change_id: previous_change_id,
+                },
+            id: _,
+        } => {
+            if let CliId::CommittedFile {
                 committed_file:
                     CommittedFileId {
                         commit_id: current_commit_id,
@@ -790,28 +917,40 @@ pub(super) fn same_entity_for_reload(previous: &CliId, current: &CliId) -> bool 
                         change_id: current_change_id,
                     },
                 id: _,
-            },
-        ) => {
-            previous_path == current_path
-                && match (previous_change_id, current_change_id) {
-                    (Some(previous), Some(current)) => previous == current,
-                    (Some(_), None) | (None, Some(_)) | (None, None) => {
-                        previous_commit_id == current_commit_id
+            } = current
+            {
+                previous_path == current_path
+                    && match (previous_change_id, current_change_id) {
+                        (Some(previous), Some(current)) => previous == current,
+                        (Some(_), None) | (None, Some(_)) | (None, None) => {
+                            previous_commit_id == current_commit_id
+                        }
                     }
-                }
+            } else {
+                false
+            }
         }
-        (CliId::Branch(previous), CliId::Branch(current)) => previous == current,
-        (
-            CliId::Commit {
-                commit:
-                    CommitId {
-                        commit_id: previous_commit_id,
-                        change_id: previous_change_id,
-                        ..
-                    },
-                id: _,
-            },
-            CliId::Commit {
+        CliId::CommittedHunk(..) => false,
+        CliId::AnonymousSegment(previous) => {
+            matches!(current, CliId::AnonymousSegment(current) if previous == current)
+        }
+        CliId::Branch(previous) => {
+            if let CliId::Branch(current) = current {
+                previous == current
+            } else {
+                false
+            }
+        }
+        CliId::Commit {
+            commit:
+                CommitId {
+                    commit_id: previous_commit_id,
+                    change_id: previous_change_id,
+                    ..
+                },
+            id: _,
+        } => {
+            if let CliId::Commit {
                 commit:
                     CommitId {
                         commit_id: current_commit_id,
@@ -819,23 +958,59 @@ pub(super) fn same_entity_for_reload(previous: &CliId, current: &CliId) -> bool 
                         ..
                     },
                 id: _,
-            },
-        ) => match (previous_change_id, current_change_id) {
-            (Some(previous), Some(current)) => previous == current,
-            (Some(_), None) | (None, Some(_)) | (None, None) => {
-                previous_commit_id == current_commit_id
+            } = current
+            {
+                match (previous_change_id, current_change_id) {
+                    (Some(previous), Some(current)) => previous == current,
+                    (Some(_), None) | (None, Some(_)) | (None, None) => {
+                        previous_commit_id == current_commit_id
+                    }
+                }
+            } else {
+                false
             }
-        },
-        (CliId::Uncommitted { .. }, CliId::Uncommitted { .. }) => true,
-        (
-            CliId::Stack {
-                stack_id: previous, ..
-            },
-            CliId::Stack {
+        }
+        CliId::Uncommitted { id: _ } => matches!(current, CliId::Uncommitted { id: _ }),
+        CliId::WorktreeUncommitted {
+            id: _,
+            name: previous,
+        } => {
+            if let CliId::WorktreeUncommitted {
+                id: _,
+                name: current,
+            } = current
+            {
+                previous == current
+            } else {
+                false
+            }
+        }
+        CliId::Worktree {
+            id: _,
+            name: previous,
+        } => {
+            if let CliId::Worktree {
+                id: _,
+                name: current,
+            } = current
+            {
+                previous == current
+            } else {
+                false
+            }
+        }
+        CliId::Stack {
+            stack_id: previous, ..
+        } => {
+            if let CliId::Stack {
                 stack_id: current, ..
-            },
-        ) => previous == current,
-        _ => false,
+            } = current
+            {
+                previous == current
+            } else {
+                false
+            }
+        }
     }
 }
 
@@ -849,10 +1024,14 @@ fn select_after_reload_for_cli_id(cli_id: &Arc<CliId>) -> SelectAfterReload {
             committed_file: CommittedFileId { commit_id, .. },
             id: _,
         } => SelectAfterReload::FirstFileInCommit(*commit_id),
-        CliId::Uncommitted { .. }
+        CliId::AnonymousSegment(..)
+        | CliId::CommittedHunk(..)
+        | CliId::Uncommitted { .. }
         | CliId::UncommittedHunkOrFile(..)
         | CliId::PathPrefix { .. }
         | CliId::Branch(..)
+        | CliId::Worktree { .. }
+        | CliId::WorktreeUncommitted { .. }
         | CliId::Stack { .. } => SelectAfterReload::CliId(Box::new((**cli_id).clone())),
     }
 }
@@ -863,6 +1042,8 @@ fn is_discard_commit_boundary(line: &StatusOutputLine) -> bool {
         StatusOutputLineData::Branch { .. }
         | StatusOutputLineData::StagedChanges { .. }
         | StatusOutputLineData::UncommittedChanges { .. }
+        | StatusOutputLineData::Worktree { .. }
+        | StatusOutputLineData::WorktreeUncommitted { .. }
         | StatusOutputLineData::MergeBase => true,
         StatusOutputLineData::UpdateNotice
         | StatusOutputLineData::Connector
@@ -894,11 +1075,14 @@ fn is_section_header(line: &StatusOutputLine, mode: &Mode) -> bool {
         | Mode::Jump(..)
         | Mode::Squash(..)
         | Mode::CherryPick(..)
+        | Mode::Branch(..)
         | Mode::Details(..) => {
             matches!(
                 line.data,
                 StatusOutputLineData::Branch { .. }
                     | StatusOutputLineData::UncommittedChanges { .. }
+                    | StatusOutputLineData::Worktree { .. }
+                    | StatusOutputLineData::WorktreeUncommitted { .. }
                     | StatusOutputLineData::MergeBase
             )
         }
@@ -999,6 +1183,7 @@ pub fn is_selectable_in_mode(
             }
         }
         ModeRef::Command(..)
+        | ModeRef::Branch(..)
         | ModeRef::InlineReword(..)
         | ModeRef::Normal(..)
         | ModeRef::PickChanges(..)
@@ -1015,6 +1200,7 @@ pub fn is_selectable_in_mode(
                 if !matches!(
                     &line.data,
                     StatusOutputLineData::UncommittedChanges { .. }
+                        | StatusOutputLineData::WorktreeUncommitted { .. }
                         | StatusOutputLineData::UncommittedFile { .. },
                 ) {
                     return false;
@@ -1062,6 +1248,10 @@ pub fn is_selectable_in_mode(
                 return false;
             }
         }
+        ModeRef::Branch(..) => {
+            // the cursor can only select branch lines in branch mode which makes it impossible to
+            // mix marks
+        }
         ModeRef::Squash(..)
         | ModeRef::InlineReword(..)
         | ModeRef::Command(..)
@@ -1093,10 +1283,14 @@ pub fn is_selectable_in_mode(
         ModeRef::Details(details_mode) => {
             is_selectable_in_mode(line, details_mode.return_mode.as_ref(), show_files_flag)
         }
-        ModeRef::Squash(SquashMode { source, reword: _ }) => line
+        ModeRef::Squash(SquashMode {
+            source,
+            reword: _,
+            uncommitted_area,
+        }) => line
             .data
             .cli_id()
-            .is_some_and(|target| source.can_target(target)),
+            .is_some_and(|target| source.can_target(target, uncommitted_area.as_ref())),
         ModeRef::Commit(commit_mode) => commit_operation_display(&line.data, commit_mode).is_some(),
         ModeRef::Move(move_mode) => move_operation_display(&line.data, move_mode).is_some(),
         ModeRef::MoveStack(move_mode) => reorder_operation_display(&line.data, move_mode).is_some(),
@@ -1104,14 +1298,19 @@ pub fn is_selectable_in_mode(
         ModeRef::CherryPick(cherry_pick_mode) => {
             cherry_pick_operation_display(&line.data, cherry_pick_mode).is_some()
         }
+        ModeRef::Branch(branch_mode) => branch_operation_display(&line.data, branch_mode).is_some(),
         ModeRef::PickChanges(..) => {
             if let Some(cli_id) = line.data.cli_id() {
                 match &**cli_id {
                     CliId::UncommittedHunkOrFile(..) | CliId::Uncommitted { .. } => true,
-                    CliId::PathPrefix { .. }
+                    CliId::AnonymousSegment(..)
+                    | CliId::PathPrefix { .. }
                     | CliId::CommittedFile { .. }
+                    | CliId::CommittedHunk { .. }
                     | CliId::Branch(..)
                     | CliId::Commit { .. }
+                    | CliId::Worktree { .. }
+                    | CliId::WorktreeUncommitted { .. }
                     | CliId::Stack { .. } => false,
                 }
             } else {

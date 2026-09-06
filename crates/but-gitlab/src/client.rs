@@ -9,6 +9,9 @@ use crate::GitLabProjectId;
 
 const GITLAB_API_BASE_URL: &str = "https://gitlab.com/api/v4";
 const GITLAB_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Independent of GitLab's configurable offset, this generous cap accommodates realistic
+// self-hosted projects while bounding runaway pagination.
+const MAX_MERGE_REQUEST_REQUESTS: usize = 10_000;
 const MAX_PIPELINE_JOB_PAGES: usize = 25;
 
 /// An HTTP error with a status code, returned when the API responds with a non-success status.
@@ -75,7 +78,8 @@ impl GitLabClient {
         } else {
             Err(anyhow::anyhow!(
                 "No GitLab access token found for account '{account_id}'.\nRun 'but config forge auth' to re-authenticate."
-            ))
+            )
+            .context(NOT_AUTHENTICATED))
         }
     }
 
@@ -138,20 +142,12 @@ impl GitLabClient {
 
     pub async fn list_open_mrs(&self, project_id: GitLabProjectId) -> Result<Vec<MergeRequest>> {
         let url = format!("{}/projects/{}/merge_requests", self.base_url, project_id);
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&[("state", "opened"), ("order_by", "created_at")])
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            bail!("Failed to list open merge requests: {}", response.status());
-        }
-
-        let mrs: Vec<GitLabMergeRequest> = response.json().await?;
-        Ok(mrs.into_iter().map(Into::into).collect())
+        self.list_merge_requests(
+            &url,
+            &[("state", "opened"), ("order_by", "created_at")],
+            "Failed to list open merge requests",
+        )
+        .await
     }
 
     pub async fn list_mrs_for_target(
@@ -161,28 +157,17 @@ impl GitLabClient {
     ) -> Result<Vec<MergeRequest>> {
         let url = format!("{}/projects/{}/merge_requests", self.base_url, project_id);
 
-        let response = self
-            .client
-            .get(&url)
-            .query(&[
+        self.list_merge_requests(
+            &url,
+            &[
                 ("state", "all"),
                 ("target_branch", target_branch),
                 ("order_by", "updated_at"),
                 ("sort", "desc"),
-                ("per_page", "100"),
-            ])
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            bail!(
-                "Failed to list merge requests for target branch: {}",
-                response.status()
-            );
-        }
-
-        let mrs: Vec<GitLabMergeRequest> = response.json().await?;
-        Ok(mrs.into_iter().map(Into::into).collect())
+            ],
+            "Failed to list merge requests for target branch",
+        )
+        .await
     }
 
     pub async fn list_mrs_for_commit(
@@ -195,22 +180,95 @@ impl GitLabClient {
             self.base_url, project_id, commit_sha
         );
 
+        self.list_merge_requests(&url, &[], "Failed to list merge requests for commit")
+            .await
+    }
+
+    async fn list_merge_requests(
+        &self,
+        url: &str,
+        query: &[(&str, &str)],
+        error_message: &str,
+    ) -> Result<Vec<MergeRequest>> {
+        let mut mrs = Vec::new();
+        let mut next_page = Some("1".to_string());
+        let mut seen_pages = HashSet::new();
+
+        while let Some(page) = next_page.take() {
+            if !merge_request_page_is_safe(&page, &mut seen_pages) {
+                bail!("Stopped listing GitLab merge requests after unsafe pagination state");
+            }
+
+            let response = self
+                .client
+                .get(url)
+                .query(query)
+                .query(&[("per_page", "100"), ("page", page.as_str())])
+                .send()
+                .await?;
+            if !response.status().is_success() {
+                bail!("{error_message}: {}", response.status());
+            }
+
+            next_page = next_page_from_headers(response.headers());
+            let mut page_mrs: Vec<GitLabMergeRequest> = response.json().await?;
+            if page_mrs.is_empty() {
+                break;
+            }
+            mrs.append(&mut page_mrs);
+        }
+
+        let mut seen = HashSet::new();
+        Ok(mrs
+            .into_iter()
+            .filter(|mr| seen.insert(mr.iid))
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Fetch the single page of the most recently updated merged or closed
+    /// merge requests, one page per state.
+    ///
+    /// This is the fate sweep for the review cache: everything that left the
+    /// open listing since the last sync appears here, unless more than a
+    /// page's worth of settled merge requests were updated in between — the
+    /// leftovers then fall back to cache deletion, the pre-sweep behavior.
+    /// GitLab's `state` filter accepts a single state, and `all` would let
+    /// open merge requests crowd the settled ones out of the page.
+    pub async fn list_recently_closed_mrs(
+        &self,
+        project_id: GitLabProjectId,
+    ) -> Result<Vec<MergeRequest>> {
+        let mut mrs = self.recently_updated_mr_page(&project_id, "merged").await?;
+        mrs.extend(self.recently_updated_mr_page(&project_id, "closed").await?);
+        Ok(mrs.into_iter().map(Into::into).collect())
+    }
+
+    async fn recently_updated_mr_page(
+        &self,
+        project_id: &GitLabProjectId,
+        state: &str,
+    ) -> Result<Vec<GitLabMergeRequest>> {
+        let url = format!("{}/projects/{}/merge_requests", self.base_url, project_id);
         let response = self
             .client
             .get(&url)
-            .query(&[("per_page", "100")])
+            .query(&[
+                ("state", state),
+                ("order_by", "updated_at"),
+                ("sort", "desc"),
+                ("per_page", "100"),
+                ("page", "1"),
+            ])
             .send()
             .await?;
-
         if !response.status().is_success() {
             bail!(
-                "Failed to list merge requests for commit: {}",
+                "Failed to list recently {state} merge requests: {}",
                 response.status()
             );
         }
-
-        let mrs: Vec<GitLabMergeRequest> = response.json().await?;
-        Ok(mrs.into_iter().map(Into::into).collect())
+        Ok(response.json().await?)
     }
 
     pub async fn create_merge_request(
@@ -526,6 +584,8 @@ impl GitLabClient {
             #[serde(default)]
             forked_from_project: Option<GitLabApiProjectRef>,
             #[serde(default)]
+            visibility: Option<String>,
+            #[serde(default)]
             remove_source_branch_after_merge: Option<bool>,
             #[serde(default)]
             permissions: Option<GitLabApiPermissions>,
@@ -577,6 +637,7 @@ impl GitLabClient {
             http_url_to_repo: project.http_url_to_repo,
             default_branch: project.default_branch,
             forked_from_project_id: project.forked_from_project.map(|fork| fork.id),
+            visibility: project.visibility,
             remove_source_branch_after_merge: project.remove_source_branch_after_merge,
             access_level,
         })
@@ -698,6 +759,13 @@ impl GitLabClient {
         );
         Ok(jobs)
     }
+}
+
+fn merge_request_page_is_safe(page: &str, seen_pages: &mut HashSet<usize>) -> bool {
+    let Ok(page) = page.parse::<usize>() else {
+        return false;
+    };
+    page > 0 && seen_pages.len() < MAX_MERGE_REQUEST_REQUESTS && seen_pages.insert(page)
 }
 
 fn next_page_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -902,6 +970,9 @@ pub struct GitLabProject {
     pub http_url_to_repo: String,
     pub default_branch: Option<String>,
     pub forked_from_project_id: Option<i64>,
+    /// `private`, `internal` or `public`. GitLab omits it for callers whose
+    /// token lacks the scope to read project metadata.
+    pub visibility: Option<String>,
     pub remove_source_branch_after_merge: Option<bool>,
     /// Higher of project-level and group-level access for the caller.
     /// GitLab levels: 10=Guest, 20=Reporter, 30=Developer,
@@ -943,6 +1014,9 @@ pub struct MergeRequest {
     pub draft: bool,
     pub source_branch: String,
     pub target_branch: String,
+    /// The head commit of the merge request. Empty when GitLab reported no
+    /// head, e.g. a transitional MR whose source branch is gone or whose
+    /// diff has not been generated yet.
     pub sha: String,
     pub integration_commit_shas: Vec<String>,
     pub created_at: Option<String>,
@@ -972,7 +1046,7 @@ struct GitLabMergeRequest {
     draft: bool,
     source_branch: String,
     target_branch: String,
-    sha: String,
+    sha: Option<String>,
     merge_commit_sha: Option<String>,
     squash_commit_sha: Option<String>,
     created_at: Option<String>,
@@ -1011,7 +1085,7 @@ impl From<GitLabMergeRequest> for MergeRequest {
             draft: mr.draft,
             source_branch: mr.source_branch,
             target_branch: mr.target_branch,
-            sha: mr.sha,
+            sha: mr.sha.unwrap_or_default(),
             integration_commit_shas,
             created_at: mr.created_at,
             updated_at: mr.updated_at,
@@ -1051,23 +1125,33 @@ fn source_project_differs_from_target(
     source_project_id != target_project_id
 }
 
+/// Marks credential lookups that came up empty, so consumers can tell "the
+/// user is not authenticated" apart from a failing forge and e.g. keep
+/// serving cached data instead of surfacing an error.
+pub(crate) const NOT_AUTHENTICATED: but_error::Context = but_error::Context::new_static(
+    but_error::Code::ForgeNotAuthenticated,
+    "Not authenticated with GitLab. Connect your account under Settings → Integrations.",
+);
+
 pub(crate) fn resolve_account(
     preferred_account: Option<&crate::GitlabAccountIdentifier>,
     storage: &but_forge_storage::Controller,
 ) -> Result<crate::GitlabAccountIdentifier, anyhow::Error> {
     let known_accounts = crate::token::list_known_gitlab_accounts(storage)?;
     let Some(default_account) = known_accounts.first() else {
-        bail!(
+        return Err(anyhow::anyhow!(
             "No authenticated GitLab users found.\nRun 'but config forge auth' to authenticate with GitLab."
-        );
+        )
+        .context(NOT_AUTHENTICATED));
     };
     let account = if let Some(account) = preferred_account {
         if known_accounts.contains(account) {
             account
         } else {
-            bail!(
+            return Err(anyhow::anyhow!(
                 "Preferred GitLab account '{account}' has not authenticated yet.\nRun 'but config forge auth' to authenticate, or choose another account."
-            );
+            )
+            .context(NOT_AUTHENTICATED));
         }
     } else {
         default_account
@@ -1079,9 +1163,9 @@ pub(crate) fn resolve_account(
 #[cfg(test)]
 mod tests {
     use super::{
-        GitLabMergeRequest, GitLabPipelineJob, GitLabPipelineRef, MergeRequest,
-        next_page_from_headers, normalize_pipeline_jobs, repo_owner_from_path_with_namespace,
-        update_draft_state_in_title,
+        GitLabMergeRequest, GitLabPipelineJob, GitLabPipelineRef, MAX_MERGE_REQUEST_REQUESTS,
+        MergeRequest, merge_request_page_is_safe, next_page_from_headers, normalize_pipeline_jobs,
+        repo_owner_from_path_with_namespace, update_draft_state_in_title,
     };
     use reqwest::header::{HeaderMap, HeaderValue};
 
@@ -1115,6 +1199,20 @@ mod tests {
 
         headers.insert("x-next-page", HeaderValue::from_static(""));
         assert_eq!(next_page_from_headers(&headers), None);
+    }
+
+    #[test]
+    fn bounds_merge_request_page_requests_independently_of_server_offsets() {
+        let mut seen_pages =
+            (1..MAX_MERGE_REQUEST_REQUESTS).collect::<std::collections::HashSet<_>>();
+        assert!(
+            merge_request_page_is_safe("50001", &mut seen_pages),
+            "the final safe request should accept a server page above GitLab's default offset"
+        );
+        assert!(
+            !merge_request_page_is_safe("50002", &mut seen_pages),
+            "a distinct page should be rejected after the request-count safety bound"
+        );
     }
 
     #[test]
@@ -1250,7 +1348,7 @@ mod tests {
             draft: false,
             source_branch: "feature".into(),
             target_branch: "main".into(),
-            sha: "1234567890abcdef1234567890abcdef12345678".into(),
+            sha: Some("1234567890abcdef1234567890abcdef12345678".into()),
             merge_commit_sha: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
             squash_commit_sha: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
             created_at: None,
@@ -1310,7 +1408,7 @@ mod tests {
             draft: false,
             source_branch: "feature".into(),
             target_branch: "main".into(),
-            sha: "1234567890abcdef1234567890abcdef12345678".into(),
+            sha: Some("1234567890abcdef1234567890abcdef12345678".into()),
             merge_commit_sha: None,
             squash_commit_sha: None,
             created_at: None,
@@ -1344,7 +1442,7 @@ mod tests {
             draft: false,
             source_branch: "feature".into(),
             target_branch: "main".into(),
-            sha: "1234567890abcdef1234567890abcdef12345678".into(),
+            sha: Some("1234567890abcdef1234567890abcdef12345678".into()),
             merge_commit_sha: None,
             squash_commit_sha: None,
             created_at: None,

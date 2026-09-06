@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result};
 use bstr::ByteSlice;
 use but_api_macros::but_api;
 use but_core::{
-    RepositoryExt,
+    RefMetadata as _, RepositoryExt,
     git_config::{edit_repo_config, ensure_config_value},
     ref_metadata::ProjectMeta,
 };
@@ -294,9 +294,15 @@ pub fn list_reviews(
 
     let db = &mut *ctx.db.get_cache_mut()?;
 
+    // Typed so the desktop can treat an unrecognized forge as an expected,
+    // terminal listing state instead of retrying it on a timer.
+    let forge_repo_info = forge_repo_info.context(but_error::Context::new_static(
+        but_error::Code::ForgeUnrecognized,
+        "No forge could be determined for this repository branch",
+    ))?;
     but_forge::list_forge_reviews_with_cache(
         preferred_forge_user,
-        &forge_repo_info.context("No forge could be determined for this repository branch")?,
+        &forge_repo_info,
         &storage,
         db,
         cache_config,
@@ -360,10 +366,32 @@ pub fn review_apply(
             })?;
 
     let out = crate::branch::apply_with_perm(ctx, remote_ref.as_ref(), guard.write_permission())?;
+    // Record the review as the branch's durable identity. Best-effort like
+    // the publish path: the workspace mutation already happened, so a failed
+    // metadata write must not fail the apply — nor skip the cache
+    // invalidation below. An already-applied branch gets the association
+    // too; its outcome carries no applied branch, so the review's own source
+    // branch names it.
+    let applied_branch = out.applied_branches.last().cloned().or_else(|| {
+        // Only for a local branch that actually exists: metadata written for
+        // an unknown ref would fabricate a stack entry.
+        let name = gix::refs::Category::LocalBranch
+            .to_full_name(review.source_branch.as_str())
+            .ok()?;
+        let exists = ctx
+            .repo
+            .get()
+            .ok()?
+            .try_find_reference(name.as_ref())
+            .ok()
+            .flatten()
+            .is_some();
+        exists.then_some(name)
+    });
+    if let Some(branch) = applied_branch {
+        persist_review_association(ctx, branch.as_ref(), review_id).ok();
+    }
     if out.status.persisted_mutation() {
-        // The applied review is already in the forge cache (it was just fetched
-        // to be applied), so its PR association is derived at projection time.
-        // Invalidate the workspace cache so the next projection reflects it.
         ctx.invalidate_workspace_cache()?;
     }
     Ok(out)
@@ -550,6 +578,26 @@ mod tests {
     }
 
     #[test]
+    fn persists_review_number_on_the_local_branch() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        git_at_dir(tmp.path()).args(["init"]).run();
+        let ctx = but_ctx::Context::from_repo_for_testing(open_repo(tmp.path())?)?
+            .with_memory_app_cache();
+        let branch_name: gix::refs::FullName = "refs/heads/feature".try_into()?;
+
+        persist_review_association(&ctx, branch_name.as_ref(), 42)?;
+
+        assert_eq!(
+            ctx.meta()?
+                .branch(branch_name.as_ref())?
+                .review
+                .pull_request,
+            Some(42)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unchanged_review_targets_do_not_need_pre_push_flattening() {
         let reviews = [
             (
@@ -711,6 +759,37 @@ pub async fn list_review_comments(
     let (storage, forge_repo_info, preferred_forge_user) = forge_endpoint_context(ctx)?;
     but_forge::list_review_comments(&preferred_forge_user, &forge_repo_info, review_id, &storage)
         .await
+}
+
+/// List the diff-anchored comment threads on a review, oldest first.
+#[but_api(napi, provides = [ReviewThreads])]
+#[instrument(err(Debug))]
+pub async fn list_review_threads(
+    ctx: ThreadSafeContext,
+    review_id: usize,
+) -> Result<Vec<but_forge::ForgeReviewThread>> {
+    let (storage, forge_repo_info, preferred_forge_user) = forge_endpoint_context(ctx)?;
+    but_forge::list_review_threads(&preferred_forge_user, &forge_repo_info, review_id, &storage)
+        .await
+}
+
+/// Reply into one of a review's diff-anchored comment threads.
+#[but_api(napi, invalidates = [ReviewThreads])]
+#[instrument(err(Debug))]
+pub async fn create_review_thread_reply(
+    ctx: ThreadSafeContext,
+    thread_id: String,
+    body: String,
+) -> Result<but_forge::ForgeReviewThreadComment> {
+    let (storage, forge_repo_info, preferred_forge_user) = forge_endpoint_context(ctx)?;
+    but_forge::create_review_thread_reply(
+        &preferred_forge_user,
+        &forge_repo_info,
+        &thread_id,
+        &body,
+        &storage,
+    )
+    .await
 }
 
 /// List the individual reactions (with who reacted) on a review itself.
@@ -1050,7 +1129,7 @@ pub fn get_review(ctx: &Context, review_id: usize) -> Result<but_forge::ForgeRev
     )
 }
 
-#[but_api(napi)]
+#[but_api(napi, provides = [RepoInfo])]
 #[instrument(err(Debug))]
 pub async fn get_repo_info(ctx: ThreadSafeContext) -> Result<but_forge::RepoInfo> {
     let (storage, forge_repo_info, preferred_forge_user) = {
@@ -1111,7 +1190,7 @@ pub fn list_ci_checks_for_ref(
     )
 }
 
-#[but_api(napi, invalidates = [Reviews])]
+#[but_api(napi, invalidates = [Reviews, Branches, Workspace])]
 #[instrument(err(Debug))]
 pub async fn publish_review(
     ctx: ThreadSafeContext,
@@ -1129,7 +1208,7 @@ pub async fn publish_review(
         target_branch,
         draft: params.draft,
     };
-    let review = publish_review_only(ctx.clone(), params).await?;
+    let review = publish_review_only(ctx.clone(), branch.clone(), params).await?;
     let review_sync = sync_review_stack_after_review_creation(ctx, branch).await;
     Ok(but_forge::PublishReviewOutcome {
         review,
@@ -1155,15 +1234,17 @@ pub struct PublishReviewInput {
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(PublishReviewInput);
 
-/// Create and cache a review without synchronizing the surrounding reviewed ref slice.
+/// Create, cache, and persist a branch's review without synchronizing the
+/// surrounding reviewed ref slice.
 ///
 /// Batch review creation uses this primitive and synchronizes once after all reviews exist.
 pub async fn publish_review_only(
     ctx: ThreadSafeContext,
+    local_branch: gix::refs::FullName,
     params: but_forge::CreateForgeReviewParams,
 ) -> Result<but_forge::ForgeReview> {
-    // Kept for the optimistic cache insert after the (non-`Send`) forge call.
-    let cache_ctx = ctx.clone();
+    // Kept for local persistence after the (non-`Send`) forge call.
+    let local_ctx = ctx.clone();
     let (storage, forge_repo_info, forge_push_repo_info, preferred_forge_user) = {
         let ctx = ctx.into_thread_local();
         let project_meta = ctx.project_meta()?;
@@ -1194,17 +1275,43 @@ pub async fn publish_review_only(
     // is exactly the key the projection resolver matches against. Best-effort:
     // a failed insert only delays the association until the next sync.
     {
-        let ctx = cache_ctx.into_thread_local();
+        let mut ctx = local_ctx.into_thread_local();
         if let Ok(mut db) = ctx.db.get_cache_mut() {
             but_forge::cache_review(&mut db, &review).ok();
+        }
+        // Best-effort like the cache insert: the review exists on the forge
+        // either way, and failing here would abort batch publishing after PRs
+        // were already created. Until persisted, the cache fallback carries
+        // the association. Metadata writes take the worktree guard so a
+        // concurrent mutation's metadata snapshot cannot clobber this one;
+        // the guard scope is this local write only — never the forge call
+        // above — and callers must not already hold worktree access when
+        // awaiting this function.
+        if let Ok(review_number) = usize::try_from(review.number) {
+            let _guard = ctx.exclusive_worktree_access();
+            persist_review_association(&ctx, local_branch.as_ref(), review_number).ok();
         }
     }
 
     Ok(review)
 }
 
+/// Record `review_number` as the branch's review identity. The stored
+/// `review_id` is left untouched: it identifies a GitButler review, which
+/// publishing a forge review does not supersede.
+fn persist_review_association(
+    ctx: &Context,
+    branch_name: &gix::refs::FullNameRef,
+    review_number: usize,
+) -> Result<()> {
+    let mut meta = ctx.meta()?;
+    let mut branch = meta.branch(branch_name)?;
+    branch.review.pull_request = Some(review_number);
+    meta.set_branch(&branch)
+}
+
 /// Merge a review on the forge.
-#[but_api(napi, invalidates = [Reviews, MergeStatus, Checks])]
+#[but_api(napi, invalidates = [Reviews, MergeStatus, Checks, Branches])]
 #[instrument(err(Debug))]
 pub async fn merge_review(
     ctx: ThreadSafeContext,
@@ -1709,7 +1816,7 @@ fn review_updates_after_push(
                 segment
                     .ref_info
                     .as_ref()
-                    .is_some_and(|ref_info| ref_info.ref_name.as_ref() == branch)
+                    .is_some_and(|ref_info| ref_info.ref_name == branch)
             })
         })
         .with_context(|| {
@@ -1719,11 +1826,12 @@ fn review_updates_after_push(
             )
         })?;
 
+    let open_reviews = open_review_numbers(ctx)?;
     let reviewed_branches = info
         .stacks
         .iter()
         .flat_map(|stack| &stack.segments)
-        .filter(|segment| review_number(segment).is_some())
+        .filter(|segment| review_number(segment, &open_reviews).is_some())
         .filter_map(|segment| {
             segment
                 .ref_info
@@ -1751,7 +1859,7 @@ fn review_updates_after_push(
     let mut affected_stack_indices = std::collections::BTreeSet::from([selected_stack_index]);
     for (stack_index, stack) in info.stacks.iter().enumerate() {
         'segments: for segment in &stack.segments {
-            if review_number(segment).is_none() {
+            if review_number(segment, &open_reviews).is_none() {
                 continue;
             }
             let Ok(head) = remote_head(&repo, segment) else {
@@ -1772,9 +1880,9 @@ fn review_updates_after_push(
     Ok(affected_stack_indices
         .into_iter()
         .map(|index| {
-            review_updates_for_stack(&info.stacks[index], &base_branch)
+            review_updates_for_stack(&info.stacks[index], &base_branch, &open_reviews)
                 .into_iter()
-                .map(Into::into)
+                .map(|(_, update)| update.into())
                 .collect()
         })
         .collect())
@@ -1787,9 +1895,10 @@ fn review_updates_for_branch(
     let base_branch = target_short_name(&ctx.project_meta()?, &*ctx.repo.get()?)?;
     let info = crate::legacy::workspace::head_info(ctx)?;
     let (stack, _) = stack_and_segment_for_branch(&info, branch)?;
-    Ok(review_updates_for_stack(stack, &base_branch)
+    let open_reviews = open_review_numbers(ctx)?;
+    Ok(review_updates_for_stack(stack, &base_branch, &open_reviews)
         .into_iter()
-        .map(Into::into)
+        .map(|(_, update)| update.into())
         .collect())
 }
 
@@ -1805,29 +1914,22 @@ pub(crate) fn review_target_updates_for_branch(
 > {
     let info = crate::legacy::workspace::head_info(ctx)?;
     let (stack, _) = stack_and_segment_for_branch(&info, branch)?;
+    let open_reviews = open_review_numbers(ctx)?;
     if !stack
         .segments
         .iter()
-        .any(|segment| review_number(segment).is_some())
+        .any(|segment| review_number(segment, &open_reviews).is_some())
     {
         return Ok(Vec::new());
     }
     let base_branch = target_short_name(&ctx.project_meta()?, &*ctx.repo.get()?)?;
-    let updates = review_updates_for_stack(stack, &base_branch);
     let db = ctx.db.get_cache()?;
     let cached_targets = but_forge::list_cached_forge_reviews(&db)?
         .into_iter()
         .map(|review| (review.number, review.target_branch))
         .collect::<std::collections::HashMap<_, _>>();
-    let reviewed_refs = stack.segments.iter().rev().filter_map(|segment| {
-        review_number(segment)?;
-        segment
-            .ref_info
-            .as_ref()
-            .map(|ref_info| ref_info.ref_name.clone())
-    });
-    Ok(reviewed_refs
-        .zip(updates)
+    Ok(review_updates_for_stack(stack, &base_branch, &open_reviews)
+        .into_iter()
         .map(|(branch, update)| {
             let current_target = cached_targets.get(&update.number).cloned();
             (branch, update, current_target)
@@ -1835,31 +1937,37 @@ pub(crate) fn review_target_updates_for_branch(
         .collect())
 }
 
+/// One `(branch ref, target update)` pair per reviewed active segment,
+/// bottom-to-top. Refs and updates are derived from one pass over the same
+/// segments, so they cannot fall out of alignment; segments without an
+/// active review (via [`review_number`] — integrated ones included) are
+/// inert for target computation and contribute nothing.
 fn review_updates_for_stack(
     stack: &but_workspace::branch::Stack,
     base_branch: &str,
-) -> Vec<but_forge::ForgeReviewTargetUpdate> {
-    let heads = stack
+    open_reviews: &std::collections::HashSet<i64>,
+) -> Vec<(gix::refs::FullName, but_forge::ForgeReviewTargetUpdate)> {
+    let reviewed = stack
         .segments
         .iter()
         .rev()
         .filter_map(|segment| {
-            let ref_name = segment
-                .ref_info
-                .as_ref()?
-                .ref_name
-                .shorten()
-                .to_str()
-                .ok()?;
-            let review = segment
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.review.pull_request)
-                .map(|number| number as i64);
-            Some((ref_name.to_owned(), review))
+            let number = review_number(segment, open_reviews)?;
+            let ref_name = segment.ref_info.as_ref()?.ref_name.clone();
+            let short = ref_name.shorten().to_str().ok()?.to_owned();
+            Some((ref_name, short, number))
         })
         .collect::<Vec<_>>();
-    but_forge::compute_review_target_updates(&heads, base_branch)
+    let heads = reviewed
+        .iter()
+        .map(|(_, short, number)| (short.clone(), Some(*number)))
+        .collect::<Vec<_>>();
+    let updates = but_forge::compute_review_target_updates(&heads, base_branch);
+    reviewed
+        .into_iter()
+        .map(|(ref_name, _, _)| ref_name)
+        .zip(updates)
+        .collect()
 }
 
 fn review_creation_target(ctx: &Context, branch: &gix::refs::FullNameRef) -> Result<String> {
@@ -1867,10 +1975,11 @@ fn review_creation_target(ctx: &Context, branch: &gix::refs::FullNameRef) -> Res
     let (stack, selected_index) = stack_and_segment_for_branch(&info, branch)?;
     let repo = ctx.repo.get()?;
 
+    let open_reviews = open_review_numbers(ctx)?;
     let mut reviewed_ancestors = stack.segments[selected_index + 1..]
         .iter()
         .rev()
-        .filter(|segment| review_number(segment).is_some())
+        .filter(|segment| review_number(segment, &open_reviews).is_some())
         .map(|segment| remote_head(&repo, segment))
         .collect::<Result<Vec<_>>>()?;
     let selected = remote_head(&repo, &stack.segments[selected_index])?;
@@ -1916,7 +2025,7 @@ fn stack_and_segment_for_branch<'a>(
                     segment
                         .ref_info
                         .as_ref()
-                        .is_some_and(|ref_info| ref_info.ref_name.as_ref() == branch)
+                        .is_some_and(|ref_info| ref_info.ref_name == branch)
                 })
                 .map(|index| (stack, index))
         })
@@ -1928,12 +2037,33 @@ fn stack_and_segment_for_branch<'a>(
         })
 }
 
-fn review_number(segment: &but_workspace::ref_info::Segment) -> Option<i64> {
-    segment
+/// The numbers of reviews the forge cache currently knows as open.
+///
+/// The mutation flows gate on this: only an open review is a valid target for
+/// retargeting, footer syncs, creation targets, or merge selection. A
+/// segment's metadata number can also be settled display state — an
+/// integrated branch's landed identity, or a merge still awaiting
+/// integration detection — which must never reach the forge as a mutation.
+pub fn open_review_numbers(ctx: &Context) -> Result<std::collections::HashSet<i64>> {
+    let db = ctx.db.get_cache()?;
+    Ok(but_forge::cached_review_states(&db)?
+        .into_iter()
+        .filter_map(|(number, settled)| (!settled).then_some(number))
+        .collect())
+}
+
+/// The number of the segment's active review: its recorded number, when the
+/// cache knows that review as open. There is deliberately no ungated variant.
+fn review_number(
+    segment: &but_workspace::ref_info::Segment,
+    open_reviews: &std::collections::HashSet<i64>,
+) -> Option<i64> {
+    let number = segment
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.review.pull_request)
-        .map(|number| number as i64)
+        .map(|number| number as i64)?;
+    open_reviews.contains(&number).then_some(number)
 }
 
 fn remote_head(
@@ -1977,24 +2107,23 @@ fn remote_contains(
         return Ok(true);
     }
     match repo.merge_base(ancestor, descendant) {
-        Ok(base) => Ok(base.detach() == ancestor),
+        Ok(base) => Ok(base == ancestor),
         Err(gix::repository::merge_base::Error::FindMergeBase(_))
         | Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
         Err(err) => Err(err.into()),
     }
 }
 
-fn local_branch_for_review(ctx: &Context, review_number: i64) -> Result<gix::refs::FullName> {
+fn local_branch_for_review(ctx: &Context, wanted: i64) -> Result<gix::refs::FullName> {
     let info = crate::legacy::workspace::head_info(ctx)?;
+    let open_reviews = open_review_numbers(ctx)?;
     info.stacks
         .iter()
         .flat_map(|stack| &stack.segments)
         .find_map(|segment| {
-            let associated_review = segment
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.review.pull_request)?;
-            if associated_review as i64 == review_number {
+            // Via review_number so a settled review's number cannot resolve
+            // into review-sync targets.
+            if review_number(segment, &open_reviews)? == wanted {
                 segment
                     .ref_info
                     .as_ref()
@@ -2004,7 +2133,7 @@ fn local_branch_for_review(ctx: &Context, review_number: i64) -> Result<gix::ref
             }
         })
         .with_context(|| {
-            format!("Review #{review_number} is not associated with a local workspace branch")
+            format!("Review #{wanted} is not associated with a local workspace branch")
         })
 }
 
@@ -2045,33 +2174,39 @@ pub async fn list_reviews_for_branch(
 #[but_api(napi)]
 #[instrument(err(Debug))]
 pub fn warm_ci_checks_cache(ctx: &Context) -> Result<()> {
-    // Get all stacks
-    let stacks = crate::legacy::workspace::stacks(ctx, None)?;
+    // Get all applied stacks and their branches
+    let workspace = crate::legacy::workspace::head_info(ctx)?;
 
     // Collect branch references that have CI checks cached
     let mut current_refs = std::collections::HashSet::new();
 
-    // For each stack, get details and check branches
-    for stack in stacks {
-        if let Some(stack_id) = stack.id {
-            let details = crate::legacy::workspace::stack_details(ctx, Some(stack_id))?;
-
-            // Process each branch that has a PR
-            for branch in &details.branch_details {
-                if branch.pr_number.is_some() {
-                    // Fetch CI checks with NoCache to force refresh
-                    let _ = list_ci_checks(
-                        ctx,
-                        branch.name.to_string(),
-                        Some(but_forge::CacheConfig::NoCache),
-                    );
-                    // Ignore errors for individual branches to ensure we process all branches
-
-                    // Track this reference as having CI checks
-                    current_refs.insert(branch.name.to_string());
-                }
-            }
+    // Process each branch that has a PR
+    for segment in workspace
+        .stacks
+        .iter()
+        .flat_map(|stack| stack.segments.iter())
+    {
+        let has_pull_request = segment
+            .metadata
+            .as_ref()
+            .is_some_and(|meta| meta.review.pull_request.is_some());
+        if !has_pull_request {
+            continue;
         }
+        let Some(name) = segment
+            .ref_info
+            .as_ref()
+            .map(|ref_info| ref_info.ref_name.shorten().to_string())
+        else {
+            continue;
+        };
+
+        // Fetch CI checks with NoCache to force refresh
+        let _ = list_ci_checks(ctx, name.clone(), Some(but_forge::CacheConfig::NoCache));
+        // Ignore errors for individual branches to ensure we process all branches
+
+        // Track this reference as having CI checks
+        current_refs.insert(name);
     }
 
     // Clean up stale CI check entries from the database

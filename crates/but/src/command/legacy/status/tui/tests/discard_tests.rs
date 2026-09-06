@@ -17,7 +17,7 @@ fn discard_prompt_can_be_cancelled() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('x')
         .assert_rendered_contains("Discard uncommitted changes?")
@@ -26,7 +26,7 @@ fn discard_prompt_can_be_cancelled() {
     tui.input('n');
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"])
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"])
         .assert_rendered_term_svg_eq(file!["snapshots/discard_prompt_can_be_cancelled_final.svg"]);
 }
 
@@ -40,7 +40,7 @@ fn discard_uncommitted_confirm_yes_discards_changes() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('x')
         .assert_rendered_contains("Discard uncommitted changes?");
@@ -48,7 +48,7 @@ fn discard_uncommitted_confirm_yes_discards_changes() {
     tui.input('y');
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     let status = tui.env().invoke_git("status --porcelain");
     assert_eq!(status, "");
@@ -68,7 +68,7 @@ fn discard_uncommitted_cancel_keeps_changes() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('x')
         .assert_rendered_contains("Discard uncommitted changes?");
@@ -76,7 +76,7 @@ fn discard_uncommitted_cancel_keeps_changes() {
     tui.input('n');
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     let status = tui.env().invoke_git("status --porcelain");
     assert!(
@@ -128,10 +128,10 @@ fn discard_top_commit_selects_next_commit_in_branch() {
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1#0 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   mul (no commit message) (no changes)"]);
 
     tui.input('x')
         .assert_rendered_contains("Discard commit")
@@ -140,7 +140,7 @@ fn discard_top_commit_selects_next_commit_in_branch() {
     tui.input('y');
 
     tui.reload()
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn discard_bottom_commit_selects_rewritten_commit_above() {
 
     tui.input('x').assert_rendered_contains("Discard commit");
     tui.input('y')
-        .assert_current_line_eq(str!["┊●   1#1 one (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun one (no changes)"]);
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn discard_stack_confirm_yes_discards_staged_changes() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊   vo A test.txt"]);
@@ -194,7 +194,7 @@ fn discard_stack_confirm_yes_discards_staged_changes() {
         .assert_current_line_eq(str!["┊●   tpm add A"]);
 
     tui.input([KeyCode::Up, KeyCode::Up])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input('x')
         .assert_rendered_contains("Discard uncommitted changes?")
@@ -203,7 +203,7 @@ fn discard_stack_confirm_yes_discards_staged_changes() {
     tui.input('y');
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     let status = tui.env().invoke_git("status --porcelain");
     assert_eq!(status, "");
@@ -223,7 +223,8 @@ fn discard_branch_confirm_yes_removes_branch() {
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
-    tui.input('b')
+    tui.input('b');
+    tui.input('n')
         .assert_current_line_eq(str!["┊╭┄ br [c-branch-1] (no commits)"]);
 
     tui.input('x')
@@ -255,7 +256,8 @@ fn discard_branch_cancel_keeps_branch() {
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
-    tui.input('b')
+    tui.input('b');
+    tui.input('n')
         .assert_current_line_eq(str!["┊╭┄ br [c-branch-1] (no commits)"]);
 
     tui.input('x')
@@ -284,7 +286,8 @@ fn discard_multiple_commits() {
 
     let mut tui = test_status_tui(env);
 
-    tui.input('b')
+    tui.input('b');
+    tui.input('n')
         .assert_current_line_eq(str!["┊╭┄ br [c-branch-1] (no commits)"]);
 
     for msg in ["one", "two", "three"] {
@@ -354,7 +357,7 @@ fn discard_individual_committed_files_from_local_file_list() {
         "snapshots/discard_individual_committed_files_from_local_file_list_002.svg"
     ]);
     tui.input('y')
-        .assert_current_line_eq(str!["┊│     1:o A three"])
+        .assert_current_line_eq(str!["┊│     zt:o A three"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/discard_individual_committed_files_from_local_file_list_003.svg"
         ])
@@ -364,7 +367,7 @@ fn discard_individual_committed_files_from_local_file_list() {
         "snapshots/discard_individual_committed_files_from_local_file_list_004.svg"
     ]);
     tui.input('y')
-        .assert_current_line_eq(str!["┊│     1:t A two"])
+        .assert_current_line_eq(str!["┊│     zt:t A two"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/discard_individual_committed_files_from_local_file_list_005.svg"
         ])
@@ -374,7 +377,7 @@ fn discard_individual_committed_files_from_local_file_list() {
         "snapshots/discard_individual_committed_files_from_local_file_list_006.svg"
     ]);
     tui.input('y')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"])
+        .assert_current_line_eq(str!["┊●   ztn (no commit message) (no changes)"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/discard_individual_committed_files_from_local_file_list_007.svg"
         ])
@@ -451,7 +454,7 @@ fn discard_marked_committed_files_from_local_file_list() {
         "snapshots/discard_marked_committed_files_from_local_file_list_003.svg"
     ]);
     tui.input('y')
-        .assert_current_line_eq(str!["┊│     1:t A two"])
+        .assert_current_line_eq(str!["┊│     zt:t A two"])
         .assert_backstack_eq([BackstackEntry::ShowFileList])
         .assert_rendered_term_svg_eq(file![
             "snapshots/discard_marked_committed_files_from_local_file_list_004.svg"
@@ -462,7 +465,7 @@ fn discard_marked_committed_files_from_local_file_list() {
 
     tui.input('x');
     tui.input('y')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"])
+        .assert_current_line_eq(str!["┊●   ztn (no commit message) (no changes)"])
         .assert_backstack_eq([])
         .assert_rendered_term_svg_eq(file![
             "snapshots/discard_marked_committed_files_from_local_file_list_005.svg"
@@ -568,9 +571,11 @@ fn marking_and_discarding_multiple_branches() {
     tui.input('j');
     tui.input('b');
     tui.input('n');
+    tui.input('n');
 
     tui.input('g');
     tui.input('b');
+    tui.input('n');
     tui.input('n').assert_rendered_term_svg_eq(file![
         "snapshots/marking_and_discarding_multiple_branches_001.svg"
     ]);
@@ -616,6 +621,7 @@ fn marking_and_discarding_multiple_branches_fails_with_dependencies() {
     // create a new branch without any dependencies
     tui.input('g');
     tui.input('b');
+    tui.input('n');
     tui.input('n');
 
     tui.input(Shift('f')).assert_rendered_term_svg_eq(file![

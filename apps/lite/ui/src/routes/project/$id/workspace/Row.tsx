@@ -32,6 +32,8 @@ export const Row: FC<
 		isSelected?: boolean;
 		onSelect?: () => void;
 		onShiftSelect?: () => void;
+		/** @default true */
+		scrollSelectedIntoView?: boolean;
 		/** @default false */
 		isHighlighted?: boolean;
 		/**
@@ -47,6 +49,7 @@ export const Row: FC<
 	isSelected,
 	onSelect,
 	onShiftSelect,
+	scrollSelectedIntoView = true,
 	isHighlighted,
 	isChecked,
 	interactive = true,
@@ -56,13 +59,24 @@ export const Row: FC<
 	const rowRef = useRef<HTMLDivElement | null>(null);
 	const mergedRef = useMergedRefs(rowRef, refProp);
 
+	// Activity reconnects layout effects on reveal without changing `isSelected`. Only scroll for a
+	// new selection so revealing a tab preserves manual scroll.
+	const selectionWasRevealedRef = useRef(false);
+
 	useLayoutEffect(() => {
-		if (!isSelected) return;
+		if (!isSelected) {
+			selectionWasRevealedRef.current = false;
+			return;
+		}
+		if (!scrollSelectedIntoView || selectionWasRevealedRef.current) return;
+
 		rowRef.current?.scrollIntoView({
 			block: "nearest",
 			inline: "nearest",
 		});
-	}, [isSelected]);
+
+		selectionWasRevealedRef.current = true;
+	}, [isSelected, scrollSelectedIntoView]);
 
 	return (
 		// This is safe because the tree is focusable.
@@ -95,6 +109,9 @@ export const Row: FC<
 
 				if (event.shiftKey && onShiftSelect && !isFromNonRowBody(event)) onShiftSelect();
 				else onSelect?.();
+			}}
+			onDoubleClick={(event) => {
+				if (!isFromNonRowBody(event)) props.onDoubleClick?.(event);
 			}}
 		/>
 	);
@@ -193,19 +210,24 @@ export const RowLabel: FC<
  * A non-interactive row that acts as a section header (e.g. "Stacks", "Uncommitted changes").
  *
  * `children` are rendered inside the label container next to the heading (e.g. badges),
- * while `actions` are rendered outside of it (e.g. a toolbar). `childrenBefore` are rendered before
- * the heading.
+ * while `actions` are rendered outside of it (e.g. a toolbar).
  */
 export const SectionHeaderRow: FC<
-	{ label: ReactNode; actions?: ReactNode; childrenBefore?: ReactNode } & Omit<
-		ComponentProps<typeof Row>,
-		"interactive" | "onSelect" | "isSelected"
-	>
-> = ({ label, actions, children, childrenBefore, ...props }) => (
+	{
+		label: ReactNode;
+		/**
+		 * Sits before the label, where a row's graph rail would. For a disclosure
+		 * control, which reads as one only on the leading edge — `actions` is the
+		 * trailing cluster of things the section can *do*.
+		 */
+		leading?: ReactNode;
+		actions?: ReactNode;
+	} & Omit<ComponentProps<typeof Row>, "interactive" | "onSelect" | "isSelected">
+> = ({ label, leading, actions, children, ...props }) => (
 	<Row {...props} className={classes(props.className, styles.sectionHeader)} interactive={false}>
-		<RowLabelContainer>
-			{childrenBefore}
+		{leading}
 
+		<RowLabelContainer>
 			<RowLabel heading singleLine>
 				{label}
 			</RowLabel>

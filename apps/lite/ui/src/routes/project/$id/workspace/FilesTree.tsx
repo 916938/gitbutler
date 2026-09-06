@@ -1,5 +1,7 @@
 import rowStyles from "./Row.module.css";
+import { startAbsorb } from "#ui/use-cursor.ts";
 import {
+	changesInWorktreeQueryOptions,
 	guiSettingsQueryOptions,
 	headInfoQueryOptions,
 	listEditorsQueryOptions,
@@ -8,51 +10,60 @@ import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
 import { defaultSettings } from "#ui/settings.ts";
 import {
 	uncommittedChangesFileParent,
-	fileOperand,
-	operandEquals,
-	operandIdentityKey,
+	fileAddress,
+	addressEquals,
+	addressIdentityKey,
 	type FileParent,
-} from "#ui/operands.ts";
+} from "#ui/addresses.ts";
 import { projectSlice } from "#ui/projects/state.ts";
 import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
 import { classes } from "#ui/components/classes.ts";
-import { mergeProps, useRender } from "@base-ui/react";
-import { useQuery } from "@tanstack/react-query";
-import { type ComponentProps, type FC, useRef } from "react";
+import { getRangeExtractorWithIndices } from "#ui/virtual.ts";
+import { mergeProps, Tooltip, useRender } from "@base-ui/react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Range, useVirtualizer } from "@tanstack/react-virtual";
+import {
+	type ComponentProps,
+	type FC,
+	useCallback,
+	useDeferredValue,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import styles from "./FilesTree.module.css";
 import { Row, RowLabel, RowLabelContainer } from "./Row.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
-import {
-	focusSelectionScope,
-	useNavigationIndexHotkeys,
-	type SelectionScope,
-} from "#ui/selection-scopes.ts";
-import { navigationIndexIncludes, type NavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { focusScope, useAddressSpaceHotkeys, type FocusScope } from "#ui/focus-scopes.ts";
+import { addressSpaceIncludes, type AddressSpace } from "#ui/workspace/address-space.ts";
 import { changesFileHotkeys } from "#ui/hotkeys.ts";
+import { useRevealInFolder } from "./useRevealInFolder.ts";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { useMergedRefs } from "@base-ui/utils/useMergedRefs";
-import { FileRow } from "./FileRow.tsx";
+import { FileRow, FileRowPresentational } from "./FileRow.tsx";
 import { DirectoryRow, type DirectoryCheckedState } from "./DirectoryRow.tsx";
 import type { FileRowItem } from "./file-row.ts";
 import { parentDirectoryRow, type FileTreeRow } from "./file-tree.ts";
 import { useFileDisplayMode } from "./useFileDisplayMode.ts";
-import { checkedRange, navigationIndexRange } from "#ui/checking.ts";
-import {
-	useCommitUncommitChanges,
-	useDiscardFileChanges,
-	useOpenInProgram,
-} from "#ui/api/mutations.ts";
-import { createDiffSpec } from "#ui/operations/diff-specs.ts";
+import { checkedRange, addressSpaceRange } from "#ui/checking.ts";
+import { useDiscardFileChanges, useOpenInProgram } from "#ui/api/mutations.ts";
 import type { TreeChange } from "@gitbutler/but-sdk";
+import type { CSSProperties } from "react";
+import { FileRowTooltipRoot, type FileRowTooltipPayload } from "./FileRowTooltip.tsx";
+
+/** One identity for every tree that has no reviewed paths, so the default is stable. */
+const EMPTY_REVIEWED_PATHS: ReadonlySet<string> = new Set();
 
 const useFilesTreeHotkeys = ({
 	checkRow,
-	navigationIndex,
+	addressSpace,
 	onRowSelection,
 	onEdgeSpill,
 	projectId,
 	ref,
 	fileParent,
+	canUncommit,
+	uncommit,
 	rows,
 	selection,
 	selectedRow,
@@ -60,20 +71,22 @@ const useFilesTreeHotkeys = ({
 	toggleDirectoryCollapsed,
 }: {
 	checkRow: (evt: { path: string; shiftKey: boolean }) => void;
-	navigationIndex: NavigationIndex<string>;
+	addressSpace: AddressSpace<string>;
 	onRowSelection: (selection: string) => void;
 	onEdgeSpill?: (offset: -1 | 1) => void;
 	projectId: string;
 	ref: React.RefObject<HTMLElement | null>;
 	fileParent: FileParent;
+	canUncommit: boolean;
+	uncommit?: (change: TreeChange, extendToCheckedFiles: boolean) => void;
 	rows: Array<FileTreeRow<FileRowItem>>;
 	selection: string | null;
 	selectedRow: FileTreeRow<FileRowItem> | undefined;
 	selectedChange: TreeChange | null;
 	toggleDirectoryCollapsed: (path: string) => void;
 }) => {
-	const isDefaultMode = useAppSelector(
-		(state) => projectSlice.selectors.selectOutlineModeState(state, projectId)._tag === "Default",
+	const noOperationPending = useAppSelector(
+		(state) => projectSlice.selectors.selectPendingOperation(state, projectId)._tag === "None",
 	);
 	const mode = useFileDisplayMode();
 	const { data: editors } = useQuery(listEditorsQueryOptions);
@@ -82,12 +95,11 @@ const useFilesTreeHotkeys = ({
 		select: (cfg) => editors?.find((editor) => editor.id === cfg.editorId),
 	});
 	const { mutate: openInProgram } = useOpenInProgram();
-	const { isPending: isCommitUncommitChangesPending, mutate: commitUncommitChanges } =
-		useCommitUncommitChanges();
+	const revealInFolder = useRevealInFolder(projectId);
 	const { canDiscard, discard } = useDiscardFileChanges({ projectId, fileParent });
 
 	const store = useAppStore();
-	const dispatch = useAppDispatch();
+	const queryClient = useQueryClient();
 
 	const selectedChangesFile = fileParent._tag === "UncommittedChanges" ? selection : null;
 	const selectedUncommittedChange =
@@ -95,24 +107,38 @@ const useFilesTreeHotkeys = ({
 
 	const absorbSelectedFile = () => {
 		if (selectedUncommittedChange === null) return;
+		const checkedPaths = projectSlice.selectors.selectCheckedUncommittedFilePaths(
+			store.getState(),
+			projectId,
+		);
+		const checkedChanges =
+			checkedPaths.size === 0
+				? null
+				: queryClient
+						.getQueryData(changesInWorktreeQueryOptions(projectId).queryKey)
+						?.changes.filter((change) => checkedPaths.has(change.path));
+		if (checkedPaths.size > 0 && !checkedChanges) return;
 
-		dispatch(
-			projectSlice.actions.enterAbsorbMode({
-				projectId,
-				source: fileOperand({
+		startAbsorb({
+			sources: (checkedPaths.size > 0
+				? Array.from(checkedPaths, (path) =>
+						fileAddress({ parent: uncommittedChangesFileParent, path }),
+					)
+				: null) ?? [
+				fileAddress({
 					parent: uncommittedChangesFileParent,
 					path: selectedUncommittedChange.path,
 				}),
-				sourceTarget: {
-					type: "treeChanges",
-					subject: {
-						changes: [selectedUncommittedChange],
-						assignedStackId: null,
-					},
+			],
+			sourceTarget: {
+				type: "treeChanges",
+				subject: {
+					changes: checkedChanges ?? [selectedUncommittedChange],
+					assignedStackId: null,
 				},
-			}),
-		);
-		focusSelectionScope("outline");
+			},
+		});
+		focusScope("sidebar");
 	};
 
 	const toggleSelectedRowChecked = (event: KeyboardEvent) => {
@@ -135,13 +161,7 @@ const useFilesTreeHotkeys = ({
 	const uncommitSelectedFile = () => {
 		if (selectedChange === null || fileParent._tag !== "Commit") return;
 
-		commitUncommitChanges({
-			projectId,
-			commitId: fileParent.commitId,
-			assignTo: null,
-			changes: [createDiffSpec(selectedChange, [])],
-			dryRun: false,
-		});
+		uncommit?.(selectedChange, true);
 	};
 
 	/**
@@ -178,7 +198,7 @@ const useFilesTreeHotkeys = ({
 			callback: absorbSelectedFile,
 			options: {
 				conflictBehavior: "allow",
-				enabled: selectedChangesFile !== null && isDefaultMode,
+				enabled: selectedChangesFile !== null && noOperationPending,
 				target: ref,
 				meta: changesFileHotkeys.absorb.meta,
 			},
@@ -188,7 +208,7 @@ const useFilesTreeHotkeys = ({
 			callback: toggleSelectedRowChecked,
 			options: {
 				conflictBehavior: "allow",
-				enabled: selection !== null && isDefaultMode && canCheckTheseFiles,
+				enabled: selection !== null && noOperationPending && canCheckTheseFiles,
 				preventDefault: false,
 				stopPropagation: false,
 				target: ref,
@@ -200,7 +220,7 @@ const useFilesTreeHotkeys = ({
 			callback: discardSelectedFile,
 			options: {
 				conflictBehavior: "allow",
-				enabled: isDefaultMode && canDiscardSelectedFile,
+				enabled: noOperationPending && canDiscardSelectedFile,
 				target: ref,
 				meta: changesFileHotkeys.discard.meta,
 			},
@@ -210,7 +230,7 @@ const useFilesTreeHotkeys = ({
 			callback: toggleSelectedRowChecked,
 			options: {
 				conflictBehavior: "allow",
-				enabled: selection !== null && isDefaultMode && canCheckTheseFiles,
+				enabled: selection !== null && noOperationPending && canCheckTheseFiles,
 				preventDefault: false,
 				stopPropagation: false,
 				target: ref,
@@ -236,15 +256,31 @@ const useFilesTreeHotkeys = ({
 			},
 		},
 		{
+			hotkey: changesFileHotkeys.revealInFolder.hotkey,
+			// Not limited to uncommitted files the way the editor binding above
+			// is: a row's path locates the file in the worktree whichever list
+			// it came from, which is all revealing it needs.
+			callback: () => {
+				if (selection === null) return;
+				void revealInFolder(selection);
+			},
+			options: {
+				conflictBehavior: "allow",
+				enabled: selectedRow?._tag === "File",
+				target: ref,
+				meta: changesFileHotkeys.revealInFolder.meta,
+			},
+		},
+		{
 			hotkey: changesFileHotkeys.uncommit.hotkey,
 			callback: uncommitSelectedFile,
 			options: {
 				conflictBehavior: "allow",
 				enabled:
-					isDefaultMode &&
+					noOperationPending &&
 					selectedChange !== null &&
 					fileParent._tag === "Commit" &&
-					!isCommitUncommitChangesPending,
+					canUncommit,
 				target: ref,
 				meta: changesFileHotkeys.uncommit.meta,
 			},
@@ -254,7 +290,7 @@ const useFilesTreeHotkeys = ({
 			callback: toggleFoldSelectedRow,
 			options: {
 				conflictBehavior: "allow",
-				// Folding is a view operation, so it stays available in every outline
+				// Folding is a view operation, so it stays available in every workspace
 				// mode. Flat list mode has no directory rows, nothing to fold.
 				enabled: mode === "tree" && selectedRow !== undefined,
 				target: ref,
@@ -263,9 +299,9 @@ const useFilesTreeHotkeys = ({
 		},
 	]);
 
-	useNavigationIndexHotkeys({
-		navigationIndex,
+	useAddressSpaceHotkeys({
 		projectId,
+		addressSpace,
 		group: "File",
 		select: onRowSelection,
 		selection,
@@ -273,44 +309,409 @@ const useFilesTreeHotkeys = ({
 		onEdgeSpill,
 		getKey: (path) => path,
 		operationSourcesForItem: (path) => {
-			const operand = fileOperand({ parent: fileParent, path });
-			const checkedOperands = projectSlice.selectors.selectCheckedOperands(
+			const rowIndex = addressSpace.indexByKey.get(path);
+			const row = rowIndex === undefined ? undefined : rows[rowIndex];
+			const checkedAddresses = projectSlice.selectors.selectCheckedAddresses(
 				store.getState(),
 				projectId,
 			);
-			return checkedOperands.length > 0 ? checkedOperands : [operand];
+			if (row?._tag === "Directory") {
+				const sources = row.filePaths.map((path) => fileAddress({ parent: fileParent, path }));
+				return sources.some((source) =>
+					checkedAddresses.some((checked) => addressEquals(checked, source)),
+				)
+					? checkedAddresses
+					: sources;
+			}
+
+			const address = fileAddress({ parent: fileParent, path });
+			return checkedAddresses.length > 0 ? checkedAddresses : [address];
 		},
 	});
+};
+
+// Extracted as a component boundary for the compiler to memo.
+const DirectoryOperationSource: FC<
+	{
+		projectId: string;
+		fileParent: FileParent;
+		filePaths: Array<string>;
+	} & Omit<useRender.ComponentProps<"div">, "onDragStart">
+> = ({ projectId, fileParent, filePaths, render, ...props }) => (
+	<OperationSourceC
+		{...props}
+		projectId={projectId}
+		sources={filePaths.map((path) => fileAddress({ parent: fileParent, path }))}
+		respectChecked
+		outline="outside"
+		acceptOriginDrop
+		render={render}
+	/>
+);
+
+/**
+ * What every row gets from the tree, bundled so a row's props stay few and
+ * stable: the bundle only changes identity when one of its members does.
+ */
+type RowShared = {
+	projectId: string;
+	fileParent: FileParent;
+	focusScope: FocusScope;
+	tooltipHandle: Tooltip.Handle<FileRowTooltipPayload>;
+	ageBadgeNow: number | null;
+	pathDisplay: "lead" | "trail" | "hidden";
+	canCheck: boolean;
+	canUncommit: boolean;
+	uncommit?: (change: TreeChange, extendToCheckedFiles: boolean) => void;
+	checkFile: (evt: { path: string; shiftKey: boolean }) => void;
+	checkDirectory: (evt: { path: string; checked: boolean }) => void;
+	onRowSelection: (selection: string) => void;
+	onToggleDirectoryCollapsed: (path: string) => void;
+	branchNameByCommitId: (commitId: string) => string | undefined;
+};
+
+/**
+ * One virtualised row. Its own component so that a re-render of the list
+ * leaves the row's element tree cached when nothing about the row changed:
+ * the list itself is left uncompiled by its virtualizer, so anything built
+ * inline there would be rebuilt, and re-render every row, on every render.
+ */
+const FilesTreeRow: FC<{
+	row: FileTreeRow<FileRowItem>;
+	index: number;
+	height: number;
+	measureElement: (element: HTMLDivElement | null) => void;
+	shared: RowShared;
+	isSelected: boolean;
+	inert: boolean;
+	/** A file row's own checked state, or a directory row's aggregate over its files. */
+	checkedState: DirectoryCheckedState;
+	isReviewed: boolean;
+	isCollapsed: boolean;
+	/** Whether the selection sits on or under this directory row. */
+	holdsSelection: boolean;
+	/** See `renderInteractiveRows` in {@link FilesTreeVirtualList}. */
+	interactive: boolean;
+}> = ({
+	row,
+	index,
+	height,
+	measureElement,
+	shared,
+	isSelected,
+	inert,
+	checkedState,
+	isReviewed,
+	isCollapsed,
+	holdsSelection,
+	interactive,
+}) => {
+	const {
+		projectId,
+		fileParent,
+		focusScope,
+		tooltipHandle,
+		ageBadgeNow,
+		pathDisplay,
+		canCheck,
+		canUncommit,
+		uncommit,
+		checkFile,
+		checkDirectory,
+		onRowSelection,
+		onToggleDirectoryCollapsed,
+		branchNameByCommitId,
+	} = shared;
+	const virtStyle: CSSProperties = { position: "absolute", top: 0, left: 0, width: "100%", height };
+
+	if (row._tag === "Directory") {
+		const directoryRow = (
+			<DirectoryRow
+				projectId={projectId}
+				path={row.path}
+				name={row.name}
+				fileCount={row.filePaths.length}
+				depth={row.depth}
+				isCollapsed={isCollapsed}
+				scrollSelectedIntoView={false}
+				onToggleCollapsed={() => {
+					// Collapsing over the selection hides it, and it would
+					// fall back to the first row: hand it to the directory
+					// row, as the z hotkey does. Other toggles leave the
+					// selection (and the details pane it drives) alone.
+					if (!isCollapsed && holdsSelection) onRowSelection(row.path);
+					onToggleDirectoryCollapsed(row.path);
+				}}
+				isSelected={isSelected}
+				canCheck={canCheck}
+				checkedState={checkedState}
+				checkDirectory={checkDirectory}
+				focusScope={focusScope}
+				inert={inert}
+				onSelect={() => onRowSelection(row.path)}
+			/>
+		);
+
+		return (
+			<TreeItem
+				data-index={index}
+				ref={measureElement}
+				row={row}
+				isSelected={isSelected}
+				isExpanded={!isCollapsed}
+				aria-label={`Directory ${row.path}`}
+				style={virtStyle}
+				render={
+					interactive ? (
+						<DirectoryOperationSource
+							projectId={projectId}
+							fileParent={fileParent}
+							filePaths={row.filePaths}
+							render={directoryRow}
+						/>
+					) : (
+						directoryRow
+					)
+				}
+			/>
+		);
+	}
+
+	const item = row.item;
+	const address = fileAddress({ parent: fileParent, path: row.path });
+	const isChecked = checkedState === "checked";
+
+	return (
+		<TreeItem
+			data-index={index}
+			ref={measureElement}
+			row={row}
+			isSelected={isSelected}
+			style={virtStyle}
+			aria-label={
+				item._tag === "Change"
+					? `${item.change.status.type} ${item.change.path}`
+					: `Conflict ${item.path}`
+			}
+			render={
+				interactive ? (
+					<OperationSourceC
+						projectId={projectId}
+						sources={[address]}
+						respectChecked
+						outline="outside"
+						acceptOriginDrop
+						render={
+							<FileRow
+								item={item}
+								depth={row.depth}
+								pathDisplay={pathDisplay}
+								inert={inert}
+								isSelected={isSelected}
+								scrollSelectedIntoView={false}
+								isChecked={isChecked}
+								isReviewed={isReviewed}
+								onSelect={() => onRowSelection(row.path)}
+								canCheck={canCheck && item._tag === "Change"}
+								checkFile={checkFile}
+								projectId={projectId}
+								fileParent={fileParent}
+								canUncommit={canUncommit}
+								uncommit={uncommit}
+								focusScope={focusScope}
+								tooltipHandle={tooltipHandle}
+								ageBadgeNow={ageBadgeNow}
+								branchNameByCommitId={branchNameByCommitId}
+							/>
+						}
+					/>
+				) : (
+					<FileRowPresentational
+						item={item}
+						depth={row.depth}
+						pathDisplay={pathDisplay}
+						inert={inert}
+						isSelected={isSelected}
+						scrollSelectedIntoView={false}
+						isChecked={isChecked}
+						isReviewed={isReviewed}
+						onSelect={() => onRowSelection(row.path)}
+						canCheck={false}
+						checkFile={() => {}}
+						projectId={projectId}
+						fileParent={fileParent}
+						focusScope={focusScope}
+						tooltipHandle={tooltipHandle}
+						ageBadgeNow={ageBadgeNow}
+						branchNameByCommitId={() => undefined}
+						anyOperationPending
+						menuItems={[]}
+					/>
+				)
+			}
+		/>
+	);
+};
+
+/**
+ * The virtualised rows. Kept apart from {@link FilesTree} because React
+ * Compiler leaves any component calling `useVirtualizer` uncompiled
+ * (https://github.com/TanStack/virtual/issues/1119), so this one holds as
+ * little as possible: everything the rows need is derived, and memoised, in
+ * the tree and arrives here already stable.
+ */
+const FilesTreeVirtualList: FC<{
+	rows: Array<FileTreeRow<FileRowItem>>;
+	addressSpace: AddressSpace<string>;
+	selection: string | null;
+	hasPendingOperationSources: boolean;
+	collapsedDirectories: Record<string, true>;
+	reviewedPaths: ReadonlySet<string>;
+	isFileChecked: (path: string) => boolean;
+	directoryCheckedState: (filePaths: Array<string>) => DirectoryCheckedState;
+	shared: RowShared;
+}> = ({
+	rows,
+	addressSpace,
+	selection,
+	hasPendingOperationSources,
+	collapsedDirectories,
+	reviewedPaths,
+	isFileChecked,
+	directoryCheckedState,
+	shared,
+}) => {
+	const selectedRowIndex =
+		selection !== null ? (addressSpace.indexByKey.get(selection) ?? null) : null;
+	const rangeExtractorWithSelected = useCallback(
+		(range: Range) =>
+			getRangeExtractorWithIndices(range, selectedRowIndex === null ? [] : [selectedRowIndex]),
+		[selectedRowIndex],
+	);
+
+	// The list scrolls in the tree's parent, reached from this component's own
+	// element: the tree's ref belongs to the parent component and is not attached
+	// yet when the virtualizer first asks, which would leave the list empty until
+	// something else re-rendered it.
+	const groupRef = useRef<HTMLDivElement>(null);
+	// oxlint-disable-next-line react-hooks-js/incompatible-library -- https://github.com/TanStack/virtual/issues/1119#issuecomment-4648268095
+	const rowVirtualizer = useVirtualizer({
+		directDomUpdates: true,
+		directDomUpdatesMode: "transform",
+		count: rows.length,
+		getScrollElement: () => groupRef.current?.parentElement?.parentElement ?? null,
+		// Keep in sync with --single-line-row-height.
+		estimateSize: () => 28,
+		getItemKey: (index) => rows[index]?.path ?? index,
+		rangeExtractor: rangeExtractorWithSelected,
+		// Matches --scroll-gradient-height.
+		scrollPaddingStart: 14,
+		scrollPaddingEnd: 14,
+	});
+	const deferredIsScrolling = useDeferredValue(rowVirtualizer.isScrolling, true);
+	// Keep OperationSourceC mounted while an operation refers to its rows, especially while a
+	// pointer transfer auto-scrolls. Otherwise render the cheap rows immediately on scroll and
+	// wait for deferredIsScrolling to catch up before upgrading them in an interruptible render.
+	const renderInteractiveRows =
+		hasPendingOperationSources || (!rowVirtualizer.isScrolling && !deferredIsScrolling);
+
+	// Virtualisation-friendly equivalent to Row's own scrollIntoView.
+	useLayoutEffect(() => {
+		if (selectedRowIndex !== null)
+			rowVirtualizer.scrollToIndex(selectedRowIndex, { align: "auto" });
+	}, [rowVirtualizer, selectedRowIndex]);
+
+	return (
+		<div
+			// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- Tree items need ARIA group semantics.
+			role="group"
+			ref={useMergedRefs(rowVirtualizer.containerRef, groupRef)}
+			style={{ position: "relative" }}
+		>
+			{rowVirtualizer.getVirtualItems().map((virtualRow) => {
+				const row = rows[virtualRow.index];
+				if (row === undefined) return null;
+
+				const isDirectory = row._tag === "Directory";
+				return (
+					<FilesTreeRow
+						key={row.path}
+						row={row}
+						index={virtualRow.index}
+						height={virtualRow.size}
+						measureElement={rowVirtualizer.measureElement}
+						shared={shared}
+						isSelected={selection !== null && selection === row.path}
+						inert={!addressSpaceIncludes(addressSpace, row.path, (path) => path)}
+						checkedState={
+							isDirectory
+								? directoryCheckedState(row.filePaths)
+								: isFileChecked(row.path)
+									? "checked"
+									: "unchecked"
+						}
+						isReviewed={
+							!isDirectory && row.item._tag === "Change" && reviewedPaths.has(row.item.change.path)
+						}
+						isCollapsed={isDirectory && collapsedDirectories[row.path] === true}
+						holdsSelection={
+							isDirectory &&
+							selection !== null &&
+							(selection === row.path || selection.startsWith(`${row.path}/`))
+						}
+						interactive={renderInteractiveRows}
+					/>
+				);
+			})}
+		</div>
+	);
 };
 
 export const FilesTree: FC<
 	{
 		projectId: string;
 		rows: Array<FileTreeRow<FileRowItem>>;
+		canUncommit: boolean;
+		uncommit?: (change: TreeChange, extendToCheckedFiles: boolean) => void;
 		collapsedDirectories: Record<string, true>;
 		onToggleDirectoryCollapsed: (path: string) => void;
 		selection: string | null;
 		onRowSelection: (selection: string) => void;
-		/** See {@link useNavigationIndexHotkeys}'s option of the same name. */
+		/** See {@link useAddressSpaceHotkeys}'s option of the same name. */
 		onEdgeSpill?: (offset: -1 | 1) => void;
-		navigationIndex: NavigationIndex<string>;
+		addressSpace: AddressSpace<string>;
 		fileParent: FileParent;
 		/** The scope this tree's hotkeys are bound to; also stamped on the tree element. */
-		selectionScope: SelectionScope;
+		focusScope: FocusScope;
+		/**
+		 * Paths whose diff, as it currently stands, has been reviewed. Those rows
+		 * report it in place of their change type. Empty where reviewing does not
+		 * apply, which hides the mark.
+		 */
+		reviewedPaths?: ReadonlySet<string>;
 		emptyLabel?: string;
+		/**
+		 * Timestamp the row age badges are measured against; `null` hides them.
+		 * The caller owns the ticking.
+		 */
+		ageBadgeNow?: number | null;
 	} & ComponentProps<"div">
 > = ({
 	rows,
+	canUncommit,
+	uncommit,
 	collapsedDirectories,
 	onToggleDirectoryCollapsed,
 	selection,
 	onRowSelection,
 	onEdgeSpill,
 	projectId,
-	navigationIndex,
+	addressSpace,
 	fileParent,
-	selectionScope,
+	focusScope,
+	reviewedPaths = EMPTY_REVIEWED_PATHS,
 	emptyLabel = "No changes.",
+	ageBadgeNow = null,
 	ref: refProp,
 	...props
 }) => {
@@ -329,17 +730,32 @@ export const FilesTree: FC<
 	const canCheck = useAppSelector((state) =>
 		projectSlice.selectors.selectCanCheckFiles(state, projectId, fileParent),
 	);
-	const checkedOperandKeys = useAppSelector((state) =>
-		projectSlice.selectors.selectCheckedOperandKeys(state, projectId),
+	const hasPendingOperationSources = useAppSelector((state) => {
+		const pendingOperation = projectSlice.selectors.selectPendingOperation(state, projectId);
+		return pendingOperation._tag === "Absorb" || pendingOperation._tag === "Transfer";
+	});
+	const checkedAddressKeys = useAppSelector((state) =>
+		projectSlice.selectors.selectCheckedAddressKeys(state, projectId),
 	);
 	const store = useAppStore();
 	const dispatch = useAppDispatch();
+	// Create once per tree: rows in separate trees can have the same DOM ID, but a tooltip store
+	// can register only one element for each ID.
+	const [tooltipHandle] = useState(() => Tooltip.createHandle<FileRowTooltipPayload>());
 
 	const ref = useRef<HTMLDivElement>(null);
 
 	const fileCheckRangeAnchor = useRef<string>(null);
 	const fileCheckRangeEnd = useRef<string>(null);
 	const rowByPath = new Map(rows.map((row) => [row.path, row]));
+	// Conflicts have no change to commit or discard yet, so they never get checked.
+	const conflictPaths = new Set(
+		rows
+			.values()
+			.filter((row) => row._tag === "File" && row.item._tag === "Conflict")
+			.map((row) => row.path),
+	);
+	const checkable = (path: string) => !conflictPaths.has(path);
 	const selectedRow = selection === null ? undefined : rowByPath.get(selection);
 	const selectedItem = selectedRow?._tag === "File" ? selectedRow.item : undefined;
 	const selectedChange = selectedItem?._tag === "Change" ? selectedItem.change : null;
@@ -350,16 +766,17 @@ export const FilesTree: FC<
 		mode === "tree" ? "hidden" : (pathFirst ?? defaultSettings.pathFirst) ? "lead" : "trail";
 
 	const isFileChecked = (path: string): boolean =>
-		checkedOperandKeys.has(operandIdentityKey(fileOperand({ parent: fileParent, path })));
+		checkedAddressKeys.has(addressIdentityKey(fileAddress({ parent: fileParent, path })));
 
 	const directoryCheckedState = (filePaths: Array<string>): DirectoryCheckedState => {
-		const checkedCount = filePaths.filter((path) => isFileChecked(path)).length;
+		const paths = filePaths.filter(checkable);
+		const checkedCount = paths.filter((path) => isFileChecked(path)).length;
 		if (checkedCount === 0) return "unchecked";
-		return checkedCount === filePaths.length ? "checked" : "indeterminate";
+		return checkedCount === paths.length ? "checked" : "indeterminate";
 	};
 
-	const rangeResolver = navigationIndexRange<string, string>({
-		navigationIndex,
+	const rangeResolver = addressSpaceRange<string, string>({
+		addressSpace,
 		getKey: (path) => path,
 		// Range-checking runs over files; a directory caught in the middle of a
 		// range is passed over rather than checked as a path of its own.
@@ -368,14 +785,19 @@ export const FilesTree: FC<
 	const getCheckedRange = checkedRange(rangeResolver);
 
 	const checkedFilePaths = (): Set<string> => {
-		const checkedOperands = projectSlice.selectors.selectCheckedOperands(
+		const checkedAddresses = projectSlice.selectors.selectCheckedAddresses(
 			store.getState(),
 			projectId,
 		);
 		return new Set(
-			checkedOperands.flatMap((operand) =>
-				operand._tag === "File" && operandEquals(operand.parent, fileParent) ? operand.path : [],
-			),
+			checkedAddresses
+				.values()
+				.map((address) =>
+					address._tag === "File" && addressEquals(address.parent, fileParent)
+						? address.path
+						: null,
+				)
+				.filter((x) => x != null),
 		);
 	};
 
@@ -386,20 +808,21 @@ export const FilesTree: FC<
 		previous: Set<string>;
 		next: Set<string>;
 	}): void => {
-		const operands = (paths: Set<string>) =>
-			Array.from(paths, (path) => fileOperand({ parent: fileParent, path }));
+		const nextCheckable = new Set([...next].filter(checkable));
+		const addresses = (paths: Set<string>) =>
+			Array.from(paths, (path) => fileAddress({ parent: fileParent, path }));
 
 		dispatch(
-			projectSlice.actions.checkOperands({
+			projectSlice.actions.checkAddresses({
 				projectId,
-				operands: operands(next.difference(previous)),
+				addresses: addresses(nextCheckable.difference(previous)),
 				checked: true,
 			}),
 		);
 		dispatch(
-			projectSlice.actions.checkOperands({
+			projectSlice.actions.checkAddresses({
 				projectId,
-				operands: operands(previous.difference(next)),
+				addresses: addresses(previous.difference(nextCheckable)),
 				checked: false,
 			}),
 		);
@@ -452,12 +875,14 @@ export const FilesTree: FC<
 
 	useFilesTreeHotkeys({
 		checkRow,
-		navigationIndex,
+		addressSpace,
 		onRowSelection,
 		onEdgeSpill,
 		projectId,
 		ref,
 		fileParent,
+		canUncommit,
+		uncommit,
 		rows,
 		selection,
 		selectedRow,
@@ -465,16 +890,35 @@ export const FilesTree: FC<
 		toggleDirectoryCollapsed: onToggleDirectoryCollapsed,
 	});
 
+	const shared: RowShared = {
+		projectId,
+		fileParent,
+		focusScope,
+		tooltipHandle,
+		ageBadgeNow,
+		pathDisplay,
+		canCheck,
+		canUncommit,
+		uncommit,
+		checkFile,
+		checkDirectory,
+		onRowSelection,
+		onToggleDirectoryCollapsed,
+		branchNameByCommitId: (commitId) =>
+			headInfoIndex?.commitContextByCommitId(commitId)?.segment.refName?.displayName,
+	};
+
 	return (
 		<div
 			{...props}
-			data-selection-scope={selectionScope}
+			data-focus-scope={focusScope}
 			tabIndex={0}
 			role="tree"
 			aria-activedescendant={selection !== null ? treeItemId(selection) : undefined}
 			className={classes(props.className, styles.tree)}
 			ref={useMergedRefs(refProp, ref)}
 		>
+			<FileRowTooltipRoot handle={tooltipHandle} />
 			{rows.length === 0 ? (
 				<Row interactive={false}>
 					<RowLabelContainer>
@@ -482,98 +926,17 @@ export const FilesTree: FC<
 					</RowLabelContainer>
 				</Row>
 			) : (
-				// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- Tree items need ARIA group semantics.
-				<div role="group">
-					{rows.map((row) => {
-						const isSelected = selection !== null && selection === row.path;
-
-						if (row._tag === "Directory") {
-							const isCollapsed = collapsedDirectories[row.path] === true;
-
-							return (
-								<TreeItem
-									key={row.path}
-									row={row}
-									isSelected={isSelected}
-									isExpanded={!isCollapsed}
-									aria-label={`Directory ${row.path}`}
-									render={
-										<DirectoryRow
-											projectId={projectId}
-											path={row.path}
-											name={row.name}
-											fileCount={row.filePaths.length}
-											depth={row.depth}
-											isCollapsed={isCollapsed}
-											onToggleCollapsed={() => {
-												// Collapsing over the selection hides it, and it would
-												// fall back to the first row: hand it to the directory
-												// row, as the z hotkey does. Other toggles leave the
-												// selection (and the details pane it drives) alone.
-												if (
-													!isCollapsed &&
-													selection !== null &&
-													(selection === row.path || selection.startsWith(`${row.path}/`))
-												)
-													onRowSelection(row.path);
-												onToggleDirectoryCollapsed(row.path);
-											}}
-											isSelected={isSelected}
-											canCheck={canCheck}
-											checkedState={directoryCheckedState(row.filePaths)}
-											checkDirectory={checkDirectory}
-											selectionScope={selectionScope}
-											onSelect={() => onRowSelection(row.path)}
-										/>
-									}
-								/>
-							);
-						}
-
-						const item = row.item;
-						const operand = fileOperand({ parent: fileParent, path: row.path });
-
-						return (
-							<TreeItem
-								key={row.path}
-								row={row}
-								isSelected={isSelected}
-								aria-label={
-									item._tag === "Change"
-										? `${item.change.status.type} ${item.change.path}`
-										: `Conflict ${item.path}`
-								}
-								render={
-									<OperationSourceC
-										projectId={projectId}
-										source={operand}
-										outline="outside"
-										render={
-											<FileRow
-												item={item}
-												depth={row.depth}
-												pathDisplay={pathDisplay}
-												inert={!navigationIndexIncludes(navigationIndex, row.path, (path) => path)}
-												isSelected={isSelected}
-												isChecked={checkedOperandKeys.has(operandIdentityKey(operand))}
-												onSelect={() => onRowSelection(row.path)}
-												canCheck={canCheck}
-												checkFile={checkFile}
-												projectId={projectId}
-												fileParent={fileParent}
-												selectionScope={selectionScope}
-												branchNameByCommitId={(commitId) =>
-													headInfoIndex?.commitContextByCommitId(commitId)?.segment.refName
-														?.displayName
-												}
-											/>
-										}
-									/>
-								}
-							/>
-						);
-					})}
-				</div>
+				<FilesTreeVirtualList
+					rows={rows}
+					addressSpace={addressSpace}
+					selection={selection}
+					hasPendingOperationSources={hasPendingOperationSources}
+					collapsedDirectories={collapsedDirectories}
+					reviewedPaths={reviewedPaths}
+					isFileChecked={isFileChecked}
+					directoryCheckedState={directoryCheckedState}
+					shared={shared}
+				/>
 			)}
 		</div>
 	);
@@ -602,5 +965,7 @@ const TreeItem: FC<
 			"aria-selected": isSelected,
 			"aria-expanded": isExpanded,
 			"aria-level": row.depth + 1,
+			"aria-posinset": row.positionInSet,
+			"aria-setsize": row.setSize,
 		}),
 	});

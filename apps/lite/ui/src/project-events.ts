@@ -8,12 +8,10 @@
  * are handled separately below.
  */
 
-import {
-	projectQueryKeys,
-	refreshIntegratedReviews,
-	type ProjectQueryKey,
-} from "#ui/api/queries.ts";
-import type { WatcherEvent } from "@gitbutler/but-sdk";
+import { projectQueryKeys, type ProjectQueryKey } from "#ui/api/query-keys.ts";
+import { getReviewQueryOptions } from "#ui/api/queries.ts";
+import { recordedPullRequest } from "#ui/api/ref-info.ts";
+import type { ForgeReview, WatcherEvent } from "@gitbutler/but-sdk";
 import { apiProvides, watcherInvalidates, type CacheTag } from "@gitbutler/but-sdk/cache-tags";
 import type { QueryClient } from "@tanstack/react-query";
 
@@ -56,6 +54,8 @@ const handledSeparately: Partial<Record<ProjectEvent, ReadonlySet<ProjectQueryKe
 	// Pushes instead: the event carries the new changes, so invalidating would
 	// spend a round trip fetching what is already in hand.
 	worktreeChanges: new Set(["changesInWorktree"]),
+	// Pushes instead: the event carries the new head and mode.
+	gitHead: new Set(["operatingMode"]),
 	// Invalidates later instead: re-reading before the review refresh lands
 	// returns commits without their annotations.
 	gitFetch: new Set(["workspaceTargetCommits"]),
@@ -77,6 +77,39 @@ for (const query of projectQueryKeys) {
 	}
 }
 
+/**
+ * A fetch can turn a reviewed branch into an integrated one while the backend
+ * forge cache still holds the pre-merge review. Refresh those reviews before
+ * re-reading the target commits so their annotations can be matched.
+ */
+const refreshIntegratedReviews = async (client: QueryClient, projectId: string): Promise<void> => {
+	const headInfo = await client.fetchQuery({
+		queryKey: [projectId, "headInfo"],
+		queryFn: () => window.lite.headInfo(projectId),
+		staleTime: 0,
+	});
+
+	const reviewIds = new Set(
+		headInfo.stacks.values().flatMap((stack) =>
+			stack.segments
+				.values()
+				// Integrated segments only: an open association needs no refresh here, and the landed view
+				// fetches on demand.
+				.filter((segment) => segment.pushStatus === "integrated")
+				.map(recordedPullRequest)
+				.filter((x) => x != null),
+		),
+	);
+
+	await Promise.allSettled(
+		reviewIds
+			.values()
+			.map((reviewId) => getReviewQueryOptions({ projectId, reviewId }))
+			.filter((options) => client.getQueryData<ForgeReview>(options.queryKey)?.mergedAt == null)
+			.map((options) => client.fetchQuery({ ...options, staleTime: Number.POSITIVE_INFINITY })),
+	);
+};
+
 export const handleProjectEvent = (
 	event: WatcherEvent,
 	projectId: string,
@@ -85,10 +118,13 @@ export const handleProjectEvent = (
 	const { payload } = event;
 
 	if (payload.type === "worktreeChanges")
-		client.setQueryData(["changesInWorktree", projectId], () => payload.subject.changes);
+		client.setQueryData([projectId, "changesInWorktree"], () => payload.subject.changes);
+
+	if (payload.type === "gitHead")
+		client.setQueryData([projectId, "operatingMode"], () => payload.subject);
 
 	for (const query of invalidateOn.get(payload.type) ?? [])
-		void client.invalidateQueries({ queryKey: [query, projectId] });
+		void client.invalidateQueries({ queryKey: [projectId, query] });
 
 	// The annotations read the backend's review cache, so integrated reviews have
 	// to land before the listing is re-read. A failed refresh degrades to
@@ -98,7 +134,7 @@ export const handleProjectEvent = (
 			.catch(() => undefined)
 			.finally(() => {
 				void client.invalidateQueries({
-					queryKey: ["workspaceTargetCommits", projectId],
+					queryKey: [projectId, "workspaceTargetCommits"],
 				});
 			});
 	}

@@ -28,7 +28,7 @@ fn parent_subjects(repo: &gix::Repository, rev: &str) -> Result<Vec<String>> {
 }
 #[test]
 fn insert_single_node_segment_above() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "@")?,
         snapbox::str![[r#"
@@ -53,11 +53,12 @@ fn insert_single_node_segment_above() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor
@@ -82,19 +83,19 @@ fn insert_single_node_segment_above() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·ee7f107 (⌂|1)
+    └── ·ee7f107 (⌂)
         ├── ►:1[1]:A
-        │   └── ·69221b4 (⌂|1)
+        │   └── ·69221b4 (⌂)
         │       ├── ►:3[2]:B
-        │       │   ├── ·a748762 (⌂|1)
-        │       │   └── ·62e05ba (⌂|1)
+        │       │   ├── ·a748762 (⌂)
+        │       │   └── ·62e05ba (⌂)
         │       │       └── ►:4[3]:anon:
-        │       │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │       │           └── 🏁·8f0d338 (⌂) ►tags/base
         │       └── →:4:
         └── ►:2[1]:C
-            ├── ·930563a (⌂|1)
-            ├── ·68a2fc3 (⌂|1)
-            └── ·984fd1c (⌂|1)
+            ├── ·930563a (⌂)
+            ├── ·68a2fc3 (⌂)
+            └── ·984fd1c (⌂)
                 └── →:4:
 
 "#]]
@@ -126,7 +127,7 @@ fn insert_single_node_segment_above() -> Result<()> {
 }
 #[test]
 fn insert_single_node_segment_below() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "@")?,
         snapbox::str![[r#"
@@ -151,11 +152,12 @@ fn insert_single_node_segment_below() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor
@@ -180,21 +182,21 @@ fn insert_single_node_segment_below() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·b005f3c (⌂|1)
+    └── ·b005f3c (⌂)
         ├── ►:1[2]:A
-        │   └── ·7f0cc55 (⌂|1)
+        │   └── ·7f0cc55 (⌂)
         │       ├── ►:4[3]:anon:
-        │       │   └── ·62e05ba (⌂|1)
+        │       │   └── ·62e05ba (⌂)
         │       │       └── ►:5[4]:anon:
-        │       │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │       │           └── 🏁·8f0d338 (⌂) ►tags/base
         │       └── →:5:
         ├── ►:2[1]:B
-        │   └── ·a3301fe (⌂|1)
+        │   └── ·a3301fe (⌂)
         │       └── →:1: (A)
         └── ►:3[1]:C
-            ├── ·930563a (⌂|1)
-            ├── ·68a2fc3 (⌂|1)
-            └── ·984fd1c (⌂|1)
+            ├── ·930563a (⌂)
+            ├── ·68a2fc3 (⌂)
+            └── ·984fd1c (⌂)
                 └── →:5:
 
 "#]]
@@ -227,7 +229,7 @@ fn insert_single_node_segment_below() -> Result<()> {
 }
 #[test]
 fn insert_multi_node_segment_above() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "@")?,
         snapbox::str![[r#"
@@ -252,11 +254,12 @@ fn insert_multi_node_segment_above() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor
@@ -285,20 +288,20 @@ fn insert_multi_node_segment_above() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·61b2679 (⌂|1)
+    └── ·61b2679 (⌂)
         ├── ►:1[1]:anon:
-        │   └── ·758c8a3 (⌂|1) ►A, ►B
+        │   └── ·758c8a3 (⌂) ►A, ►B
         │       └── ►:3[2]:anon:
-        │           └── ·db40ffc (⌂|1)
+        │           └── ·db40ffc (⌂)
         │               ├── ►:4[3]:anon:
-        │               │   └── ·add59d2 (⌂|1)
+        │               │   └── ·add59d2 (⌂)
         │               │       └── ►:5[4]:anon:
-        │               │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │               │           └── 🏁·8f0d338 (⌂) ►tags/base
         │               └── →:5:
         └── ►:2[1]:C
-            ├── ·930563a (⌂|1)
-            ├── ·68a2fc3 (⌂|1)
-            └── ·984fd1c (⌂|1)
+            ├── ·930563a (⌂)
+            ├── ·68a2fc3 (⌂)
+            └── ·984fd1c (⌂)
                 └── →:5:
 
 "#]]
@@ -331,7 +334,7 @@ fn insert_multi_node_segment_above() -> Result<()> {
 
 #[test]
 fn insert_multi_node_segment_below() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "@")?,
         snapbox::str![[r#"
@@ -356,11 +359,12 @@ fn insert_multi_node_segment_below() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor
@@ -389,19 +393,19 @@ fn insert_multi_node_segment_below() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·4db28a9 (⌂|1)
+    └── ·4db28a9 (⌂)
         ├── ►:1[1]:A
-        │   └── ·71dfc8f (⌂|1)
+        │   └── ·71dfc8f (⌂)
         │       └── ►:2[2]:B
-        │           ├── ·a748762 (⌂|1)
-        │           └── ·62e05ba (⌂|1)
+        │           ├── ·a748762 (⌂)
+        │           └── ·62e05ba (⌂)
         │               └── ►:4[3]:anon:
-        │                   └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │                   └── 🏁·8f0d338 (⌂) ►tags/base
         ├── →:2: (B)
         └── ►:3[1]:C
-            ├── ·930563a (⌂|1)
-            ├── ·68a2fc3 (⌂|1)
-            └── ·984fd1c (⌂|1)
+            ├── ·930563a (⌂)
+            ├── ·68a2fc3 (⌂)
+            └── ·984fd1c (⌂)
                 └── →:4:
 
 "#]]
@@ -434,7 +438,7 @@ fn insert_multi_node_segment_below() -> Result<()> {
 
 #[test]
 fn insert_single_node_segment_above_with_explicit_children() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "@")?,
         snapbox::str![[r#"
@@ -459,11 +463,12 @@ fn insert_single_node_segment_above_with_explicit_children() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor
@@ -498,21 +503,21 @@ fn insert_single_node_segment_above_with_explicit_children() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·cca953f (⌂|1)
+    └── ·cca953f (⌂)
         ├── ►:1[2]:A
-        │   └── ·69221b4 (⌂|1)
+        │   └── ·69221b4 (⌂)
         │       ├── ►:2[3]:B
-        │       │   ├── ·a748762 (⌂|1)
-        │       │   └── ·62e05ba (⌂|1)
+        │       │   ├── ·a748762 (⌂)
+        │       │   └── ·62e05ba (⌂)
         │       │       └── ►:4[4]:anon:
-        │       │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │       │           └── 🏁·8f0d338 (⌂) ►tags/base
         │       └── →:4:
         ├── →:2: (B)
         └── ►:3[1]:C
-            └── ·76e2160 (⌂|1)
+            └── ·76e2160 (⌂)
                 ├── ►:5[2]:anon:
-                │   ├── ·68a2fc3 (⌂|1)
-                │   └── ·984fd1c (⌂|1)
+                │   ├── ·68a2fc3 (⌂)
+                │   └── ·984fd1c (⌂)
                 │       └── →:4:
                 └── →:1: (A)
 
@@ -552,7 +557,7 @@ fn insert_single_node_segment_above_with_explicit_children() -> Result<()> {
 
 #[test]
 fn insert_single_node_segment_below_with_explicit_parents() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "@")?,
         snapbox::str![[r#"
@@ -577,11 +582,12 @@ fn insert_single_node_segment_below_with_explicit_parents() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor
@@ -616,20 +622,20 @@ fn insert_single_node_segment_below_with_explicit_parents() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·54f9cab (⌂|1)
+    └── ·54f9cab (⌂)
         ├── ►:1[1]:A
-        │   └── ·9501727 (⌂|1)
+        │   └── ·9501727 (⌂)
         │       ├── ►:4[4]:anon:
-        │       │   └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │       │   └── 🏁·8f0d338 (⌂) ►tags/base
         │       └── ►:2[2]:B
-        │           └── ·347772f (⌂|1)
+        │           └── ·347772f (⌂)
         │               ├── ►:3[3]:C
-        │               │   ├── ·930563a (⌂|1)
-        │               │   ├── ·68a2fc3 (⌂|1)
-        │               │   └── ·984fd1c (⌂|1)
+        │               │   ├── ·930563a (⌂)
+        │               │   ├── ·68a2fc3 (⌂)
+        │               │   └── ·984fd1c (⌂)
         │               │       └── →:4:
         │               └── ►:5[3]:anon:
-        │                   └── ·62e05ba (⌂|1)
+        │                   └── ·62e05ba (⌂)
         │                       └── →:4:
         ├── →:2: (B)
         └── →:3: (C)
@@ -676,16 +682,17 @@ fn insert_single_node_segment_below_with_explicit_parents() -> Result<()> {
 
 #[test]
 fn insert_single_node_segment_below_can_append_reparented_parent() -> Result<()> {
-    let (repo, _tmp, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmp, mut meta, mut db) = fixture_writable("three-branches-merged")?;
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = repo.rev_parse_single("A")?.detach();
     let a_selector = editor

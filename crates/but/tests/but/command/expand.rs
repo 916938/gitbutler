@@ -8,6 +8,15 @@ fn expand_env() -> Sandbox {
     env
 }
 
+/// A valid PNG file, useful if you want to test binary files.
+const PNG_BINARY_CONTENT: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xB5, 0x1C, 0x0C,
+    0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x64, 0xF8, 0x0F, 0x00,
+    0x01, 0x05, 0x01, 0x01, 0x27, 0x18, 0xE3, 0x66, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+    0xAE, 0x42, 0x60, 0x82,
+];
+
 #[test]
 fn resolves_cli_id_atom() {
     let env = expand_env();
@@ -23,7 +32,7 @@ branch: g0 A
 
 "#]]);
 
-    env.but("_expand zz")
+    env.but("_expand @")
         .assert()
         .success()
         .stderr_eq(str![])
@@ -54,6 +63,7 @@ Matches: 0
 fn resolves_duplicated_change_ids() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
+    set_change_id(&env, "1");
 
     env.but("commit -m first").assert().success();
     env.but("commit -m second").assert().success();
@@ -125,7 +135,7 @@ fn changing_pushed_commit_does_not_cause_change_id_ambiguity() {
 
     // Undo to before the second commit
     env.but("undo").assert().success();
-    env.but("discard zz").assert().success();
+    env.but("discard @").assert().success();
 
     // now reword the first to properly diverge
     env.but("reword 123 -m 'rewritten'").assert().success();
@@ -134,7 +144,7 @@ fn changing_pushed_commit_does_not_cause_change_id_ambiguity() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ br [a-branch-1]
 ┊┊
@@ -177,7 +187,7 @@ fn set_change_id(env: &Sandbox, change_id: &str) {
 fn supports_json_output() {
     let env = expand_env();
 
-    env.but("--json _expand zz")
+    env.but("--json _expand @")
         .allow_json()
         .assert()
         .success()
@@ -206,7 +216,7 @@ fn exact_match_on_branch_short_id_must_prioritize_branch() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A
@@ -232,9 +242,385 @@ branch: tp tp-branch
 }
 
 #[test]
+fn resolves_committed_hunk() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+
+    env.file("file", "content");
+
+    env.but("diff")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+───────────╮
+ qs:7 file │
+───────────╯
+
+@@ -1,0 +1,1 @@
+───────────────
+  ┊ 1 │ +content
+
+"#]]);
+
+    env.but("commit -m 'Add file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit oln on new branch 'a-branch-1'
+
+"#]]);
+
+    env.but("_expand oln:qs:7")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 1
+
+committed hunk: 94d0f7aa1b81428805071f9a45ed6533dee4160a file @@ -1,0 +1,1 @@
+
+"#]]);
+}
+
+#[test]
+fn resolves_binary_committed_hunk() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+
+    env.file("image.png", PNG_BINARY_CONTENT);
+
+    env.but("diff")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+────────────────╮
+ nx:e image.png │
+────────────────╯
+
+No diff available - file is either empty, binary, or too large
+
+"#]]);
+
+    env.but("commit -m 'Add binary file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit nul on new branch 'a-branch-1'
+
+"#]]);
+
+    env.but("_expand nul:nx:e")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 1
+
+committed hunk: 673f0a6533ac3929ad467b4f7a0b935853775963 image.png <no hunk header>
+
+"#]]);
+}
+
+#[test]
+fn identical_committed_hunks_qualified_by_commit() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+    set_change_id(&env, "1");
+
+    let repeated_content = "line\n".repeat(10);
+
+    env.file("file", format!("{repeated_content}{repeated_content}"));
+
+    env.but("commit -m 'Add file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on new branch 'a-branch-1'
+
+"#]]);
+
+    env.file(
+        "file",
+        format!("{repeated_content}new-line\n{repeated_content}"),
+    );
+
+    env.but("diff")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+───────────╮
+ qs:b file │
+───────────╯
+
+@@ -8,6 +8,7 @@
+───────────────
+ 8 ┊  8 │  line
+ 9 ┊  9 │  line
+10 ┊ 10 │  line
+   ┊ 11 │ +new-line
+11 ┊ 12 │  line
+12 ┊ 13 │  line
+13 ┊ 14 │  line
+
+"#]]);
+
+    env.but("commit -m 'Add new line'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on branch 'a-branch-1'
+
+"#]]);
+
+    // revert to original state so we can get _exactly_ the same hunk again
+    env.file("file", format!("{repeated_content}{repeated_content}"));
+    env.but("diff")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+───────────╮
+ qs:2 file │
+───────────╯
+
+@@ -8,7 +8,6 @@
+───────────────
+ 8 ┊  8 │  line
+ 9 ┊  9 │  line
+10 ┊ 10 │  line
+11 ┊    │ -new-line
+12 ┊ 11 │  line
+13 ┊ 12 │  line
+14 ┊ 13 │  line
+
+"#]]);
+    env.but("commit -m 'Revert'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on branch 'a-branch-1'
+
+"#]]);
+
+    env.file(
+        "file",
+        format!("{repeated_content}new-line\n{repeated_content}"),
+    );
+    env.but("diff")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+───────────╮
+ qs:b file │
+───────────╯
+
+@@ -8,6 +8,7 @@
+───────────────
+ 8 ┊  8 │  line
+ 9 ┊  9 │  line
+10 ┊ 10 │  line
+   ┊ 11 │ +new-line
+11 ┊ 12 │  line
+12 ┊ 13 │  line
+13 ┊ 14 │  line
+
+"#]]);
+
+    env.but("commit -m 'Add new line'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on branch 'a-branch-1'
+
+"#]]);
+
+    env.but("status -fv")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ br [a-branch-1]
+┊● 1#0 author 2000-01-01 00:00:00 +0000 (sha 6f4b52a)
+┊│     Add new line
+┊│     1#0:q M file
+┊● 1#1 author 2000-01-01 00:00:00 +0000 (sha 120d589)
+┊│     Revert
+┊│     1#1:q M file
+┊● 1#2 author 2000-01-01 00:00:00 +0000 (sha bc7dd74)
+┊│     Add new line
+┊│     1#2:q M file
+┊● 1#3 author 2000-01-01 00:00:00 +0000 (sha 86543ac)
+┊│     Add file
+┊│     1#3:q A file
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    // Without qualifying the collision ID for the change IDs, we get both commits that add the
+    // new-line text
+    env.but("_expand 1:qs:b")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 2
+
+committed hunk: 6f4b52a36cae46b54446f6a90d6781bacbce12dc file @@ -8,6 +8,7 @@
+committed hunk: bc7dd74811af27895beecb37a245cc34291274ad file @@ -8,6 +8,7 @@
+
+"#]]);
+
+    // Can selectively get the tip commit's hunk
+    env.but("_expand 1#0:qs:b")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 1
+
+committed hunk: 6f4b52a36cae46b54446f6a90d6781bacbce12dc file @@ -8,6 +8,7 @@
+
+"#]]);
+
+    // Can selectively get the older commit's hunk
+    env.but("_expand 1#2:qs:b")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 1
+
+committed hunk: bc7dd74811af27895beecb37a245cc34291274ad file @@ -8,6 +8,7 @@
+
+"#]]);
+}
+
+#[test]
+fn resolves_committed_hunk_id_duplicates() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+    set_change_id(&env, "1");
+
+    let repeated_content = "line\n".repeat(10);
+
+    env.file(
+        "file",
+        format!("{repeated_content}{repeated_content}{repeated_content}"),
+    );
+
+    env.but("commit -m 'Add file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on new branch 'a-branch-1'
+
+"#]]);
+    env.file(
+        "file",
+        format!("{repeated_content}new_line\n{repeated_content}new_line\n{repeated_content}"),
+    );
+
+    env.but("diff")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+───────────────╮
+ qs:8#0-2 file │
+───────────────╯
+
+@@ -8,6 +8,7 @@
+───────────────
+ 8 ┊  8 │  line
+ 9 ┊  9 │  line
+10 ┊ 10 │  line
+   ┊ 11 │ +new_line
+11 ┊ 12 │  line
+12 ┊ 13 │  line
+13 ┊ 14 │  line
+
+───────────────╮
+ qs:8#1-2 file │
+───────────────╯
+
+@@ -18,6 +19,7 @@
+─────────────────
+18 ┊ 19 │  line
+19 ┊ 20 │  line
+20 ┊ 21 │  line
+   ┊ 22 │ +new_line
+21 ┊ 23 │  line
+22 ┊ 24 │  line
+23 ┊ 25 │  line
+
+"#]]);
+
+    env.but("commit -m 'Edit file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit 1 on branch 'a-branch-1'
+
+"#]]);
+
+    env.file("file", "");
+    env.but("commit -m 'Delete content'").assert().success();
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ br [a-branch-1]
+┊●   1#0 Delete content
+┊│     1#0:q M file
+┊●   1#1 Edit file
+┊│     1#1:q M file
+┊●   1#2 Add file
+┊│     1#2:q A file
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    env.but("_expand 1#1:qs:8")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 2
+
+committed hunk: ecdc91c3a88413a31b1a2ba4000198593dbcbb9e file @@ -8,6 +8,7 @@
+committed hunk: ecdc91c3a88413a31b1a2ba4000198593dbcbb9e file @@ -18,6 +19,7 @@
+
+"#]]);
+
+    env.but("_expand 1#1:qs:8#0-2")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 1
+
+committed hunk: ecdc91c3a88413a31b1a2ba4000198593dbcbb9e file @@ -8,6 +8,7 @@
+
+"#]]);
+
+    env.but("_expand 1#1:qs:8#1-2")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Matches: 1
+
+committed hunk: ecdc91c3a88413a31b1a2ba4000198593dbcbb9e file @@ -18,6 +19,7 @@
+
+"#]]);
+}
+
+#[test]
 fn requires_exactly_one_argument() {
     let env = Sandbox::empty();
 
     env.but("_expand").assert().failure();
-    env.but("_expand zz extra").assert().failure();
+    env.but("_expand @ extra").assert().failure();
 }

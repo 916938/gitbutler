@@ -1,10 +1,11 @@
 import { Badge } from "#ui/components/Badge.tsx";
 import { classes } from "#ui/components/classes.ts";
+import { DiffStats } from "#ui/components/DiffStats.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { Tooltip } from "@base-ui/react";
 import type { FC } from "react";
 import styles from "./ChangeStats.module.css";
-import type { LineStats } from "./lineStats.ts";
+import { describeLineStats, type LineStats } from "./lineStats.ts";
 
 const pluralRules = new Intl.PluralRules("en");
 
@@ -22,35 +23,20 @@ export const ChangeStats: FC<{
 	// as added/removed lines on sight — so the tooltip only explains that one. Screen readers
 	// get the full wording instead, since the colours carry no meaning for them.
 	const description = `${fileCount} file${pluralRules.select(fileCount) === "one" ? "" : "s"} changed`;
-	const spoken = [description];
-	if (lineStats.linesAdded > 0) {
-		spoken.push(
-			`${lineStats.linesAdded} line${pluralRules.select(lineStats.linesAdded) === "one" ? "" : "s"} added`,
-		);
-	}
-	if (lineStats.linesRemoved > 0) {
-		spoken.push(
-			`${lineStats.linesRemoved} line${pluralRules.select(lineStats.linesRemoved) === "one" ? "" : "s"} removed`,
-		);
-	}
+	const spoken = [description, ...describeLineStats(lineStats)];
 
 	return (
 		<Tooltip.Root>
 			<Tooltip.Trigger
 				render={
 					<span aria-label={spoken.join(", ")} className={classes(styles.container, className)}>
-						<Badge variant="fillGray">{fileCount}</Badge>
+						<Badge variant="lightGray">{fileCount}</Badge>
 
-						{(lineStats.linesAdded > 0 || lineStats.linesRemoved > 0) && (
-							<span className={classes("text-12", styles.lineStats)}>
-								{lineStats.linesAdded > 0 && (
-									<span className={styles.linesAdded}>+{lineStats.linesAdded}</span>
-								)}
-								{lineStats.linesRemoved > 0 && (
-									<span className={styles.linesRemoved}>-{lineStats.linesRemoved}</span>
-								)}
-							</span>
-						)}
+						<DiffStats
+							added={lineStats.linesAdded}
+							removed={lineStats.linesRemoved}
+							className="text-12"
+						/>
 					</span>
 				}
 			/>

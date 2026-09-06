@@ -128,10 +128,12 @@ export function buildQueryHooks<Definitions extends ExtensionDefinitions>({
 			if (result.error) {
 				const error = result.error;
 				// track({ failure: true, startTime, error });
+				const classified = classify(error);
 				emitQueryError(posthog, error, {
 					command,
 					actionName,
-					severity: classify(error).severity,
+					severity: classified.severity,
+					terminal: classified.terminal,
 				});
 			}
 			if (options?.transform && data) {
@@ -378,15 +380,17 @@ export function buildMutationHook<
 		});
 
 		/** TODO: How long do we need to send these duplicates? */
-		const legacyName = args.failure ? `${actionName} Failed` : `${actionName} Successful`;
-		posthog?.capture(legacyName, {
-			...args.properties,
-			actionName,
-			command,
-			durationMs,
-			failure: args.failure,
-			error: args.error,
-		});
+		if (actionName !== undefined) {
+			const legacyName = args.failure ? `${actionName} Failed` : `${actionName} Successful`;
+			posthog?.capture(legacyName, {
+				...args.properties,
+				actionName,
+				command,
+				durationMs,
+				failure: args.failure,
+				error: args.error,
+			});
+		}
 	}
 
 	/**

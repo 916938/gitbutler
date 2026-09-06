@@ -150,25 +150,36 @@ struct Stack {
 ///   and those that are. These edges get replaced with edges to `target.ref`
 /// - We replace all steps marked as `content_integrated` that are not
 ///   `historically_integrated` with `None` steps.
+///
+/// This variant uses no review hints and never swaps an emptied managed workspace for a canned
+/// branch; see [`integrate_upstream_with_hints()`] for both.
 pub fn integrate_upstream<'ws, 'meta, M: RefMetadata>(
     workspace: &'ws mut but_graph::Workspace,
     meta: &'meta mut M,
     project_meta: ProjectMeta,
     repo: &gix::Repository,
+    db: &'meta mut but_db::DbHandle,
     updates: Vec<BottomUpdate>,
 ) -> Result<IntegrateUpstreamOutcome<'ws, 'meta, M>> {
-    integrate_upstream_with_hints(workspace, meta, project_meta, repo, updates, &[])
+    integrate_upstream_with_hints(workspace, meta, project_meta, repo, db, updates, &[], false)
 }
 
 /// Like [`integrate_upstream()`], but accepts merged-review-derived integration
 /// anchors to classify additional integrated history.
+///
+/// With `single_branch_mode`, a managed workspace whose applied stacks were all integrated is
+/// replaced by a checked-out canned branch at the target tip. Otherwise the emptied managed
+/// workspace stays checked out, reparented onto the target.
+#[allow(clippy::too_many_arguments)]
 pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
     workspace: &'ws mut but_graph::Workspace,
     meta: &'meta mut M,
     project_meta: ProjectMeta,
     repo: &gix::Repository,
+    db: &'meta mut but_db::DbHandle,
     updates: Vec<BottomUpdate>,
     review_hints: &[ReviewIntegrationHint],
+    single_branch_mode: bool,
 ) -> Result<IntegrateUpstreamOutcome<'ws, 'meta, M>> {
     if matches!(workspace.kind, but_graph::workspace::WorkspaceKind::AdHoc)
         && workspace.ref_name().is_none()
@@ -193,6 +204,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
     let head_commit = repo.find_commit(head_commit.id)?;
     let head_commit_id = head_commit.id;
     let head_is_workspace_commit = is_managed_workspace_by_message(head_commit.message_raw()?);
+    let workspace_ref_name = workspace.ref_name().map(ToOwned::to_owned);
     let direct_checkout_head_ref_name = if head_is_workspace_commit {
         None
     } else {
@@ -201,7 +213,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
 
     // The editor contains every segment in the graph; the target ref's segment
     // is reachable from HEAD and so is mutable by default.
-    let mut editor = Editor::create(workspace, meta, repo)?;
+    let mut editor = Editor::create(workspace, meta, repo, db)?;
 
     let updates_with_selectors = updates
         .iter()
@@ -241,9 +253,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
                     .iter()
                     .zip(&updates_with_selectors)
                     .find_map(|(update, (selector, _))| match &update.selector {
-                        RelativeTo::Reference(ref_name)
-                            if ref_name.as_ref() == head_ref_name.as_ref() =>
-                        {
+                        RelativeTo::Reference(ref_name) if ref_name == head_ref_name => {
                             Some(*selector)
                         }
                         _ => None,
@@ -253,7 +263,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
 
     let target_ref_selector = target_ref.ref_name.to_selector(&editor)?;
     let target_sha_selector = target_sha.to_selector(&editor)?;
-    let target_ref_commit_selector = target_ref_commit.detach().to_selector(&editor)?;
+    let target_ref_commit_selector = target_ref_commit.to_selector(&editor)?;
 
     let from_target_ref = traverse_nodes(&editor, target_ref_selector)?;
     let mut from_target_sha = traverse_nodes(&editor, target_sha_selector)?;
@@ -350,7 +360,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
                 && let Some(head_ref_name) = direct_checkout_head_ref_name.as_ref()
                 && head_ref_name.as_ref().category() == Some(gix::refs::Category::LocalBranch)
             {
-                direct_checkout_replacement_ref = Some(replace_direct_checkout_ref_with_fallback(
+                direct_checkout_replacement_ref = Some(replace_checkout_ref_with_fallback(
                     &mut editor,
                     repo,
                     head_ref_name.as_ref(),
@@ -365,7 +375,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
                 let Step::Reference { refname, .. } = editor.lookup_step(*head)? else {
                     continue;
                 };
-                if refname.as_ref() == target_ref.ref_name.as_ref() {
+                if refname == target_ref.ref_name {
                     continue;
                 }
                 fully_integrated_workspace_parents.insert(*head);
@@ -402,7 +412,7 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
             [(parent_selector, parent_order)]
                 if !selected_stack_nodes.contains(parent_selector)
                     && selector_commit_id(&editor, *parent_selector)? == Some(target_sha)
-                    && target_sha != target_ref_commit.detach() =>
+                    && target_sha != target_ref_commit =>
             {
                 // Only parent is the old target sha, and that's not the latest tip of the target
                 // ref. This is a workspace with no stacks, or an unnamed empty lane at the base
@@ -418,8 +428,26 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
                     *parent_order,
                 )?;
             }
+            [] if !fully_integrated_workspace_parents.is_empty()
+                && stacks.len() > 1
+                && single_branch_mode =>
+            {
+                // In single-branch mode a managed workspace must not become empty. Replace its
+                // checkout with a uniquely named canned branch at the latest target tip, just
+                // like a fully integrated direct checkout.
+                let workspace_ref_name = workspace_ref_name
+                    .as_ref()
+                    .map(|name| name.as_ref())
+                    .context("Managed workspace has no reference")?;
+                replace_checkout_ref_with_fallback(
+                    &mut editor,
+                    repo,
+                    workspace_ref_name,
+                    target_ref_commit_selector,
+                )?;
+            }
             [] if !fully_integrated_workspace_parents.is_empty() => {
-                // Orphaned workspace, reparent onto the target ref.
+                // Otherwise the existing empty managed workspace is retained.
                 editor.add_edge(workspace_commit_selector, target_ref_selector, 0)?;
             }
             _ => {}
@@ -499,9 +527,9 @@ pub fn integrate_upstream_with_hints<'ws, 'meta, M: RefMetadata>(
                     let target_selector = match editor.lookup_step(child)? {
                         Step::Reference { refname, .. }
                             if !head_is_workspace_commit
-                                && direct_checkout_head_ref_name.as_ref().is_some_and(
-                                    |head_ref| head_ref.as_ref() == refname.as_ref(),
-                                ) =>
+                                && direct_checkout_head_ref_name
+                                    .as_ref()
+                                    .is_some_and(|head_ref| *head_ref == refname) =>
                         {
                             // A direct local ref cannot be parented through the target reference
                             // node when both refs already participate in the same reachable graph.
@@ -882,7 +910,7 @@ fn empty_local_reference_remote_tip_integrated<'ws, 'meta, M: RefMetadata>(
     let Ok(remote_ref_name) = resolve_tracking_branch_ref_name(ref_name, editor.repo()) else {
         return Ok(false);
     };
-    if remote_ref_name.as_bstr() == target_ref_name.as_bstr() {
+    if *remote_ref_name == *target_ref_name {
         return Ok(false);
     }
 
@@ -901,7 +929,7 @@ fn empty_local_reference_remote_tip_integrated<'ws, 'meta, M: RefMetadata>(
     Ok(editor
         .repo()
         .merge_base(remote_tip_id, target_ref_commit)
-        .is_ok_and(|merge_base| merge_base.detach() == remote_tip_id))
+        .is_ok_and(|merge_base| merge_base == remote_tip_id))
 }
 
 /// Return `true` if `ref_name` currently resolves to either the old target
@@ -1082,19 +1110,17 @@ fn selector_commit_id<M: RefMetadata>(
     })
 }
 
-/// Replace a fully integrated direct-checkout branch with a new canned local branch at the
-/// latest target tip.
+/// Replace a fully integrated checkout reference with a new canned local branch at the latest
+/// target tip.
 ///
-/// In a managed workspace, a fully integrated stack can simply be detached from the workspace
-/// commit and the workspace commit is reparented to the target. A direct checkout has no
-/// workspace commit to keep `HEAD` alive, so deleting the checked-out branch would leave `HEAD`
+/// Deleting the checked-out branch or empty managed workspace reference would leave `HEAD`
 /// pointing at a missing ref. Instead, reuse the checkout reference step for a fresh branch name
 /// and point it at the latest target commit.
 ///
 /// The old checkout reference can be on the target ancestry path. Before repointing the step to
 /// the target tip, `disconnect_segment_from()` rewires its children around the old reference to
 /// preserve the existing graph and avoid introducing a cycle.
-fn replace_direct_checkout_ref_with_fallback<M: RefMetadata>(
+fn replace_checkout_ref_with_fallback<M: RefMetadata>(
     editor: &mut Editor<'_, '_, M>,
     repo: &gix::Repository,
     head_ref_name: &gix::refs::FullNameRef,
@@ -1139,4 +1165,100 @@ fn preserve_pick_parents<M: RefMetadata>(
     pick.preserved_parents = Some(commit.inner.parents.iter().copied().collect());
     editor.replace(selector, Step::Pick(pick))?;
     Ok(())
+}
+
+/// Fast-forward the local branch that tracks a remote `target_ref`, preferring the same name.
+///
+/// Local target refs, missing tracking branches, checked-out branches, and non-fast-forward updates
+/// are left unchanged.
+pub fn fast_forward_local_tracking_branch(
+    repo: &gix::Repository,
+    target_ref: &gix::refs::FullNameRef,
+    target_id: gix::ObjectId,
+) -> Result<()> {
+    let Some(local_ref_name) = local_tracking_branch_to_fast_forward(repo, target_ref, target_id)?
+    else {
+        return Ok(());
+    };
+    let local_id = repo.find_reference(&local_ref_name)?.id().detach();
+
+    repo.reference(
+        local_ref_name,
+        target_id,
+        gix::refs::transaction::PreviousValue::ExistingMustMatch(gix::refs::Target::Object(
+            local_id,
+        )),
+        "integrate upstream: fast-forward local target",
+    )?;
+    Ok(())
+}
+
+/// Return the local tracking branch that can safely be fast-forwarded to `target_id`.
+pub fn local_tracking_branch_to_fast_forward(
+    repo: &gix::Repository,
+    target_ref: &gix::refs::FullNameRef,
+    target_id: gix::ObjectId,
+) -> Result<Option<gix::refs::FullName>> {
+    let local_ref_name = match target_ref.category() {
+        Some(gix::refs::Category::RemoteBranch) => {
+            let target_short_name =
+                but_core::extract_remote_name_and_short_name(target_ref, &repo.remote_names())
+                    .map(|(_, short_name)| short_name);
+            let tracks_target = |name: &gix::refs::FullNameRef| -> Result<bool> {
+                Ok(repo
+                    .branch_remote_tracking_ref_name(name, gix::remote::Direction::Fetch)
+                    .transpose()?
+                    .is_some_and(|name| name.as_bstr() == target_ref.as_bstr()))
+            };
+            let preferred = if let Some(short_name) = target_short_name.as_ref() {
+                let preferred =
+                    gix::refs::Category::LocalBranch.to_full_name(short_name.as_bstr())?;
+                if let Some(reference) = repo.try_find_reference(&preferred)?
+                    && tracks_target(reference.name())?
+                {
+                    Some(preferred)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if preferred.is_some() {
+                preferred
+            } else {
+                let mut fallback = None;
+                for reference in repo.references()?.prefixed("refs/heads/")? {
+                    let Ok(reference) = reference else {
+                        continue;
+                    };
+                    if !tracks_target(reference.name())? {
+                        continue;
+                    }
+                    fallback.get_or_insert_with(|| reference.name().to_owned());
+                }
+                fallback
+            }
+        }
+        _ => None,
+    };
+    let Some(local_ref_name) = local_ref_name else {
+        return Ok(None);
+    };
+    let mut local_ref = repo.find_reference(&local_ref_name)?;
+    let local_id = local_ref.peel_to_id()?.detach();
+    if local_id == target_id
+        || !repo
+            .merge_base(local_id, target_id)
+            .is_ok_and(|base| base.detach() == local_id)
+    {
+        return Ok(None);
+    }
+    if but_core::branch::SafeDelete::new(repo)?
+        .worktree_dirs_with_ref(&local_ref)
+        .is_some()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(local_ref_name))
 }

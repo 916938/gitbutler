@@ -4,6 +4,85 @@ use snapbox::str;
 use crate::utils::Sandbox;
 
 #[test]
+fn names_an_anonymous_segment() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+    let anonymous_tip = env.invoke_git("rev-parse gitbutler/workspace^");
+
+    env.but("reword g0 -m recovered")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Named anonymous branch 'g0' as 'recovered'
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("rev-parse recovered"),
+        anonymous_tip,
+        "new branch reference names the anonymous segment tip"
+    );
+    env.but("status").assert().success().stdout_eq(str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ re [recovered]
+┊●   sxu anonymous (no changes)
+┊│
+┊├┄ g0 [A]
+┊●   tpm add A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
+fn rejects_naming_an_anonymous_segment_after_an_existing_branch() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+
+    env.but("reword g0 -m A")
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: A branch named 'A' is already applied
+
+"#]]);
+}
+
+#[test]
+fn names_an_anonymous_segment_from_editor() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+    env.file(
+        "editor.sh",
+        "#!/usr/bin/env bash\nprintf 'from-editor\\n' > \"$1\"\n",
+    );
+
+    env.but("reword g0")
+        .env("GIT_EDITOR", "bash editor.sh")
+        .assert()
+        .success()
+        .stdout_eq(str![[r#"
+Named anonymous branch 'g0' as 'from-editor'
+
+"#]]);
+    assert_eq!(
+        env.invoke_git("rev-parse from-editor"),
+        env.invoke_git("rev-parse gitbutler/workspace^"),
+        "editor-provided name creates a reference at the segment tip"
+    );
+}
+
+#[test]
 fn reword_commit_with_message_flag() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     snapbox::assert_data_eq!(
@@ -48,11 +127,11 @@ fn reword_commit_with_change_id_shows_change_id() {
     env.file("new.txt", "content\n");
     env.but("commit -b A -m 'add new.txt'").assert().success();
 
-    env.but("reword 1 -m 'reworded'")
+    env.but("reword uzw -m 'reworded'")
         .assert()
         .success()
         .stdout_eq(str![[r#"
-Updated commit message for 1
+Updated commit message for uzw
 
 "#]]);
 }
@@ -299,4 +378,61 @@ Error: Commit 756ee31 is merged upstream
 Hint: Most likely you want `but pull`, which updates the workspace and removes landed work. In rare cases `--allow-merged` can bypass this check
 
 "#]]);
+}
+
+/// A commit owned by a linked worktree resolves like a workspace commit, so rewording it
+/// rewrites the commit and moves the worktree's branch and checkout onto the result.
+#[test]
+fn reword_a_commit_in_a_linked_worktree() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    super::util::enable_worktree_manipulation(&env);
+    env.but("status").assert().success();
+    let wt_dir = super::util::add_worktree_with_commit(&env, "wt-feature", "A");
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* edd3eb7 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+| * 580bef0 (wt-feature) add W
+|/  
+* 9477ae7 (A) add A
+* 0dc3733 (origin/main, origin/HEAD, main) add M
+
+"#]]
+    );
+
+    env.but("reword 580bef0 -m 'add the W file'")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Updated commit message for nsn
+
+"#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* edd3eb7 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+| * b6105ca (wt-feature) add the W file
+|/  
+* 9477ae7 (A) add A
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
+    // The worktree's own HEAD followed the rewrite and its checkout stayed clean.
+    snapbox::assert_data_eq!(
+        but_testsupport::visualize_commit_graph_all_from_dir(&wt_dir).unwrap(),
+        snapbox::str![[r#"
+* edd3eb7 (gitbutler/workspace) GitButler Workspace Commit
+| * b6105ca (HEAD -> wt-feature) add the W file
+|/  
+* 9477ae7 (A) add A
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
+    assert_eq!(env.git_status(), "", "the main checkout stayed clean");
 }

@@ -1,6 +1,9 @@
 import type { LocalAnnotationsByPath } from "#ui/annotation.ts";
+import type { ThreadsByPath } from "#ui/review-threads.ts";
 import type { GUISettings } from "#electron/settings.ts";
 import type { CodeView } from "@pierre/diffs";
+import type { SearchMarks } from "./diff-search-marks.ts";
+import type { DiffSearchMatch } from "./diff-search.ts";
 import {
 	type Annotation,
 	codeViewItemMetrics,
@@ -455,13 +458,25 @@ const lineTop = (file: MinimapFile, side: ChangeSide, line: number): number | nu
 	return null;
 };
 
+/** Identifies a match across the two views drawing it. */
+const searchMatchKey = (itemId: string, match: DiffSearchMatch): string =>
+	`${itemId} ${match.side} ${match.lineNumber}`;
+
 /** The range the diff currently has selected, in file line numbers. */
-export type MinimapSelection = { itemId: string; side: ChangeSide; start: number; end: number };
+export type MinimapSelection = {
+	itemId: string;
+	side: ChangeSide;
+	start: number;
+	endSide: ChangeSide;
+	end: number;
+};
 
 export type MinimapOverlays = {
 	/** Comment positions, in scroll-content pixels. */
 	pins: Array<number>;
 	band: { top: number; height: number } | null;
+	/** Search matches, in scroll-content pixels, the current one flagged. */
+	matches: Array<{ top: number; current: boolean }>;
 };
 
 /**
@@ -473,15 +488,31 @@ export const getMinimapOverlays = ({
 	files,
 	geometry,
 	annotationsByPath,
+	threadsByPath,
 	selection,
+	searchMarks,
 }: {
 	files: Array<MinimapFile>;
 	geometry: MinimapGeometry;
 	annotationsByPath: LocalAnnotationsByPath;
+	threadsByPath: ThreadsByPath;
 	selection: MinimapSelection | null;
+	searchMarks: SearchMarks;
 }): MinimapOverlays => {
 	const pins: Array<number> = [];
+	const matches: Array<{ top: number; current: boolean }> = [];
 	let band: { top: number; height: number } | null = null;
+
+	const currentKey =
+		searchMarks.current === null
+			? null
+			: searchMatchKey(searchMarks.current.itemId, searchMarks.current);
+	const matchesByItem = new Map<string, Array<DiffSearchMatch>>();
+	for (const match of searchMarks.matches) {
+		const forItem = matchesByItem.get(match.itemId);
+		if (forItem) forItem.push(match);
+		else matchesByItem.set(match.itemId, [match]);
+	}
 
 	for (const [index, file] of files.entries()) {
 		const block = geometry.blocks[index];
@@ -493,27 +524,61 @@ export const getMinimapOverlays = ({
 			return local === null ? null : block.top + local * scale;
 		};
 
+		// A local comment and a review thread share one pin: at this scale the
+		// mark says "something is written here", which is true of both.
 		for (const annotation of annotationsByPath.get(file.path) ?? []) {
 			const top = place(annotation.side, annotation.lineNumber);
 			if (top !== null) pins.push(top);
 		}
 
+		for (const thread of threadsByPath.get(file.path) ?? []) {
+			const top = place(thread.side, thread.lineNumber);
+			if (top !== null) pins.push(top);
+		}
+
+		for (const match of matchesByItem.get(file.itemId) ?? []) {
+			// A context match is numbered on the additions side; in split view its
+			// deletions-column twin sits on the same row, so one mark says it.
+			const top = place(match.side, match.lineNumber);
+			if (top === null) continue;
+
+			matches.push({ top, current: searchMatchKey(file.itemId, match) === currentKey });
+		}
+
 		if (selection?.itemId !== file.itemId) continue;
 
-		// A hunk that only removes lines carries no addition to number the range
-		// against, and the other way round, so fall through to whichever side has it.
-		const other = selection.side === "additions" ? "deletions" : "additions";
-		const locate = (line: number): number | null =>
-			place(selection.side, line) ?? place(other, line);
+		// A hunk that only changes one side has no line on the other to number the
+		// endpoint against, so fall through to whichever side has it.
+		const locate = (side: ChangeSide, line: number): number | null => {
+			const other = side === "additions" ? "deletions" : "additions";
+			return place(side, line) ?? place(other, line);
+		};
+		const endpoints = [
+			{ side: selection.side, line: selection.start },
+			{ side: selection.endSide, line: selection.end },
+		];
+		const starts = endpoints
+			.values()
+			.map(({ side, line }) => locate(side, line))
+			.filter((x) => x != null)
+			.toArray();
+		if (starts.length === 0) continue;
 
-		const start = locate(selection.start);
-		// The band should stop where the line after the range starts; a selection
-		// running to the end of a hunk has no such line to ask for.
-		const end = locate(selection.end + 1) ?? locate(selection.end);
-		if (start !== null) band = { top: start, height: Math.max((end ?? start) - start, 0) };
+		const ends = endpoints
+			.values()
+			.map(({ side, line }) => {
+				const start = locate(side, line);
+				if (start === null) return null;
+
+				return locate(side, line + 1) ?? start;
+			})
+			.filter((x) => x != null);
+		const top = Math.min(...starts);
+		const bottom = Math.max(...ends);
+		band = { top, height: Math.max(bottom - top, 0) };
 	}
 
-	return { pins, band };
+	return { pins, band, matches };
 };
 
 /**

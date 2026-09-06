@@ -1,7 +1,9 @@
+import { expect } from "../src/expect.ts";
+import { forgeErrorBody, githubForgeInfo, mockForge } from "../src/forge.ts";
 import { openWorkspace } from "../src/setup.ts";
 import { test } from "../src/test.ts";
 import { clickByTestId, getByTestId } from "../src/util.ts";
-import { expect, type Page, type Request } from "@playwright/test";
+import { type Page, type Request } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 
 function git(pathToRepo: string, args: string[]): string {
@@ -9,6 +11,10 @@ function git(pathToRepo: string, args: string[]): string {
 		cwd: pathToRepo,
 		encoding: "utf8",
 	}).trim();
+}
+
+function backendSuccess(subject: unknown): string {
+	return JSON.stringify({ type: "success", subject });
 }
 
 async function workspaceFetchRequests(page: Page, action?: string): Promise<Request> {
@@ -52,6 +58,84 @@ test.describe("manual workspace fetch", () => {
 		});
 	});
 
+	test("repeated sync stays quiet when the forge is not authenticated", async ({
+		page,
+		gitbutler,
+	}) => {
+		await gitbutler.runScript("project-with-remote-branches.sh");
+		await mockForge(page, { forge_info: githubForgeInfo() });
+
+		// Model a disconnected integration: the live refresh fails with
+		// `ForgeNotAuthenticated` while cached reads serve stale data.
+		let liveReviewRequests = 0;
+		await page.route("**/list_reviews", async (route) => {
+			const isLive = route.request().postDataJSON()?.cacheConfig === "noCache";
+			if (isLive) liveReviewRequests += 1;
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: isLive
+					? forgeErrorBody({
+							code: "ForgeNotAuthenticated",
+							message: "Not authenticated with GitHub.",
+						})
+					: backendSuccess([]),
+			});
+		});
+
+		await openWorkspace(page);
+		const syncButton = getByTestId(page, "sync-button");
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const fetchStatusResponse = page.waitForResponse(
+				(response) =>
+					response.url().endsWith("/workspace_fetch_status") &&
+					response.request().method() === "POST",
+			);
+			await clickByTestId(page, "sync-button");
+			await fetchStatusResponse;
+			await expect(syncButton).not.toContainText("Fetching...");
+		}
+
+		// The refresh is still attempted every sync; only the auth error is muted.
+		expect(liveReviewRequests).toBe(2);
+		// Match both the classified copy ("You are not logged in to your
+		// forge...") and the raw backend message ("Not authenticated with
+		// GitHub."), so the test still catches a regression where the error
+		// slips through unclassified and toasts with the raw wording.
+		await expect(
+			page.getByTestId("toast-info-message").filter({ hasText: /not (logged in|authenticated)/i }),
+		).toHaveCount(0);
+	});
+
+	test("sync surfaces review refresh failures that are not auth-related", async ({
+		page,
+		gitbutler,
+	}) => {
+		await gitbutler.runScript("project-with-remote-branches.sh");
+		await mockForge(page, { forge_info: githubForgeInfo() });
+
+		await page.route("**/list_reviews", async (route) => {
+			const isLive = route.request().postDataJSON()?.cacheConfig === "noCache";
+			await route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: isLive
+					? forgeErrorBody({ code: "GitHubTokenExpired", message: "401: bad credentials" })
+					: backendSuccess([]),
+			});
+		});
+
+		await openWorkspace(page);
+		const fetchStatusResponse = page.waitForResponse("**/workspace_fetch_status");
+		await clickByTestId(page, "sync-button");
+		await fetchStatusResponse;
+		await expect(getByTestId(page, "sync-button")).not.toContainText("Fetching...");
+
+		await expect(
+			page.getByTestId("toast-info-message").filter({ hasText: "token appears expired" }),
+		).toHaveCount(1);
+	});
+
 	test("sync button shows the persisted workspace fetch timestamp after reload", async ({
 		page,
 		gitbutler,
@@ -84,7 +168,16 @@ test.describe("manual workspace fetch", () => {
 		const expectedOriginMaster = git(remoteProject, ["rev-parse", "master"]);
 		expect(git(localClone, ["rev-parse", "origin/master"])).not.toBe(expectedOriginMaster);
 
+		const fetchResponse = page.waitForResponse(
+			(response) =>
+				response.url().endsWith("/workspace_fetch_from_remotes") &&
+				response.request().method() === "POST",
+		);
 		await clickByTestId(page, "sync-button");
+
+		// The target's remote (origin) is healthy, so the broken unrelated remote must not
+		// fail the operation (a failure response is what triggers the error toast).
+		expect(await (await fetchResponse).json()).toMatchObject({ type: "success" });
 
 		await expect
 			.poll(() => git(localClone, ["rev-parse", "origin/master"]), {

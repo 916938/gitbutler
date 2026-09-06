@@ -8,23 +8,35 @@ import type * as sdk from "@gitbutler/but-sdk";
 import { apiParamNames } from "@gitbutler/but-sdk/api-param-names";
 import type { GUISettings } from "./settings.js";
 
+type SDK = Pick<
+	{
+		// Keep this homomorphic so TypeScript preserves each SDK member's definition target. Filtering
+		// directly in the mapped key breaks go-to-definition, hence filtering on the outside with Pick.
+		[K in keyof typeof sdk]: K extends Endpoint ? EndpointFn<K> : (typeof sdk)[K];
+	},
+	Endpoint
+>;
+
 /**
  * What the renderer can call: every SDK endpoint, whose signatures are the
  * SDK's, plus the members electron implements itself.
  */
-export type LiteElectronApi = {
-	[K in Endpoint]: EndpointFn<K>;
-} & {
+export type LiteElectronApi = SDK & {
 	onAskpassPrompt: (callback: (event: AskpassPromptEvent) => void) => () => void;
 	askpassSubmitPromptResponse: (params: AskpassSubmitPromptResponseParams) => Promise<void>;
 	clipboardWriteText: (text: string) => Promise<void>;
+	/** A `but://app/...` link the app was asked to open, as an in-app path. */
+	onDeepLink: (callback: (path: string) => void) => () => void;
 	getAiConfiguration: () => Promise<AiConfiguration>;
 	getVersion: () => Promise<string>;
 	isFullScreen: () => Promise<boolean>;
 	onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void;
 	openInWebBrowser: (url: string) => Promise<void>;
 	pathJoin: (...paths: Array<string>) => Promise<string>;
+	pickDirectory: () => Promise<string | null>;
 	resetAiConfiguration: () => Promise<AiConfiguration>;
+	/** Reveal a file in the OS file manager, selected in its containing folder. */
+	showItemInFolder: (path: string) => Promise<void>;
 	showNativeMenu: (params: ShowNativeMenuParams) => Promise<string | null>;
 	streamAiResponse: (
 		systemMessage: string,
@@ -53,17 +65,17 @@ export const localEndpoints = [
 	"askpassPrompt",
 	"askpassSubmitPromptResponse",
 	"clipboardWriteText",
+	"deepLink",
 	"fullScreenChange",
-	"getAiConfiguration",
 	"getVersion",
 	"isFullScreen",
 	"openInWebBrowser",
 	"pathJoin",
+	"pickDirectory",
 	"readGUISettings",
-	"resetAiConfiguration",
+	"showItemInFolder",
 	"showNativeMenu",
 	"streamAiResponse",
-	"updateAiConfiguration",
 	"watcherStopAll",
 	"watcherSubscribe",
 	"watcherUnsubscribe",
@@ -157,4 +169,6 @@ export type NativeMenuPopupItem =
 export interface ShowNativeMenuParams {
 	items: Array<NativeMenuPopupItem>;
 	position: NativeMenuPosition;
+	/** Opaque caller context (e.g. the file path); hosts may ignore it. */
+	context?: unknown;
 }

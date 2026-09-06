@@ -395,6 +395,22 @@ mod error {
         }
 
         #[test]
+        fn static_context_hides_saml_authorization_url() {
+            const MESSAGE: &str = "Authorize this GitHub credential for SAML SSO, then try again.";
+            let err = anyhow!("HTTP 403 Forbidden")
+                .context(r#"Resource protected by organization SAML enforcement. Visit https://example.invalid/orgs/example/sso?authorization_request=redacted"#)
+                .context(Context::new_static(Code::GitHubOrgSamlRestricted, MESSAGE))
+                .context("Failed to load a pull request");
+            let serialized = json(err);
+            let expected = format!(r#"{{"code":"GitHubOrgSamlRestricted","message":"{MESSAGE}"}}"#);
+            assert_eq!(serialized, expected, "the API sends only static guidance");
+            let leaked = ["authorization_request", "/sso?"]
+                .iter()
+                .any(|detail| serialized.contains(detail));
+            assert!(!leaked, "per-request SSO details must stay private");
+        }
+
+        #[test]
         fn find_context_without_message() {
             let err = anyhow!("err msg").context(Context::from(Code::Validation));
             assert_eq!(
@@ -541,7 +557,7 @@ mod maybe_lossy_full_name_ref_tests {
             serde_json::from_str::<MaybeLossyFullNameRef>("\"refs/heads/main\"")
                 .expect("valid full ref name")
                 .into();
-        assert_eq!(actual.expect("present").as_bstr(), "refs/heads/main");
+        assert_eq!(actual.expect("present"), "refs/heads/main");
 
         let actual: Option<gix::refs::FullName> =
             serde_json::from_str::<MaybeLossyFullNameRef>("null")
@@ -560,7 +576,7 @@ mod maybe_lossy_full_name_ref_tests {
         )
         .expect("valid full ref name bytes")
         .into();
-        assert_eq!(actual.as_bstr(), "refs/heads/main");
+        assert_eq!(actual, "refs/heads/main");
 
         serde_json::from_str::<FullNameBytes>("[109,97,105,110]")
             .expect_err("partial ref names are rejected");

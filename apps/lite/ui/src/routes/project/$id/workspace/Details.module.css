@@ -1,15 +1,14 @@
 .container {
-	/* Shared by the PR layout and the header so the primary-action buttons
-	   align with the panel column's right edge. The panel consumes
-	   --pr-panel-width for its own flex-basis. */
-	--pr-main-max: 700px;
-	--pr-panel-width: 220px;
+	/* The PR layout's columns. They live up here because .prLayout caps itself
+	   at their sum, and because the panel — a separate module, so no literal to
+	   share — reads --pr-panel-width for its own flex-basis. */
+	--pr-main-max: 900px;
+	--pr-panel-width: 315px;
 	--pr-layout-gap: 16px;
-	--pr-content-max: calc(var(--pr-main-max) + var(--pr-layout-gap) + var(--pr-panel-width));
 
 	display: grid;
 	grid-template-rows: auto minmax(0, 1fr);
-	row-gap: 12px;
+	row-gap: 0;
 }
 
 .containerLone {
@@ -24,7 +23,11 @@
 	/* Symmetric so the header actions share a right edge with the content
 	   columns below, which all inset by the same token. */
 	padding-inline: var(--panel-padding-inline);
-	padding-block-start: var(--panel-padding-block);
+	padding-block: var(--panel-padding-block) 12px;
+	/* The header draws its own bottom edge, so the tab row reads as a strip
+	   spanning the pane rather than a control floating in empty space. Every
+	   view below it — diff, PR, loading — starts flush under this line. */
+	border-bottom: 1px solid var(--border-section);
 }
 
 .titleRow {
@@ -41,9 +44,11 @@
 	display: grid;
 	/* Match regular button height. */
 	grid-template-rows: 28px;
-	grid-template-columns: auto auto 1fr;
+	grid-template-columns: auto 1fr;
 	column-gap: 8px;
 	align-items: center;
+	/* Long names ellipsize rather than shove the row's actions off the edge. */
+	min-width: 0;
 }
 
 .titleContentWrapper {
@@ -64,14 +69,9 @@
 	display: flex;
 	align-items: center;
 	/* With a separate header above (commit/branch views), use tighter padding. */
-	padding: 10px;
+	padding: 8px;
 	gap: 12px;
 	border-bottom: 1px solid var(--border-section);
-
-	/* No files panel to the left, so align with the panel padding. */
-	&.filesHidden {
-		padding-inline-start: var(--panel-padding-inline);
-	}
 
 	/* Lone layout: the title lives in this row, match the panel padding. */
 	.containerLone & {
@@ -86,15 +86,6 @@
 	gap: 6px;
 }
 
-.panels {
-	border-top: 1px solid var(--border-section);
-
-	/* No header above in the lone layout; the border would shift content down 1px. */
-	.containerLone & {
-		border-top: none;
-	}
-}
-
 .panel {
 	/* Stretch/shrink single child element to fit this element. */
 	display: grid;
@@ -104,7 +95,9 @@
 
 .loadingTab {
 	padding-inline: var(--panel-padding-inline);
-	padding-block-end: var(--panel-padding-block);
+	/* Deeper than the panel's own block padding: the tab ends on the comment
+	   composer, which needs room under it rather than the viewport edge. */
+	padding-block: 12px 24px;
 }
 
 .diffTab {
@@ -114,6 +107,23 @@
 	grid-template-columns: minmax(0, 1fr);
 }
 
+/* With no changes the tab holds one block instead of the two panels. Centred
+   the way the sidebar's and the pane's empty hosts are: `safe` so a short tab
+   falls back to the top rather than putting the block's head out of reach, and
+   a size container so the block scales its counterweight to the room. */
+.diffTabEmpty {
+	container-type: size;
+	display: flex;
+	flex-direction: column;
+	justify-content: safe center;
+	overflow: auto;
+	/* The paper, not the panel tint: this sits under the details view's own
+	   header, as that view's content, so it takes the ground the diff and file
+	   list would have had. The standalone pane placeholder has no header above
+	   it and is the whole surface, so it keeps `--bg-2` instead. */
+	background-color: var(--bg-1);
+}
+
 .filesPanelContent {
 	display: flex;
 	grid-row: 1 / -1;
@@ -121,40 +131,25 @@
 	overflow: hidden;
 }
 
-.filesScrollerArea {
-	--scroll-gradient-height: 14px;
-	--scroll-gradient-overlap: 4px;
-}
-
 .diffFiles {
-	padding-inline: var(--panel-padding-inline);
 	padding-block-end: var(--panel-padding-block);
-
-	/* Stretch the scroll separator over the inline padding to full width. */
-	&::before {
-		margin-inline: calc(-1 * var(--panel-padding-inline));
-	}
 }
 
 .diffContentsContainer {
 	display: grid;
-	/* Bound the row to the pane. Left to size itself, it takes the height of the
-	   ruler's canvas — which has no height of its own but its bitmap's, which the
-	   painter sizes from this row. At a fractional device pixel ratio the rounding
-	   in that loop doesn't cancel and the pane grows a little on every frame. */
+	/* Anchors the minimap overlay. */
+	position: relative;
+	/* Bound the row to the pane rather than letting the diff size it. */
 	grid-template-rows: minmax(0, 1fr);
-	/* Code, then the minimap ruler — which collapses the column when it has
-	   nothing to map. */
-	grid-template-columns: minmax(0, 1fr) auto;
+	grid-template-columns: minmax(0, 1fr);
+	/* Second row of `.diffArea`, named rather than implied: the conflict bar
+	   above renders nothing unless there are conflicts, and auto placement would
+	   otherwise drop this into that row's `auto` track and size it to the diff. */
+	grid-row: 2;
 
 	&:has([data-minimap-navigable="true"]) .diffContents {
-		/* The ruler's edge, drawn from the code's side of it. The ruler ends where
-		   its map does — at a fixed scale a short diff doesn't reach the foot of the
-		   pane — while this column always fills the row, so the line runs unbroken
-		   from here. */
-		border-right: 1px solid var(--border-section);
-		/* Drop the native scrollbar only while the minimap is showing, so a diff too
-		   short to map keeps one. */
+		/* Drop the native scrollbar while the minimap stands in for it; a diff
+		   too short to map keeps one. */
 		scrollbar-width: none;
 
 		&::-webkit-scrollbar {
@@ -175,6 +170,13 @@
 	font-variant-ligatures: common-ligatures;
 	user-select: text;
 
+	/* CodeView makes this scroller focusable, so arrow keys raise the platform
+	   focus ring around the whole pane. The focus state is displayed on the
+	   selected lines instead, as it is on the file tree's rows. */
+	&:focus {
+		outline: none;
+	}
+
 	diffs-container {
 		--diffs-selection-number-fg: var(--text-1);
 		border-top: 1px solid var(--border-section);
@@ -186,7 +188,7 @@
 		}
 	}
 
-	[data-selection-focus-styles="true"] [data-selection-scope="diff"]:focus-within & {
+	[data-selection-focus-styles="true"] [data-focus-scope="diff"][data-selection-focused="true"] & {
 		--diffs-bg-selection-number-override: var(--fill-gray-bg);
 
 		diffs-container {
@@ -195,10 +197,17 @@
 	}
 }
 
-.annotate {
-	z-index: 1;
-	position: relative;
-	translate: calc(50% + 1px) 0;
+.dadJoke {
+	display: flex;
+	flex-direction: column;
+	max-width: 80ch;
+	margin-inline: auto;
+	padding-inline: 16px;
+	padding-block: 32px;
+	gap: 4px;
+	color: var(--text-2);
+	font-size: 12px;
+	text-align: center;
 }
 
 .avatar {
@@ -237,89 +246,125 @@
 	column-gap: 12px;
 }
 
-/* While the PR tab is showing, cap the row to the PR content width so the
-   primary actions align with the panel column instead of the pane edge. */
-.tabsRowPrCap {
-	max-width: var(--pr-content-max);
-}
-
 .tabsRowRight {
 	margin-inline-start: auto;
 }
 
+/* The tab owns its scrolling, the way the diff tab does. Without this the
+   content overflows all the way up to the page pane, which carries the
+   details header out of view with it. */
+.prTabScroll {
+	overflow-y: auto;
+}
+
 .prTab {
-	/* The container grid clamps this row to the pane height while the pane
-	   scrolls the overflow; size to content instead so the end padding lands
-	   after the composer rather than mid-content. */
-	align-self: start;
+	width: 100%;
+	max-width: 1000px;
+	margin: 0 auto;
 	padding-inline: var(--panel-padding-inline);
-	padding-block-end: var(--panel-padding-block);
+	/* Deeper than the panel's own block padding: the tab ends on the comment
+	   composer, which needs room under it rather than the viewport edge. */
+	padding-block: 12px 24px;
 }
 
 .prLayout {
 	display: flex;
-	flex-wrap: wrap;
 	align-items: flex-start;
-	/* Cap the whole row so the panel sits just right of the main column
-	   instead of drifting to the pane's far edge at wide widths. */
-	max-width: var(--pr-content-max);
 	gap: var(--pr-layout-gap);
 }
 
 .prMain {
-	flex: 1 1 400px;
+	flex: 1;
+	/* Without this the automatic minimum size holds the column at its widest
+	   content — a quoted hunk, a long code span — so it never gives ground and
+	   the fixed panel beside it is pushed off the edge instead. */
 	min-width: 0;
-	max-width: var(--pr-main-max);
 }
 
 .fileHeader {
 	display: grid;
-	grid-template-columns: auto 1fr auto auto auto auto;
-	column-gap: 12px;
+	grid-template-columns: auto 1fr auto;
+	column-gap: 8px;
 	align-items: center;
 	justify-content: space-between;
-	padding: 8px;
+	padding: 8px 10px;
 	border-bottom: 1px solid var(--border-3);
 	white-space: nowrap;
+
+	/* Focusable only so a click lands here rather than on the diff container;
+	   the platform ring around a whole header would be noise, and the diff pane
+	   above already suppresses its own. */
+	&:focus {
+		outline: none;
+	}
 
 	&.lone {
 		border-bottom: none;
 	}
 }
 
-/* A folded file's header stands in for its hidden, selected hunks. A plain
-   accent bar marks it for now; positioned absolutely so the layout is
-   untouched. */
+/* Marks the file holding the diff selection — including a folded one, whose
+   header stands in for its hidden hunks. A plain accent bar for now;
+   positioned absolutely so the layout is untouched. */
 .fileHeaderSelected {
 	position: relative;
 
 	&::before {
 		position: absolute;
 		width: 3px;
-		inset: 4px auto 4px 0;
-		border-radius: 0 2px 2px 0;
+		inset: 0 auto 0 0;
 		/* The row-selection fill, dimmed like row selections in a blurred
 		   panel; full strength while the diff pane owns focus. */
 		background-color: color-mix(var(--fill-gray-bg) var(--opacity-bg-selected-blur), transparent);
 		content: "";
 	}
 
-	[data-selection-focus-styles="true"] [data-selection-scope="diff"]:focus-within &::before {
+	[data-selection-focus-styles="true"]
+		[data-focus-scope="diff"][data-selection-focused="true"]
+		&::before {
 		background-color: var(--fill-gray-bg);
 	}
 }
 
+/* The trailing cluster: what the file changed, then what you can do about it. */
+.fileHeaderEnd {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
 .fileHeaderActions {
 	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+/* Splits the file's read-only tallies from the controls that act on it. */
+.fileHeaderSeparator {
+	width: 1px;
+	height: 20px;
+	/* Makes up the 12px the design puts either side of it, over the 8px the
+	   surrounding toolbar gap gives. */
+	margin-inline: 2px;
+	background-color: var(--border-3);
 }
 
 .fileReview {
-	--button-height: 22px;
+	/* The box is the button's own mark, not a decorative icon: the tick inside it
+	   sits on the accent fill and must not be dimmed like a leading icon. */
+	--button-icon-opacity: 1;
+	--button-hover-icon-opacity: 1;
+	/* Wider than a small button's icon gap: the box reads as a control of its
+	   own, so it needs more air from the word than an icon would. */
 	--button-gap: 6px;
 }
 
-.fileReviewIndicator {
+/* The checkbox the design draws inside the button. It is the button's mark
+   rather than a Checkbox of its own: nesting a real one would put a second
+   control inside the first. Kept in step with Checkbox.module.css. */
+.fileReviewBox {
 	display: flex;
+	flex-shrink: 0;
 	align-items: center;
 	justify-content: center;
 	width: 14px;
@@ -336,20 +381,18 @@
 	}
 }
 
+.fileMeta {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
 .filePath {
 	display: flex;
 	align-items: center;
 	overflow: hidden;
 	gap: 6px;
 	text-overflow: ellipsis;
-}
-
-.fileDiffAdded {
-	color: var(--text-safe);
-}
-
-.fileDiffDeleted {
-	color: #d34832;
 }
 
 .pathInit {
@@ -384,6 +427,12 @@
 	min-height: 28px;
 	gap: 8px;
 	color: var(--text-3);
+}
+
+/* The toggle leads the meta row, so it keeps the row's own rhythm but sits a
+   touch further from the author than the meta items sit from each other. */
+.commitDetailsMetaTabs {
+	margin-inline-end: 4px;
 }
 
 .commitDetailsMetaSha {

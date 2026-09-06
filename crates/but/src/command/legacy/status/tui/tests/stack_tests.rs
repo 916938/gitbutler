@@ -13,9 +13,11 @@ fn unapply_stack() {
 
     tui.input('j');
     tui.input('b');
+    tui.input('n');
 
     tui.input((KeyModifiers::SHIFT, 'G'));
     tui.input('b');
+    tui.input('n');
 
     tui.input('g')
         .assert_rendered_term_svg_eq(file!["snapshots/unapply_stack_001.svg"]);
@@ -42,9 +44,11 @@ fn unapply_stack_selects_base_branch_when_next_stack_has_commits() {
     tui.input('j');
     tui.input('b');
     tui.input('n');
+    tui.input('n');
 
     tui.input((KeyModifiers::SHIFT, 'G'));
     tui.input('b');
+    tui.input('n');
 
     tui.input('g');
     tui.input('s');
@@ -74,6 +78,7 @@ fn moving_stacks() {
     for name in ["one", "two", "three"] {
         tui.input('g');
         tui.input('b');
+        tui.input('n');
         tui.input(KeyCode::Enter);
         for _ in 0..100 {
             tui.input(KeyCode::Backspace);
@@ -106,14 +111,18 @@ fn moving_stacks() {
 
 #[test]
 fn applying_stacks() {
-    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    let mut env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
+    // Unapplying every stack should leave an empty managed workspace to apply into.
+    // In single branch mode the second-to-last unapply checks out the remaining branch instead.
+    env.app_settings_mut().feature_flags.single_branch = false;
 
     let mut tui = test_status_tui(env);
 
     for name in ["one", "two"] {
         tui.input('g');
         tui.input('b');
+        tui.input('n');
         tui.input(KeyCode::Enter);
         for _ in 0..100 {
             tui.input(KeyCode::Backspace);

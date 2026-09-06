@@ -12,7 +12,7 @@ use crate::ref_info::with_workspace_commit::utils::{
 
 #[test]
 fn squash_top_commit_into_parent() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -30,7 +30,7 @@ fn squash_top_commit_into_parent() -> Result<()> {
     let subject_tree = repo.find_commit(subject_id)?.tree_id()?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -48,7 +48,7 @@ fn squash_top_commit_into_parent() -> Result<()> {
         "combined message should be target followed by subject with one blank line"
     );
     assert_eq!(
-        squashed_commit.tree_id()?.detach(),
+        squashed_commit.tree_id()?,
         subject_tree,
         "squashed commit should take the top-most (subject) tree"
     );
@@ -80,7 +80,7 @@ fn squash_top_commit_into_parent() -> Result<()> {
 
 #[test]
 fn squash_top_commit_into_parent_keeping_target_message() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -97,7 +97,7 @@ fn squash_top_commit_into_parent_keeping_target_message() -> Result<()> {
     let target_id = repo.rev_parse_single("two")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -120,7 +120,7 @@ fn squash_top_commit_into_parent_keeping_target_message() -> Result<()> {
 
 #[test]
 fn squash_top_commit_into_parent_keeping_subject_message() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -137,7 +137,7 @@ fn squash_top_commit_into_parent_keeping_subject_message() -> Result<()> {
     let target_id = repo.rev_parse_single("two")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -160,7 +160,7 @@ fn squash_top_commit_into_parent_keeping_subject_message() -> Result<()> {
 
 #[test]
 fn squash_reorders_when_subject_is_not_on_top() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -179,7 +179,7 @@ fn squash_reorders_when_subject_is_not_on_top() -> Result<()> {
     let target_tree = repo.find_commit(target_id)?.tree_id()?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -197,7 +197,7 @@ fn squash_reorders_when_subject_is_not_on_top() -> Result<()> {
         "combined message should respect target-then-subject order"
     );
     assert_eq!(
-        squashed_commit.tree_id()?.detach(),
+        squashed_commit.tree_id()?,
         target_tree,
         "when subject is above target in ancestry, the target tree is top-most and must be kept"
     );
@@ -218,14 +218,14 @@ fn squash_reorders_when_subject_is_not_on_top() -> Result<()> {
 
 #[test]
 fn squash_deduplicates_duplicate_subjects() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     let subject_id = repo.rev_parse_single("three")?.detach();
     let target_id = repo.rev_parse_single("two")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id, subject_id],
@@ -248,7 +248,7 @@ fn squash_deduplicates_duplicate_subjects() -> Result<()> {
 
 #[test]
 fn squash_same_commit_is_rejected() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -264,7 +264,7 @@ fn squash_same_commit_is_rejected() -> Result<()> {
     let commit_id = repo.rev_parse_single("two")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
 
     let err = squash_commits(
         editor,
@@ -294,14 +294,14 @@ fn squash_same_commit_is_rejected() -> Result<()> {
 
 #[test]
 fn squash_rejects_target_in_subject_commit_ids() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
 
     let subject_id = repo.rev_parse_single("three")?.detach();
     let target_id = repo.rev_parse_single("two")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
 
     let err = squash_commits(
         editor,
@@ -321,7 +321,7 @@ fn squash_rejects_target_in_subject_commit_ids() -> Result<()> {
 
 #[test]
 fn squash_down_keeps_topmost_tree_for_shared_file_lineage() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("squash-shared-file-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -338,7 +338,7 @@ fn squash_down_keeps_topmost_tree_for_shared_file_lineage() -> Result<()> {
     let target_id = repo.rev_parse_single("two")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -367,7 +367,7 @@ fn squash_down_keeps_topmost_tree_for_shared_file_lineage() -> Result<()> {
 
 #[test]
 fn squash_move_subject_below_target_for_shared_file_lineage() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("squash-shared-file-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -384,7 +384,7 @@ fn squash_move_subject_below_target_for_shared_file_lineage() -> Result<()> {
     let target_id = repo.rev_parse_single("three")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -419,7 +419,7 @@ fn squash_move_subject_below_target_for_shared_file_lineage() -> Result<()> {
 
 #[test]
 fn squash_move_subject_above_target_out_of_order_for_shared_file_lineage() -> Result<()> {
-    let (_tmp, graph, repo, mut _meta, _description) =
+    let (_tmp, graph, repo, mut _meta, _description, mut db) =
         writable_scenario("squash-shared-file-three-commits", |_| {})?;
 
     snapbox::assert_data_eq!(
@@ -436,7 +436,7 @@ fn squash_move_subject_above_target_out_of_order_for_shared_file_lineage() -> Re
     let target_id = repo.rev_parse_single("one")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut _meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut _meta, &repo, &mut db)?;
     let err = squash_commits(
         editor,
         vec![subject_id],
@@ -464,7 +464,7 @@ fn squash_move_subject_above_target_out_of_order_for_shared_file_lineage() -> Re
 
 #[test]
 fn squash_across_stacks_subject_into_target() -> Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-two-stacks", |meta| {
             add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
             add_stack_with_segments(meta, 2, "B", StackState::InWorkspace, &[]);
@@ -488,12 +488,12 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:B on 85efbe4 {2}
-    └── 📙:4:B
+└── ≡📙:B on 85efbe4 {2}
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
@@ -502,8 +502,7 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
     let subject_id = repo.rev_parse_single("A")?.detach();
     let target_id = repo.rev_parse_single("B")?.detach();
     let subject_tree = repo.find_commit(subject_id)?.tree_id()?.detach();
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -516,7 +515,7 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
 
     let squashed_commit = repo.find_commit(squashed_id)?;
     assert_eq!(squashed_commit.message_raw()?, "B\n\nA\n");
-    assert_eq!(squashed_commit.tree_id()?.detach(), subject_tree);
+    assert_eq!(squashed_commit.tree_id()?, subject_tree);
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -533,11 +532,11 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:4:A on 85efbe4 {1}
-│   └── 📙:4:A
-└── ≡📙:3:B on 85efbe4 {2}
-    └── 📙:3:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
+└── ≡📙:B on 85efbe4 {2}
+    └── 📙:B
         └── ·a2dc4c7 (🏘️)
 
 "#]]
@@ -548,7 +547,7 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
 
 #[test]
 fn squash_across_stacks_target_into_subject() -> Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-two-stacks", |meta| {
             add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
             add_stack_with_segments(meta, 2, "B", StackState::InWorkspace, &[]);
@@ -574,12 +573,12 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:B on 85efbe4 {2}
-    └── 📙:4:B
+└── ≡📙:B on 85efbe4 {2}
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
@@ -588,8 +587,7 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
     let subject_id = repo.rev_parse_single("B")?.detach();
     let target_id = repo.rev_parse_single("A")?.detach();
     let subject_tree = repo.find_commit(subject_id)?.tree_id()?.detach();
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -602,7 +600,7 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
 
     let squashed_commit = repo.find_commit(squashed_id)?;
     assert_eq!(squashed_commit.message_raw()?, "A\n\nB\n");
-    assert_eq!(squashed_commit.tree_id()?.detach(), subject_tree);
+    assert_eq!(squashed_commit.tree_id()?, subject_tree);
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -619,12 +617,12 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·80db672 (🏘️)
-└── ≡📙:4:B on 85efbe4 {2}
-    └── 📙:4:B
+└── ≡📙:B on 85efbe4 {2}
+    └── 📙:B
 
 "#]]
     );
@@ -634,7 +632,7 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
 
 #[test]
 fn squash_cross_stack_commit_does_not_pull_in_ancestor_tree_state() -> Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack-files", |meta| {
             add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
             add_stack_with_segments(meta, 2, "C", StackState::InWorkspace, &["B"]);
@@ -659,8 +657,7 @@ fn squash_cross_stack_commit_does_not_pull_in_ancestor_tree_state() -> Result<()
     let mut ws = graph.into_workspace()?;
     let subject_id = repo.rev_parse_single("C")?.detach();
     let target_id = repo.rev_parse_single("A")?.detach();
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![subject_id],
@@ -703,7 +700,7 @@ fn squash_cross_stack_commit_does_not_pull_in_ancestor_tree_state() -> Result<()
 #[test]
 fn squash_cross_stack_commit_with_deeper_stacks_does_not_pull_in_ancestor_tree_state() -> Result<()>
 {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-double-stack-triple-stack-files", |meta| {
             add_stack_with_segments(meta, 1, "D", StackState::InWorkspace, &["A"]);
             add_stack_with_segments(meta, 2, "E", StackState::InWorkspace, &["B", "C"]);
@@ -734,7 +731,7 @@ fn squash_cross_stack_commit_with_deeper_stacks_does_not_pull_in_ancestor_tree_s
     let e_id = repo.rev_parse_single("E")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![e_id],
@@ -901,11 +898,12 @@ fn squash_cross_stack_commit_with_deeper_stacks_does_not_pull_in_ancestor_tree_s
 
 #[test]
 fn squash_all_c_commits_into_second_commit_of_b_keeps_new_file_content() -> Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) = writable_scenario("three-stacks", |meta| {
-        add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
-        add_stack_with_segments(meta, 2, "B", StackState::InWorkspace, &[]);
-        add_stack_with_segments(meta, 3, "C", StackState::InWorkspace, &[]);
-    })?;
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
+        writable_scenario("three-stacks", |meta| {
+            add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
+            add_stack_with_segments(meta, 2, "B", StackState::InWorkspace, &[]);
+            add_stack_with_segments(meta, 3, "C", StackState::InWorkspace, &[]);
+        })?;
 
     let c_top = repo.rev_parse_single("C")?.detach();
     let c_second = repo.rev_parse_single("C~1")?.detach();
@@ -913,7 +911,7 @@ fn squash_all_c_commits_into_second_commit_of_b_keeps_new_file_content() -> Resu
     let target_id = repo.rev_parse_single("B~1")?.detach();
 
     let mut ws = graph.into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let outcome = squash_commits(
         editor,
         vec![c_top, c_second, c_third],

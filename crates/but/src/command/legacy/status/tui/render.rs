@@ -1,10 +1,8 @@
 use std::{
-    collections::HashMap,
     iter::once,
     time::{Duration, Instant},
 };
 
-use but_core::ref_metadata::StackId;
 use but_rebase::graph_rebase::mutate::InsertSide;
 use ratatui::{
     Frame,
@@ -19,15 +17,17 @@ use crate::{
     command::legacy::status::{
         CommitLineContent, FileLineContent, StatusOutputLine,
         output::{
-            BranchLineContent, StatusOutputContent, StatusOutputLineData, UncommittedLineContent,
+            BranchLineContent, MergeBaseLineContent, StatusOutputContent, StatusOutputLineData,
+            UncommittedLineContent,
         },
         tui::app::{
-            CherryPickMode, CommitMessageComposer, CommitMode, JumpMode, MoveMode, MoveSource,
-            MoveStackMode, StackMode, find_jump_match,
+            BranchMode, CherryPickMode, CommitMessageComposer, CommitMode, JumpMode, MoveMode,
+            MoveSource, MoveStackMode, StackMode, find_jump_match, lines_part_of_current_stack,
         },
     },
-    id::{CommitId, CommittedFileId},
+    id::CommitId,
     theme::Theme,
+    utils::targeting::Side,
 };
 
 use super::{
@@ -41,7 +41,20 @@ use super::{
 };
 
 pub fn render_app(app: &App, frame: &mut Frame) {
-    let layout = app_layout(app, frame.area());
+    let layout = if app.in_single_branch_mode {
+        let area = frame.area();
+        let layout = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+        frame.render_widget(
+            Line::from("single branch mode")
+                .centered()
+                .style(Style::default().fg(app.mode.fg(app.theme)))
+                .bg(app.mode.bg(app.theme)),
+            layout[1],
+        );
+        app_layout(app, layout[0])
+    } else {
+        app_layout(app, frame.area())
+    };
 
     match layout.details {
         Some(DetailsPaneLayout::FullScreen {
@@ -105,6 +118,9 @@ pub fn render_app(app: &App, frame: &mut Frame) {
             picker.render(app.has_focus, frame.area(), frame);
         }
         Some(Modal::ApplyStackPicker { picker, .. }) => {
+            picker.render(app.has_focus, frame.area(), frame);
+        }
+        Some(Modal::SwitchBranchPicker { picker, .. }) => {
             picker.render(app.has_focus, frame.area(), frame);
         }
         Some(Modal::CopySelectionPicker { picker, .. }) => {
@@ -309,24 +325,36 @@ pub fn status_layout(app: &App, area: Rect) -> StatusLayout {
 fn render_status(app: &App, area: Rect, frame: &mut Frame) {
     update_status_scroll(app, area);
 
-    let stack_highlight_rows = stack_highlight_rows(app);
+    let lines_part_of_current_stack = lines_part_of_current_stack(app);
+    let lines_part_of_current_branch = app
+        .cursor
+        .lines_part_of_current_branch(&app.mode, app.status_lines.iter().map(|line| &line.data));
 
     let mut areas = available_lines_in_area(area);
 
-    for (idx, tui_line) in app
+    for (idx, status_line) in app
         .status_lines
         .iter()
         .enumerate()
         .skip(app.status_scroll.top())
     {
-        let stack_highlight = stack_highlight_rows
+        let stack_highlight = lines_part_of_current_stack
             .as_ref()
             .is_some_and(|rows| rows.get(idx).copied().unwrap_or_default());
+
+        let branch_highlight = lines_part_of_current_branch
+            .as_ref()
+            .is_some_and(|rows| rows.get(idx).copied().unwrap_or_default());
+
+        let mode_highlight = stack_highlight || branch_highlight;
+
         if !render_status_list_item(
             app,
-            tui_line,
+            status_line,
             app.cursor.index() == idx,
-            stack_highlight,
+            mode_highlight,
+            idx,
+            lines_part_of_current_branch.as_deref(),
             &mut areas,
             frame,
         ) {
@@ -352,133 +380,14 @@ fn update_status_scroll(app: &App, area: Rect) {
     app.status_scroll.set_top(scroll_top);
 }
 
-fn stack_highlight_rows(app: &App) -> Option<Vec<bool>> {
-    let Mode::Stack(..) = &*app.mode else {
-        return None;
-    };
-
-    let row_stack_ids = row_stack_ids(&app.status_lines);
-    let selected_stack_id = row_stack_ids.get(app.cursor.index()).copied().flatten()?;
-
-    Some(
-        row_stack_ids
-            .into_iter()
-            .map(|stack_id| stack_id == Some(selected_stack_id))
-            .collect(),
-    )
-}
-
-fn row_stack_ids(lines: &[StatusOutputLine]) -> Vec<Option<StackId>> {
-    let mut current_stack_id = None;
-    let mut commit_stack_ids = HashMap::new();
-
-    for line in lines {
-        if let StatusOutputLineData::Commit {
-            cli_id,
-            stack_id: Some(stack_id),
-            ..
-        } = &line.data
-            && let CliId::Commit {
-                commit: CommitId { commit_id, .. },
-                id: _,
-            } = &**cli_id
-        {
-            commit_stack_ids.insert(*commit_id, *stack_id);
-        }
-    }
-
-    let mut row_stack_ids = lines
-        .iter()
-        .map(|line| match &line.data {
-            StatusOutputLineData::Branch { cli_id, .. } => {
-                let stack_id = stack_id_from_cli_id(cli_id.as_ref());
-                current_stack_id = stack_id;
-                stack_id
-            }
-            StatusOutputLineData::Commit { stack_id, .. } => {
-                current_stack_id = *stack_id;
-                *stack_id
-            }
-            StatusOutputLineData::StagedChanges { cli_id } => {
-                let stack_id = stack_id_from_cli_id(cli_id.as_ref());
-                current_stack_id = stack_id;
-                stack_id
-            }
-            StatusOutputLineData::StagedFile { .. }
-            | StatusOutputLineData::CommitMessage
-            | StatusOutputLineData::EmptyCommitMessage => current_stack_id,
-            StatusOutputLineData::Connector | StatusOutputLineData::BetweenStacks => None,
-            StatusOutputLineData::File { cli_id } => match &**cli_id {
-                CliId::CommittedFile {
-                    committed_file: CommittedFileId { commit_id, .. },
-                    id: _,
-                } => {
-                    let stack_id = commit_stack_ids
-                        .get(commit_id)
-                        .copied()
-                        .or(current_stack_id);
-                    current_stack_id = stack_id;
-                    stack_id
-                }
-                CliId::UncommittedHunkOrFile(..) | CliId::PathPrefix { .. } => current_stack_id,
-                CliId::Branch(..)
-                | CliId::Commit { .. }
-                | CliId::Uncommitted { .. }
-                | CliId::Stack { .. } => None,
-            },
-            StatusOutputLineData::UpdateNotice
-            | StatusOutputLineData::UncommittedChanges { .. }
-            | StatusOutputLineData::UncommittedFile { .. }
-            | StatusOutputLineData::MergeBase
-            | StatusOutputLineData::UpstreamChanges
-            | StatusOutputLineData::Warning
-            | StatusOutputLineData::Hint
-            | StatusOutputLineData::NoAssignmentsUnstaged => {
-                current_stack_id = None;
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    for idx in 0..lines.len() {
-        if !matches!(lines[idx].data, StatusOutputLineData::Connector) {
-            continue;
-        }
-
-        let stack_id_before = row_stack_ids[..idx]
-            .iter()
-            .rev()
-            .find_map(|stack_id| *stack_id);
-        let stack_id_after = row_stack_ids[idx + 1..]
-            .iter()
-            .find_map(|stack_id| *stack_id);
-
-        if stack_id_before == stack_id_after {
-            row_stack_ids[idx] = stack_id_before;
-        }
-    }
-
-    row_stack_ids
-}
-
-fn stack_id_from_cli_id(cli_id: &CliId) -> Option<StackId> {
-    match cli_id {
-        CliId::Branch(branch) => branch.stack_id,
-        CliId::Stack { stack_id, .. } => Some(*stack_id),
-        CliId::UncommittedHunkOrFile(..)
-        | CliId::PathPrefix { .. }
-        | CliId::CommittedFile { .. }
-        | CliId::Commit { .. }
-        | CliId::Uncommitted { .. } => None,
-    }
-}
-
 #[must_use]
 fn render_status_list_item(
     app: &App,
-    tui_line: &StatusOutputLine,
+    status_line: &StatusOutputLine,
     is_selected: bool,
-    stack_highlight: bool,
+    mode_highlight: bool,
+    status_line_idx: usize,
+    lines_part_of_current_branch: Option<&[bool]>,
     areas: &mut dyn Iterator<Item = Rect>,
     frame: &mut Frame,
 ) -> bool {
@@ -492,7 +401,7 @@ fn render_status_list_item(
         connector,
         content,
         data,
-    } = tui_line;
+    } = status_line;
 
     let operation_extension = if is_selected {
         app.mode.as_mode_render().operation_extension(data)
@@ -525,7 +434,7 @@ fn render_status_list_item(
         render_operation_extension_line(app, data, connector.as_deref(), area, extension, frame);
     }
 
-    if (is_selected || stack_highlight) && highlight_current_line {
+    if (is_selected || mode_highlight) && highlight_current_line {
         frame
             .buffer_mut()
             .set_style(area, app.selection_highlight_color());
@@ -590,6 +499,15 @@ fn render_status_list_item(
     //      ^^^^^^^^^^^^ render target/source labels
     if line_is_to_be_discarded {
         line.extend([Span::raw("<< discard >>").black().on_red(), Span::raw(" ")]);
+    } else if let Mode::Branch(branch_mode) = &*app.mode {
+        branch_mode.render_insert_branch_marker(
+            app,
+            data,
+            is_selected,
+            status_line_idx,
+            lines_part_of_current_branch,
+            &mut line,
+        );
     } else if is_selected {
         app.mode
             .as_mode_render()
@@ -613,10 +531,7 @@ fn render_status_list_item(
             if app.cursor == cursor_for_match {
                 return None;
             }
-            let current_line_id = data.cli_id()?;
-            let match_ = cursor_for_match.selected_line(&app.status_lines)?;
-            let id = match_.data.cli_id()?;
-            Some(id == current_line_id)
+            Some(cursor_for_match.index() == status_line_idx)
         })
         .unwrap_or(false)
     } else {
@@ -629,6 +544,22 @@ fn render_status_list_item(
         match content {
             StatusOutputContent::Plain(spans) => {
                 line.extend(spans);
+            }
+            StatusOutputContent::MergeBase(MergeBaseLineContent {
+                id,
+                suffix,
+                commit_id: _,
+            }) => {
+                if let Mode::Jump(jump_mode) = &*app.mode {
+                    line.extend(style_jump_mode_matches(
+                        id,
+                        jump_mode,
+                        is_selected || line_is_jump_match,
+                    ));
+                } else {
+                    line.extend(id);
+                }
+                line.extend(suffix);
             }
             StatusOutputContent::Commit(CommitLineContent {
                 sha,
@@ -757,7 +688,10 @@ fn render_status_list_item(
                 decoration_end,
                 suffix,
             }) => {
-                if line_has_copied_highlight {
+                let is_worktree = data
+                    .cli_id()
+                    .is_some_and(|cli_id| matches!(&**cli_id, CliId::Worktree { .. }));
+                if line_has_copied_highlight && !is_worktree {
                     line.extend(id.iter().cloned().map(with_highlight));
                 } else if let Mode::Jump(jump_mode) = &*app.mode {
                     line.extend(style_jump_mode_matches(
@@ -769,7 +703,11 @@ fn render_status_list_item(
                     line.extend(id);
                 }
                 line.extend(decoration_start);
-                line.extend(label);
+                if line_has_copied_highlight && is_worktree {
+                    line.extend(label.iter().cloned().map(with_highlight));
+                } else {
+                    line.extend(label);
+                }
                 line.extend(decoration_end);
                 line.extend(suffix);
             }
@@ -783,7 +721,7 @@ fn render_status_list_item(
             .set_style(area_used_by_main_content, Style::default().crossed_out());
     }
 
-    if !is_selectable_in_mode(tui_line, app.mode.as_ref(), app.flags.show_files) {
+    if !is_selectable_in_mode(status_line, app.mode.as_ref(), app.flags.show_files) {
         line.frame
             .buffer_mut()
             .set_style(area_used_by_main_content, app.theme.hint);
@@ -870,7 +808,9 @@ pub(crate) fn render_commit_operation_target_marker(
         return;
     };
 
-    if mode.source.contains(target) {
+    // A line that is both the source and a genuine destination - a worktree heading - commits
+    // rather than cancelling, so it must not advertise itself as a no-op.
+    if mode.source.contains(target) && commit_operation_display(data, mode).is_none() {
         line.extend([source_span(app.theme), Span::raw(" ")]);
         line.extend(
             [
@@ -1186,11 +1126,18 @@ pub fn commit_operation_display(
                 None
             } else {
                 match insert_side {
-                    InsertSide::Above => Some("commit above"),
-                    InsertSide::Below => Some("commit below"),
+                    Side::Above => Some("commit above"),
+                    Side::Below => Some("commit below"),
                 }
             }
         }
+        // The reference row is the top of the worktree's lane, which is the only place a commit
+        // made from that worktree can go. Scoping to a stack excludes it, as a worktree branch is
+        // by definition outside the workspace.
+        StatusOutputLineData::Worktree { .. } => {
+            scope_to_stack.is_none().then_some("commit to worktree")
+        }
+        StatusOutputLineData::WorktreeUncommitted { .. } => None,
         StatusOutputLineData::StagedChanges { .. }
         | StatusOutputLineData::StagedFile { .. }
         | StatusOutputLineData::UncommittedChanges { .. }
@@ -1217,13 +1164,18 @@ pub fn move_operation_display(
         source,
         insert_side,
     } = mode;
-    match &**source {
+    match source {
         MoveSource::Commit { .. } => match data {
             StatusOutputLineData::Commit { .. } => match insert_side {
                 InsertSide::Above => Some("move commit above"),
                 InsertSide::Below => Some("move commit below"),
             },
             StatusOutputLineData::Branch { .. } => Some("move commit to branch"),
+            // The reference row is the top of the worktree's lane, which is the only place in
+            // the lane a whole commit can move to.
+            StatusOutputLineData::Worktree { .. } => Some("move commit to worktree"),
+            StatusOutputLineData::WorktreeUncommitted { .. } => None,
+            StatusOutputLineData::MergeBase => Some("move commit to new branch"),
             StatusOutputLineData::UpdateNotice
             | StatusOutputLineData::Connector
             | StatusOutputLineData::BetweenStacks
@@ -1234,7 +1186,6 @@ pub fn move_operation_display(
             | StatusOutputLineData::CommitMessage
             | StatusOutputLineData::EmptyCommitMessage
             | StatusOutputLineData::File { .. }
-            | StatusOutputLineData::MergeBase
             | StatusOutputLineData::UpstreamChanges
             | StatusOutputLineData::Warning
             | StatusOutputLineData::Hint
@@ -1254,6 +1205,21 @@ pub fn move_operation_display(
                     Some("move commits to branch")
                 }
             }
+            StatusOutputLineData::Worktree { .. } => {
+                if marks.len() == 1 {
+                    Some("move commit to worktree")
+                } else {
+                    Some("move commits to worktree")
+                }
+            }
+            StatusOutputLineData::WorktreeUncommitted { .. } => None,
+            StatusOutputLineData::MergeBase => {
+                if marks.len() == 1 {
+                    Some("move commit to new branch")
+                } else {
+                    Some("move commits to new branch")
+                }
+            }
             StatusOutputLineData::UpdateNotice
             | StatusOutputLineData::Connector
             | StatusOutputLineData::BetweenStacks
@@ -1264,7 +1230,6 @@ pub fn move_operation_display(
             | StatusOutputLineData::CommitMessage
             | StatusOutputLineData::EmptyCommitMessage
             | StatusOutputLineData::File { .. }
-            | StatusOutputLineData::MergeBase
             | StatusOutputLineData::UpstreamChanges
             | StatusOutputLineData::Warning
             | StatusOutputLineData::Hint
@@ -1280,6 +1245,8 @@ pub fn move_operation_display(
             | StatusOutputLineData::StagedChanges { .. }
             | StatusOutputLineData::StagedFile { .. }
             | StatusOutputLineData::UncommittedChanges { .. }
+            | StatusOutputLineData::Worktree { .. }
+            | StatusOutputLineData::WorktreeUncommitted { .. }
             | StatusOutputLineData::UncommittedFile { .. }
             | StatusOutputLineData::CommitMessage
             | StatusOutputLineData::EmptyCommitMessage
@@ -1303,6 +1270,8 @@ pub fn reorder_operation_display(
         | StatusOutputLineData::StagedChanges { .. }
         | StatusOutputLineData::StagedFile { .. }
         | StatusOutputLineData::UncommittedChanges { .. }
+        | StatusOutputLineData::Worktree { .. }
+        | StatusOutputLineData::WorktreeUncommitted { .. }
         | StatusOutputLineData::UncommittedFile { .. }
         | StatusOutputLineData::Branch { .. }
         | StatusOutputLineData::Commit { .. }
@@ -1339,6 +1308,8 @@ pub fn stack_operation_display(
         | StatusOutputLineData::StagedChanges { .. }
         | StatusOutputLineData::StagedFile { .. }
         | StatusOutputLineData::UncommittedChanges { .. }
+        | StatusOutputLineData::Worktree { .. }
+        | StatusOutputLineData::WorktreeUncommitted { .. }
         | StatusOutputLineData::UncommittedFile { .. }
         | StatusOutputLineData::Commit { .. }
         | StatusOutputLineData::CommitMessage
@@ -1363,17 +1334,46 @@ pub fn cherry_pick_operation_display(
             InsertSide::Above => Some("pick above"),
             InsertSide::Below => Some("pick below"),
         },
+        StatusOutputLineData::Worktree { .. } => Some("pick to worktree"),
+        StatusOutputLineData::WorktreeUncommitted { .. } => None,
         StatusOutputLineData::UpdateNotice
+        | StatusOutputLineData::UncommittedChanges { .. }
         | StatusOutputLineData::Connector
         | StatusOutputLineData::BetweenStacks
         | StatusOutputLineData::StagedChanges { .. }
         | StatusOutputLineData::StagedFile { .. }
-        | StatusOutputLineData::UncommittedChanges { .. }
         | StatusOutputLineData::UncommittedFile { .. }
         | StatusOutputLineData::CommitMessage
         | StatusOutputLineData::EmptyCommitMessage
         | StatusOutputLineData::File { .. }
         | StatusOutputLineData::MergeBase
+        | StatusOutputLineData::UpstreamChanges
+        | StatusOutputLineData::Warning
+        | StatusOutputLineData::Hint
+        | StatusOutputLineData::NoAssignmentsUnstaged => None,
+    }
+}
+
+pub fn branch_operation_display(
+    data: &StatusOutputLineData,
+    _mode: &BranchMode,
+) -> Option<&'static str> {
+    match data {
+        StatusOutputLineData::UncommittedChanges { .. }
+        | StatusOutputLineData::Branch { .. }
+        | StatusOutputLineData::MergeBase => Some("branch"),
+        StatusOutputLineData::UpdateNotice
+        | StatusOutputLineData::Worktree { .. }
+        | StatusOutputLineData::WorktreeUncommitted { .. }
+        | StatusOutputLineData::Connector
+        | StatusOutputLineData::BetweenStacks
+        | StatusOutputLineData::StagedChanges { .. }
+        | StatusOutputLineData::StagedFile { .. }
+        | StatusOutputLineData::UncommittedFile { .. }
+        | StatusOutputLineData::Commit { .. }
+        | StatusOutputLineData::CommitMessage
+        | StatusOutputLineData::EmptyCommitMessage
+        | StatusOutputLineData::File { .. }
         | StatusOutputLineData::UpstreamChanges
         | StatusOutputLineData::Warning
         | StatusOutputLineData::Hint
@@ -1506,6 +1506,7 @@ impl Mode {
             Mode::PickChanges(mode) => mode,
             Mode::Jump(mode) => mode,
             Mode::CherryPick(mode) => mode,
+            Mode::Branch(mode) => mode,
         }
     }
 }

@@ -3,12 +3,12 @@
  *
  * Rows come out flat and in render order, one array for both display modes:
  * the list is the tree with every path kept whole at depth zero. Flat keeps
- * rendering a single `map`, and lets the navigation index stay a list of paths
+ * rendering a single `map`, and lets the address space stay a list of paths
  * — a directory path and a file path can never collide, so one string still
  * identifies any row.
  */
 
-import { buildIndexByKey, type NavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { buildIndexByKey, type AddressSpace } from "#ui/workspace/address-space.ts";
 import { compareFilePaths } from "#ui/file-order.ts";
 
 export type FileDisplayMode = "list" | "tree";
@@ -17,6 +17,8 @@ export type FileTreeRow<T> = {
 	path: string;
 	/** Indent depth, counted from zero. Every list-mode row sits at zero. */
 	depth: number;
+	positionInSet: number;
+	setSize: number;
 } & (
 	| {
 			_tag: "Directory";
@@ -78,6 +80,14 @@ const foldSoleChildren = <T>(name: string, directory: Directory<T>): NamedDirect
 /** One directory's worth of rows, and every file path below it. */
 type Collected<T> = { rows: Array<FileTreeRow<T>>; filePaths: Array<string> };
 
+const appendFilePaths = <T extends { path: string }>(
+	directory: Directory<T>,
+	filePaths: Array<string>,
+): void => {
+	for (const child of directory.directories.values()) appendFilePaths(child, filePaths);
+	for (const item of directory.items) filePaths.push(item.path);
+};
+
 const collectRows = <T extends { path: string }>({
 	directory,
 	prefix,
@@ -91,27 +101,45 @@ const collectRows = <T extends { path: string }>({
 }): Collected<T> => {
 	const rows: Array<FileTreeRow<T>> = [];
 	const filePaths: Array<string> = [];
+	const setSize = directory.directories.size + directory.items.length;
+	let positionInSet = 1;
 
 	for (const [name, child] of directory.directories) {
 		const folded = foldSoleChildren(name, child);
 		const { name: foldedName, directory: foldedDirectory } = folded;
 		const path = prefix === "" ? foldedName : `${prefix}/${foldedName}`;
-		// Walked whether or not it is collapsed: collapsing keeps a directory's rows
-		// out of the list, but it still answers for its files at its own checkbox.
-		const below = collectRows({
-			directory: foldedDirectory,
-			prefix: path,
-			depth: depth + 1,
-			collapsedDirectories,
-		});
+		const collapsed = collapsedDirectories[path] === true;
+		let below: Collected<T>;
+		if (collapsed) {
+			const filePaths: Array<string> = [];
+			appendFilePaths(foldedDirectory, filePaths);
+			below = { rows: [], filePaths };
+		} else {
+			below = collectRows({
+				directory: foldedDirectory,
+				prefix: path,
+				depth: depth + 1,
+				collapsedDirectories,
+			});
+		}
 
-		rows.push({ _tag: "Directory", path, name: foldedName, depth, filePaths: below.filePaths });
-		if (collapsedDirectories[path] !== true) rows.push(...below.rows);
-		filePaths.push(...below.filePaths);
+		rows.push({
+			_tag: "Directory",
+			path,
+			name: foldedName,
+			depth,
+			positionInSet,
+			setSize,
+			filePaths: below.filePaths,
+		});
+		positionInSet++;
+		if (!collapsed) for (const row of below.rows) rows.push(row);
+		for (const filePath of below.filePaths) filePaths.push(filePath);
 	}
 
 	for (const item of directory.items) {
-		rows.push({ _tag: "File", path: item.path, item, depth });
+		rows.push({ _tag: "File", path: item.path, item, depth, positionInSet, setSize });
+		positionInSet++;
 		filePaths.push(item.path);
 	}
 
@@ -122,15 +150,26 @@ export const buildFileTreeRows = <T extends { path: string }>({
 	items,
 	mode,
 	collapsedDirectories,
+	compare,
 }: {
 	items: Array<T>;
 	mode: FileDisplayMode;
 	collapsedDirectories: Record<string, true>;
+	/** Row order; path order when absent. Tree mode still groups by directory around it. */
+	compare?: (a: T, b: T) => number;
 }): Array<FileTreeRow<T>> => {
-	const orderedItems = items.toSorted((a, b) => compareFilePaths(a.path, b.path));
+	const orderedItems = items.toSorted(compare ?? ((a, b) => compareFilePaths(a.path, b.path)));
 
-	if (mode === "list")
-		return orderedItems.map((item) => ({ _tag: "File", path: item.path, item, depth: 0 }));
+	if (mode === "list") {
+		return orderedItems.map((item, index) => ({
+			_tag: "File",
+			path: item.path,
+			item,
+			depth: 0,
+			positionInSet: index + 1,
+			setSize: orderedItems.length,
+		}));
+	}
 
 	const root = emptyDirectory<T>();
 	for (const item of orderedItems) insert(root, item);
@@ -138,9 +177,7 @@ export const buildFileTreeRows = <T extends { path: string }>({
 	return collectRows({ directory: root, prefix: "", depth: 0, collapsedDirectories }).rows;
 };
 
-export const fileTreeNavigationIndex = <T>(
-	rows: Array<FileTreeRow<T>>,
-): NavigationIndex<string> => {
+export const fileTreeAddressSpace = <T>(rows: Array<FileTreeRow<T>>): AddressSpace<string> => {
 	const items = rows.map((row) => row.path);
 	return { items, indexByKey: buildIndexByKey(items, (path) => path) };
 };

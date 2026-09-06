@@ -4,8 +4,8 @@ use crate::{
     command::legacy::status::tui::{
         InlineRewordMode,
         app::{
-            CherryPickMode, CommandMode, CommandReturnMode, CommitMode, CommitSource, JumpMode,
-            MoveMode, MoveSource, MoveStackMode, NormalMode, PickChangesMode, SquashMode,
+            BranchMode, CherryPickMode, CommandMode, CommandReturnMode, CommitMode, CommitSource,
+            JumpMode, MoveMode, MoveSource, MoveStackMode, NormalMode, PickChangesMode, SquashMode,
             StackMode,
             mark::{Marks, MarksRef},
         },
@@ -32,6 +32,7 @@ pub enum Mode {
     PickChanges(PickChangesMode),
     Jump(JumpMode),
     CherryPick(CherryPickMode),
+    Branch(BranchMode),
 }
 
 impl Default for Mode {
@@ -41,12 +42,10 @@ impl Default for Mode {
 }
 
 impl Mode {
-    #[expect(dead_code)]
     pub fn bg(&self, theme: &'static Theme) -> Color {
         ModeDiscriminant::from(self).bg(theme)
     }
 
-    #[expect(dead_code)]
     pub fn fg(&self, theme: &'static Theme) -> Color {
         ModeDiscriminant::from(self).fg(theme)
     }
@@ -69,6 +68,7 @@ impl Mode {
             Mode::PickChanges(inner) => ModeRef::PickChanges(inner),
             Mode::Jump(inner) => ModeRef::Jump(inner),
             Mode::CherryPick(inner) => ModeRef::CherryPick(inner),
+            Mode::Branch(inner) => ModeRef::Branch(inner),
         }
     }
 }
@@ -82,7 +82,7 @@ impl ModeDiscriminant {
             Self::InlineReword | Self::Stack => {
                 theme.tui_mode_inline_reword.bg.unwrap_or(Color::Magenta)
             }
-            Self::Command => theme.tui_mode_command.bg.unwrap_or(Color::Yellow),
+            Self::Command | Self::Branch => theme.tui_mode_command.bg.unwrap_or(Color::Yellow),
             Self::Move | Self::MoveStack | Self::CherryPick => {
                 theme.tui_mode_move.bg.unwrap_or(Color::Cyan)
             }
@@ -101,7 +101,7 @@ impl ModeDiscriminant {
             Self::InlineReword | Self::Stack => {
                 theme.tui_mode_inline_reword.fg.unwrap_or(Color::Black)
             }
-            Self::Command => theme.tui_mode_command.fg.unwrap_or(Color::Black),
+            Self::Command | Self::Branch => theme.tui_mode_command.fg.unwrap_or(Color::Black),
             Self::Move | Self::MoveStack | Self::CherryPick => {
                 theme.tui_mode_move.fg.unwrap_or(Color::Black)
             }
@@ -123,6 +123,7 @@ impl ModeDiscriminant {
             Self::MoveStack => "  move stack  ",
             Self::Jump => "  jump  ",
             Self::CherryPick => "  pick  ",
+            Self::Branch => "  branch  ",
         }
     }
 }
@@ -142,13 +143,14 @@ pub enum ModeRef<'a> {
     PickChanges(&'a PickChangesMode),
     Jump(&'a JumpMode),
     CherryPick(&'a CherryPickMode),
+    Branch(&'a BranchMode),
 }
 
 impl<'a> ModeRef<'a> {
     pub fn marks_ref(self) -> MarksRef<'a> {
         match self {
             ModeRef::Normal(normal_mode) => normal_mode.marks.as_ref(),
-            ModeRef::Squash(SquashMode { source, reword: _ }) => match source {
+            ModeRef::Squash(SquashMode { source, .. }) => match source {
                 SquashSource::Marks(marks) => marks.as_ref(),
                 SquashSource::Uncommitted
                 | SquashSource::Branch(..)
@@ -158,7 +160,9 @@ impl<'a> ModeRef<'a> {
             },
             ModeRef::Commit(commit_mode) => match &*commit_mode.source {
                 CommitSource::Marks(hunks) => MarksRef::from_hunks(hunks),
-                CommitSource::Uncommitted | CommitSource::UncommittedHunk(..) => MarksRef::Empty,
+                CommitSource::UncommittedHunk(..) | CommitSource::UncommittedArea(..) => {
+                    MarksRef::Empty
+                }
             },
             ModeRef::PickChanges(pick_uncommitted_mode) => pick_uncommitted_mode.marks.as_ref(),
             ModeRef::Details(details_mode) => details_mode.return_mode.marks(),
@@ -166,7 +170,7 @@ impl<'a> ModeRef<'a> {
                 CommandReturnMode::Normal(normal_mode) => normal_mode.marks.as_ref(),
                 CommandReturnMode::Details(details_mode) => details_mode.return_mode.marks(),
             },
-            ModeRef::Move(move_mode) => match &*move_mode.source {
+            ModeRef::Move(move_mode) => match &move_mode.source {
                 MoveSource::Marks(commits) => MarksRef::from_commits(commits),
                 MoveSource::Commit { .. } | MoveSource::Branch(..) => MarksRef::Empty,
             },
@@ -174,6 +178,7 @@ impl<'a> ModeRef<'a> {
                 CherryPickSource::Marks(marks) => marks.as_ref(),
                 CherryPickSource::Commit(..) => MarksRef::Empty,
             },
+            ModeRef::Branch(branch_mode) => branch_mode.marks.as_ref(),
             ModeRef::InlineReword(..)
             | ModeRef::Stack(..)
             | ModeRef::MoveStack(..)

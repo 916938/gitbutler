@@ -1,27 +1,31 @@
 import { checkForUpdates, registerUpdater, setAutoUpdateEnabled } from "./updater.js";
 import WatcherManager from "./watcher.js";
 import * as sdk from "@gitbutler/but-sdk";
-import { apiParamNames } from "@gitbutler/but-sdk/api-param-names";
 import {
-	exposedEndpoints,
-	type PayloadFor,
-	type Endpoint,
-	type LiteElectronApi,
-	type ShowNativeMenuParams,
-	type StreamAiResponseParams,
-	type WatcherSubscribeParams,
-	type WatcherUnsubscribeParams,
-	type NativeMenuPopupItem,
+	createEndpointTable,
+	type Handler,
+	type HandlerOverrides,
+	type HostOnlyKey,
+} from "./endpoint-table.js";
+import type {
+	ShowNativeMenuParams,
+	StreamAiResponseParams,
+	WatcherSubscribeParams,
+	WatcherUnsubscribeParams,
+	NativeMenuPopupItem,
 } from "./ipc.js";
 import {
 	askpassInit,
 	askpassSubmitPromptResponse,
 	initApplicationNamespace,
+	interactiveLoginShellEnvironment,
 } from "@gitbutler/but-sdk";
 import {
 	app,
+	autoUpdater,
 	BrowserWindow,
 	clipboard,
+	dialog,
 	ipcMain,
 	Menu,
 	nativeTheme,
@@ -40,7 +44,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { initLogging } from "./logging.js";
 import { type GUISettings, readSettings, writeSettings } from "./settings.js";
+import { initMetrics, metricsOnLogin, shutdownMetrics, withApiCommandCapture } from "./metrics.js";
+import { apiParamNames } from "@gitbutler/but-sdk/api-param-names";
+
+Object.assign(process.env, interactiveLoginShellEnvironment());
 
 const isHeadless = process.env.GITBUTLER_LITE_HEADLESS === "true";
 if (isHeadless && process.platform === "darwin") app.setActivationPolicy("accessory");
@@ -100,7 +109,7 @@ const imgSrc = [
 	"https://gitbutler-public.s3.amazonaws.com",
 ].join(" ");
 
-const liteProtocolScheme = "lite";
+const liteProtocolScheme = "but";
 const liteProtocolHost = "app";
 const contentRootURL = pathToFileURL(path.join(currentDirPath, "../ui"));
 const askpassExecutableName =
@@ -235,6 +244,40 @@ const buildNativeMenuTemplate = (
 		};
 	});
 
+/**
+ * The editing menu every native app offers: the full set in a field you can
+ * type in, and just the copy of a selection anywhere else — read-only text
+ * like a diff is there to be copied out of, and had no menu at all.
+ */
+const registerEditingContextMenu = (window: BrowserWindow): void => {
+	window.webContents.on("context-menu", (_event, params) => {
+		const { editFlags, isEditable, selectionText } = params;
+		if (!isEditable && selectionText.trim() === "") return;
+
+		const template: Array<Electron.MenuItemConstructorOptions> = isEditable
+			? [
+					{ role: "undo", enabled: editFlags.canUndo },
+					{ role: "redo", enabled: editFlags.canRedo },
+					{ type: "separator" },
+					{ role: "cut", enabled: editFlags.canCut },
+					{ role: "copy", enabled: editFlags.canCopy },
+					{ role: "paste", enabled: editFlags.canPaste },
+					{ type: "separator" },
+					{ role: "selectAll", enabled: editFlags.canSelectAll },
+				]
+			: [{ role: "copy", enabled: editFlags.canCopy }];
+		const menu = Menu.buildFromTemplate(template);
+
+		menu.popup({
+			window,
+			frame: params.frame ?? undefined,
+			x: params.x,
+			y: params.y,
+			sourceType: params.menuSourceType,
+		});
+	});
+};
+
 // Returns true if the `url` is from an origin we trust to perform privileged actions such as executing IPC commands.
 const isTrustedLocalOrigin = (url: URL | null) =>
 	url !== null &&
@@ -250,42 +293,14 @@ const newUrlOrNull = (url: string): URL | null => {
 	}
 };
 
-/** Members the renderer implements itself; they have no main-side handler. */
-type RendererOnlyKey = "onAskpassPrompt" | "onFullScreenChange" | "platform";
-
-/** Handlers needing the IPC event itself, or taking variadic arguments. */
-type ImperativeKey =
-	| "isFullScreen"
-	| "pathJoin"
-	| "showNativeMenu"
-	| "streamAiResponse"
-	| "watcherSubscribe"
-	// The preload wraps the id in an object, so the payload is not the argument.
-	| "watcherUnsubscribe";
-
-type TableKey = Exclude<keyof LiteElectronApi, RendererOnlyKey | ImperativeKey>;
-
 /**
- * A handler takes what the renderer sends and returns what it expects, both
- * read off `LiteElectronApi`, so a payload or result that drifts from the
- * renderer's view is a compile error.
+ * Members only electron main can answer: its own capabilities, injected into
+ * the endpoint table. `HostOnlyKey` makes forgetting one a compile error.
  */
-type Handler<K extends TableKey> = LiteElectronApi[K] extends (params: infer P) => infer R
-	? (params: P) => R | Awaited<R>
-	: never;
-
-/**
- * Members the main process answers itself: electron's own capabilities, and
- * the one endpoint that is not `#[but_api]`. Listing one here is what takes
- * it out of the derived set.
- */
-const ipcHandlerOverrides = {
+const electronHandlerOverrides = {
 	askpassSubmitPromptResponse: ({ id, response }) => askpassSubmitPromptResponse(id, response),
-	clipboardWriteText: (text) => {
-		clipboard.writeText(text, "clipboard");
-	},
+	clipboardWriteText: (text) => clipboard.writeText(text),
 	getVersion: () => app.getVersion(),
-	getAiConfiguration: () => sdk.getAiConfiguration(),
 	openInWebBrowser: (url) => {
 		// shell.openExternal() is powerful and dangerous. For example, on macOS you can launch a
 		// program with shell.openExternal("file:///Applications/Numbers.app"). Similarly bad
@@ -302,59 +317,22 @@ const ipcHandlerOverrides = {
 
 		return shell.openExternal(url);
 	},
+	showItemInFolder: (itemPath) => {
+		// Unlike shell.openExternal, this only selects the item in the file
+		// manager; it never launches it, so a path is all it takes.
+		shell.showItemInFolder(itemPath);
+	},
+	pickDirectory: async () => {
+		const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+		return canceled ? null : (filePaths[0] ?? null);
+	},
 	watcherStopAll: () => WatcherManager.getInstance().stopAllWatchersForShutdown(),
 	readGUISettings: () => readSettings(),
-	resetAiConfiguration: () => sdk.resetAiConfiguration(),
-	updateAiConfiguration: (update) => sdk.updateAiConfiguration(update),
 	writeGUISettings: async (settings) => {
 		applyGUISettings(settings);
 		await writeSettings(settings);
 	},
-} satisfies { [K in TableKey]?: Handler<K> };
-
-type OverrideKey = keyof typeof ipcHandlerOverrides;
-type DerivedKey = Exclude<TableKey, OverrideKey>;
-
-/** Narrowing rather than asserting: an exposed endpoint may be either. */
-const isOverride = (key: Endpoint): key is Endpoint & OverrideKey => key in ipcHandlerOverrides;
-
-/**
- * Every other endpoint reads its arguments out of the payload by name, so
- * it cannot pass them in the wrong order — which a hand-written call can,
- * silently: `commitMoveChangesBetween` takes source and destination commit
- * ids that are both strings.
- */
-const derivedHandler =
-	(key: DerivedKey) =>
-	(params: unknown): unknown => {
-		const names: ReadonlyArray<string> = apiParamNames[key];
-		const call = sdk[key] as (...args: Array<unknown>) => unknown;
-		// A lone argument is sent as itself; the rest arrive as a payload.
-		return names.length === 1
-			? call(params)
-			: call(...names.map((name) => (params as Record<string, unknown>)[name]));
-	};
-
-type PayloadOf<K extends TableKey> = Parameters<LiteElectronApi[K]>[0];
-
-/**
- * A derived handler can only supply arguments its payload carries, so the
- * multi-argument ones must carry every name and the single-argument ones
- * must be the argument. Anything else has to be an override.
- */
-type CannotSupplyItsArguments = {
-	[K in DerivedKey]: (typeof apiParamNames)[K]["length"] extends 0
-		? never
-		: (typeof apiParamNames)[K]["length"] extends 1
-			? PayloadOf<K> extends Parameters<(typeof sdk)[K]>[0]
-				? never
-				: K
-			: PayloadOf<K> extends PayloadFor<K>
-				? never
-				: K;
-}[DerivedKey];
-type AssertNever<T extends never> = T;
-type _EveryDerivedHandlerCanSupplyItsArguments = AssertNever<CannotSupplyItsArguments>;
+} satisfies HandlerOverrides & { [K in HostOnlyKey]: Handler<K> };
 
 const registerIpcHandlers = (): void => {
 	const senderValidatingHandle: typeof ipcMain.handle = (channel, listener) => {
@@ -377,13 +355,13 @@ const registerIpcHandlers = (): void => {
 		ipcMain.handle(channel, senderValidatingListener);
 	};
 
-	for (const key of exposedEndpoints) {
-		if (isOverride(key)) continue;
-		senderValidatingHandle(key, (_e, params: unknown) => derivedHandler(key)(params));
-	}
-	for (const [name, handler] of Object.entries(ipcHandlerOverrides)) {
-		const call = handler as (params: unknown) => unknown;
-		senderValidatingHandle(name, (_e, params: unknown) => call(params));
+	for (const [name, handler] of createEndpointTable(electronHandlerOverrides)) {
+		// Only but-api endpoints record `api_command`; the host's own members
+		// (clipboard, settings, dialogs) do not.
+		const captureWrapped = Object.hasOwn(apiParamNames, name)
+			? withApiCommandCapture(name, handler)
+			: handler;
+		senderValidatingHandle(name, (_e, params: unknown) => captureWrapped(params));
 	}
 	senderValidatingHandle("watcherUnsubscribe", (_e, { subscriptionId }: WatcherUnsubscribeParams) =>
 		WatcherManager.getInstance().removeSubscription(subscriptionId),
@@ -436,9 +414,108 @@ const registerIpcHandlers = (): void => {
 	);
 };
 
-const createMainWindow = async (): Promise<void> => {
+/**
+ * Where a `but://app/...` link points, in both forms a window can take it:
+ * `url` for one that has to load the page (the dev server in development, our
+ * own scheme when packaged), `path` for one whose router can just navigate
+ * there. Null for anything that is not one of our links.
+ */
+const deepLinkTarget = (link: string): { url: string; path: string } | null => {
+	const url = newUrlOrNull(link);
+	if (
+		url === null ||
+		url.protocol !== `${liteProtocolScheme}:` ||
+		url.host !== liteProtocolHost ||
+		url.pathname.includes("..")
+	)
+		return null;
+
+	const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+	const base = new URL(devServerUrl ?? `${liteProtocolScheme}://${liteProtocolHost}/`);
+	const target = new URL(`${url.pathname}${url.search}`, base);
+
+	// The path decides the host when it starts with `//`, so the link's own host
+	// having checked out says nothing about where this one points.
+	if (target.protocol !== base.protocol || target.host !== base.host) return null;
+
+	return { url: target.href, path: `${target.pathname}${target.search}` };
+};
+
+/**
+ * Sign in from a `but://login?access_token=…` link, which is how the login page
+ * hands the account back once it knows which client asked.
+ */
+const completeLogin = async (url: URL): Promise<boolean> => {
+	if (url.host !== "login") return false;
+
+	const accessToken = url.searchParams.get("access_token");
+	if (accessToken === null) return true;
+
+	try {
+		const profile = await sdk.loginAndPersist(accessToken);
+		void metricsOnLogin(profile);
+	} catch (error) {
+		// oxlint-disable-next-line no-console
+		console.error("Failed to sign in from a login link", error);
+	}
+	return true;
+};
+
+const showAndFocusWindow = (window: BrowserWindow): void => {
+	if (window.isMinimized()) window.restore();
+	window.show();
+	window.focus();
+};
+
+/**
+ * Open a deep link in the window we already have, or start one if the app was
+ * launched by the link. A running window navigates to the link rather than
+ * reloading the page, so the app keeps its state and its history. The project
+ * the link names is checked by the route itself, which covers every other way
+ * a URL arrives too.
+ */
+const openDeepLink = async (link: string): Promise<void> => {
+	const url = newUrlOrNull(link);
+	if (url !== null && url.protocol === `${liteProtocolScheme}:` && (await completeLogin(url))) {
+		const [existing] = BrowserWindow.getAllWindows();
+		if (existing) showAndFocusWindow(existing);
+		return;
+	}
+
+	const target = deepLinkTarget(link);
+	if (target === null) {
+		// oxlint-disable-next-line no-console
+		console.error(`Ignored deep link ${link}`);
+		return;
+	}
+
+	const [existing] = BrowserWindow.getAllWindows();
+	if (!existing) {
+		await createMainWindow(target.url);
+		return;
+	}
+
+	showAndFocusWindow(existing);
+
+	// A page still loading has no listener yet, so it has to be given the link
+	// as the page to load.
+	if (existing.webContents.isLoading()) {
+		await existing.loadURL(target.url);
+		return;
+	}
+
+	existing.webContents.send("deepLink", target.path);
+};
+
+/** The `but://` link in a launch argv, if the OS started us with one. */
+const deepLinkFromArgv = (argv: Array<string>): string | undefined =>
+	argv.find((arg) => arg.startsWith(`${liteProtocolScheme}://`));
+
+const createMainWindow = async (initialUrl?: string): Promise<void> => {
 	const icon = getWindowIcon();
 	const mainWindow = new BrowserWindow({
+		name: "main",
+		windowStatePersistence: true,
 		width: 1024,
 		height: 768,
 		show: !isHeadless,
@@ -453,6 +530,7 @@ const createMainWindow = async (): Promise<void> => {
 			preload: path.join(currentDirPath, "preload.cjs"),
 		},
 	});
+	registerEditingContextMenu(mainWindow);
 
 	const notifyFullScreenChange = () => {
 		mainWindow.webContents.send("fullScreenChange", mainWindow.isFullScreen());
@@ -460,25 +538,67 @@ const createMainWindow = async (): Promise<void> => {
 	mainWindow.on("enter-full-screen", notifyFullScreenChange);
 	mainWindow.on("leave-full-screen", notifyFullScreenChange);
 
+	if (process.platform === "darwin") {
+		const hideWindowInsteadOfClosing = (event: Electron.Event) => {
+			event.preventDefault();
+			mainWindow.hide();
+		};
+		const allowWindowToClose = () => {
+			mainWindow.removeListener("close", hideWindowInsteadOfClosing);
+		};
+
+		mainWindow.on("close", hideWindowInsteadOfClosing);
+		app.once("before-quit", allowWindowToClose);
+		autoUpdater.once("before-quit-for-update", allowWindowToClose);
+		mainWindow.once("closed", () => {
+			app.removeListener("before-quit", allowWindowToClose);
+			autoUpdater.removeListener("before-quit-for-update", allowWindowToClose);
+		});
+	}
+
 	const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 	if (devServerUrl !== undefined) {
-		await mainWindow.loadURL(devServerUrl);
+		await mainWindow.loadURL(initialUrl ?? devServerUrl);
 		return;
 	}
 
 	const rootUrl = `${liteProtocolScheme}://${liteProtocolHost}/`;
-	await mainWindow.loadURL(rootUrl);
+	await mainWindow.loadURL(initialUrl ?? rootUrl);
 	registerUpdater(mainWindow);
 	checkForUpdates();
 };
 
 app.enableSandbox(); // forces sandboxing for all renderers, even if they try to launch without
+
+// One instance owns the protocol: a second launch (how Windows and Linux
+// deliver a link) hands its argv to the first and exits.
+if (!app.requestSingleInstanceLock()) {
+	app.quit();
+} else {
+	app.on("second-instance", (_event, argv) => {
+		const link = deepLinkFromArgv(argv);
+		if (link !== undefined) void openDeepLink(link);
+	});
+
+	// macOS delivers links here instead, both to a running app and to one the
+	// link just launched.
+	app.on("open-url", (event, url) => {
+		event.preventDefault();
+		void openDeepLink(url);
+	});
+}
+
 void app.whenReady().then(async () => {
+	initLogging();
 	applyGUISettings(await readSettings());
 	await initApplicationNamespace(null);
 	configureAskpass();
 
 	if (app.isPackaged) {
+		// Packaged-only so dev builds send nothing, and awaited so the client
+		// exists before the IPC handlers and the launch-link login below run.
+		await initMetrics(app.getVersion());
+
 		registerLiteProtocolHandler();
 
 		// Basic non-Strict CSP based on https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html#basic-non-strict-csp-policy
@@ -560,29 +680,57 @@ void app.whenReady().then(async () => {
 	});
 
 	registerIpcHandlers();
-	await createMainWindow();
+
+	// Dev runs from the electron binary, which needs to be told which program
+	// and arguments to relaunch for a link.
+	if (app.isPackaged) {
+		app.setAsDefaultProtocolClient(liteProtocolScheme);
+	} else {
+		app.setAsDefaultProtocolClient(liteProtocolScheme, process.execPath, [
+			path.resolve(process.argv[1] ?? ""),
+		]);
+	}
+
+	const launchLink = deepLinkFromArgv(process.argv);
+	// Windows and Linux deliver a cold-launch link only through argv, never as
+	// `open-url`, so a login link arriving that way has to be handled here too.
+	const launchUrl = launchLink === undefined ? null : newUrlOrNull(launchLink);
+	if (launchUrl?.protocol === `${liteProtocolScheme}:`) await completeLogin(launchUrl);
+
+	await createMainWindow(
+		launchLink === undefined ? undefined : (deepLinkTarget(launchLink)?.url ?? undefined),
+	);
 
 	app.on("activate", () => {
-		if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
+		const [existing] = BrowserWindow.getAllWindows();
+		if (existing) showAndFocusWindow(existing);
+		else void createMainWindow();
 	});
 });
 
-app.on("before-quit", () => {
-	WatcherManager.getInstance().destroy();
+app.on("before-quit", (event) => {
+	WatcherManager.destroyInstance();
+
+	// The metrics queue lives in memory, so hold the quit until it has
+	// flushed; the re-issued quit finds nothing to flush and goes through.
+	const flushing = shutdownMetrics();
+	if (flushing !== null) {
+		event.preventDefault();
+		void flushing.then(() => app.quit());
+	}
 });
 
 app.on("window-all-closed", () => {
-	WatcherManager.getInstance().destroy();
+	WatcherManager.destroyInstance();
 	if (process.platform !== "darwin") app.quit();
 });
 
 app.on("web-contents-created", (_, contents) => {
 	contents.on("will-navigate", (event, navigationUrl) => {
-		const currentUrl = newUrlOrNull(contents.getURL());
 		const targetUrl = newUrlOrNull(navigationUrl);
-		// Allow HMR page reloads.
-		if (!app.isPackaged && currentUrl?.href === targetUrl?.href && isTrustedLocalOrigin(targetUrl))
-			return;
+		// Where the user is lives in the URL, so opening a link to a branch or a
+		// commit is an ordinary navigation. Anything off our origin stays blocked.
+		if (isTrustedLocalOrigin(targetUrl)) return;
 
 		// oxlint-disable-next-line no-console
 		console.error(`Blocked navigation to ${navigationUrl}`);

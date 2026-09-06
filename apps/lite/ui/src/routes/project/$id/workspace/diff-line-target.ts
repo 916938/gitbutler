@@ -21,6 +21,7 @@ const diffLineFromElement = (element: HTMLElement): DiffLine | null => {
 		case "change-deletion":
 			return { side: "deletions", lineType: "change" };
 		case "context":
+		case "context-expanded":
 			// Context has no side of its own, so it is numbered by the column holding it: the deletions
 			// one in a split diff, the additions one otherwise.
 			return {
@@ -42,9 +43,10 @@ export const diffLineTargetFromElement = ({
 	const line = diffLineFromElement(element);
 	if (!line) return null;
 
-	const [number] = LINE_NUMBER_ATTRIBUTES.flatMap(
-		(attribute) => element.getAttribute(attribute) ?? [],
-	);
+	const [number] = LINE_NUMBER_ATTRIBUTES.values()
+		.map((attr) => element.getAttribute(attr))
+		.filter((x) => x != null)
+		.take(1);
 	const lineNumber = Number.parseInt(number ?? "", 10);
 	if (!Number.isFinite(lineNumber)) return null;
 

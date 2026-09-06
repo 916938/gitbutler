@@ -9,7 +9,7 @@ use crate::ref_info::with_workspace_commit::utils::{
 
 #[test]
 fn tear_off_top_most_branch() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph(
             "ws-ref-ws-commit-single-stack-double-stack",
             |meta| {
@@ -36,20 +36,19 @@ fn tear_off_top_most_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:C on 85efbe4 {2}
-    ├── 📙:4:C
+└── ≡📙:C on 85efbe4 {2}
+    ├── 📙:C
     │   └── ·09bc93e (🏘️)
-    └── 📙:5:B
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off C from the stack.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -63,7 +62,7 @@ fn tear_off_top_most_branch() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -84,15 +83,15 @@ fn tear_off_top_most_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-├── ≡📙:4:B on 85efbe4 {2}
-│   └── 📙:4:B
+├── ≡📙:B on 85efbe4 {2}
+│   └── 📙:B
 │       └── ·c813d8d (🏘️)
-└── ≡📙:5:C on 85efbe4 {3}
-    └── 📙:5:C
+└── ≡📙:C on 85efbe4 {3}
+    └── 📙:C
         └── ·8e00332 (🏘️)
 
 "#]]
@@ -103,7 +102,7 @@ fn tear_off_top_most_branch() -> anyhow::Result<()> {
 
 #[test]
 fn tear_off_bottom_most_branch() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph(
             "ws-ref-ws-commit-single-stack-double-stack",
             |meta| {
@@ -130,20 +129,19 @@ fn tear_off_bottom_most_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:C on 85efbe4 {2}
-    ├── 📙:4:C
+└── ≡📙:C on 85efbe4 {2}
+    ├── 📙:C
     │   └── ·09bc93e (🏘️)
-    └── 📙:5:B
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off B from the stack.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -157,7 +155,7 @@ fn tear_off_bottom_most_branch() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -178,15 +176,15 @@ fn tear_off_bottom_most_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-├── ≡📙:4:C on 85efbe4 {2}
-│   └── 📙:4:C
+├── ≡📙:C on 85efbe4 {2}
+│   └── 📙:C
 │       └── ·8e00332 (🏘️)
-└── ≡📙:5:B on 85efbe4 {3}
-    └── 📙:5:B
+└── ≡📙:B on 85efbe4 {3}
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
@@ -197,7 +195,7 @@ fn tear_off_bottom_most_branch() -> anyhow::Result<()> {
 
 #[test]
 fn tear_off_only_branch_in_stack() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph(
             "ws-ref-ws-commit-single-stack-double-stack",
             |meta| {
@@ -224,20 +222,19 @@ fn tear_off_only_branch_in_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:C on 85efbe4 {2}
-    ├── 📙:4:C
+└── ≡📙:C on 85efbe4 {2}
+    ├── 📙:C
     │   └── ·09bc93e (🏘️)
-    └── 📙:5:B
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off A from the stack. Should be a no-op.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -251,7 +248,7 @@ fn tear_off_only_branch_in_stack() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -271,14 +268,14 @@ fn tear_off_only_branch_in_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:C on 85efbe4 {2}
-    ├── 📙:4:C
+└── ≡📙:C on 85efbe4 {2}
+    ├── 📙:C
     │   └── ·09bc93e (🏘️)
-    └── 📙:5:B
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
@@ -289,7 +286,7 @@ fn tear_off_only_branch_in_stack() -> anyhow::Result<()> {
 
 #[test]
 fn tear_off_from_single_stack_in_ws_top() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph("ws-ref-ws-commit-one-stack", |meta| {
             add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
             add_stack_with_segments(meta, 2, "B", StackState::InWorkspace, &[]);
@@ -309,17 +306,16 @@ fn tear_off_from_single_stack_in_ws_top() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:4:B on 85efbe4 {2}
-    ├── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B on 85efbe4 {2}
+    ├── 📙:B
     │   └── ·d69fe94 (🏘️)
-    └── 📙:3:A
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off B from the stack.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -333,7 +329,7 @@ fn tear_off_from_single_stack_in_ws_top() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -352,12 +348,12 @@ fn tear_off_from_single_stack_in_ws_top() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:B on 85efbe4 {2}
-    └── 📙:4:B
+└── ≡📙:B on 85efbe4 {2}
+    └── 📙:B
         └── ·1273ba9 (🏘️)
 
 "#]]
@@ -368,7 +364,7 @@ fn tear_off_from_single_stack_in_ws_top() -> anyhow::Result<()> {
 
 #[test]
 fn tear_off_from_single_stack_in_ws_bottom() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph("ws-ref-ws-commit-one-stack", |meta| {
             add_stack_with_segments(meta, 1, "A", StackState::InWorkspace, &[]);
             add_stack_with_segments(meta, 2, "B", StackState::InWorkspace, &[]);
@@ -388,17 +384,16 @@ fn tear_off_from_single_stack_in_ws_bottom() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:4:B on 85efbe4 {2}
-    ├── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B on 85efbe4 {2}
+    ├── 📙:B
     │   └── ·d69fe94 (🏘️)
-    └── 📙:3:A
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off A from the stack.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -412,7 +407,7 @@ fn tear_off_from_single_stack_in_ws_bottom() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -431,12 +426,12 @@ fn tear_off_from_single_stack_in_ws_bottom() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:B on 85efbe4 {2}
-│   └── 📙:3:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:B on 85efbe4 {2}
+│   └── 📙:B
 │       └── ·1273ba9 (🏘️)
-└── ≡📙:4:A on 85efbe4 {1}
-    └── 📙:4:A
+└── ≡📙:A on 85efbe4 {1}
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]
@@ -447,7 +442,7 @@ fn tear_off_from_single_stack_in_ws_bottom() -> anyhow::Result<()> {
 
 #[test]
 fn tear_off_empty_branch() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph(
             "ws-ref-ws-commit-one-stack-with-empty-top-branch",
             |meta| {
@@ -468,16 +463,15 @@ fn tear_off_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:4:B on 85efbe4 {1}
-    ├── 📙:4:B
-    └── 📙:5:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B on 85efbe4 {1}
+    ├── 📙:B
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off B from the stack.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -491,7 +485,7 @@ fn tear_off_empty_branch() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -509,12 +503,12 @@ fn tear_off_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡📙:4:B on 85efbe4 {3}
-    └── 📙:4:B
+└── ≡📙:B on 85efbe4 {3}
+    └── 📙:B
 
 "#]]
     );
@@ -524,7 +518,7 @@ fn tear_off_empty_branch() -> anyhow::Result<()> {
 
 #[test]
 fn tear_off_non_empty_branch() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description_and_graph(
             "ws-ref-ws-commit-one-stack-with-empty-top-branch",
             |meta| {
@@ -545,16 +539,15 @@ fn tear_off_non_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:4:B on 85efbe4 {1}
-    ├── 📙:4:B
-    └── 📙:5:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B on 85efbe4 {1}
+    ├── 📙:B
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     // Tear off A from the stack.
     let but_workspace::branch::move_branch::Outcome {
         rebase, ws_meta, ..
@@ -568,7 +561,7 @@ fn tear_off_non_empty_branch() -> anyhow::Result<()> {
     rebase.materialize(Default::default())?;
     set_workspace_metadata(&mut meta, &ws, ws_meta)?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta)?;
+    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -586,11 +579,11 @@ fn tear_off_non_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:4:B on 85efbe4 {1}
-│   └── 📙:4:B
-└── ≡📙:3:A on 85efbe4 {3}
-    └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:B on 85efbe4 {1}
+│   └── 📙:B
+└── ≡📙:A on 85efbe4 {3}
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]

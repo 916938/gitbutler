@@ -109,8 +109,12 @@ pub enum CliError {
     BadInput(BadInput),
     /// We tried to execute the subcommand as an external command, but that command was not found.
     ExternalCommandNotFound(OsString),
+    /// An external subcommand failed with this exit code.
+    ExternalCommandFailed(i32),
     /// Something went wrong internally.
     Internal(anyhow::Error),
+    /// The command failed before its handler started.
+    Initialization(anyhow::Error),
     /// The CLI output was a "rejection". See [`CliOutputHuman::is_rejection`] for more details.
     CommandRejection,
 }
@@ -141,8 +145,10 @@ impl CliError {
             Self::ExternalCommandNotFound(command_name) => {
                 Self::ExternalCommandNotFound(command_name)
             }
+            Self::ExternalCommandFailed(code) => Self::ExternalCommandFailed(code),
             Self::CommandRejection => Self::CommandRejection,
             Self::Internal(value) => Self::Internal(value.context(context)),
+            Self::Initialization(value) => Self::Initialization(value.context(context)),
         }
     }
 
@@ -153,7 +159,9 @@ impl CliError {
             Self::ExternalCommandNotFound(command_name) => {
                 Self::ExternalCommandNotFound(command_name)
             }
+            Self::ExternalCommandFailed(code) => Self::ExternalCommandFailed(code),
             Self::Internal(value) => Self::Internal(value),
+            Self::Initialization(value) => Self::Initialization(value),
             Self::CommandRejection => Self::CommandRejection,
         }
     }
@@ -165,17 +173,28 @@ impl CliError {
             Self::ExternalCommandNotFound(command_name) => {
                 Self::ExternalCommandNotFound(command_name)
             }
+            Self::ExternalCommandFailed(code) => Self::ExternalCommandFailed(code),
             Self::Internal(value) => Self::Internal(value),
+            Self::Initialization(value) => Self::Initialization(value),
             Self::CommandRejection => Self::CommandRejection,
         }
     }
 
     pub fn into_internal(self) -> anyhow::Error {
         match self {
-            Self::BadInput(..) | Self::ExternalCommandNotFound(..) | Self::CommandRejection => {
+            Self::BadInput(mut err) => {
+                // the hints are unlikely to be useful for internal errors so lets just discard
+                // them
+                err.hint = None;
+
+                anyhow::anyhow!("{err}")
+            }
+            Self::ExternalCommandNotFound(..)
+            | Self::ExternalCommandFailed(..)
+            | Self::CommandRejection => {
                 anyhow::anyhow!("{self}")
             }
-            Self::Internal(error) => error,
+            Self::Internal(error) | Self::Initialization(error) => error,
         }
     }
 }
@@ -191,7 +210,10 @@ impl Display for CliError {
                     bad_input("Unrecognized subcommand").arg_value(command_name.to_string_lossy())
                 )
             }
-            Self::Internal(value) => value.fmt(f),
+            Self::ExternalCommandFailed(code) => {
+                write!(f, "External command exited with status {code}")
+            }
+            Self::Internal(value) | Self::Initialization(value) => value.fmt(f),
             Self::CommandRejection => {
                 // The output is printed elsewhere such as by [`OutputChannel::print_cli_output`].
                 f.write_str("Command rejected")

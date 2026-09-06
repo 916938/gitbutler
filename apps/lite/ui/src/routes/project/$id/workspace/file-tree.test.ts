@@ -41,6 +41,20 @@ describe("buildFileTreeRows", () => {
 		]);
 	});
 
+	test("reports each row's position among its siblings", () => {
+		const rows = tree(["readme.md", "src/app.ts", "src/ui/row.ts", "docs/guide.md"]);
+
+		expect(rows.map(({ path, positionInSet, setSize }) => [path, positionInSet, setSize])).toEqual([
+			["docs", 1, 3],
+			["docs/guide.md", 1, 1],
+			["src", 2, 3],
+			["src/ui", 1, 2],
+			["src/ui/row.ts", 1, 1],
+			["src/app.ts", 2, 2],
+			["readme.md", 3, 3],
+		]);
+	});
+
 	test("folds a chain of sole-child directories into one row", () => {
 		const rows = tree(["src/lib/files/row.ts", "src/lib/files/tree.ts"]);
 
@@ -59,13 +73,13 @@ describe("buildFileTreeRows", () => {
 	});
 
 	test("sorts names naturally, case only breaking ties", () => {
-		const rows = tree(["v9.ts", "Outline.tsx", "v10.ts", "Beta.ts", "lineStats.ts", "alpha.ts"]);
+		const rows = tree(["v9.ts", "Sidebar.tsx", "v10.ts", "Beta.ts", "lineStats.ts", "alpha.ts"]);
 
 		expect(layout(rows)).toEqual([
 			"alpha.ts",
 			"Beta.ts",
 			"lineStats.ts",
-			"Outline.tsx",
+			"Sidebar.tsx",
 			"v9.ts",
 			"v10.ts",
 		]);
@@ -85,6 +99,29 @@ describe("buildFileTreeRows", () => {
 			path: "src",
 			filePaths: ["src/ui/row.ts", "src/app.ts"],
 		});
+	});
+
+	test("handles a directory larger than the function argument limit", () => {
+		const fileCount = 150_000;
+		const largeTree = (collapsedDirectories: Record<string, true> = {}) =>
+			buildFileTreeRows({
+				items: Array.from({ length: fileCount }, (_, index) => ({
+					path: `target/debug/file-${index}`,
+				})),
+				mode: "tree",
+				collapsedDirectories,
+				compare: () => 0,
+			});
+
+		const expanded = largeTree();
+		expect(expanded).toHaveLength(fileCount + 1);
+		expect(expanded[0]?._tag === "Directory" ? expanded[0].filePaths : []).toHaveLength(fileCount);
+
+		const collapsed = largeTree({ "target/debug": true });
+		expect(collapsed).toHaveLength(1);
+		expect(collapsed[0]?._tag === "Directory" ? collapsed[0].filePaths : []).toHaveLength(
+			fileCount,
+		);
 	});
 });
 

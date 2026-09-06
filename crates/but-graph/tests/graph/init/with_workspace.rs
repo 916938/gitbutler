@@ -25,7 +25,7 @@ use crate::support::graph_dag;
 
 #[test]
 fn workspace_with_stack_and_local_target() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/local-target-and-stack")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/local-target-and-stack")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -50,6 +50,7 @@ fn workspace_with_stack_and_local_target() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -57,19 +58,19 @@ fn workspace_with_stack_and_local_target() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·59a427f (⌂|🏘|001)
+●    ·59a427f (⌂|🏘)
 ├─╮
 ◎ │  main <> origin/main
-● │  ·0a415d8 (⌂|🏘|011)
+● │  ·0a415d8 (⌂|🏘)
 │ ◎  A
-│ ●  ·a62b0de (⌂|🏘|001)
-│ ●  ·120a217 (⌂|🏘|001)
+│ ●  ·a62b0de (⌂|🏘)
+│ ●  ·120a217 (⌂|🏘)
 │ │ ◎  origin/main
-│ │ ●  🟣1f5c47b (0x0|100)
+│ │ ●  🟣1f5c47b (0x0)
 ├───╯
-● │  ·73ba99d (⌂|🏘|111)
+● │  ·73ba99d (⌂|🏘)
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|111)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -79,7 +80,7 @@ fn workspace_with_stack_and_local_target() -> anyhow::Result<()> {
             .expect("this is managed workspace commit")
             .to_debug(),
         snapbox::str![[r#"
-Commit(59a427f, ⌂|🏘|1)
+Commit(59a427f, ⌂|🏘)
 
 "#]]
     );
@@ -90,14 +91,14 @@ Commit(59a427f, ⌂|🏘|1)
     snapbox::assert_data_eq!(
         graph_workspace(ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓! on fafd9d0
-├── ≡:1:main <> origin/main →:2:⇡1⇣1 on fafd9d0
-│   └── :1:main <> origin/main →:2:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓! on fafd9d0
+├── ≡:main <> origin/main⇡1⇣1 on fafd9d0
+│   └── :main <> origin/main⇡1⇣1
 │       ├── 🟣1f5c47b
 │       ├── ·0a415d8 (🏘️)
 │       └── ❄️73ba99d (🏘️)
-└── ≡:3:A on fafd9d0
-    └── :3:A
+└── ≡:A on fafd9d0
+    └── :A
         ├── ·a62b0de (🏘️)
         └── ·120a217 (🏘️)
 
@@ -109,7 +110,8 @@ Commit(59a427f, ⌂|🏘|1)
 
 #[test]
 fn workspace_with_only_local_target() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/local-contained-and-target-ahead")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/local-contained-and-target-ahead")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -124,20 +126,26 @@ fn workspace_with_only_local_target() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·e5e2623 (⌂|🏘|01)
+●  ·e5e2623 (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣cb54dca (✓)
 ├─╯
 ◎  main <> origin/main
-●  ·0a415d8 (⌂|🏘|✓|11)
-●  ·73ba99d (⌂|🏘|✓|11)
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  ·0a415d8 (⌂|🏘|✓)
+●  ·73ba99d (⌂|🏘|✓)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -147,7 +155,7 @@ fn workspace_with_only_local_target() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 0a415d8
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 0a415d8
 
 "#]]
     );
@@ -157,7 +165,7 @@ fn workspace_with_only_local_target() -> anyhow::Result<()> {
 
 #[test]
 fn reproduce_11483() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/reproduce-11483")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/reproduce-11483")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -175,20 +183,26 @@ fn reproduce_11483() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 2, "B", StackState::InWorkspace, &["below"]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     let ws = &graph.into_workspace()?;
     snapbox::assert_data_eq!(
         graph_workspace(ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
-├── ≡📙:3:A on 3183e43 {1}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+├── ≡📙:A on 3183e43 {1}
+│   └── 📙:A
 │       └── ·7236012 (🏘️)
-└── ≡📙:4:B on 3183e43 {2}
-    ├── 📙:4:B
+└── ≡📙:B on 3183e43 {2}
+    ├── 📙:B
     │   └── ·68c8a9d (🏘️)
-    └── 📙:5:below
+    └── 📙:below
 
 "#]]
     );
@@ -197,18 +211,24 @@ fn reproduce_11483() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &["below"]);
     add_stack_with_segments(&mut meta, 2, "B", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
-├── ≡📙:3:A on 3183e43 {1}
-│   ├── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+├── ≡📙:A on 3183e43 {1}
+│   ├── 📙:A
 │   │   └── ·7236012 (🏘️)
-│   └── 📙:5:below
-└── ≡📙:4:B on 3183e43 {2}
-    └── 📙:4:B
+│   └── 📙:below
+└── ≡📙:B on 3183e43 {2}
+    └── 📙:B
         └── ·68c8a9d (🏘️)
 
 "#]]
@@ -219,7 +239,8 @@ fn reproduce_11483() -> anyhow::Result<()> {
 
 #[test]
 fn workspace_projection_with_advanced_stack_tip() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/advanced-stack-tip-outside-workspace")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/advanced-stack-tip-outside-workspace")?;
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &["A"]);
 
     snapbox::assert_data_eq!(
@@ -235,35 +256,252 @@ fn workspace_projection_with_advanced_stack_tip() -> anyhow::Result<()> {
 "#]]
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  📙B
 ●  ·cc0bf57 (⌂)
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·2076060 (⌂|🏘|01)
+│ ●  ·2076060 (⌂|🏘)
 ├─╯
-●  ·d69fe94 (⌂|🏘|01)
+●  ·d69fe94 (⌂|🏘)
 ◎  📙A
-●  ·09d8e52 (⌂|🏘|01)
+●  ·09d8e52 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·85efbe4 (⌂|🏘|✓|11)
+●  🏁·85efbe4 (⌂|🏘|✓)
 "#]]
     );
     let ws = &graph.into_workspace()?;
     snapbox::assert_data_eq!(
         graph_workspace(ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:5:B →:3: on 85efbe4 {1}
-    ├── 📙:5:B →:3:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B on 85efbe4 {1}
+    ├── 📙:B
     │   ├── ·cc0bf57*
     │   └── ·d69fe94 (🏘️)
-    └── 📙:4:A
+    └── 📙:A
+        └── ·09d8e52 (🏘️)
+
+"#]]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn workspace_projection_with_stack_tip_advanced_by_two() -> anyhow::Result<()> {
+    // With the tip two commits ahead of the stale workspace commit, the workspace
+    // walk reaches the fork commit before the stack-branch walk does.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/advanced-stack-tip-twice-outside-workspace")?;
+    add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &["A"]);
+
+    // `B` is two commits past the fork the workspace commit was made from, so the workspace
+    // walk reaches `d69fe94` before `B` does.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 6d3fd90 (B) B-outside-2
+* cf6b678 B-outside-1
+| * 2076060 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+|/  
+* d69fe94 B
+* 09d8e52 (A) A
+* 85efbe4 (origin/main, main) M
+
+"#]]
+    );
+
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    // `B` keeps both outside commits and connects down into the workspace segment, which
+    // still owns the fork commit.
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  📙B
+●  ·6d3fd90 (⌂)
+●  ·cf6b678 (⌂)
+│ ◎  👉📕gitbutler/workspace[🌳]
+│ ●  ·2076060 (⌂|🏘)
+├─╯
+●  ·d69fe94 (⌂|🏘)
+◎  📙A
+●  ·09d8e52 (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·85efbe4 (⌂|🏘|✓)
+"#]]
+    );
+    let ws = &graph.into_workspace()?;
+    // The advanced commits show on `B` as outside the workspace, the fork commit stays managed.
+    snapbox::assert_data_eq!(
+        graph_workspace(ws).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B on 85efbe4 {1}
+    ├── 📙:B
+    │   ├── ·6d3fd90*
+    │   ├── ·cf6b678*
+    │   └── ·d69fe94 (🏘️)
+    └── 📙:A
+        └── ·09d8e52 (🏘️)
+
+"#]]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn workspace_projection_with_stack_tip_advanced_by_two_in_single_branch_mode() -> anyhow::Result<()>
+{
+    // Like above, but `HEAD` stays on the advanced stack branch, as single-branch
+    // mode leaves it after committing there (GB-1948).
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
+        "ws/advanced-stack-tip-twice-outside-workspace-single-branch",
+    )?;
+    add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &["A"]);
+
+    // Same shape, but `HEAD` stays on `B`, as single-branch mode leaves it after committing.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 6d3fd90 (HEAD -> B) B-outside-2
+* cf6b678 B-outside-1
+| * 2076060 (gitbutler/workspace) GitButler Workspace Commit
+|/  
+* d69fe94 B
+* 09d8e52 (A) A
+* 85efbe4 (origin/main, main) M
+
+"#]]
+    );
+
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    // `B` is the entrypoint and keeps its own commits; the workspace segment keeps the fork commit.
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📙B[🌳]
+●  ·6d3fd90 (⌂)
+●  ·cf6b678 (⌂)
+│ ◎  📕gitbutler/workspace
+│ ●  ·2076060 (⌂|🏘)
+├─╯
+●  ·d69fe94 (⌂|🏘)
+◎  📙A
+●  ·09d8e52 (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·85efbe4 (⌂|🏘|✓)
+"#]]
+    );
+    let ws = &graph.into_workspace()?;
+    // The projection is anchored on `B` itself and lists the new commits as regular stack commits.
+    snapbox::assert_data_eq!(
+        graph_workspace(ws).to_string(),
+        snapbox::str![[r#"
+⌂:B[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡📙:B[🌳] on 85efbe4 {1}
+    ├── 📙:B[🌳]
+    │   ├── ·6d3fd90
+    │   ├── ·cf6b678
+    │   └── ·d69fe94 (🏘️)
+    └── 📙:A
+        └── ·09d8e52 (🏘️)
+
+"#]]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn workspace_projection_with_branch_on_top_of_workspace_commit() -> anyhow::Result<()> {
+    // `HEAD` is on a branch that was created on top of the workspace commit, so the
+    // entrypoint walk runs into the workspace segment at its tip commit.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/branch-on-top-of-workspace-commit")?;
+    add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &[]);
+
+    // `C` sits two commits above the workspace commit, which itself sits on top of the stack.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* d453f2a (HEAD -> C) C-2
+* 70d125c C-1
+* d990875 (gitbutler/workspace) GitButler Workspace Commit
+* 09d8e52 (A) A
+* 85efbe4 (origin/main, main) M
+
+"#]]
+    );
+
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    // The entrypoint keeps its own commits and connects down into the workspace segment
+    // instead of trading commits with it.
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉C[🌳]
+●  ·d453f2a (⌂)
+●  ·70d125c (⌂)
+◎  📕gitbutler/workspace
+●  ·d990875 (⌂|🏘)
+◎  📙A
+●  ·09d8e52 (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·85efbe4 (⌂|🏘|✓)
+"#]]
+    );
+    let ws = &graph.into_workspace()?;
+    // `C` acts as an ad-hoc workspace whose stack absorbs the managed commit and `A` below it.
+    snapbox::assert_data_eq!(
+        graph_workspace(ws).to_string(),
+        snapbox::str![[r#"
+⌂:C[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+└── ≡:C[🌳] on 85efbe4 {1}
+    ├── :C[🌳]
+    │   ├── ·d453f2a
+    │   ├── ·70d125c
+    │   └── ·d990875 (🏘️)
+    └── 📙:A
         └── ·09d8e52 (🏘️)
 
 "#]]
@@ -275,7 +513,7 @@ fn workspace_projection_with_advanced_stack_tip() -> anyhow::Result<()> {
 #[test]
 fn no_overzealous_stacks_due_to_workspace_metadata() -> anyhow::Result<()> {
     // NOTE: Was supposed to reproduce #11459, but it found another issue instead.
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/reproduce-11459")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/reproduce-11459")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -300,18 +538,24 @@ fn no_overzealous_stacks_due_to_workspace_metadata() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 1, "X", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 2, "feat-2", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
-├── ≡:7:anon: on a821094 {2}
-│   └── :7:anon:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+├── ≡:anon: on a821094 {2}
+│   └── :anon:
 │       ├── ·835086d (🏘️) ►four, ►three
 │       └── ·ff310d3 (🏘️)
-└── ≡📙:3:X <> origin/X →:5:⇡1 on 3183e43 {1}
-    └── 📙:3:X <> origin/X →:5:⇡1
+└── ≡📙:X <> origin/X⇡1 on 3183e43 {1}
+    └── 📙:X <> origin/X⇡1
         ├── ·0b203b5 (🏘️)
         └── ❄️4840f3b (🏘️)
 
@@ -323,7 +567,7 @@ fn no_overzealous_stacks_due_to_workspace_metadata() -> anyhow::Result<()> {
 
 #[test]
 fn single_stack_ambiguous() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/single-stack-ambiguous")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/single-stack-ambiguous")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -340,8 +584,14 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
     // Just a workspace, no additional ref information.
     // As the segments are ambiguous, there are many unnamed segments.
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -356,25 +606,25 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ ◎  ambiguous-01
 │ ├─╯
 │ │ ◎  👉📕gitbutler/workspace[🌳]
-│ │ ●  ·20de6ee (⌂|🏘|0001)
+│ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|0101)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ │ ◎  new-A
 │ │ │ │ ◎  new-B
 │ │ │ ├─╯
 │ │ │ │ ◎  origin/main
 │ │ │ │ │ ◎  tags/without-ref
 │ │ ├─────╯
-│ │ ● │ │  ·320e105 (⌂|🏘|0101)
+│ │ ● │ │  ·320e105 (⌂|🏘)
 │ ├─╯ │ │
-│ ●   │ │  ·2a31450 (⌂|🏘|0101)
+│ ●   │ │  ·2a31450 (⌂|🏘)
 │ ◎   │ │  origin/B
 ├─╯   │ │
-●     │ │  ·70bde6b (⌂|🏘|1101)
+●     │ │  ·70bde6b (⌂|🏘)
 ├───────╯
 ◎     │  main <> origin/main
 ├─────╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -382,9 +632,9 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:B <> origin/B →:4:⇡3 on fafd9d0
-    └── :3:B <> origin/B →:4:⇡3
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B <> origin/B⇡3 on fafd9d0
+    └── :B <> origin/B⇡3
         ├── ·70e9a36 (🏘️)
         ├── ·320e105 (🏘️) ►tags/without-ref
         ├── ·2a31450 (🏘️) ►B-empty, ►ambiguous-01
@@ -401,6 +651,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -421,23 +672,23 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ ◎  📕gitbutler/workspace[🌳]
 │ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|0100)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ ◎  👉tags/without-ref
-│ │ ●  ·320e105 (⌂|🏘|0101)
+│ │ ●  ·320e105 (⌂|🏘)
 │ ├─╯
-│ ●  ·2a31450 (⌂|🏘|0101)
+│ ●  ·2a31450 (⌂|🏘)
 ├─╯
 │ ◎  new-A
 │ │ ◎  new-B
 │ ├─╯
 │ │ ◎  origin/B
 ├───╯
-● │  ·70bde6b (⌂|🏘|1101)
+● │  ·70bde6b (⌂|🏘)
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     // Now `HEAD` is outside a workspace, which goes to single-branch mode. But it knows it's in a workspace
@@ -445,11 +696,11 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:B <> origin/B →:5:⇡1 on fafd9d0
-    ├── :4:B <> origin/B →:5:⇡1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B <> origin/B⇡1 on fafd9d0
+    ├── :B <> origin/B⇡1
     │   └── ·70e9a36 (🏘️)
-    └── 👉:0:tags/without-ref
+    └── 👉:tags/without-ref
         ├── ·320e105 (🏘️)
         ├── ·2a31450 (🏘️) ►B-empty, ►ambiguous-01
         └── ❄70bde6b (🏘️) ►A, ►A-empty-01, ►A-empty-02, ►A-empty-03
@@ -463,6 +714,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
         None,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -482,7 +734,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ ◎  📕gitbutler/workspace[🌳]
 │ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|0100)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ │ ◎  new-A
 │ │ │ │ ◎  new-B
 │ │ │ ├─╯
@@ -491,15 +743,15 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ │ │ ◎  origin/main
 │ │ │ │ │ ◎  tags/without-ref
 │ │ ├─────╯
-│ │ ● │ │  👉·320e105 (⌂|🏘|0101)
+│ │ ● │ │  👉·320e105 (⌂|🏘)
 │ ├─╯ │ │
-│ ●   │ │  ·2a31450 (⌂|🏘|0101)
+│ ●   │ │  ·2a31450 (⌂|🏘)
 ├─╯   │ │
-●     │ │  ·70bde6b (⌂|🏘|1101)
+●     │ │  ·70bde6b (⌂|🏘)
 ├───────╯
 ◎     │  main <> origin/main
 ├─────╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -507,11 +759,11 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:B <> origin/B →:5:⇡1 on fafd9d0
-    ├── :4:B <> origin/B →:5:⇡1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B <> origin/B⇡1 on fafd9d0
+    ├── :B <> origin/B⇡1
     │   └── ·70e9a36 (🏘️)
-    └── 👉:0:anon:
+    └── 👉:anon:
         ├── ·320e105 (🏘️) ►tags/without-ref
         ├── ·2a31450 (🏘️) ►B-empty, ►ambiguous-01
         └── ❄70bde6b (🏘️) ►A, ►A-empty-01, ►A-empty-02, ►A-empty-03
@@ -526,6 +778,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
         None,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -545,7 +798,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ ◎  📕gitbutler/workspace[🌳]
 │ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|0100)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ │ ◎  new-A
 │ │ │ │ ◎  new-B
 │ │ │ ├─╯
@@ -554,15 +807,15 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ │ │ ◎  origin/main
 │ │ │ │ │ ◎  tags/without-ref
 │ │ ├─────╯
-│ │ ● │ │  ·320e105 (⌂|🏘|0100)
+│ │ ● │ │  ·320e105 (⌂|🏘)
 │ ├─╯ │ │
-│ ●   │ │  👉·2a31450 (⌂|🏘|0101)
+│ ●   │ │  👉·2a31450 (⌂|🏘)
 ├─╯   │ │
-●     │ │  ·70bde6b (⌂|🏘|1101)
+●     │ │  ·70bde6b (⌂|🏘)
 ├───────╯
 ◎     │  main <> origin/main
 ├─────╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -570,12 +823,12 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:B <> origin/B →:5:⇡2 on fafd9d0
-    ├── :4:B <> origin/B →:5:⇡2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B <> origin/B⇡2 on fafd9d0
+    ├── :B <> origin/B⇡2
     │   ├── ·70e9a36 (🏘️)
     │   └── ·320e105 (🏘️) ►tags/without-ref
-    └── 👉:0:anon:
+    └── 👉:anon:
         ├── ·2a31450 (🏘️) ►B-empty, ►ambiguous-01
         └── ❄70bde6b (🏘️) ►A, ►A-empty-01, ►A-empty-02, ►A-empty-03
 
@@ -588,6 +841,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
         tag_ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -605,7 +859,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ ◎  📕gitbutler/workspace[🌳]
 │ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|0100)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ │ ◎  new-A
 │ │ │ │ ◎  new-B
 │ │ │ ├─╯
@@ -614,28 +868,28 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 │ │ │ │ ◎  origin/main
 │ │ │ │ │ ◎  tags/without-ref
 │ │ ├─────╯
-│ │ ● │ │  ·320e105 (⌂|🏘|0100)
+│ │ ● │ │  ·320e105 (⌂|🏘)
 │ │ ◎ │ │  👉B-empty
 │ ├─╯ │ │
-│ ●   │ │  ·2a31450 (⌂|🏘|0101)
+│ ●   │ │  ·2a31450 (⌂|🏘)
 ├─╯   │ │
-●     │ │  ·70bde6b (⌂|🏘|1101)
+●     │ │  ·70bde6b (⌂|🏘)
 ├───────╯
 ◎     │  main <> origin/main
 ├─────╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:B <> origin/B →:5:⇡2 on fafd9d0
-    ├── :4:B <> origin/B →:5:⇡2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B <> origin/B⇡2 on fafd9d0
+    ├── :B <> origin/B⇡2
     │   ├── ·70e9a36 (🏘️)
     │   └── ·320e105 (🏘️) ►tags/without-ref
-    └── 👉:0:B-empty
+    └── 👉:B-empty
         ├── ·2a31450 (🏘️) ►ambiguous-01
         └── ❄70bde6b (🏘️) ►A, ►A-empty-01, ►A-empty-02, ►A-empty-03
 
@@ -646,7 +900,7 @@ fn single_stack_ambiguous() -> anyhow::Result<()> {
 
 #[test]
 fn single_stack_ws_insertions() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/single-stack-ambiguous")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/single-stack-ambiguous")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -677,17 +931,23 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
         ],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  A-empty-02
 │ ◎  ambiguous-01
 │ │ ◎  👉📕gitbutler/workspace[🌳]
-│ │ ●  ·20de6ee (⌂|🏘|0001)
+│ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  📙B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|0101)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ │ ◎  new-A
 │ │ │ │ ◎  new-B
 │ │ │ ├─╯
@@ -695,20 +955,20 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
 │ │ │ │ │ ◎  origin/main
 │ │ │ │ │ │ ◎  tags/without-ref
 │ │ ├───────╯
-│ │ ● │ │ │  ·320e105 (⌂|🏘|0101)
+│ │ ● │ │ │  ·320e105 (⌂|🏘)
 │ │ ◎ │ │ │  📙B-empty
 │ ├─╯ │ │ │
-│ ●   │ │ │  ·2a31450 (⌂|🏘|0101)
+│ ●   │ │ │  ·2a31450 (⌂|🏘)
 │ ├─────╯ │
 │ ◎   │   │  📙A-empty-03
 │ ◎   │   │  📙A-empty-01
 │ ◎   │   │  📙A
 ├─╯   │   │
-●     │   │  ·70bde6b (⌂|🏘|1101)
+●     │   │  ·70bde6b (⌂|🏘)
 ├─────────╯
 ◎     │  main <> origin/main
 ├─────╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -716,16 +976,16 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:4:B <> origin/B →:6:⇡2 on fafd9d0 {0}
-    ├── 📙:4:B <> origin/B →:6:⇡2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:B <> origin/B⇡2 on fafd9d0 {0}
+    ├── 📙:B <> origin/B⇡2
     │   ├── ·70e9a36 (🏘️)
     │   └── ·320e105 (🏘️) ►tags/without-ref
-    ├── 📙:3:B-empty
+    ├── 📙:B-empty
     │   └── ·2a31450 (🏘️) ►ambiguous-01
-    ├── 📙:7:A-empty-03
-    ├── 📙:8:A-empty-01
-    └── 📙:9:A
+    ├── 📙:A-empty-03
+    ├── 📙:A-empty-01
+    └── 📙:A
         └── ❄70bde6b (🏘️) ►A-empty-02
 
 "#]]
@@ -744,15 +1004,21 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
         &["A-empty-02", "A-empty-01", "A"],
     );
 
-    let graph = Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  ambiguous-01
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·20de6ee (⌂|🏘|0001)
+│ ●  ·20de6ee (⌂|🏘)
 │ ◎  📙B <> origin/B
-│ ●  ·70e9a36 (⌂|🏘|0101)
+│ ●  ·70e9a36 (⌂|🏘)
 │ │ ◎  new-A
 │ │ │ ◎  new-B
 │ │ ├─╯
@@ -760,33 +1026,33 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
 │ │ │ │ ◎  origin/main
 │ │ │ │ │ ◎  tags/without-ref
 │ ├───────╯
-│ ● │ │ │  ·320e105 (⌂|🏘|0101)
+│ ● │ │ │  ·320e105 (⌂|🏘)
 │ ◎ │ │ │  📙B-empty
 ├─╯ │ │ │
-●   │ │ │  ·2a31450 (⌂|🏘|0101)
+●   │ │ │  ·2a31450 (⌂|🏘)
 ├─────╯ │
 ◎   │   │  📙A-empty-03
 ◎   │   │  📙A-empty-02
 ◎   │   │  📙A-empty-01
 ◎   │   │  📙A
-●   │   │  ·70bde6b (⌂|🏘|1101)
+●   │   │  ·70bde6b (⌂|🏘)
 ├───────╯
 ◎   │  main <> origin/main
 ├───╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:4:B <> origin/B →:6:⇡2 on fafd9d0 {0}
-    ├── 📙:4:B <> origin/B →:6:⇡2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:B <> origin/B⇡2 on fafd9d0 {0}
+    ├── 📙:B <> origin/B⇡2
     │   ├── ·70e9a36 (🏘️)
     │   └── ·320e105 (🏘️) ►tags/without-ref
-    ├── 📙:3:B-empty
+    ├── 📙:B-empty
     │   └── ·2a31450 (🏘️) ►ambiguous-01
-    └── 📙:10:A
+    └── 📙:A
         └── ❄70bde6b (🏘️)
 
 "#]]
@@ -804,6 +1070,7 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
@@ -816,7 +1083,7 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
 │ │ ◎  📕gitbutler/workspace[🌳]
 │ │ ●  ·20de6ee (⌂|🏘)
 │ │ ◎  📙B <> origin/B
-│ │ ●  ·70e9a36 (⌂|🏘|100)
+│ │ ●  ·70e9a36 (⌂|🏘)
 │ │ │ ◎  new-A
 │ │ │ │ ◎  new-B
 │ │ │ ├─╯
@@ -824,32 +1091,32 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
 │ │ │ │ │ ◎  origin/main
 │ │ │ │ │ │ ◎  tags/without-ref
 │ │ ├───────╯
-│ │ ● │ │ │  ·320e105 (⌂|🏘|100)
+│ │ ● │ │ │  ·320e105 (⌂|🏘)
 │ │ ◎ │ │ │  📙B-empty
 │ ├─╯ │ │ │
-│ ●   │ │ │  ·2a31450 (⌂|🏘|100)
+│ ●   │ │ │  ·2a31450 (⌂|🏘)
 │ ├─────╯ │
 │ ◎   │   │  📙A
 │ ◎   │   │  👉📙A-empty-01
 ├─╯   │   │
-●     │   │  ·70bde6b (⌂|🏘|101)
+●     │   │  ·70bde6b (⌂|🏘)
 ├─────────╯
 ◎     │  main <> origin/main
 ├─────╯
-●  🏁·fafd9d0 (⌂|🏘|✓|111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:5:B <> origin/B →:6:⇡2 on fafd9d0 {1}
-    ├── 📙:5:B <> origin/B →:6:⇡2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:B <> origin/B⇡2 on fafd9d0 {1}
+    ├── 📙:B <> origin/B⇡2
     │   ├── ·70e9a36 (🏘️)
     │   └── ·320e105 (🏘️) ►tags/without-ref
-    ├── 📙:4:B-empty
+    ├── 📙:B-empty
     │   └── ·2a31450 (🏘️) ►ambiguous-01
-    └── 👉📙:8:A-empty-01
+    └── 👉📙:A-empty-01
         └── ❄70bde6b (🏘️) ►A-empty-02, ►A-empty-03
 
 "#]]
@@ -864,6 +1131,7 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?;
 
@@ -872,19 +1140,19 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:5:B <> origin/B →:6:⇡2 on fafd9d0 {1}
-│   ├── 📙:5:B <> origin/B →:6:⇡2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:B <> origin/B⇡2 on fafd9d0 {1}
+│   ├── 📙:B <> origin/B⇡2
 │   │   ├── ·70e9a36 (🏘️)
 │   │   └── ·320e105 (🏘️) ►tags/without-ref
-│   ├── 📙:4:B-empty
+│   ├── 📙:B-empty
 │   │   └── ·2a31450 (🏘️) ►ambiguous-01
-│   └── 📙:10:A-empty-01
+│   └── 📙:A-empty-01
 │       └── ❄70bde6b (🏘️) ►A-empty-02, ►A-empty-03
-├── ≡👉📙:7:new-A on fafd9d0 {2}
-│   └── 👉📙:7:new-A
-└── ≡📙:8:new-B on fafd9d0 {3}
-    └── 📙:8:new-B
+├── ≡👉📙:new-A on fafd9d0 {2}
+│   └── 👉📙:new-A
+└── ≡📙:new-B on fafd9d0 {3}
+    └── 📙:new-B
 
 "#]]
     );
@@ -893,7 +1161,7 @@ fn single_stack_ws_insertions() -> anyhow::Result<()> {
 
 #[test]
 fn single_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/single-stack")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/single-stack")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -909,37 +1177,43 @@ fn single_stack() -> anyhow::Result<()> {
     // Just a workspace, no additional ref information.
     // It segments across the unambiguous ref names.
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·2c12d75 (⌂|🏘|01)
+●  ·2c12d75 (⌂|🏘)
 ◎  B
-●  ·320e105 (⌂|🏘|01)
+●  ·320e105 (⌂|🏘)
 ◎  B-sub
-●  ·2a31450 (⌂|🏘|01)
+●  ·2a31450 (⌂|🏘)
 ◎  A
-●  ·70bde6b (⌂|🏘|01)
+●  ·70bde6b (⌂|🏘)
 │ ◎  new-A
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:B on fafd9d0
-    ├── :3:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B on fafd9d0
+    ├── :B
     │   └── ·320e105 (🏘️)
-    ├── :4:B-sub
+    ├── :B-sub
     │   └── ·2a31450 (🏘️)
-    └── :5:A
+    └── :A
         └── ·70bde6b (🏘️)
 
 "#]]
@@ -956,40 +1230,46 @@ fn single_stack() -> anyhow::Result<()> {
         &["below-new-A"],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·2c12d75 (⌂|🏘|01)
+●  ·2c12d75 (⌂|🏘)
 ◎  📙B
-●  ·320e105 (⌂|🏘|01)
+●  ·320e105 (⌂|🏘)
 ◎  📙B-sub
-●  ·2a31450 (⌂|🏘|01)
+●  ·2a31450 (⌂|🏘)
 ◎  📙A
-●  ·70bde6b (⌂|🏘|01)
+●  ·70bde6b (⌂|🏘)
 │ ◎  📙new-A
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:B on fafd9d0 {0}
-│   ├── 📙:3:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:B on fafd9d0 {0}
+│   ├── 📙:B
 │   │   └── ·320e105 (🏘️)
-│   ├── 📙:4:B-sub
+│   ├── 📙:B-sub
 │   │   └── ·2a31450 (🏘️)
-│   └── 📙:5:A
+│   └── 📙:A
 │       └── ·70bde6b (🏘️)
-└── ≡📙:6:new-A on fafd9d0 {1}
-    └── 📙:6:new-A
+└── ≡📙:new-A on fafd9d0 {1}
+    └── 📙:new-A
 
 "#]]
     );
@@ -999,7 +1279,7 @@ fn single_stack() -> anyhow::Result<()> {
 
 #[test]
 fn single_merge_into_main_base_archived() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/single-merge-into-main")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/single-merge-into-main")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1017,19 +1297,25 @@ fn single_merge_into_main_base_archived() -> anyhow::Result<()> {
     );
 
     let stack_id = add_stack_with_segments(&mut meta, 0, "C", StackState::InWorkspace, &["merge"]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
 
     // By default, everything with metadata on the branch will show up, even if on the base.
     let ws = graph.into_workspace()?;
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
-└── ≡📙:3:C on 0cc5a6f {0}
-    ├── 📙:3:C
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
+└── ≡📙:C on 0cc5a6f {0}
+    ├── 📙:C
     │   └── ·c6d714c (🏘️)
-    └── 📙:7:merge
+    └── 📙:merge
 
 "#]]
     );
@@ -1051,9 +1337,9 @@ fn single_merge_into_main_base_archived() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
-└── ≡📙:3:C {0}
-    └── 📙:3:C
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
+└── ≡📙:C {0}
+    └── 📙:C
         └── ·c6d714c (🏘️)
 
 "#]]
@@ -1062,18 +1348,24 @@ fn single_merge_into_main_base_archived() -> anyhow::Result<()> {
     // Finally, when the 'merge' branch is independent, it still works as it should.
     add_stack_with_segments(&mut meta, 0, "C", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 1, "merge", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
-├── ≡📙:3:C on 0cc5a6f {0}
-│   └── 📙:3:C
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
+├── ≡📙:C on 0cc5a6f {0}
+│   └── 📙:C
 │       └── ·c6d714c (🏘️)
-└── ≡📙:7:merge on 0cc5a6f {1}
-    └── 📙:7:merge
+└── ≡📙:merge on 0cc5a6f {1}
+    └── 📙:merge
 
 "#]]
     );
@@ -1081,17 +1373,23 @@ fn single_merge_into_main_base_archived() -> anyhow::Result<()> {
     // The order is respected.
     add_stack_with_segments(&mut meta, 1, "C", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 0, "merge", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
-├── ≡📙:7:merge on 0cc5a6f {0}
-│   └── 📙:7:merge
-└── ≡📙:3:C on 0cc5a6f {1}
-    └── 📙:3:C
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0cc5a6f
+├── ≡📙:merge on 0cc5a6f {0}
+│   └── 📙:merge
+└── ≡📙:C on 0cc5a6f {1}
+    └── 📙:C
         └── ·c6d714c (🏘️)
 
 "#]]
@@ -1101,7 +1399,7 @@ fn single_merge_into_main_base_archived() -> anyhow::Result<()> {
 
 #[test]
 fn minimal_merge_no_refs() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("ws/dual-merge-no-refs")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("ws/dual-merge-no-refs")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1123,24 +1421,30 @@ fn minimal_merge_no_refs() -> anyhow::Result<()> {
     );
 
     // Without hints.
-    let graph =
-        Graph::from_head(&repo, &*meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉gitbutler/workspace[🌳]
-●  ·47e1cf1 (⌂|1)
-●    ·f40fb16 (⌂|1)
+●  ·47e1cf1 (⌂)
+●    ·f40fb16 (⌂)
 ├─╮
-● │  ·450c58a (⌂|1)
-│ ●  ·c6d714c (⌂|1)
+● │  ·450c58a (⌂)
+│ ●  ·c6d714c (⌂)
 ├─╯
-●    ·0cc5a6f (⌂|1)
+●    ·0cc5a6f (⌂)
 ├─╮
-● │  ·7fdb58d (⌂|1)
-│ ●  ·e255adc (⌂|1)
+● │  ·7fdb58d (⌂)
+│ ●  ·e255adc (⌂)
 ├─╯
-●  🏁·fafd9d0 (⌂|1)
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -1149,9 +1453,9 @@ fn minimal_merge_no_refs() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:0:gitbutler/workspace[🌳] {1}
-    └── :0:gitbutler/workspace[🌳]
+⌂:gitbutler/workspace[🌳] <> ✓!
+└── ≡:gitbutler/workspace[🌳] {1}
+    └── :gitbutler/workspace[🌳]
         ├── ·47e1cf1
         ├── ·f40fb16
         ├── ·450c58a
@@ -1168,7 +1472,7 @@ fn minimal_merge_no_refs() -> anyhow::Result<()> {
 fn segment_on_each_incoming_connection() -> anyhow::Result<()> {
     // Validate that the graph is truly having segments whenever there is an incoming connection.
     // This is required to not need special edge-weights.
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/graph-splitting")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/graph-splitting")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1187,9 +1491,15 @@ fn segment_on_each_incoming_connection() -> anyhow::Result<()> {
     // Without hints - needs to split `refs/heads/main` at `b688f2d`
     let (id, name) = id_at(&repo, "entrypoint");
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_commit_traversal(id, name, &*meta, default_project_meta(), standard_options())?
-            .validated()?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        name,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // Segment boundaries at incoming connections are the property under test,
     // so this keeps the segment-structure rendering.
     snapbox::assert_data_eq!(
@@ -1197,12 +1507,12 @@ fn segment_on_each_incoming_connection() -> anyhow::Result<()> {
         snapbox::str![[r#"
 
 ├── 👉►:0[0]:entrypoint
-│   ├── ·98c5aba (⌂|1)
-│   ├── ·807b6ce (⌂|1)
-│   └── ·6d05486 (⌂|1)
+│   ├── ·98c5aba (⌂)
+│   ├── ·807b6ce (⌂)
+│   └── ·6d05486 (⌂)
 │       └── ►:3[2]:anon:
-│           ├── ·b688f2d (⌂|🏘|1)
-│           └── 🏁·fafd9d0 (⌂|🏘|1)
+│           ├── ·b688f2d (⌂|🏘)
+│           └── 🏁·fafd9d0 (⌂|🏘)
 └── 📕►►►:1[0]:gitbutler/workspace[🌳]
     └── ·b6917c7 (⌂|🏘)
         └── ►:2[1]:main
@@ -1215,9 +1525,9 @@ fn segment_on_each_incoming_connection() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:entrypoint <> ✓!
-└── ≡:0:entrypoint {1}
-    └── :0:entrypoint
+⌂:entrypoint <> ✓!
+└── ≡:entrypoint {1}
+    └── :entrypoint
         ├── ·98c5aba
         ├── ·807b6ce
         ├── ·6d05486
@@ -1231,7 +1541,7 @@ fn segment_on_each_incoming_connection() -> anyhow::Result<()> {
 
 #[test]
 fn minimal_merge() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/dual-merge")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/dual-merge")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1253,8 +1563,14 @@ fn minimal_merge() -> anyhow::Result<()> {
     );
 
     // Without hints, and no workspace data, the branch is normal!
-    let graph =
-        Graph::from_head(&repo, &*meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -1262,29 +1578,29 @@ fn minimal_merge() -> anyhow::Result<()> {
 │ ◎  empty-2-on-merge
 ├─╯
 │ ◎  👉gitbutler/workspace[🌳]
-│ ●  ·47e1cf1 (⌂|01)
+│ ●  ·47e1cf1 (⌂)
 │ ◎  merge-2
-│ ●    ·f40fb16 (⌂|01)
+│ ●    ·f40fb16 (⌂)
 │ ├─╮
 │ ◎ │  D
-│ ● │  ·450c58a (⌂|01)
+│ ● │  ·450c58a (⌂)
 ├─╯ │
 │   ◎  C
-│   ●  ·c6d714c (⌂|01)
+│   ●  ·c6d714c (⌂)
 ├───╯
 │ ◎  merge
 ├─╯
-●    ·0cc5a6f (⌂|01)
+●    ·0cc5a6f (⌂)
 ├─╮
 ◎ │  B
-● │  ·7fdb58d (⌂|01)
+● │  ·7fdb58d (⌂)
 │ ◎  A
-│ ●  ·e255adc (⌂|01)
+│ ●  ·e255adc (⌂)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|11)
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -1292,18 +1608,18 @@ fn minimal_merge() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:0:gitbutler/workspace[🌳] {1}
-    ├── :0:gitbutler/workspace[🌳]
+⌂:gitbutler/workspace[🌳] <> ✓!
+└── ≡:gitbutler/workspace[🌳] {1}
+    ├── :gitbutler/workspace[🌳]
     │   └── ·47e1cf1
-    ├── :1:merge-2
+    ├── :merge-2
     │   └── ·f40fb16
-    ├── :2:D
+    ├── :D
     │   ├── ·450c58a
     │   └── ·0cc5a6f ►empty-1-on-merge, ►empty-2-on-merge, ►merge
-    ├── :5:B
+    ├── :B
     │   └── ·7fdb58d
-    └── :7:main <> origin/main →:8:
+    └── :main <> origin/main
         └── ❄️fafd9d0
 
 "#]]
@@ -1318,51 +1634,57 @@ fn minimal_merge() -> anyhow::Result<()> {
         StackState::InWorkspace,
         &["empty-1-on-merge", "merge"],
     );
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·47e1cf1 (⌂|🏘|01)
+●  ·47e1cf1 (⌂|🏘)
 ◎  merge-2
-●    ·f40fb16 (⌂|🏘|01)
+●    ·f40fb16 (⌂|🏘)
 ├─╮
 ◎ │  D
-● │  ·450c58a (⌂|🏘|01)
+● │  ·450c58a (⌂|🏘)
 │ ◎  C
-│ ●  ·c6d714c (⌂|🏘|01)
+│ ●  ·c6d714c (⌂|🏘)
 ├─╯
 ◎  📙empty-2-on-merge
 ◎  📙empty-1-on-merge
 ◎  📙merge
-●    ·0cc5a6f (⌂|🏘|01)
+●    ·0cc5a6f (⌂|🏘)
 ├─╮
 ◎ │  B
-● │  ·7fdb58d (⌂|🏘|01)
+● │  ·7fdb58d (⌂|🏘)
 │ ◎  A
-│ ●  ·e255adc (⌂|🏘|01)
+│ ●  ·e255adc (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:6:merge-2 on fafd9d0 {0}
-    ├── :6:merge-2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:merge-2 on fafd9d0 {0}
+    ├── :merge-2
     │   └── ·f40fb16 (🏘️)
-    ├── :7:D
+    ├── :D
     │   └── ·450c58a (🏘️)
-    ├── 📙:9:empty-2-on-merge
-    ├── 📙:10:empty-1-on-merge
-    ├── 📙:11:merge
+    ├── 📙:empty-2-on-merge
+    ├── 📙:empty-1-on-merge
+    ├── 📙:merge
     │   └── ·0cc5a6f (🏘️)
-    └── :4:B
+    └── :B
         └── ·7fdb58d (🏘️)
 
 "#]]
@@ -1372,7 +1694,7 @@ fn minimal_merge() -> anyhow::Result<()> {
 
 #[test]
 fn entrypoint_inside_second_parent_of_workspace_diamond_is_included() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/dual-merge")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/dual-merge")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1394,9 +1716,15 @@ fn entrypoint_inside_second_parent_of_workspace_diamond_is_included() -> anyhow:
     );
     add_workspace(&mut meta);
     let (id, name) = id_at(&repo, "C");
-    let graph =
-        Graph::from_commit_traversal(id, name, &*meta, default_project_meta(), standard_options())?
-            .validated()?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        name,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -1412,21 +1740,21 @@ fn entrypoint_inside_second_parent_of_workspace_diamond_is_included() -> anyhow:
 │ ● │  ·450c58a (⌂|🏘)
 ├─╯ │
 │   ◎  👉C
-│   ●  ·c6d714c (⌂|🏘|01)
+│   ●  ·c6d714c (⌂|🏘)
 ├───╯
 │ ◎  merge
 ├─╯
-●    ·0cc5a6f (⌂|🏘|01)
+●    ·0cc5a6f (⌂|🏘)
 ├─╮
 ◎ │  B
-● │  ·7fdb58d (⌂|🏘|01)
+● │  ·7fdb58d (⌂|🏘)
 │ ◎  A
-│ ●  ·e255adc (⌂|🏘|01)
+│ ●  ·e255adc (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -1441,20 +1769,20 @@ fn entrypoint_inside_second_parent_of_workspace_diamond_is_included() -> anyhow:
         entrypoint_stack_segment
             .commits
             .iter()
-            .any(|commit| commit.id == id.detach()),
+            .any(|commit| commit.id == id),
         "the entrypoint stack segment must contain the custom traversal commit"
     );
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:5:merge-2 on fafd9d0
-    ├── :5:merge-2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:merge-2 on fafd9d0
+    ├── :merge-2
     │   └── ·f40fb16 (🏘️)
-    ├── 👉:0:C
+    ├── 👉:C
     │   ├── ·c6d714c (🏘️)
     │   └── ·0cc5a6f (🏘️) ►empty-1-on-merge, ►empty-2-on-merge, ►merge
-    └── :6:B
+    └── :B
         └── ·7fdb58d (🏘️)
 
 "#]]
@@ -1464,7 +1792,7 @@ fn entrypoint_inside_second_parent_of_workspace_diamond_is_included() -> anyhow:
 
 #[test]
 fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1481,6 +1809,7 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         extra_target_options.clone(),
     )?
     .validated()?;
@@ -1494,7 +1823,7 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     assert_eq!(
@@ -1518,11 +1847,11 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓! on fafd9d0
-├── ≡📙:2:A on fafd9d0 {1}
-│   └── 📙:2:A
-└── ≡📙:3:B on fafd9d0 {2}
-    └── 📙:3:B
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓! on fafd9d0
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+└── ≡📙:B on fafd9d0 {2}
+    └── 📙:B
 
 "#]]
     );
@@ -1533,6 +1862,7 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         extra_target_options.clone(),
     )?
     .validated()?;
@@ -1546,17 +1876,17 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓! on fafd9d0
-├── ≡📙:2:A on fafd9d0 {1}
-│   └── 📙:2:A
-└── ≡👉📙:3:B on fafd9d0 {2}
-    └── 👉📙:3:B
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓! on fafd9d0
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+└── ≡👉📙:B on fafd9d0 {2}
+    └── 👉📙:B
 
 "#]]
     );
@@ -1567,6 +1897,7 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         extra_target_options,
     )?
     .validated()?;
@@ -1580,17 +1911,17 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓! on fafd9d0
-├── ≡👉📙:2:A on fafd9d0 {1}
-│   └── 👉📙:2:A
-└── ≡📙:3:B on fafd9d0 {2}
-    └── 📙:3:B
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓! on fafd9d0
+├── ≡👉📙:A on fafd9d0 {1}
+│   └── 👉📙:A
+└── ≡📙:B on fafd9d0 {2}
+    └── 📙:B
 
 "#]]
     );
@@ -1600,7 +1931,7 @@ fn stack_configuration_is_respected_if_one_of_them_is_an_entrypoint() -> anyhow:
 
 #[test]
 fn just_init_with_branches() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
     // Note the dedicated workspace branch without a workspace commit.
     // All is fair game, and we use it to validate 'empty parent branch handling after new children took the commit'.
     snapbox::assert_data_eq!(
@@ -1613,8 +1944,14 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 
     // Without hints - `main` is picked up as it's the entrypoint.
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -1634,7 +1971,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 │ ├─╯
 │ ◎  👉main[🌳] <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -1644,9 +1981,9 @@ fn just_init_with_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓refs/remotes/origin/main
-└── ≡:0:main[🌳] <> origin/main →:2: {1}
-    └── :0:main[🌳] <> origin/main →:2:
+⌂:main[🌳] <> ✓refs/remotes/origin/main
+└── ≡:main[🌳] <> origin/main on fafd9d0 {1}
+    └── :main[🌳] <> origin/main
 
 "#]]
     );
@@ -1657,6 +1994,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
         ws_ref_name.clone(),
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -1679,7 +2017,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 │ ├─╯
 │ ◎  main[🌳] <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -1687,9 +2025,9 @@ fn just_init_with_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓!
-└── ≡:1:main[🌳] <> origin/main →:2:
-    └── :1:main[🌳] <> origin/main →:2:
+📕🏘️⚠️:gitbutler/workspace <> ✓!
+└── ≡:main[🌳] <> origin/main
+    └── :main[🌳] <> origin/main
         └── ❄️fafd9d0 (🏘️) ►A, ►B, ►C, ►D, ►E, ►F
 
 "#]]
@@ -1704,6 +2042,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
@@ -1721,7 +2060,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 │ ◎  origin/main
 ├─╯
 ◎  👉main[🌳] <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -1729,15 +2068,15 @@ fn just_init_with_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace <> ✓! on fafd9d0
-├── ≡📙:3:C on fafd9d0 {0}
-│   ├── 📙:3:C
-│   ├── 📙:4:B
-│   └── 📙:5:A
-└── ≡📙:6:D on fafd9d0 {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace <> ✓! on fafd9d0
+├── ≡📙:C on fafd9d0 {0}
+│   ├── 📙:C
+│   ├── 📙:B
+│   └── 📙:A
+└── ≡📙:D on fafd9d0 {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
 
 "#]]
     );
@@ -1747,6 +2086,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
         ws_ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -1766,7 +2106,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 │ ◎  origin/main
 ├─╯
 ◎  main[🌳] <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -1774,15 +2114,15 @@ fn just_init_with_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:C on fafd9d0 {0}
-│   ├── 📙:3:C
-│   ├── 📙:4:B
-│   └── 📙:5:A
-└── ≡📙:6:D on fafd9d0 {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C on fafd9d0 {0}
+│   ├── 📙:C
+│   ├── 📙:B
+│   └── 📙:A
+└── ≡📙:D on fafd9d0 {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
 
 "#]]
     );
@@ -1791,15 +2131,15 @@ fn just_init_with_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws.graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:A <> ✓! on fafd9d0
-├── ≡📙:3:A on fafd9d0 {0}
-│   ├── 📙:3:A
-│   ├── 📙:4:B
-│   └── 📙:5:C
-└── ≡📙:6:D on fafd9d0 {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+📕🏘️⚠️:A <> ✓! on fafd9d0
+├── ≡📙:A on fafd9d0 {0}
+│   ├── 📙:A
+│   ├── 📙:B
+│   └── 📙:C
+└── ≡📙:D on fafd9d0 {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
 
 "#]]
     );
@@ -1809,6 +2149,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
         ws_ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         but_graph::init::Options {
             dangerously_skip_postprocessing_for_debugging: true,
             ..standard_options()
@@ -1836,14 +2177,14 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 ├─╯
 │ ◎  origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
 
 "#]]
     );
@@ -1853,7 +2194,7 @@ fn just_init_with_branches() -> anyhow::Result<()> {
 
 #[test]
 fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1873,8 +2214,14 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
     let origin_main_ref = super::ref_name("refs/remotes/origin/main");
     let stack_ref = |name: &str| super::ref_name(&format!("refs/heads/{name}"));
 
-    let head_baseline =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let head_baseline = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     let head_baseline_tree = graph_dag(&head_baseline);
     let head_baseline_workspace = graph_workspace(&head_baseline.into_workspace()?).to_string();
 
@@ -1914,6 +2261,7 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
         ws_ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -1922,15 +2270,15 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
     snapbox::assert_data_eq!(
         workspace_baseline_workspace.to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:C on fafd9d0 {0}
-│   ├── 📙:3:C
-│   ├── 📙:4:B
-│   └── 📙:5:A
-└── ≡📙:6:D on fafd9d0 {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C on fafd9d0 {0}
+│   ├── 📙:C
+│   ├── 📙:B
+│   └── 📙:A
+└── ≡📙:D on fafd9d0 {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
 
 "#]]
     );
@@ -1972,6 +2320,7 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
         head_tips,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -1991,6 +2340,7 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
         explicit_tips.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2003,15 +2353,15 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
     snapbox::assert_data_eq!(
         explicit_workspace.to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:C on fafd9d0 {0}
-│   ├── 📙:3:C
-│   ├── 📙:4:B
-│   └── 📙:5:A
-└── ≡📙:6:D on fafd9d0 {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C on fafd9d0 {0}
+│   ├── 📙:C
+│   ├── 📙:B
+│   └── 📙:A
+└── ≡📙:D on fafd9d0 {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
 
 "#]]
     );
@@ -2026,14 +2376,20 @@ fn tips_equivalent_to_workspace_metadata_are_order_independent() -> anyhow::Resu
 
 #[test]
 fn workspace_target_commit_and_extra_target_commit_can_overlap() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
     let target_id = id_by_rev(&repo, "main").detach();
     let project_meta = add_workspace_with_target(&mut meta, target_id);
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 2, "B", StackState::InWorkspace, &[]);
 
-    let baseline =
-        Graph::from_head(&repo, &*meta, project_meta.clone(), standard_options())?.validated()?;
+    let baseline = Graph::from_head(
+        &repo,
+        &*meta,
+        project_meta.clone(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     let baseline_tree = graph_dag(&baseline);
     let baseline_workspace = graph_workspace(&baseline.into_workspace()?).to_string();
 
@@ -2041,6 +2397,7 @@ fn workspace_target_commit_and_extra_target_commit_can_overlap() -> anyhow::Resu
         &repo,
         &*meta,
         project_meta,
+        &mut db,
         standard_options().with_extra_target_commit_id(target_id),
     )?
     .validated()?;
@@ -2061,13 +2418,19 @@ fn workspace_target_commit_and_extra_target_commit_can_overlap() -> anyhow::Resu
 
 #[test]
 fn duplicate_workspace_stack_branch_tips_from_metadata_are_ignored() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
     add_workspace(&mut meta);
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 2, "B", StackState::InWorkspace, &[]);
 
-    let baseline =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let baseline = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     let baseline_tree = graph_dag(&baseline);
     let baseline_workspace = graph_workspace(&baseline.into_workspace()?).to_string();
 
@@ -2076,6 +2439,7 @@ fn duplicate_workspace_stack_branch_tips_from_metadata_are_ignored() -> anyhow::
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2096,16 +2460,22 @@ fn duplicate_workspace_stack_branch_tips_from_metadata_are_ignored() -> anyhow::
 
 #[test]
 fn projected_metadata_excludes_missing_branch_from_existing_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-two-branches")?;
     add_workspace(&mut meta);
     let stack_id =
         add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &["missing"]);
 
-    let metadata = Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?
-        .validated()?
-        .into_workspace()?
-        .metadata_from_projection()?
-        .expect("workspace metadata is present");
+    let metadata = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?
+    .into_workspace()?
+    .metadata_from_projection()?
+    .expect("workspace metadata is present");
     let stack = metadata
         .stacks
         .iter()
@@ -2126,7 +2496,7 @@ fn projected_metadata_excludes_missing_branch_from_existing_stack() -> anyhow::R
 
 #[test]
 fn just_init_with_archived_branches() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
     // Note the dedicated workspace branch without a workspace commit.
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -2144,6 +2514,7 @@ fn just_init_with_archived_branches() -> anyhow::Result<()> {
         ws_ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2153,11 +2524,11 @@ fn just_init_with_archived_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:C on fafd9d0 {0}
-    ├── 📙:3:C
-    ├── 📙:4:B
-    └── 📙:5:A
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:C on fafd9d0 {0}
+    ├── 📙:C
+    ├── 📙:B
+    └── 📙:A
 
 "#]]
     );
@@ -2177,9 +2548,9 @@ fn just_init_with_archived_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:C {0}
-    └── 📙:3:C
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:C {0}
+    └── 📙:C
 
 "#]]
     );
@@ -2196,10 +2567,10 @@ fn just_init_with_archived_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:C {0}
-    ├── 📙:3:C
-    └── 📙:4:B
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:C {0}
+    ├── 📙:C
+    └── 📙:B
 
 "#]]
     );
@@ -2216,7 +2587,7 @@ fn just_init_with_archived_branches() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
 
 "#]]
     );
@@ -2225,7 +2596,7 @@ fn just_init_with_archived_branches() -> anyhow::Result<()> {
 
 #[test]
 fn two_stacks_many_refs() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/one-stacks-many-refs")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/one-stacks-many-refs")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -2238,8 +2609,14 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // Without any information it looks quite barren.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
@@ -2258,16 +2635,16 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
 │ │ │ ◎  S1
 │ │ ├─╯
 │ │ │ ◎  👉📕gitbutler/workspace[🌳]
-│ │ │ ●  ·298d938 (⌂|🏘|01)
+│ │ │ ●  ·298d938 (⌂|🏘)
 │ │ ├─╯
-│ │ ●  ·16f132b (⌂|🏘|01)
+│ │ ●  ·16f132b (⌂|🏘)
 │ ├─╯
-│ ●  ·917b9da (⌂|🏘|01)
+│ ●  ·917b9da (⌂|🏘)
 │ │ ◎  origin/main
 │ ├─╯
 │ ◎  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -2275,9 +2652,9 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:anon: on fafd9d0
-    └── :3:anon:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:anon: on fafd9d0
+    └── :anon:
         ├── ·16f132b (🏘️) ►F, ►G, ►S1
         └── ·917b9da (🏘️) ►D, ►E
 
@@ -2290,6 +2667,7 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2312,22 +2690,22 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
 │ │ │ ●  ·298d938 (⌂|🏘)
 │ │ │ ◎  👉S1
 │ │ ├─╯
-│ │ ●  ·16f132b (⌂|🏘|01)
+│ │ ●  ·16f132b (⌂|🏘)
 │ ├─╯
-│ ●  ·917b9da (⌂|🏘|01)
+│ ●  ·917b9da (⌂|🏘)
 │ │ ◎  origin/main
 │ ├─╯
 │ ◎  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡👉:0:S1 on fafd9d0
-    └── 👉:0:S1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡👉:S1 on fafd9d0
+    └── 👉:S1
         ├── ·16f132b (🏘️) ►F, ►G
         └── ·917b9da (🏘️) ►D, ►E
 
@@ -2341,8 +2719,14 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 4, "D", StackState::InWorkspace, &["E"]);
 
     // We see that all segments are used: S1 C B A E D G F
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -2351,37 +2735,37 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
 │ ◎  📙B
 ├─╯
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·298d938 (⌂|🏘|01)
+│ ●  ·298d938 (⌂|🏘)
 │ ◎  📙S1
 │ ◎  📙G
 │ ◎  📙F
-│ ●  ·16f132b (⌂|🏘|01)
+│ ●  ·16f132b (⌂|🏘)
 │ ◎  📙D
 │ ◎  📙E
-│ ●  ·917b9da (⌂|🏘|01)
+│ ●  ·917b9da (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:5:C on fafd9d0 {1}
-│   ├── 📙:5:C
-│   └── 📙:6:B
-├── ≡📙:7:A on fafd9d0 {2}
-│   └── 📙:7:A
-└── ≡📙:8:S1 on fafd9d0 {3}
-    ├── 📙:8:S1
-    ├── 📙:9:G
-    ├── 📙:10:F
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C on fafd9d0 {1}
+│   ├── 📙:C
+│   └── 📙:B
+├── ≡📙:A on fafd9d0 {2}
+│   └── 📙:A
+└── ≡📙:S1 on fafd9d0 {3}
+    ├── 📙:S1
+    ├── 📙:G
+    ├── 📙:F
     │   └── ·16f132b (🏘️)
-    └── 📙:12:E
+    └── 📙:E
         └── ·917b9da (🏘️)
 
 "#]]
@@ -2392,6 +2776,7 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2408,32 +2793,32 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
 │ ◎  👉📙S1
 │ ◎  📙G
 │ ◎  📙F
-│ ●  ·16f132b (⌂|🏘|01)
+│ ●  ·16f132b (⌂|🏘)
 │ ◎  📙D
 │ ◎  📙E
-│ ●  ·917b9da (⌂|🏘|01)
+│ ●  ·917b9da (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:5:C on fafd9d0 {1}
-│   ├── 📙:5:C
-│   └── 📙:6:B
-├── ≡📙:7:A on fafd9d0 {2}
-│   └── 📙:7:A
-└── ≡👉📙:8:S1 on fafd9d0 {3}
-    ├── 👉📙:8:S1
-    ├── 📙:9:G
-    ├── 📙:10:F
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C on fafd9d0 {1}
+│   ├── 📙:C
+│   └── 📙:B
+├── ≡📙:A on fafd9d0 {2}
+│   └── 📙:A
+└── ≡👉📙:S1 on fafd9d0 {3}
+    ├── 👉📙:S1
+    ├── 📙:G
+    ├── 📙:F
     │   └── ·16f132b (🏘️)
-    └── 📙:12:E
+    └── 📙:E
         └── ·917b9da (🏘️)
 
 "#]]
@@ -2443,7 +2828,7 @@ fn two_stacks_many_refs() -> anyhow::Result<()> {
 
 #[test]
 fn just_init_with_branches_complex() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/just-init-with-branches")?;
 
     // A combination of dependent and independent stacks.
     add_stack_with_segments(&mut meta, 0, "C", StackState::InWorkspace, &["B"]);
@@ -2457,6 +2842,7 @@ fn just_init_with_branches_complex() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2477,24 +2863,24 @@ fn just_init_with_branches_complex() -> anyhow::Result<()> {
 │ ◎  origin/main
 ├─╯
 ◎  main[🌳] <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:C on fafd9d0 {0}
-│   ├── 📙:3:C
-│   └── 📙:4:B
-├── ≡📙:5:A on fafd9d0 {1}
-│   └── 📙:5:A
-├── ≡📙:6:D on fafd9d0 {2}
-│   ├── 📙:6:D
-│   └── 📙:7:E
-└── ≡📙:8:F on fafd9d0 {3}
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C on fafd9d0 {0}
+│   ├── 📙:C
+│   └── 📙:B
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+├── ≡📙:D on fafd9d0 {2}
+│   ├── 📙:D
+│   └── 📙:E
+└── ≡📙:F on fafd9d0 {3}
+    └── 📙:F
 
 "#]]
     );
@@ -2505,6 +2891,7 @@ fn just_init_with_branches_complex() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2527,7 +2914,7 @@ fn just_init_with_branches_complex() -> anyhow::Result<()> {
 │ ◎  origin/main
 ├─╯
 ◎  main[🌳] <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -2535,17 +2922,17 @@ fn just_init_with_branches_complex() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡👉📙:3:C on fafd9d0 {0}
-│   ├── 👉📙:3:C
-│   └── 📙:4:B
-├── ≡📙:5:A on fafd9d0 {1}
-│   └── 📙:5:A
-├── ≡📙:6:D on fafd9d0 {2}
-│   ├── 📙:6:D
-│   └── 📙:7:E
-└── ≡📙:8:F on fafd9d0 {3}
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡👉📙:C on fafd9d0 {0}
+│   ├── 👉📙:C
+│   └── 📙:B
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+├── ≡📙:D on fafd9d0 {2}
+│   ├── 📙:D
+│   └── 📙:E
+└── ≡📙:F on fafd9d0 {3}
+    └── 📙:F
 
 "#]]
     );
@@ -2554,7 +2941,7 @@ fn just_init_with_branches_complex() -> anyhow::Result<()> {
 
 #[test]
 fn proper_remote_ahead() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/proper-remote-ahead")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/proper-remote-ahead")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -2570,20 +2957,26 @@ fn proper_remote_ahead() -> anyhow::Result<()> {
 
     // Remote segments are picked up automatically and traversed - they never take ownership of already assigned commits.
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·9bcd3af (⌂|🏘|01)
+●  ·9bcd3af (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣ca7baa7 (✓)
 │ ●  🟣7ea1468 (✓)
 ├─╯
 ◎  main <> origin/main
-●  ·998eae6 (⌂|🏘|✓|11)
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  ·998eae6 (⌂|🏘|✓)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -2591,7 +2984,7 @@ fn proper_remote_ahead() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣2 on 998eae6
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣2 on 998eae6
 
 "#]]
     );
@@ -2603,6 +2996,7 @@ fn proper_remote_ahead() -> anyhow::Result<()> {
         Some(ref_name),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2616,8 +3010,8 @@ fn proper_remote_ahead() -> anyhow::Result<()> {
 │ ●  🟣7ea1468 (✓)
 ├─╯
 ◎  👉main <> origin/main
-●  ·998eae6 (⌂|🏘|✓|1)
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  ·998eae6 (⌂|🏘|✓)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -2627,9 +3021,9 @@ fn proper_remote_ahead() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main <> ✓refs/remotes/origin/main⇣2
-└── ≡:0:main <> origin/main →:2:⇣2 {1}
-    └── :0:main <> origin/main →:2:⇣2
+⌂:main <> ✓refs/remotes/origin/main⇣2
+└── ≡:main <> origin/main⇣2 on 998eae6 {1}
+    └── :main <> origin/main⇣2
         ├── 🟣ca7baa7 (✓)
         └── 🟣7ea1468 (✓)
 
@@ -2640,7 +3034,7 @@ fn proper_remote_ahead() -> anyhow::Result<()> {
 
 #[test]
 fn deduced_remote_ahead() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/deduced-remote-ahead")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/deduced-remote-ahead")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -2661,25 +3055,31 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
 
     // Remote segments are picked up automatically and traversed - they never take ownership of already assigned commits.
     add_workspace(&mut meta);
-    let graph = Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·8b39ce4 (⌂|🏘|001)
+●  ·8b39ce4 (⌂|🏘)
 ◎  A <> origin/A
-●  ·9d34471 (⌂|🏘|011)
-●  ·5b89c71 (⌂|🏘|011)
+●  ·9d34471 (⌂|🏘)
+●  ·5b89c71 (⌂|🏘)
 │ ◎  origin/A
-│ ●  🟣3ea1a8f (0x0|100)
-│ ●  🟣9c50f71 (0x0|100)
-│ ●  🟣2cfbb79 (0x0|100)
+│ ●  🟣3ea1a8f (0x0)
+│ ●  🟣9c50f71 (0x0)
+│ ●  🟣2cfbb79 (0x0)
 ╭─┤
-│ ●  🟣e898cd0 (0x0|100)
+│ ●  🟣e898cd0 (0x0)
 ├─╯
-●  ·998eae6 (⌂|🏘|111)
+●  ·998eae6 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|111)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     // There is no target branch, so nothing is integrated, and `main` shows up.
@@ -2687,9 +3087,9 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:A <> origin/A →:2:⇡2⇣4
-    ├── :1:A <> origin/A →:2:⇡2⇣4
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:A <> origin/A⇡2⇣4
+    ├── :A <> origin/A⇡2⇣4
     │   ├── 🟣3ea1a8f
     │   ├── 🟣9c50f71
     │   ├── 🟣2cfbb79
@@ -2697,33 +3097,39 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
     │   ├── ·9d34471 (🏘️)
     │   ├── ·5b89c71 (🏘️)
     │   └── ❄️998eae6 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
     );
 
     let id = id_by_rev(&repo, ":/init");
-    let graph =
-        Graph::from_commit_traversal(id, None, &*meta, default_project_meta(), standard_options())?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        None,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  📕gitbutler/workspace[🌳]
 ●  ·8b39ce4 (⌂|🏘)
 ◎  A <> origin/A
-●  ·9d34471 (⌂|🏘|010)
-●  ·5b89c71 (⌂|🏘|010)
+●  ·9d34471 (⌂|🏘)
+●  ·5b89c71 (⌂|🏘)
 │ ◎  origin/A
-│ ●  🟣3ea1a8f (0x0|100)
-│ ●  🟣9c50f71 (0x0|100)
-│ ●  🟣2cfbb79 (0x0|100)
+│ ●  🟣3ea1a8f (0x0)
+│ ●  🟣9c50f71 (0x0)
+│ ●  🟣2cfbb79 (0x0)
 ╭─┤
-│ ●  🟣e898cd0 (0x0|100)
+│ ●  🟣e898cd0 (0x0)
 ├─╯
-●  ·998eae6 (⌂|🏘|110)
+●  ·998eae6 (⌂|🏘)
 ◎  👉main
-●  🏁·fafd9d0 (⌂|🏘|111)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     // The whole workspace is visible, but it's clear where the entrypoint is.
@@ -2731,9 +3137,9 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡:2:A <> origin/A →:3:⇡2⇣4
-    ├── :2:A <> origin/A →:3:⇡2⇣4
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:A <> origin/A⇡2⇣4
+    ├── :A <> origin/A⇡2⇣4
     │   ├── 🟣3ea1a8f
     │   ├── 🟣9c50f71
     │   ├── 🟣2cfbb79
@@ -2741,7 +3147,7 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
     │   ├── ·9d34471 (🏘️)
     │   ├── ·5b89c71 (🏘️)
     │   └── ❄️998eae6 (🏘️)
-    └── 👉:0:main
+    └── 👉:main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -2750,34 +3156,34 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
     // When the push-remote is configured, it overrides the remote we use for listing, even if a fetch remote is available.
     let mut pm = default_project_meta();
     pm.push_remote = Some("push-remote".into());
-    let graph = Graph::from_head(&repo, &*meta, pm, standard_options())?;
+    let graph = Graph::from_head(&repo, &*meta, pm, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·8b39ce4 (⌂|🏘|001)
+●  ·8b39ce4 (⌂|🏘)
 ◎  A <> push-remote/A
-●  ·9d34471 (⌂|🏘|011)
-●  ·5b89c71 (⌂|🏘|011)
+●  ·9d34471 (⌂|🏘)
+●  ·5b89c71 (⌂|🏘)
 │ ◎  push-remote/A
-│ ●  🟣3ea1a8f (0x0|100)
-│ ●  🟣9c50f71 (0x0|100)
-│ ●  🟣2cfbb79 (0x0|100)
+│ ●  🟣3ea1a8f (0x0)
+│ ●  🟣9c50f71 (0x0)
+│ ●  🟣2cfbb79 (0x0)
 ╭─┤
-│ ●  🟣e898cd0 (0x0|100)
+│ ●  🟣e898cd0 (0x0)
 ├─╯
-●  ·998eae6 (⌂|🏘|111)
+●  ·998eae6 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|111)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:A <> push-remote/A →:2:⇡2⇣4
-    ├── :1:A <> push-remote/A →:2:⇡2⇣4
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:A <> push-remote/A⇡2⇣4
+    ├── :A <> push-remote/A⇡2⇣4
     │   ├── 🟣3ea1a8f
     │   ├── 🟣9c50f71
     │   ├── 🟣2cfbb79
@@ -2785,7 +3191,7 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
     │   ├── ·9d34471 (🏘️)
     │   ├── ·5b89c71 (🏘️)
     │   └── ❄️998eae6 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -2795,7 +3201,8 @@ fn deduced_remote_ahead() -> anyhow::Result<()> {
 
 #[test]
 fn stacked_rebased_remotes() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/remote-includes-another-remote")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/remote-includes-another-remote")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -2817,6 +3224,7 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -2824,15 +3232,15 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·7786959 (⌂|🏘|01)
+●  ·7786959 (⌂|🏘)
 ◎  B
-●  ·312f819 (⌂|🏘|01)
+●  ·312f819 (⌂|🏘)
 ◎  A
-●  ·e255adc (⌂|🏘|01)
+●  ·e255adc (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     // It's worth noting that we avoid double-listing remote commits that are also
@@ -2841,13 +3249,13 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:B
-    ├── :1:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:B
+    ├── :B
     │   └── ·312f819 (🏘️)
-    ├── :2:A
+    ├── :A
     │   └── ·e255adc (🏘️)
-    └── :3:main <> origin/main →:4:
+    └── :main <> origin/main
         └── ❄️fafd9d0 (🏘️)
 
 "#]]
@@ -2855,39 +3263,45 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
 
     // The result is the same when changing the entrypoint.
     let (id, name) = id_at(&repo, "A");
-    let graph =
-        Graph::from_commit_traversal(id, name, &*meta, default_project_meta(), standard_options())?
-            .validated()?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        name,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  📕gitbutler/workspace[🌳]
 ●  ·7786959 (⌂|🏘)
 ◎  B <> origin/B
-●  ·312f819 (⌂|🏘|01000)
+●  ·312f819 (⌂|🏘)
 ◎  👉A <> origin/A
-●  ·e255adc (⌂|🏘|01001)
+●  ·e255adc (⌂|🏘)
 │ ◎  origin/B
-│ ●  🟣682be32 (0x0|10000)
+│ ●  🟣682be32 (0x0)
 │ ◎  origin/A
-│ ●  🟣e29c23d (0x0|10100)
+│ ●  🟣e29c23d (0x0)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     let ws = graph.into_workspace()?;
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:5:B <> origin/B →:6:⇡1⇣1 on fafd9d0
-    ├── :5:B <> origin/B →:6:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:B <> origin/B⇡1⇣1 on fafd9d0
+    ├── :B <> origin/B⇡1⇣1
     │   ├── 🟣682be32
     │   └── ·312f819 (🏘️)
-    └── 👉:0:A <> origin/A →:4:⇡1⇣1
+    └── 👉:A <> origin/A⇡1⇣1
         ├── 🟣e29c23d
         └── ·e255adc (🏘️)
 
@@ -2971,7 +3385,8 @@ Statistics {
 
 #[test]
 fn target_with_remote_on_stack_tip() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/local-target-ahead-and-on-stack-tip")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/local-target-ahead-and-on-stack-tip")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -2983,19 +3398,25 @@ fn target_with_remote_on_stack_tip() -> anyhow::Result<()> {
     );
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·dd0cca8 (⌂|🏘|01)
+●  ·dd0cca8 (⌂|🏘)
 │ ◎  main <> origin/main
 ├─╯
 ◎  📙A
-●  ·e255adc (⌂|🏘|11)
+●  ·e255adc (⌂|🏘)
 ◎  origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -3003,9 +3424,9 @@ fn target_with_remote_on_stack_tip() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:2:A on fafd9d0 {1}
-    └── 📙:2:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    └── 📙:A
         └── ·e255adc (🏘️)
 
 "#]]
@@ -3013,15 +3434,21 @@ fn target_with_remote_on_stack_tip() -> anyhow::Result<()> {
 
     // But mention it if it's in the workspace. It should retain order.
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &["main"]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:A on fafd9d0 {1}
-    ├── 📙:3:A
-    └── 📙:4:main <> origin/main →:1:⇡1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    ├── 📙:A
+    └── 📙:main <> origin/main⇡1
         └── ·e255adc (🏘️)
 
 "#]]
@@ -3029,15 +3456,21 @@ fn target_with_remote_on_stack_tip() -> anyhow::Result<()> {
 
     // But mention it if it's in the workspace. It should retain order - inverting the order is fine.
     add_stack_with_segments(&mut meta, 1, "main", StackState::InWorkspace, &["A"]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:main <> origin/main →:1: on fafd9d0 {1}
-    ├── 📙:3:main <> origin/main →:1:
-    └── 📙:4:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:main <> origin/main on fafd9d0 {1}
+    ├── 📙:main <> origin/main
+    └── 📙:A
         └── ·e255adc (🏘️)
 
 "#]]
@@ -3047,7 +3480,7 @@ fn target_with_remote_on_stack_tip() -> anyhow::Result<()> {
 
 #[test]
 fn disambiguate_by_remote() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/disambiguate-by-remote")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/disambiguate-by-remote")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -3072,8 +3505,14 @@ fn disambiguate_by_remote() -> anyhow::Result<()> {
     // need to get better as disambiguation.
     // The target branch is actually counted as remote, but it doesn't come through here as
     // it steals the commit from `main`. This should be fine.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -3083,28 +3522,28 @@ fn disambiguate_by_remote() -> anyhow::Result<()> {
 │ │ │ ◎  ambiguous-C
 ├─────╯
 │ │ │ ◎  👉📕gitbutler/workspace[🌳]
-│ │ │ ●  ·e30f90c (⌂|🏘|000001)
+│ │ │ ●  ·e30f90c (⌂|🏘)
 ├─────╯
 │ │ │ ◎  origin/A
 │ │ │ │ ◎  origin/B
-│ │ │ │ ●  🟣ac24e74 (0x0|010000)
+│ │ │ │ ●  🟣ac24e74 (0x0)
 │ │ │ │ │ ◎  origin/C
 ├─────────╯
 │ │ │ │ │ ◎  origin/ambiguous-C
 ├─────────╯
-● │ │ │ │  ·2173153 (⌂|🏘|000101)
+● │ │ │ │  ·2173153 (⌂|🏘)
 ├───────╯
 ◎ │ │ │  B <> origin/B
 ├───╯ │
-● │   │  ·312f819 (⌂|🏘|011101)
+● │   │  ·312f819 (⌂|🏘)
 ├─────╯
 ◎ │  A <> origin/A
 ├─╯
-●  ·e255adc (⌂|🏘|111101)
+●  ·e255adc (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|111111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -3117,14 +3556,14 @@ fn disambiguate_by_remote() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:6:anon: on fafd9d0
-    ├── :6:anon:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:anon: on fafd9d0
+    ├── :anon:
     │   └── ·2173153 (🏘️) ►C, ►ambiguous-C
-    ├── :9:B <> origin/B →:5:⇣1
+    ├── :B <> origin/B⇣1
     │   ├── 🟣ac24e74
     │   └── ❄️312f819 (🏘️) ►ambiguous-B
-    └── :8:A <> origin/A →:7:
+    └── :A <> origin/A
         └── ❄️e255adc (🏘️) ►ambiguous-A
 
 "#]]
@@ -3132,8 +3571,14 @@ fn disambiguate_by_remote() -> anyhow::Result<()> {
 
     // If 'C' is in the workspace, it's naturally disambiguated.
     add_stack_with_segments(&mut meta, 0, "C", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -3141,43 +3586,43 @@ fn disambiguate_by_remote() -> anyhow::Result<()> {
 │ ◎  ambiguous-B
 │ │ ◎  ambiguous-C
 │ │ │ ◎  👉📕gitbutler/workspace[🌳]
-│ │ │ ●  ·e30f90c (⌂|🏘|000001)
+│ │ │ ●  ·e30f90c (⌂|🏘)
 │ │ │ │ ◎  origin/A
 │ │ │ │ │ ◎  origin/B
-│ │ │ │ │ ●  🟣ac24e74 (0x0|010000)
+│ │ │ │ │ ●  🟣ac24e74 (0x0)
 │ │ │ │ │ │ ◎  origin/C
 │ │ │ ├─────╯
 │ │ │ │ │ │ ◎  origin/ambiguous-C
 │ │ │ ├─────╯
 │ │ │ ◎ │ │  📙C <> origin/C
 │ │ ├─╯ │ │
-│ │ ●   │ │  ·2173153 (⌂|🏘|000101)
+│ │ ●   │ │  ·2173153 (⌂|🏘)
 │ │ ├─────╯
 │ │ ◎   │  B <> origin/B
 │ ├─╯   │
-│ ●     │  ·312f819 (⌂|🏘|011101)
+│ ●     │  ·312f819 (⌂|🏘)
 │ ├─────╯
 │ ◎  A <> origin/A
 ├─╯
-●  ·e255adc (⌂|🏘|111101)
+●  ·e255adc (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|111111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     // And because `C` is in the workspace data, its data is denoted.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:C <> origin/C →:4: on fafd9d0 {0}
-    ├── 📙:3:C <> origin/C →:4:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:C <> origin/C on fafd9d0 {0}
+    ├── 📙:C <> origin/C
     │   └── ❄️2173153 (🏘️) ►ambiguous-C
-    ├── :9:B <> origin/B →:6:⇣1
+    ├── :B <> origin/B⇣1
     │   ├── 🟣ac24e74
     │   └── ❄️312f819 (🏘️) ►ambiguous-B
-    └── :8:A <> origin/A →:7:
+    └── :A <> origin/A
         └── ❄️e255adc (🏘️) ►ambiguous-A
 
 "#]]
@@ -3187,7 +3632,7 @@ fn disambiguate_by_remote() -> anyhow::Result<()> {
 
 #[test]
 fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/two-segments-one-integrated-without-remote")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -3228,6 +3673,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -3236,26 +3682,26 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4077353 (⌂|🏘|1)
+●  ·4077353 (⌂|🏘)
 ◎  B
-●  ·6b1a13b (⌂|🏘|1)
-●  ·03ad472 (⌂|🏘|1)
+●  ·6b1a13b (⌂|🏘)
+●  ·03ad472 (⌂|🏘)
 ◎  A
-●  ·79bbb29 (⌂|🏘|1)
-●  ·fc98174 (⌂|🏘|1)
-●  ·a381df5 (⌂|🏘|1)
-●  ·777b552 (⌂|🏘|1)
-●    ·ce4a760 (⌂|🏘|1)
+●  ·79bbb29 (⌂|🏘)
+●  ·fc98174 (⌂|🏘)
+●  ·a381df5 (⌂|🏘)
+●  ·777b552 (⌂|🏘)
+●    ·ce4a760 (⌂|🏘)
 ├─╮
 │ ◎  A-feat
-│ ●  ·fea59b5 (⌂|🏘|1)
-│ ●  ·4deea74 (⌂|🏘|1)
+│ ●  ·fea59b5 (⌂|🏘)
+│ ●  ·4deea74 (⌂|🏘)
 ├─╯
-●  ·01d0e1e (⌂|🏘|1)
+●  ·01d0e1e (⌂|🏘)
 ◎  main
-●  ·4b3e5a8 (⌂|🏘|1)
-●  ·34d0715 (⌂|🏘|1)
-●  🏁·eb5f731 (⌂|🏘|1)
+●  ·4b3e5a8 (⌂|🏘)
+●  ·34d0715 (⌂|🏘)
+●  🏁·eb5f731 (⌂|🏘)
 "#]]
     );
     // It's true that `A` is fully integrated so it isn't displayed. so from a workspace-perspective
@@ -3263,19 +3709,19 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:B
-    ├── :1:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:B
+    ├── :B
     │   ├── ·6b1a13b (🏘️)
     │   └── ·03ad472 (🏘️)
-    ├── :2:A
+    ├── :A
     │   ├── ·79bbb29 (🏘️)
     │   ├── ·fc98174 (🏘️)
     │   ├── ·a381df5 (🏘️)
     │   ├── ·777b552 (🏘️)
     │   ├── ·ce4a760 (🏘️)
     │   └── ·01d0e1e (🏘️)
-    └── :6:main
+    └── :main
         ├── ·4b3e5a8 (🏘️)
         ├── ·34d0715 (🏘️)
         └── ·eb5f731 (🏘️)
@@ -3288,16 +3734,22 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
     // This special handling was removed for now, relying on limits and extensions.
     // And since it's integrated, traversal is stopped without convergence.
     // We see more though as we add workspace segments immediately.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4077353 (⌂|🏘|1)
+●  ·4077353 (⌂|🏘)
 ◎  📙B
-●  ·6b1a13b (⌂|🏘|1)
-●  ·03ad472 (⌂|🏘|1)
+●  ·6b1a13b (⌂|🏘)
+●  ·03ad472 (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣d0df794 (✓)
 │ ●  🟣09c6e08 (✓)
@@ -3308,20 +3760,20 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 │ ●  🟣34d0715 (✓)
 │ ●  🏁🟣eb5f731 (✓)
 ◎  📙A
-●  ·79bbb29 (⌂|🏘|✓|1)
-●  ·fc98174 (⌂|🏘|✓|1)
-●  ·a381df5 (⌂|🏘|✓|1)
-●  ·777b552 (⌂|🏘|✓|1)
-●  ✂·ce4a760 (⌂|🏘|✓|1)
+●  ·79bbb29 (⌂|🏘|✓)
+●  ·fc98174 (⌂|🏘|✓)
+●  ·a381df5 (⌂|🏘|✓)
+●  ·777b552 (⌂|🏘|✓)
+●  ✂·ce4a760 (⌂|🏘|✓)
 "#]]
     );
     // `A` is integrated, hence it's not shown.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣6 on 79bbb29
-└── ≡📙:2:B on 79bbb29 {0}
-    └── 📙:2:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣6 on 79bbb29
+└── ≡📙:B on 79bbb29 {0}
+    └── 📙:B
         ├── ·6b1a13b (🏘️)
         └── ·03ad472 (🏘️)
 
@@ -3334,6 +3786,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_limit_hint(1),
     )?
     .validated()?;
@@ -3341,10 +3794,10 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4077353 (⌂|🏘|1)
+●  ·4077353 (⌂|🏘)
 ◎  📙B
-●  ·6b1a13b (⌂|🏘|1)
-●  ·03ad472 (⌂|🏘|1)
+●  ·6b1a13b (⌂|🏘)
+●  ·03ad472 (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣d0df794 (✓)
 │ ●  🟣09c6e08 (✓)
@@ -3355,18 +3808,18 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 │ ●  🟣34d0715 (✓)
 │ ●  🏁🟣eb5f731 (✓)
 ◎  📙A
-●  ·79bbb29 (⌂|🏘|✓|1)
-●  ·fc98174 (⌂|🏘|✓|1)
-●  ·a381df5 (⌂|🏘|✓|1)
-●  ✂·777b552 (⌂|🏘|✓|1)
+●  ·79bbb29 (⌂|🏘|✓)
+●  ·fc98174 (⌂|🏘|✓)
+●  ·a381df5 (⌂|🏘|✓)
+●  ✂·777b552 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣6 on 79bbb29
-└── ≡📙:2:B on 79bbb29 {0}
-    └── 📙:2:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣6 on 79bbb29
+└── ≡📙:B on 79bbb29 {0}
+    └── 📙:B
         ├── ·6b1a13b (🏘️)
         └── ·03ad472 (🏘️)
 
@@ -3385,6 +3838,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -3402,22 +3856,22 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 │ ●  🟣7b9f260 (✓)
 ╭─┤
 ◎ │  👉A
-● │  ·79bbb29 (⌂|🏘|✓|1)
-● │  ·fc98174 (⌂|🏘|✓|1)
-● │  ·a381df5 (⌂|🏘|✓|1)
-● │  ·777b552 (⌂|🏘|✓|1)
-● │    ·ce4a760 (⌂|🏘|✓|1)
+● │  ·79bbb29 (⌂|🏘|✓)
+● │  ·fc98174 (⌂|🏘|✓)
+● │  ·a381df5 (⌂|🏘|✓)
+● │  ·777b552 (⌂|🏘|✓)
+● │    ·ce4a760 (⌂|🏘|✓)
 ├───╮
 │ │ ◎  A-feat
-│ │ ●  ·fea59b5 (⌂|🏘|✓|1)
-│ │ ●  ·4deea74 (⌂|🏘|✓|1)
+│ │ ●  ·fea59b5 (⌂|🏘|✓)
+│ │ ●  ·4deea74 (⌂|🏘|✓)
 ├───╯
-● │  ·01d0e1e (⌂|🏘|✓|1)
+● │  ·01d0e1e (⌂|🏘|✓)
 ├─╯
 ◎  main <> origin/main
-●  ·4b3e5a8 (⌂|🏘|✓|1)
-●  ·34d0715 (⌂|🏘|✓|1)
-●  🏁·eb5f731 (⌂|🏘|✓|1)
+●  ·4b3e5a8 (⌂|🏘|✓)
+●  ·34d0715 (⌂|🏘|✓)
+●  🏁·eb5f731 (⌂|🏘|✓)
 "#]]
     );
     // The entrypoint branch is downgraded to a single-branch view with target context
@@ -3426,9 +3880,9 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:A <> ✓refs/remotes/origin/main⇣3
-└── ≡:0:A on 4b3e5a8 {1}
-    └── :0:A
+⌂:A <> ✓refs/remotes/origin/main⇣3
+└── ≡:A on 79bbb29 {1}
+    └── :A
 
 "#]]
     );
@@ -3438,6 +3892,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_limit_hint(1),
     )?
     .validated()?;
@@ -3461,10 +3916,10 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 │ ●  🟣34d0715 (✓)
 │ ●  🏁🟣eb5f731 (✓)
 ◎  👉A
-●  ·79bbb29 (⌂|🏘|✓|1)
-●  ·fc98174 (⌂|🏘|✓|1)
-●  ·a381df5 (⌂|🏘|✓|1)
-●  ✂·777b552 (⌂|🏘|✓|1)
+●  ·79bbb29 (⌂|🏘|✓)
+●  ·fc98174 (⌂|🏘|✓)
+●  ·a381df5 (⌂|🏘|✓)
+●  ✂·777b552 (⌂|🏘|✓)
 "#]]
     );
     // Because the branch is integrated, the surrounding workspace isn't shown. The downgraded
@@ -3472,9 +3927,9 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:A <> ✓refs/remotes/origin/main⇣6
-└── ≡:0:A {1}
-    └── :0:A
+⌂:A <> ✓refs/remotes/origin/main⇣6
+└── ≡:A on 79bbb29 {1}
+    └── :A
 
 "#]]
     );
@@ -3486,6 +3941,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         None,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "gitbutler/workspace"),
     )?
     .validated()?;
@@ -3500,36 +3956,36 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 ●  ·6b1a13b (⌂|🏘)
 ●  ·03ad472 (⌂|🏘)
 │ ◎  origin/main
-│ ●  👉·d0df794 (⌂|✓|1)
-│ ●  ·09c6e08 (⌂|✓|1)
-│ ●  ·7b9f260 (⌂|✓|1)
+│ ●  👉·d0df794 (⌂|✓)
+│ ●  ·09c6e08 (⌂|✓)
+│ ●  ·7b9f260 (⌂|✓)
 ╭─┤
 ◎ │  A
-● │  ·79bbb29 (⌂|🏘|✓|1)
-● │  ·fc98174 (⌂|🏘|✓|1)
-● │  ·a381df5 (⌂|🏘|✓|1)
-● │  ·777b552 (⌂|🏘|✓|1)
-● │    ·ce4a760 (⌂|🏘|✓|1)
+● │  ·79bbb29 (⌂|🏘|✓)
+● │  ·fc98174 (⌂|🏘|✓)
+● │  ·a381df5 (⌂|🏘|✓)
+● │  ·777b552 (⌂|🏘|✓)
+● │    ·ce4a760 (⌂|🏘|✓)
 ├───╮
 │ │ ◎  A-feat
-│ │ ●  ·fea59b5 (⌂|🏘|✓|1)
-│ │ ●  ·4deea74 (⌂|🏘|✓|1)
+│ │ ●  ·fea59b5 (⌂|🏘|✓)
+│ │ ●  ·4deea74 (⌂|🏘|✓)
 ├───╯
-● │  ·01d0e1e (⌂|🏘|✓|1)
+● │  ·01d0e1e (⌂|🏘|✓)
 ├─╯
 ◎  main <> origin/main
-●  ·4b3e5a8 (⌂|🏘|✓|1)
-●  ·34d0715 (⌂|🏘|✓|1)
-●  🏁·eb5f731 (⌂|🏘|✓|1)
+●  ·4b3e5a8 (⌂|🏘|✓)
+●  ·34d0715 (⌂|🏘|✓)
+●  🏁·eb5f731 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:DETACHED <> ✓refs/remotes/origin/main⇣3 on 79bbb29
-└── ≡:0:anon: on 4b3e5a8 {1}
-    └── :0:anon:
+⌂:DETACHED <> ✓refs/remotes/origin/main⇣3 on 79bbb29
+└── ≡:anon: on 4b3e5a8 {1}
+    └── :anon:
         ├── ·d0df794 (✓)
         ├── ·09c6e08 (✓)
         └── ·7b9f260 (✓)
@@ -3543,6 +3999,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
         None,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "B"),
     )?
     .validated()?;
@@ -3559,36 +4016,36 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 ●  ·6b1a13b (⌂|🏘|✓)
 ●  ·03ad472 (⌂|🏘|✓)
 │ ◎  origin/main
-│ ●  👉·d0df794 (⌂|✓|1)
-│ ●  ·09c6e08 (⌂|✓|1)
-│ ●  ·7b9f260 (⌂|✓|1)
+│ ●  👉·d0df794 (⌂|✓)
+│ ●  ·09c6e08 (⌂|✓)
+│ ●  ·7b9f260 (⌂|✓)
 ╭─┤
 ◎ │  A
-● │  ·79bbb29 (⌂|🏘|✓|1)
-● │  ·fc98174 (⌂|🏘|✓|1)
-● │  ·a381df5 (⌂|🏘|✓|1)
-● │  ·777b552 (⌂|🏘|✓|1)
-● │    ·ce4a760 (⌂|🏘|✓|1)
+● │  ·79bbb29 (⌂|🏘|✓)
+● │  ·fc98174 (⌂|🏘|✓)
+● │  ·a381df5 (⌂|🏘|✓)
+● │  ·777b552 (⌂|🏘|✓)
+● │    ·ce4a760 (⌂|🏘|✓)
 ├───╮
 │ │ ◎  A-feat
-│ │ ●  ·fea59b5 (⌂|🏘|✓|1)
-│ │ ●  ·4deea74 (⌂|🏘|✓|1)
+│ │ ●  ·fea59b5 (⌂|🏘|✓)
+│ │ ●  ·4deea74 (⌂|🏘|✓)
 ├───╯
-● │  ·01d0e1e (⌂|🏘|✓|1)
+● │  ·01d0e1e (⌂|🏘|✓)
 ├─╯
 ◎  main <> origin/main
-●  ·4b3e5a8 (⌂|🏘|✓|1)
-●  ·34d0715 (⌂|🏘|✓|1)
-●  🏁·eb5f731 (⌂|🏘|✓|1)
+●  ·4b3e5a8 (⌂|🏘|✓)
+●  ·34d0715 (⌂|🏘|✓)
+●  🏁·eb5f731 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:DETACHED <> ✓refs/remotes/origin/main⇣3 on 79bbb29
-└── ≡:0:anon: on 4b3e5a8 {1}
-    └── :0:anon:
+⌂:DETACHED <> ✓refs/remotes/origin/main⇣3 on 79bbb29
+└── ≡:anon: on 4b3e5a8 {1}
+    └── :anon:
         ├── ·d0df794 (✓)
         ├── ·09c6e08 (✓)
         └── ·7b9f260 (✓)
@@ -3601,7 +4058,7 @@ fn integrated_tips_stop_early_if_remote_is_not_configured() -> anyhow::Result<()
 
 #[test]
 fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/two-segments-one-integrated")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/two-segments-one-integrated")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -3634,38 +4091,44 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
 
     add_workspace(&mut meta);
     // Thanks to the remote `main` is searched for by the entrypoint.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4077353 (⌂|🏘|01)
+●  ·4077353 (⌂|🏘)
 ◎  B
-●  ·6b1a13b (⌂|🏘|01)
-●  ·03ad472 (⌂|🏘|01)
+●  ·6b1a13b (⌂|🏘)
+●  ·03ad472 (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣d0df794 (✓)
 │ ●  🟣09c6e08 (✓)
 │ ●  🟣7b9f260 (✓)
 ╭─┤
 ◎ │  A
-● │  ·79bbb29 (⌂|🏘|✓|01)
-● │  ·fc98174 (⌂|🏘|✓|01)
-● │  ·a381df5 (⌂|🏘|✓|01)
-● │  ·777b552 (⌂|🏘|✓|01)
-● │    ·ce4a760 (⌂|🏘|✓|01)
+● │  ·79bbb29 (⌂|🏘|✓)
+● │  ·fc98174 (⌂|🏘|✓)
+● │  ·a381df5 (⌂|🏘|✓)
+● │  ·777b552 (⌂|🏘|✓)
+● │    ·ce4a760 (⌂|🏘|✓)
 ├───╮
 │ │ ◎  A-feat
-│ │ ●  ·fea59b5 (⌂|🏘|✓|01)
-│ │ ●  ·4deea74 (⌂|🏘|✓|01)
+│ │ ●  ·fea59b5 (⌂|🏘|✓)
+│ │ ●  ·4deea74 (⌂|🏘|✓)
 ├───╯
-● │  ·01d0e1e (⌂|🏘|✓|01)
+● │  ·01d0e1e (⌂|🏘|✓)
 ├─╯
 ◎  main <> origin/main
-●  ·4b3e5a8 (⌂|🏘|✓|11)
-●  ·34d0715 (⌂|🏘|✓|11)
-●  🏁·eb5f731 (⌂|🏘|✓|11)
+●  ·4b3e5a8 (⌂|🏘|✓)
+●  ·34d0715 (⌂|🏘|✓)
+●  🏁·eb5f731 (⌂|🏘|✓)
 "#]]
     );
 
@@ -3673,9 +4136,9 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣3 on 79bbb29
-└── ≡:4:B on 79bbb29
-    └── :4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣3 on 79bbb29
+└── ≡:B on 79bbb29
+    └── :B
         ├── ·6b1a13b (🏘️)
         └── ·03ad472 (🏘️)
 
@@ -3687,18 +4150,19 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣3 on 4b3e5a8
-└── ≡:4:B on 4b3e5a8
-    ├── :4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣3 on 4b3e5a8
+└── ≡:B on 4b3e5a8
+    ├── :B
     │   ├── ·6b1a13b (🏘️)
     │   └── ·03ad472 (🏘️)
-    └── :5:A
+    └── :A
         ├── ·79bbb29 (🏘️|✓)
         ├── ·fc98174 (🏘️|✓)
         ├── ·a381df5 (🏘️|✓)
@@ -3717,6 +4181,7 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -3734,22 +4199,22 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
 │ ●  🟣7b9f260 (✓)
 ╭─┤
 ◎ │  👉A
-● │  ·79bbb29 (⌂|🏘|✓|01)
-● │  ·fc98174 (⌂|🏘|✓|01)
-● │  ·a381df5 (⌂|🏘|✓|01)
-● │  ·777b552 (⌂|🏘|✓|01)
-● │    ·ce4a760 (⌂|🏘|✓|01)
+● │  ·79bbb29 (⌂|🏘|✓)
+● │  ·fc98174 (⌂|🏘|✓)
+● │  ·a381df5 (⌂|🏘|✓)
+● │  ·777b552 (⌂|🏘|✓)
+● │    ·ce4a760 (⌂|🏘|✓)
 ├───╮
 │ │ ◎  A-feat
-│ │ ●  ·fea59b5 (⌂|🏘|✓|01)
-│ │ ●  ·4deea74 (⌂|🏘|✓|01)
+│ │ ●  ·fea59b5 (⌂|🏘|✓)
+│ │ ●  ·4deea74 (⌂|🏘|✓)
 ├───╯
-● │  ·01d0e1e (⌂|🏘|✓|01)
+● │  ·01d0e1e (⌂|🏘|✓)
 ├─╯
 ◎  main <> origin/main
-●  ·4b3e5a8 (⌂|🏘|✓|11)
-●  ·34d0715 (⌂|🏘|✓|11)
-●  🏁·eb5f731 (⌂|🏘|✓|11)
+●  ·4b3e5a8 (⌂|🏘|✓)
+●  ·34d0715 (⌂|🏘|✓)
+●  🏁·eb5f731 (⌂|🏘|✓)
 "#]]
     );
 
@@ -3759,9 +4224,9 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:A <> ✓refs/remotes/origin/main⇣3
-└── ≡:0:A on 4b3e5a8 {1}
-    └── :0:A
+⌂:A <> ✓refs/remotes/origin/main⇣3
+└── ≡:A on 79bbb29 {1}
+    └── :A
 
 "#]]
     );
@@ -3773,18 +4238,19 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣3 on 4b3e5a8
-└── ≡:5:B on 4b3e5a8
-    ├── :5:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣3 on 4b3e5a8
+└── ≡:B on 4b3e5a8
+    ├── :B
     │   ├── ·6b1a13b (🏘️)
     │   └── ·03ad472 (🏘️)
-    └── 👉:0:A
+    └── 👉:A
         ├── ·79bbb29 (🏘️|✓)
         ├── ·fc98174 (🏘️|✓)
         ├── ·a381df5 (🏘️|✓)
@@ -3801,6 +4267,7 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
         ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -3809,9 +4276,9 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main <> ✓refs/remotes/origin/main⇣3
-└── ≡:0:main <> origin/main →:2:⇣3 {1}
-    └── :0:main <> origin/main →:2:⇣3
+⌂:main <> ✓refs/remotes/origin/main⇣3
+└── ≡:main <> origin/main⇣3 on 4b3e5a8 {1}
+    └── :main <> origin/main⇣3
         ├── 🟣d0df794 (✓)
         ├── 🟣09c6e08 (✓)
         └── 🟣7b9f260 (✓)
@@ -3820,17 +4287,23 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
     );
 
     let id = id_by_rev(&repo, "main~1");
-    let graph =
-        Graph::from_commit_traversal(id, None, &*meta, default_project_meta(), standard_options())?
-            .validated()?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        None,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // Detached states are also possible. They keep the anonymous container while
     // preserving target context and pruning integrated commits.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:DETACHED <> ✓refs/remotes/origin/main⇣3
-└── ≡:0:anon: {1}
-    └── :0:anon:
+⌂:DETACHED <> ✓refs/remotes/origin/main⇣3
+└── ≡:anon: on 34d0715 {1}
+    └── :anon:
 
 "#]]
     );
@@ -3839,7 +4312,8 @@ fn integrated_tips_do_not_stop_early() -> anyhow::Result<()> {
 
 #[test]
 fn workspace_without_target_can_see_remote() -> anyhow::Result<()> {
-    let (mut repo, _) = read_only_in_memory_scenario("ws/main-with-remote-and-workspace-ref")?;
+    let (mut repo, _, mut db) =
+        read_only_in_memory_scenario("ws/main-with-remote-and-workspace-ref")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -3872,8 +4346,14 @@ fn workspace_without_target_can_see_remote() -> anyhow::Result<()> {
     }
     meta.set_workspace(&ws)?;
 
-    let graph =
-        Graph::from_head(&repo, &meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // Main is a normal branch, and its remote is known.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
@@ -3883,7 +4363,7 @@ fn workspace_without_target_can_see_remote() -> anyhow::Result<()> {
 │ ●  ·956a3de (⌂)
 ├─╯
 ◎  👉📙main[🌳] <> origin/main
-●  🏁·3183e43 (⌂|🏘|1)
+●  🏁·3183e43 (⌂|🏘)
 "#]]
     );
 
@@ -3892,9 +4372,9 @@ fn workspace_without_target_can_see_remote() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace <> ✓!
-└── ≡👉📙:0:main[🌳] <> origin/main →:2:⇡1 {0}
-    └── 👉📙:0:main[🌳] <> origin/main →:2:⇡1
+📕🏘️⚠️:gitbutler/workspace <> ✓!
+└── ≡👉📙:main[🌳] <> origin/main⇡1 {0}
+    └── 👉📙:main[🌳] <> origin/main⇡1
         └── ·3183e43 (🏘️)
 
 "#]]
@@ -3915,16 +4395,16 @@ fn workspace_without_target_can_see_remote() -> anyhow::Result<()> {
 │ ●  ·956a3de (⌂)
 ├─╯
 ◎  👉📙main[🌳] <> origin/main
-●  🏁·3183e43 (⌂|🏘|1)
+●  🏁·3183e43 (⌂|🏘)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace <> ✓!
-└── ≡👉📙:0:main[🌳] <> origin/main →:2:⇡1 {0}
-    └── 👉📙:0:main[🌳] <> origin/main →:2:⇡1
+📕🏘️⚠️:gitbutler/workspace <> ✓!
+└── ≡👉📙:main[🌳] <> origin/main⇡1 {0}
+    └── 👉📙:main[🌳] <> origin/main⇡1
         └── ·3183e43 (🏘️)
 
 "#]]
@@ -3934,7 +4414,7 @@ fn workspace_without_target_can_see_remote() -> anyhow::Result<()> {
 
 #[test]
 fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/two-segments-one-integrated-without-remote")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -3970,6 +4450,7 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
         &repo,
         &*meta,
         ProjectMeta::default(),
+        &mut db,
         standard_options().with_limit_hint(0),
     )?
     .validated()?;
@@ -3977,7 +4458,7 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ✂·4077353 (⌂|🏘|1)
+●  ✂·4077353 (⌂|🏘)
 "#]]
     );
     // The commit in the workspace branch is always ignored and is expected to be the workspace merge commit.
@@ -3985,7 +4466,7 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
 
 "#]]
     );
@@ -3999,6 +4480,7 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_limit_hint(0),
     )?
     .validated()?;
@@ -4006,10 +4488,10 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4077353 (⌂|🏘|1)
+●  ·4077353 (⌂|🏘)
 ◎  B
-●  ·6b1a13b (⌂|🏘|1)
-●  ·03ad472 (⌂|🏘|1)
+●  ·6b1a13b (⌂|🏘)
+●  ·03ad472 (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣d0df794 (✓)
 │ ●  🟣09c6e08 (✓)
@@ -4020,18 +4502,18 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
 │ ●  🟣34d0715 (✓)
 │ ●  🏁🟣eb5f731 (✓)
 ◎  A
-●  ·79bbb29 (⌂|🏘|✓|1)
-●  ·fc98174 (⌂|🏘|✓|1)
-●  ✂·a381df5 (⌂|🏘|✓|1)
+●  ·79bbb29 (⌂|🏘|✓)
+●  ·fc98174 (⌂|🏘|✓)
+●  ✂·a381df5 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣6 on 79bbb29
-└── ≡:3:B on 79bbb29
-    └── :3:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣6 on 79bbb29
+└── ≡:B on 79bbb29
+    └── :B
         ├── ·6b1a13b (🏘️)
         └── ·03ad472 (🏘️)
 
@@ -4044,7 +4526,7 @@ fn workspace_obeys_limit_when_target_branch_is_missing() -> anyhow::Result<()> {
 #[test]
 fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
 -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/three-branches-one-advanced-ws-commit-advanced-fully-pushed-empty-dependent",
     )?;
     snapbox::assert_data_eq!(
@@ -4058,14 +4540,20 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  dependent
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·f8f33a7 (⌂|🏘|001)
+│ ●  ·f8f33a7 (⌂|🏘)
 │ │ ◎  lane
 │ │ │ ◎  on-top-of-dependent
 ├─────╯
@@ -4073,12 +4561,12 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
 │ ├───╯
 │ ◎ │  advanced-lane <> origin/advanced-lane
 ├─╯ │
-●   │  ·cbc6713 (⌂|🏘|101)
+●   │  ·cbc6713 (⌂|🏘)
 │ ◎ │  origin/main
 ├─╯ │
 ◎   │  main <> origin/main
 ├───╯
-●  🏁·fafd9d0 (⌂|🏘|✓|111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -4086,9 +4574,9 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:advanced-lane <> origin/advanced-lane →:3: on fafd9d0
-    └── :4:advanced-lane <> origin/advanced-lane →:3:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:advanced-lane <> origin/advanced-lane on fafd9d0
+    └── :advanced-lane <> origin/advanced-lane
         └── ❄️cbc6713 (🏘️) ►dependent, ►on-top-of-dependent
 
 "#]]
@@ -4103,13 +4591,19 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
     );
 
     // Lanes are properly ordered
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·f8f33a7 (⌂|🏘|001)
+●  ·f8f33a7 (⌂|🏘)
 ◎  📙dependent
 │ ◎  lane
 │ │ ◎  on-top-of-dependent
@@ -4117,12 +4611,12 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
 ├─────╯
 ◎ │ │  📙advanced-lane <> origin/advanced-lane
 ├───╯
-● │  ·cbc6713 (⌂|🏘|101)
+● │  ·cbc6713 (⌂|🏘)
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -4130,10 +4624,10 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:5:dependent on fafd9d0 {1}
-    ├── 📙:5:dependent
-    └── 📙:6:advanced-lane <> origin/advanced-lane →:4:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:dependent on fafd9d0 {1}
+    ├── 📙:dependent
+    └── 📙:advanced-lane <> origin/advanced-lane
         └── ❄️cbc6713 (🏘️) ►on-top-of-dependent
 
 "#]]
@@ -4143,7 +4637,8 @@ fn three_branches_one_advanced_ws_commit_advanced_fully_pushed_empty_dependent()
 
 #[test]
 fn on_top_of_target_with_history() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/on-top-of-target-with-history")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/on-top-of-target-with-history")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -4159,8 +4654,14 @@ fn on_top_of_target_with_history() -> anyhow::Result<()> {
 
     add_workspace(&mut meta);
     // It sees the entire history as it had to find `main`.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -4178,28 +4679,34 @@ fn on_top_of_target_with_history() -> anyhow::Result<()> {
 │ ◎  👉📕gitbutler/workspace[🌳]
 │ ◎  origin/main
 ├─╯
-●  ·2cde30a (⌂|🏘|✓|01)
-●  ·1c938f4 (⌂|🏘|✓|01)
-●  ·b82769f (⌂|🏘|✓|01)
-●  ·988032f (⌂|🏘|✓|01)
-●  ·cd5b655 (⌂|🏘|✓|01)
+●  ·2cde30a (⌂|🏘|✓)
+●  ·1c938f4 (⌂|🏘|✓)
+●  ·b82769f (⌂|🏘|✓)
+●  ·988032f (⌂|🏘|✓)
+●  ·cd5b655 (⌂|🏘|✓)
 ◎  main <> origin/main
-●  🏁·2be54cd (⌂|🏘|✓|11)
+●  🏁·2be54cd (⌂|🏘|✓)
 "#]]
     );
     // Workspace is empty as everything is integrated.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 2cde30a
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 2cde30a
 
 "#]]
     );
 
     add_stack_with_segments(&mut meta, 0, "C", StackState::InWorkspace, &["B", "A"]);
     add_stack_with_segments(&mut meta, 1, "D", StackState::InWorkspace, &["E", "F"]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -4213,13 +4720,13 @@ fn on_top_of_target_with_history() -> anyhow::Result<()> {
 │ ◎  📙F
 ├─╯
 ◎  origin/main
-●  ·2cde30a (⌂|🏘|✓|01)
-●  ·1c938f4 (⌂|🏘|✓|01)
-●  ·b82769f (⌂|🏘|✓|01)
-●  ·988032f (⌂|🏘|✓|01)
-●  ·cd5b655 (⌂|🏘|✓|01)
+●  ·2cde30a (⌂|🏘|✓)
+●  ·1c938f4 (⌂|🏘|✓)
+●  ·b82769f (⌂|🏘|✓)
+●  ·988032f (⌂|🏘|✓)
+●  ·cd5b655 (⌂|🏘|✓)
 ◎  main <> origin/main
-●  🏁·2be54cd (⌂|🏘|✓|11)
+●  🏁·2be54cd (⌂|🏘|✓)
 "#]]
     );
 
@@ -4227,15 +4734,15 @@ fn on_top_of_target_with_history() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 2cde30a
-├── ≡📙:3:C on 2cde30a {0}
-│   ├── 📙:3:C
-│   ├── 📙:4:B
-│   └── 📙:5:A
-└── ≡📙:6:D on 2cde30a {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 2cde30a
+├── ≡📙:C on 2cde30a {0}
+│   ├── 📙:C
+│   ├── 📙:B
+│   └── 📙:A
+└── ≡📙:D on 2cde30a {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
 
 "#]]
     );
@@ -4247,26 +4754,27 @@ fn on_top_of_target_with_history() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 2be54cd
-├── ≡📙:3:C on 2be54cd {0}
-│   ├── 📙:3:C
-│   ├── 📙:4:B
-│   └── 📙:5:A
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 2be54cd
+├── ≡📙:C on 2be54cd {0}
+│   ├── 📙:C
+│   ├── 📙:B
+│   └── 📙:A
 │       ├── ·2cde30a (🏘️|✓)
 │       ├── ·1c938f4 (🏘️|✓)
 │       ├── ·b82769f (🏘️|✓)
 │       ├── ·988032f (🏘️|✓)
 │       └── ·cd5b655 (🏘️|✓)
-└── ≡📙:6:D on 2be54cd {1}
-    ├── 📙:6:D
-    ├── 📙:7:E
-    └── 📙:8:F
+└── ≡📙:D on 2be54cd {1}
+    ├── 📙:D
+    ├── 📙:E
+    └── 📙:F
         ├── ·2cde30a (🏘️|✓)
         ├── ·1c938f4 (🏘️|✓)
         ├── ·b82769f (🏘️|✓)
@@ -4280,7 +4788,7 @@ fn on_top_of_target_with_history() -> anyhow::Result<()> {
 
 #[test]
 fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/gitlab-case")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/gitlab-case")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -4334,6 +4842,7 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
         main_ref_name.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -4370,18 +4879,18 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
 │ ●  ·fe2046b (⌂|🏘|✓)
 │ ●  ·5532ef5 (⌂|🏘|✓)
 │ ◎  👉main <> origin/main
-│ ●  ·2438292 (⌂|🏘|✓|1)
+│ ●  ·2438292 (⌂|🏘|✓)
 ├─╯
-●  ·c056b75 (⌂|🏘|✓|1)
-●  ·f49c977 (⌂|🏘|✓|1)
-●  ·7b7ebb2 (⌂|🏘|✓|1)
-●  ·dca4960 (⌂|🏘|✓|1)
-●  ·11c29b8 (⌂|🏘|✓|1)
-●  ·c32dd03 (⌂|🏘|✓|1)
-●  ·b625665 (⌂|🏘|✓|1)
-●  ·a821094 (⌂|🏘|✓|1)
-●  ·bce0c5e (⌂|🏘|✓|1)
-●  🏁·3183e43 (⌂|🏘|✓|1)
+●  ·c056b75 (⌂|🏘|✓)
+●  ·f49c977 (⌂|🏘|✓)
+●  ·7b7ebb2 (⌂|🏘|✓)
+●  ·dca4960 (⌂|🏘|✓)
+●  ·11c29b8 (⌂|🏘|✓)
+●  ·c32dd03 (⌂|🏘|✓)
+●  ·b625665 (⌂|🏘|✓)
+●  ·a821094 (⌂|🏘|✓)
+●  ·bce0c5e (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
     // Entrypoint is outside of the managed workspace, so it is projected as a
@@ -4390,9 +4899,9 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main <> ✓refs/remotes/origin/main⇣11
-└── ≡:0:main <> origin/main →:2:⇣11 {1}
-    └── :0:main <> origin/main →:2:⇣11
+⌂:main <> ✓refs/remotes/origin/main⇣11
+└── ≡:main <> origin/main⇣11 on 2438292 {1}
+    └── :main <> origin/main⇣11
         ├── 🟣232ed06 (✓)
         ├── 🟣abcfd9a (✓)
         ├── 🟣bc86eba (✓)
@@ -4416,6 +4925,7 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
         main_ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_limit_hint(1),
     )?
     .validated()?;
@@ -4452,13 +4962,13 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
 │ ●  ·fe2046b (⌂|🏘|✓)
 │ ●  ·5532ef5 (⌂|🏘|✓)
 │ ◎  👉main <> origin/main
-│ ●  ·2438292 (⌂|🏘|✓|1)
+│ ●  ·2438292 (⌂|🏘|✓)
 ├─╯
-●  ·c056b75 (⌂|🏘|✓|1)
-●  ·f49c977 (⌂|🏘|✓|1)
-●  ·7b7ebb2 (⌂|🏘|✓|1)
-●  ·dca4960 (⌂|🏘|✓|1)
-●  ✂·11c29b8 (⌂|🏘|✓|1)
+●  ·c056b75 (⌂|🏘|✓)
+●  ·f49c977 (⌂|🏘|✓)
+●  ·7b7ebb2 (⌂|🏘|✓)
+●  ·dca4960 (⌂|🏘|✓)
+●  ✂·11c29b8 (⌂|🏘|✓)
 "#]]
     );
     // The limit is visible as well. Target context is preserved in the downgraded
@@ -4466,9 +4976,9 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main <> ✓refs/remotes/origin/main⇣11
-└── ≡:0:main <> origin/main →:2:⇣11 {1}
-    └── :0:main <> origin/main →:2:⇣11
+⌂:main <> ✓refs/remotes/origin/main⇣11
+└── ≡:main <> origin/main⇣11 on 2438292 {1}
+    └── :main <> origin/main⇣11
         ├── 🟣232ed06 (✓)
         ├── 🟣abcfd9a (✓)
         ├── 🟣bc86eba (✓)
@@ -4486,13 +4996,19 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
 
     // From the workspace, even without limit, we don't traverse all of 'main' as it's uninteresting.
     // However, we wait for the target to be fully reconciled to get the proper workspace configuration.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·41ed0e4 (⌂|🏘|1)
+●  ·41ed0e4 (⌂|🏘)
 │ ◎  origin/main
 │ ●    🟣232ed06 (✓)
 │ ├─╮
@@ -4511,26 +5027,26 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
 │   ●  🟣1a22a39 (✓)
 ├───╯
 ◎  workspace
-●    ·9730cbf (⌂|🏘|✓|1)
+●    ·9730cbf (⌂|🏘|✓)
 ├─╮
 ◎ │  main-to-workspace
-● │  ·dc7ab57 (⌂|🏘|✓|1)
+● │  ·dc7ab57 (⌂|🏘|✓)
 │ ◎  long-main-to-workspace
-│ ●  ·77f31a0 (⌂|🏘|✓|1)
-│ ●  ·eb17e31 (⌂|🏘|✓|1)
-│ ●  ·fe2046b (⌂|🏘|✓|1)
-│ ●  ·5532ef5 (⌂|🏘|✓|1)
+│ ●  ·77f31a0 (⌂|🏘|✓)
+│ ●  ·eb17e31 (⌂|🏘|✓)
+│ ●  ·fe2046b (⌂|🏘|✓)
+│ ●  ·5532ef5 (⌂|🏘|✓)
 │ ◎  main <> origin/main
-│ ●  ·2438292 (⌂|🏘|✓|1)
+│ ●  ·2438292 (⌂|🏘|✓)
 ├─╯
-●  ·c056b75 (⌂|🏘|✓|1)
-●  ·f49c977 (⌂|🏘|✓|1)
-●  ·7b7ebb2 (⌂|🏘|✓|1)
-●  ·dca4960 (⌂|🏘|✓|1)
-●  ·11c29b8 (⌂|🏘|✓|1)
-●  ·c32dd03 (⌂|🏘|✓|1)
-●  ·b625665 (⌂|🏘|✓|1)
-●  ✂·a821094 (⌂|🏘|✓|1)
+●  ·c056b75 (⌂|🏘|✓)
+●  ·f49c977 (⌂|🏘|✓)
+●  ·7b7ebb2 (⌂|🏘|✓)
+●  ·dca4960 (⌂|🏘|✓)
+●  ·11c29b8 (⌂|🏘|✓)
+●  ·c32dd03 (⌂|🏘|✓)
+●  ·b625665 (⌂|🏘|✓)
+●  ✂·a821094 (⌂|🏘|✓)
 "#]]
     );
 
@@ -4538,7 +5054,7 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣11 on 9730cbf
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣11 on 9730cbf
 
 "#]]
     );
@@ -4547,7 +5063,7 @@ fn partitions_with_long_and_short_connections_to_each_other() -> anyhow::Result<
 
 #[test]
 fn remote_far_in_ancestry() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/remote-far-in-ancestry")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/remote-far-in-ancestry")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -4579,6 +5095,7 @@ fn remote_far_in_ancestry() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_limit_hint(1),
     )?
     .validated()?;
@@ -4589,39 +5106,39 @@ fn remote_far_in_ancestry() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·9412ebd (⌂|🏘|0001)
+●  ·9412ebd (⌂|🏘)
 ◎  A <> origin/A
-●  ·8407093 (⌂|🏘|0101)
-●  ·7dfaa0c (⌂|🏘|0101)
-●  ·544e458 (⌂|🏘|0101)
+●  ·8407093 (⌂|🏘)
+●  ·7dfaa0c (⌂|🏘)
+●  ·544e458 (⌂|🏘)
 │ ◎  origin/A
-│ ●  🟣975754f (0x0|1000)
-│ ●  🟣f48ff69 (0x0|1000)
+│ ●  🟣975754f (0x0)
+│ ●  🟣f48ff69 (0x0)
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
-● │  ·685d644 (⌂|🏘|✓|0111)
-● │  ·cafdb27 (⌂|🏘|✓|0111)
-● │  ·c056b75 (⌂|🏘|✓|0111)
-● │  ·f49c977 (⌂|🏘|✓|0111)
-● │  ·7b7ebb2 (⌂|🏘|✓|0111)
-● │  ·dca4960 (⌂|🏘|✓|0111)
-● │  ·11c29b8 (⌂|🏘|✓|0111)
-● │  ·c32dd03 (⌂|🏘|✓|0111)
-● │  ·b625665 (⌂|🏘|✓|0111)
-● │  ·a821094 (⌂|🏘|✓|0111)
-● │  ·bce0c5e (⌂|🏘|✓|0111)
+● │  ·685d644 (⌂|🏘|✓)
+● │  ·cafdb27 (⌂|🏘|✓)
+● │  ·c056b75 (⌂|🏘|✓)
+● │  ·f49c977 (⌂|🏘|✓)
+● │  ·7b7ebb2 (⌂|🏘|✓)
+● │  ·dca4960 (⌂|🏘|✓)
+● │  ·11c29b8 (⌂|🏘|✓)
+● │  ·c32dd03 (⌂|🏘|✓)
+● │  ·b625665 (⌂|🏘|✓)
+● │  ·a821094 (⌂|🏘|✓)
+● │  ·bce0c5e (⌂|🏘|✓)
 ├─╯
-●  🏁·3183e43 (⌂|🏘|✓|1111)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 685d644
-└── ≡:3:A <> origin/A →:4:⇡3⇣2 on 685d644
-    └── :3:A <> origin/A →:4:⇡3⇣2
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 685d644
+└── ≡:A <> origin/A⇡3⇣2 on 685d644
+    └── :A <> origin/A⇡3⇣2
         ├── 🟣975754f
         ├── 🟣f48ff69
         ├── ·8407093 (🏘️)
@@ -4635,7 +5152,7 @@ fn remote_far_in_ancestry() -> anyhow::Result<()> {
 
 #[test]
 fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/gitlab-case2")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/gitlab-case2")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -4684,6 +5201,7 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -4720,7 +5238,7 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 │ │ ● │  ·144ea85 (⌂|🏘|✓)
 │ │ ● │  ·5aecfd2 (⌂|🏘|✓)
 │ │ ◎ │  👉main <> origin/main
-│ │ ● │  ·bce0c5e (⌂|🏘|✓|1)
+│ │ ● │  ·bce0c5e (⌂|🏘|✓)
 ├───╯ │
 │ │   ◎  longer-workspace-to-target
 │ │   ●  🟣edf041f (✓)
@@ -4733,7 +5251,7 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 │ ◎  main-to-workspace
 │ ●  ·1126587 (⌂|🏘|✓)
 ├─╯
-●  🏁·3183e43 (⌂|🏘|✓|1)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
     // `main` is integrated, but it is the entrypoint, so the branch container is shown.
@@ -4741,9 +5259,9 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main <> ✓refs/remotes/origin/main⇣17
-└── ≡:0:main <> origin/main →:2:⇣17 {1}
-    └── :0:main <> origin/main →:2:⇣17
+⌂:main <> ✓refs/remotes/origin/main⇣17
+└── ≡:main <> origin/main⇣17 on bce0c5e {1}
+    └── :main <> origin/main⇣17
         ├── 🟣024f837 (✓) ►long-workspace-to-target
         ├── 🟣64a8284 (✓)
         ├── 🟣b72938c (✓)
@@ -4767,8 +5285,14 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 
     // Now the target looks for the entrypoint, which is the workspace, something it can do more easily.
     // We wait for targets to fully reconcile as well.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -4776,7 +5300,7 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 │ ◎  B
 ├─╯
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·f514495 (⌂|🏘|1)
+│ ●  ·f514495 (⌂|🏘)
 │ │ ◎  long-workspace-to-target
 │ │ │ ◎  origin/main
 │ │ ├─╯
@@ -4794,15 +5318,15 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 │ │ ● │  🟣f0d2a35 (✓)
 │ ├─╯ │
 │ ◎   │  workspace
-│ ●   │  ·c9120f1 (⌂|🏘|✓|1)
+│ ●   │  ·c9120f1 (⌂|🏘|✓)
 │ ├─╮ │
 │ │ ◎ │  long-main-to-workspace
-│ │ ● │  ·b39c7ec (⌂|🏘|✓|1)
-│ │ ● │  ·2983a97 (⌂|🏘|✓|1)
-│ │ ● │  ·144ea85 (⌂|🏘|✓|1)
-│ │ ● │  ·5aecfd2 (⌂|🏘|✓|1)
+│ │ ● │  ·b39c7ec (⌂|🏘|✓)
+│ │ ● │  ·2983a97 (⌂|🏘|✓)
+│ │ ● │  ·144ea85 (⌂|🏘|✓)
+│ │ ● │  ·5aecfd2 (⌂|🏘|✓)
 │ │ ◎ │  main <> origin/main
-│ │ ● │  ·bce0c5e (⌂|🏘|✓|1)
+│ │ ● │  ·bce0c5e (⌂|🏘|✓)
 ├───╯ │
 │ │   ◎  longer-workspace-to-target
 │ │   ●  🟣edf041f (✓)
@@ -4813,9 +5337,9 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 │ │   ●  🟣5bac978 (✓)
 │ ├───╯
 │ ◎  main-to-workspace
-│ ●  ·1126587 (⌂|🏘|✓|1)
+│ ●  ·1126587 (⌂|🏘|✓)
 ├─╯
-●  🏁·3183e43 (⌂|🏘|✓|1)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -4824,7 +5348,7 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on c9120f1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on c9120f1
 
 "#]]
     );
@@ -4840,11 +5364,11 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on 3183e43
-└── ≡:3:workspace on 3183e43
-    ├── :3:workspace
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on 3183e43
+└── ≡:workspace on 3183e43
+    ├── :workspace
     │   └── ·c9120f1 (🏘️|✓)
-    └── :4:main-to-workspace
+    └── :main-to-workspace
         └── ·1126587 (🏘️|✓)
 
 "#]]
@@ -4860,16 +5384,16 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on 3183e43
-├── ≡:3:workspace on 3183e43
-│   ├── :3:workspace
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on 3183e43
+├── ≡:workspace on 3183e43
+│   ├── :workspace
 │   │   └── ·c9120f1 (🏘️|✓)
-│   └── :4:main-to-workspace
+│   └── :main-to-workspace
 │       └── ·1126587 (🏘️|✓)
-├── ≡📙:10:A on 3183e43 {3}
-│   └── 📙:10:A
-└── ≡📙:11:B on 3183e43 {4}
-    └── 📙:11:B
+├── ≡📙:A on 3183e43 {3}
+│   └── 📙:A
+└── ≡📙:B on 3183e43 {4}
+    └── 📙:B
 
 "#]]
     );
@@ -4885,15 +5409,15 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on 3183e43
-├── ≡:3:workspace on 3183e43
-│   ├── :3:workspace
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣17 on 3183e43
+├── ≡:workspace on 3183e43
+│   ├── :workspace
 │   │   └── ·c9120f1 (🏘️|✓)
-│   └── :4:main-to-workspace
+│   └── :main-to-workspace
 │       └── ·1126587 (🏘️|✓)
-└── ≡📙:10:A on 3183e43 {3}
-    ├── 📙:10:A
-    └── 📙:11:B
+└── ≡📙:A on 3183e43 {3}
+    ├── 📙:A
+    └── 📙:B
 
 "#]]
     );
@@ -4902,7 +5426,7 @@ fn partitions_with_long_and_short_connections_to_each_other_part_2() -> anyhow::
 
 #[test]
 fn multi_lane_with_shared_segment_one_integrated() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/multi-lane-with-shared-segment-one-integrated")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -4939,6 +5463,7 @@ fn multi_lane_with_shared_segment_one_integrated() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -4946,31 +5471,31 @@ fn multi_lane_with_shared_segment_one_integrated() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●      ·2b30d94 (⌂|🏘|01)
+●      ·2b30d94 (⌂|🏘)
 ├─┬─╮
 ◎ │ │  D
-● │ │  ·9895054 (⌂|🏘|01)
+● │ │  ·9895054 (⌂|🏘)
 ◎ │ │  C
-● │ │  ·de625cc (⌂|🏘|01)
-● │ │  ·23419f8 (⌂|🏘|01)
-● │ │  ·5dc4389 (⌂|🏘|01)
+● │ │  ·de625cc (⌂|🏘)
+● │ │  ·23419f8 (⌂|🏘)
+● │ │  ·5dc4389 (⌂|🏘)
 │ │ ◎  B
-│ │ ●  ·acdc49a (⌂|🏘|01)
-│ │ ●  ·f0117e0 (⌂|🏘|01)
+│ │ ●  ·acdc49a (⌂|🏘)
+│ │ ●  ·f0117e0 (⌂|🏘)
 ├───╯
 │ │ ◎  origin/main
 │ │ ●  🟣c08dc6b (✓)
 │ ╭─┤
 │ ◎ │  A
-│ ● │  ·0bad3af (⌂|🏘|✓|01)
+│ ● │  ·0bad3af (⌂|🏘|✓)
 ├─╯ │
 ◎   │  shared
-●   │  ·d4f537e (⌂|🏘|✓|01)
-●   │  ·b448757 (⌂|🏘|✓|01)
-●   │  ·e9a378d (⌂|🏘|✓|01)
+●   │  ·d4f537e (⌂|🏘|✓)
+●   │  ·b448757 (⌂|🏘|✓)
+●   │  ·e9a378d (⌂|🏘|✓)
 ├───╯
 ◎  main <> origin/main
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -4979,30 +5504,30 @@ fn multi_lane_with_shared_segment_one_integrated() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
-├── ≡:3:D on 3183e43
-│   ├── :3:D
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
+├── ≡:D on 3183e43
+│   ├── :D
 │   │   └── ·9895054 (🏘️)
-│   ├── :6:C
+│   ├── :C
 │   │   ├── ·de625cc (🏘️)
 │   │   ├── ·23419f8 (🏘️)
 │   │   └── ·5dc4389 (🏘️)
-│   └── :7:shared
+│   └── :shared
 │       ├── ·d4f537e (🏘️|✓)
 │       ├── ·b448757 (🏘️|✓)
 │       └── ·e9a378d (🏘️|✓)
-├── ≡:4:A on 3183e43
-│   ├── :4:A
+├── ≡:A on 3183e43
+│   ├── :A
 │   │   └── ·0bad3af (🏘️|✓)
-│   └── :7:shared
+│   └── :shared
 │       ├── ·d4f537e (🏘️|✓)
 │       ├── ·b448757 (🏘️|✓)
 │       └── ·e9a378d (🏘️|✓)
-└── ≡:5:B on 3183e43
-    ├── :5:B
+└── ≡:B on 3183e43
+    ├── :B
     │   ├── ·acdc49a (🏘️)
     │   └── ·f0117e0 (🏘️)
-    └── :7:shared
+    └── :shared
         ├── ·d4f537e (🏘️|✓)
         ├── ·b448757 (🏘️|✓)
         └── ·e9a378d (🏘️|✓)
@@ -5011,21 +5536,27 @@ fn multi_lane_with_shared_segment_one_integrated() -> anyhow::Result<()> {
     );
 
     // If we do not, integrated portions are removed.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on d4f537e
-├── ≡:3:D on d4f537e
-│   ├── :3:D
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on d4f537e
+├── ≡:D on d4f537e
+│   ├── :D
 │   │   └── ·9895054 (🏘️)
-│   └── :6:C
+│   └── :C
 │       ├── ·de625cc (🏘️)
 │       ├── ·23419f8 (🏘️)
 │       └── ·5dc4389 (🏘️)
-└── ≡:5:B on d4f537e
-    └── :5:B
+└── ≡:B on d4f537e
+    └── :B
         ├── ·acdc49a (🏘️)
         └── ·f0117e0 (🏘️)
 
@@ -5036,7 +5567,8 @@ fn multi_lane_with_shared_segment_one_integrated() -> anyhow::Result<()> {
 
 #[test]
 fn multi_lane_with_shared_segment() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/multi-lane-with-shared-segment")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/multi-lane-with-shared-segment")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -5064,36 +5596,42 @@ fn multi_lane_with_shared_segment() -> anyhow::Result<()> {
 
     add_workspace(&mut meta);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●      ·2b30d94 (⌂|🏘|1)
+●      ·2b30d94 (⌂|🏘)
 ├─┬─╮
 ◎ │ │  D
-● │ │  ·9895054 (⌂|🏘|1)
+● │ │  ·9895054 (⌂|🏘)
 ◎ │ │  C
-● │ │  ·de625cc (⌂|🏘|1)
-● │ │  ·23419f8 (⌂|🏘|1)
-● │ │  ·5dc4389 (⌂|🏘|1)
+● │ │  ·de625cc (⌂|🏘)
+● │ │  ·23419f8 (⌂|🏘)
+● │ │  ·5dc4389 (⌂|🏘)
 │ ◎ │  A
-│ ● │  ·0bad3af (⌂|🏘|1)
+│ ● │  ·0bad3af (⌂|🏘)
 ├─╯ │
 │   ◎  B
-│   ●  ·acdc49a (⌂|🏘|1)
-│   ●  ·f0117e0 (⌂|🏘|1)
+│   ●  ·acdc49a (⌂|🏘)
+│   ●  ·f0117e0 (⌂|🏘)
 ├───╯
 ◎  shared
-●  ·d4f537e (⌂|🏘|1)
-●  ·b448757 (⌂|🏘|1)
-●  ·e9a378d (⌂|🏘|1)
+●  ·d4f537e (⌂|🏘)
+●  ·b448757 (⌂|🏘)
+●  ·e9a378d (⌂|🏘)
 │ ◎  origin/main
 │ ●  🟣bce0c5e (✓)
 ├─╯
 ◎  main <> origin/main
-●  🏁·3183e43 (⌂|🏘|✓|1)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -5101,30 +5639,30 @@ fn multi_lane_with_shared_segment() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
-├── ≡:2:D on 3183e43
-│   ├── :2:D
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
+├── ≡:D on 3183e43
+│   ├── :D
 │   │   └── ·9895054 (🏘️)
-│   ├── :6:C
+│   ├── :C
 │   │   ├── ·de625cc (🏘️)
 │   │   ├── ·23419f8 (🏘️)
 │   │   └── ·5dc4389 (🏘️)
-│   └── :7:shared
+│   └── :shared
 │       ├── ·d4f537e (🏘️)
 │       ├── ·b448757 (🏘️)
 │       └── ·e9a378d (🏘️)
-├── ≡:3:A on 3183e43
-│   ├── :3:A
+├── ≡:A on 3183e43
+│   ├── :A
 │   │   └── ·0bad3af (🏘️)
-│   └── :7:shared
+│   └── :shared
 │       ├── ·d4f537e (🏘️)
 │       ├── ·b448757 (🏘️)
 │       └── ·e9a378d (🏘️)
-└── ≡:4:B on 3183e43
-    ├── :4:B
+└── ≡:B on 3183e43
+    ├── :B
     │   ├── ·acdc49a (🏘️)
     │   └── ·f0117e0 (🏘️)
-    └── :7:shared
+    └── :shared
         ├── ·d4f537e (🏘️)
         ├── ·b448757 (🏘️)
         └── ·e9a378d (🏘️)
@@ -5138,6 +5676,7 @@ fn multi_lane_with_shared_segment() -> anyhow::Result<()> {
         Some(ref_name),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -5145,30 +5684,30 @@ fn multi_lane_with_shared_segment() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
-├── ≡:4:D on 3183e43
-│   ├── :4:D
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
+├── ≡:D on 3183e43
+│   ├── :D
 │   │   └── ·9895054 (🏘️)
-│   ├── :7:C
+│   ├── :C
 │   │   ├── ·de625cc (🏘️)
 │   │   ├── ·23419f8 (🏘️)
 │   │   └── ·5dc4389 (🏘️)
-│   └── :3:shared
+│   └── :shared
 │       ├── ·d4f537e (🏘️)
 │       ├── ·b448757 (🏘️)
 │       └── ·e9a378d (🏘️)
-├── ≡👉:0:A on 3183e43
-│   ├── 👉:0:A
+├── ≡👉:A on 3183e43
+│   ├── 👉:A
 │   │   └── ·0bad3af (🏘️)
-│   └── :3:shared
+│   └── :shared
 │       ├── ·d4f537e (🏘️)
 │       ├── ·b448757 (🏘️)
 │       └── ·e9a378d (🏘️)
-└── ≡:5:B on 3183e43
-    ├── :5:B
+└── ≡:B on 3183e43
+    ├── :B
     │   ├── ·acdc49a (🏘️)
     │   └── ·f0117e0 (🏘️)
-    └── :3:shared
+    └── :shared
         ├── ·d4f537e (🏘️)
         ├── ·b448757 (🏘️)
         └── ·e9a378d (🏘️)
@@ -5180,14 +5719,21 @@ fn multi_lane_with_shared_segment() -> anyhow::Result<()> {
 
 #[test]
 fn local_branch_tracking_the_target_does_not_duplicate_the_target_segment() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/multi-lane-with-shared-segment")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/multi-lane-with-shared-segment")?;
     add_workspace(&mut meta);
 
     // `main` tracks the target `origin/main`. Remote-tracking discovery at `main` must
     // recognize the project-metadata target ref as already queued instead of inserting
     // a second `origin/main` segment, which can leave disconnected segments behind.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     let target_segments = graph
         .segments()
         .filter(|sidx| {
@@ -5205,7 +5751,7 @@ fn local_branch_tracking_the_target_does_not_duplicate_the_target_segment() -> a
 
 #[test]
 fn dependent_branch_insertion() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/two-branches-one-advanced-two-parent-ws-commit-advanced-fully-pushed-empty-dependent",
     )?;
     snapbox::assert_data_eq!(
@@ -5229,26 +5775,32 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
         &["advanced-lane"],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·335d6f2 (⌂|🏘|001)
+●    ·335d6f2 (⌂|🏘)
 ├─╮
 │ ◎  📙dependent
 │ │ ◎  lane
 │ │ │ ◎  origin/advanced-lane
 │ ├───╯
 │ ◎ │  📙advanced-lane <> origin/advanced-lane
-│ ● │  ·cbc6713 (⌂|🏘|101)
+│ ● │  ·cbc6713 (⌂|🏘)
 ├─╯ │
 │ ◎ │  origin/main
 ├─╯ │
 ◎   │  main <> origin/main
 ├───╯
-●  🏁·fafd9d0 (⌂|🏘|✓|111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -5256,10 +5808,10 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:5:dependent on fafd9d0 {1}
-    ├── 📙:5:dependent
-    └── 📙:6:advanced-lane <> origin/advanced-lane →:4:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:dependent on fafd9d0 {1}
+    ├── 📙:dependent
+    └── 📙:advanced-lane <> origin/advanced-lane
         └── ❄️cbc6713 (🏘️)
 
 "#]]
@@ -5274,26 +5826,32 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
         &["dependent"],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·335d6f2 (⌂|🏘|001)
+●    ·335d6f2 (⌂|🏘)
 ├─╮
 │ │ ◎  lane
 │ │ │ ◎  origin/advanced-lane
 │ ├───╯
 │ ◎ │  📙advanced-lane <> origin/advanced-lane
 │ ◎ │  📙dependent
-│ ● │  ·cbc6713 (⌂|🏘|101)
+│ ● │  ·cbc6713 (⌂|🏘)
 ├─╯ │
 │ ◎ │  origin/main
 ├─╯ │
 ◎   │  main <> origin/main
 ├───╯
-●  🏁·fafd9d0 (⌂|🏘|✓|111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -5304,10 +5862,10 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:5:advanced-lane <> origin/advanced-lane →:4: on fafd9d0 {1}
-    ├── 📙:5:advanced-lane <> origin/advanced-lane →:4:
-    └── 📙:6:dependent
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:advanced-lane <> origin/advanced-lane on fafd9d0 {1}
+    ├── 📙:advanced-lane <> origin/advanced-lane
+    └── 📙:dependent
         └── ❄cbc6713 (🏘️)
 
 "#]]
@@ -5319,16 +5877,17 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡👉📙:5:advanced-lane <> origin/advanced-lane →:4: on fafd9d0 {1}
-    ├── 👉📙:5:advanced-lane <> origin/advanced-lane →:4:
-    └── 📙:6:dependent
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡👉📙:advanced-lane <> origin/advanced-lane on fafd9d0 {1}
+    ├── 👉📙:advanced-lane <> origin/advanced-lane
+    └── 📙:dependent
         └── ❄cbc6713 (🏘️)
 
 "#]]
@@ -5340,16 +5899,17 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:5:advanced-lane <> origin/advanced-lane →:4: on fafd9d0 {1}
-    ├── 📙:5:advanced-lane <> origin/advanced-lane →:4:
-    └── 👉📙:6:dependent
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:advanced-lane <> origin/advanced-lane on fafd9d0 {1}
+    ├── 📙:advanced-lane <> origin/advanced-lane
+    └── 👉📙:dependent
         └── ❄cbc6713 (🏘️)
 
 "#]]
@@ -5359,7 +5919,7 @@ fn dependent_branch_insertion() -> anyhow::Result<()> {
 
 #[test]
 fn multiple_stacks_with_shared_parent_and_remote() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/multiple-stacks-with-shared-segment-and-remote")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -5380,45 +5940,51 @@ fn multiple_stacks_with_shared_parent_and_remote() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 1, "C-on-A", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·e982e8a (⌂|🏘|0001)
+●    ·e982e8a (⌂|🏘)
 ├─╮
 ◎ │  📙C-on-A
-● │  ·4f1bb32 (⌂|🏘|0001)
+● │  ·4f1bb32 (⌂|🏘)
 │ ◎  B-on-A
-│ ●  ·aff8449 (⌂|🏘|0001)
+│ ●  ·aff8449 (⌂|🏘)
 ├─╯
 │ ◎  origin/A
-│ ●  🟣b627ca7 (0x0|1000)
+│ ●  🟣b627ca7 (0x0)
 ├─╯
 ◎  A <> origin/A
-●  ·e255adc (⌂|🏘|1101)
+●  ·e255adc (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:C-on-A on fafd9d0 {1}
-│   ├── 📙:3:C-on-A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:C-on-A on fafd9d0 {1}
+│   ├── 📙:C-on-A
 │   │   └── ·4f1bb32 (🏘️)
-│   └── :4:A <> origin/A →:5:⇣1
+│   └── :A <> origin/A⇣1
 │       ├── 🟣b627ca7
 │       └── ❄️e255adc (🏘️)
-└── ≡:6:B-on-A on fafd9d0
-    ├── :6:B-on-A
+└── ≡:B-on-A on fafd9d0
+    ├── :B-on-A
     │   └── ·aff8449 (🏘️)
-    └── :4:A <> origin/A →:5:⇣1
+    └── :A <> origin/A⇣1
         ├── 🟣b627ca7
         └── ❄️e255adc (🏘️)
 
@@ -5429,7 +5995,7 @@ fn multiple_stacks_with_shared_parent_and_remote() -> anyhow::Result<()> {
 
 #[test]
 fn a_stack_segment_can_be_a_segment_elsewhere_and_stack_order() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/two-branches-one-advanced-two-parent-ws-commit-diverged-ttb",
     )?;
     snapbox::assert_data_eq!(
@@ -5451,21 +6017,27 @@ fn a_stack_segment_can_be_a_segment_elsewhere_and_stack_order() -> anyhow::Resul
         add_stack_with_segments(&mut meta, idx, name, StackState::InWorkspace, &[]);
     }
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·873d056 (⌂|🏘|1)
+●    ·873d056 (⌂|🏘)
 ├─╮
 ◎ │  📙advanced-lane
-● │  ·cbc6713 (⌂|🏘|1)
+● │  ·cbc6713 (⌂|🏘)
 │ ◎  📙lane
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 ◎  origin/main
 ●  🏁🟣da83717 (✓)
 "#]]
@@ -5477,12 +6049,12 @@ fn a_stack_segment_can_be_a_segment_elsewhere_and_stack_order() -> anyhow::Resul
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡📙:2:advanced-lane on fafd9d0 {0}
-│   └── 📙:2:advanced-lane
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡📙:advanced-lane on fafd9d0 {0}
+│   └── 📙:advanced-lane
 │       └── ·cbc6713 (🏘️)
-└── ≡📙:4:lane on fafd9d0 {1}
-    └── 📙:4:lane
+└── ≡📙:lane on fafd9d0 {1}
+    └── 📙:lane
 
 "#]]
     );
@@ -5491,21 +6063,27 @@ fn a_stack_segment_can_be_a_segment_elsewhere_and_stack_order() -> anyhow::Resul
     for (idx, name) in lanes.into_iter().rev().enumerate() {
         add_stack_with_segments(&mut meta, idx, name, StackState::InWorkspace, &[]);
     }
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·873d056 (⌂|🏘|1)
+●    ·873d056 (⌂|🏘)
 ├─╮
 ◎ │  📙advanced-lane
-● │  ·cbc6713 (⌂|🏘|1)
+● │  ·cbc6713 (⌂|🏘)
 │ ◎  📙lane
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 ◎  origin/main
 ●  🏁🟣da83717 (✓)
 "#]]
@@ -5514,11 +6092,11 @@ fn a_stack_segment_can_be_a_segment_elsewhere_and_stack_order() -> anyhow::Resul
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡📙:4:lane on fafd9d0 {0}
-│   └── 📙:4:lane
-└── ≡📙:3:advanced-lane on fafd9d0 {1}
-    └── 📙:3:advanced-lane
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡📙:lane on fafd9d0 {0}
+│   └── 📙:lane
+└── ≡📙:advanced-lane on fafd9d0 {1}
+    └── 📙:advanced-lane
         └── ·cbc6713 (🏘️)
 
 "#]]
@@ -5528,15 +6106,22 @@ fn a_stack_segment_can_be_a_segment_elsewhere_and_stack_order() -> anyhow::Resul
 
 #[test]
 fn incomplete_metadata_uses_present_branch_to_order_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/incomplete-metadata-stack-order")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/incomplete-metadata-stack-order")?;
 
     add_stack(&mut meta, 0, "A", StackState::InWorkspace);
     let stack_b_id = add_stack(&mut meta, 1, "B", StackState::InWorkspace);
     // C is notably missing at the tip of the second stack.
 
-    let workspace = Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?
-        .validated()?
-        .into_workspace()?;
+    let workspace = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?
+    .into_workspace()?;
 
     assert_eq!(
         workspace.stacks[0]
@@ -5555,14 +6140,14 @@ fn incomplete_metadata_uses_present_branch_to_order_stack() -> anyhow::Result<()
     snapbox::assert_data_eq!(
         graph_workspace(&workspace).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-├── ≡📙:3:A on 85efbe4 {0}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+├── ≡📙:A on 85efbe4 {0}
+│   └── 📙:A
 │       └── ·09d8e52 (🏘️)
-└── ≡:5:C on 85efbe4 {1}
-    ├── :5:C
+└── ≡:C on 85efbe4 {1}
+    ├── :C
     │   └── ·09bc93e (🏘️)
-    └── 📙:4:B
+    └── 📙:B
         └── ·c813d8d (🏘️)
 
 "#]]
@@ -5572,7 +6157,7 @@ fn incomplete_metadata_uses_present_branch_to_order_stack() -> anyhow::Result<()
 
 #[test]
 fn two_dependent_branches_with_embedded_remote() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/two-dependent-branches-with-interesting-remote-setup")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -5597,6 +6182,7 @@ fn two_dependent_branches_with_embedded_remote() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -5604,19 +6190,19 @@ fn two_dependent_branches_with_embedded_remote() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a221221 (⌂|🏘|0001)
+●  ·a221221 (⌂|🏘)
 ◎  📙A <> origin/A
-●  ·aadad9d (⌂|🏘|0101)
+●  ·aadad9d (⌂|🏘)
 ◎  origin/main
-●  ·96a2408 (⌂|🏘|✓|0101)
+●  ·96a2408 (⌂|🏘|✓)
 │ ◎  origin/A
-│ ●  🟣2b1808c (0x0|1000)
+│ ●  🟣2b1808c (0x0)
 ├─╯
 ◎  integrated
-●  ·f15ca75 (⌂|🏘|✓|1101)
-●  ·9456d79 (⌂|🏘|✓|1101)
+●  ·f15ca75 (⌂|🏘|✓)
+●  ·9456d79 (⌂|🏘|✓)
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|1111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -5625,13 +6211,13 @@ fn two_dependent_branches_with_embedded_remote() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:A <> origin/A →:4:⇡1⇣1 on fafd9d0 {1}
-    ├── 📙:3:A <> origin/A →:4:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:A <> origin/A⇡1⇣1 on fafd9d0 {1}
+    ├── 📙:A <> origin/A⇡1⇣1
     │   ├── 🟣2b1808c
     │   ├── ·aadad9d (🏘️)
     │   └── ·96a2408 (🏘️|✓)
-    └── :5:integrated
+    └── :integrated
         ├── ❄f15ca75 (🏘️|✓)
         └── ❄9456d79 (🏘️|✓)
 
@@ -5640,14 +6226,20 @@ fn two_dependent_branches_with_embedded_remote() -> anyhow::Result<()> {
 
     // Otherwise, nothing that's integrated is shown. Note how 96a2408 seems missing,
     // but it's skipped because it's actually part of an integrated otherwise ignored segment.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 96a2408
-└── ≡📙:3:A <> origin/A →:4:⇡1⇣1 on 96a2408 {1}
-    └── 📙:3:A <> origin/A →:4:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 96a2408
+└── ≡📙:A <> origin/A⇡1⇣1 on 96a2408 {1}
+    └── 📙:A <> origin/A⇡1⇣1
         ├── 🟣2b1808c
         └── ·aadad9d (🏘️)
 
@@ -5658,7 +6250,7 @@ fn two_dependent_branches_with_embedded_remote() -> anyhow::Result<()> {
 
 #[test]
 fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/two-dependent-branches-rebased-with-remotes-merge-one-local",
     )?;
     // Each of the stacked branches has a remote, and the local branch was merged into main.
@@ -5685,6 +6277,7 @@ fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<(
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -5692,21 +6285,21 @@ fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4f08b8d (⌂|🏘|000001)
+●  ·4f08b8d (⌂|🏘)
 ◎  📙B <> origin/B
-●  ·da597e8 (⌂|🏘|000101)
+●  ·da597e8 (⌂|🏘)
 │ ◎  origin/B
-│ ●  🟣e0bd0a7 (0x0|001000)
+│ ●  🟣e0bd0a7 (0x0)
 │ ◎  origin/A
-│ ●  🟣0b6b861 (0x0|101000)
+│ ●  🟣0b6b861 (0x0)
 │ │ ◎  origin/main
 │ │ ●  🟣b694668 (✓)
 ╭─┬─╯
 ◎ │  📙A <> origin/A
-● │  ·1818c17 (⌂|🏘|✓|010101)
+● │  ·1818c17 (⌂|🏘|✓)
 ├─╯
 ◎  main <> origin/main
-●  🏁·281456a (⌂|🏘|✓|111111)
+●  🏁·281456a (⌂|🏘|✓)
 "#]]
     );
 
@@ -5716,12 +6309,12 @@ fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<(
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 281456a
-└── ≡📙:3:B <> origin/B →:5:⇡1⇣1 on 281456a {0}
-    ├── 📙:3:B <> origin/B →:5:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 281456a
+└── ≡📙:B <> origin/B⇡1⇣1 on 281456a {0}
+    ├── 📙:B <> origin/B⇡1⇣1
     │   ├── 🟣e0bd0a7
     │   └── ·da597e8 (🏘️)
-    └── 📙:4:A <> origin/A →:6:⇣1
+    └── 📙:A <> origin/A⇣1
         ├── 🟣0b6b861
         └── ·1818c17 (🏘️|✓)
 
@@ -5732,6 +6325,7 @@ fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<(
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "A"),
     )?
     .validated()?;
@@ -5739,9 +6333,9 @@ fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<(
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 1818c17
-└── ≡📙:4:B <> origin/B →:6:⇡1⇣1 on 1818c17 {0}
-    └── 📙:4:B <> origin/B →:6:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 1818c17
+└── ≡📙:B <> origin/B⇡1⇣1 on 1818c17 {0}
+    └── 📙:B <> origin/B⇡1⇣1
         ├── 🟣e0bd0a7
         └── ·da597e8 (🏘️)
 
@@ -5752,7 +6346,7 @@ fn two_dependent_branches_rebased_with_remotes_merge_local() -> anyhow::Result<(
 
 #[test]
 fn stacked_bottom_remote_still_points_at_now_split_top() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/stacked-bottom-remote-still-points-at-now-split-top")?;
     // origin/bottom still points at T (the previously combined push), but the
     // local stack is now split so that bottom holds only B and top holds T on
@@ -5771,16 +6365,22 @@ fn stacked_bottom_remote_still_points_at_now_split_top() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 0, "top", StackState::InWorkspace, &["bottom"]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:top on fafd9d0 {0}
-    ├── 📙:3:top
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:top on fafd9d0 {0}
+    ├── 📙:top
     │   └── ❄bfbff44 (🏘️)
-    └── 📙:4:bottom <> origin/bottom →:5:⇣1
+    └── 📙:bottom <> origin/bottom⇣1
         ├── 🟣bfbff44 (🏘️)
         └── ❄️7fdb58d (🏘️)
 
@@ -5792,7 +6392,7 @@ fn stacked_bottom_remote_still_points_at_now_split_top() -> anyhow::Result<()> {
 #[test]
 fn two_dependent_branches_rebased_with_remotes_squash_merge_remote_ambiguous() -> anyhow::Result<()>
 {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/two-dependent-branches-rebased-with-remotes-squash-merge-one-remote-ambiguous",
     )?;
     // Each of the stacked branches has a remote, the remote branch was merged into main,
@@ -5815,29 +6415,35 @@ fn two_dependent_branches_rebased_with_remotes_squash_merge_remote_ambiguous() -
     // But even with metadata, it still works fine.
     add_stack_with_segments(&mut meta, 0, "D", StackState::InWorkspace, &["C", "B", "A"]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·1109eb2 (⌂|🏘|0001)
+●  ·1109eb2 (⌂|🏘)
 ◎  📙D <> origin/D
-●  ·624e118 (⌂|🏘|0101)
+●  ·624e118 (⌂|🏘)
 │ ◎  origin/B
 │ │ ◎  origin/C
 │ ├─╯
 │ │ ◎  origin/D
-│ │ ●  🟣3045ea6 (0x0|1000)
+│ │ ●  🟣3045ea6 (0x0)
 │ ├─╯
 │ ◎  origin/A
-│ ●  🟣1818c17 (0x0|1000)
+│ ●  🟣1818c17 (0x0)
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
-● │  ·0b6b861 (⌂|🏘|✓|0111)
+● │  ·0b6b861 (⌂|🏘|✓)
 ├─╯
-●  🏁·281456a (⌂|🏘|✓|1111)
+●  🏁·281456a (⌂|🏘|✓)
 "#]]
     );
 
@@ -5862,9 +6468,9 @@ fn two_dependent_branches_rebased_with_remotes_squash_merge_remote_ambiguous() -
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0b6b861
-└── ≡📙:3:D <> origin/D →:4:⇡1⇣1 on 0b6b861 {0}
-    └── 📙:3:D <> origin/D →:4:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0b6b861
+└── ≡📙:D <> origin/D⇡1⇣1 on 0b6b861 {0}
+    └── 📙:D <> origin/D⇡1⇣1
         ├── 🟣3045ea6
         └── ·624e118 (🏘️)
 
@@ -5875,7 +6481,7 @@ fn two_dependent_branches_rebased_with_remotes_squash_merge_remote_ambiguous() -
 
 #[test]
 fn two_dependent_branches_rebased_with_remotes_squash_merge_remote() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/two-dependent-branches-rebased-with-remotes-squash-merge-one-remote",
     )?;
     // Each of the stacked branches has a remote, the remote branch was merged into main,
@@ -5902,31 +6508,37 @@ fn two_dependent_branches_rebased_with_remotes_squash_merge_remote() -> anyhow::
     // But even with metadata, it still works fine.
     add_stack_with_segments(&mut meta, 0, "D", StackState::InWorkspace, &["C", "B", "A"]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·deeae50 (⌂|🏘|0001)
+●  ·deeae50 (⌂|🏘)
 ◎  📙D <> origin/D
-●  ·353471f (⌂|🏘|0101)
-●  ·8a4b945 (⌂|🏘|0101)
-●  ·e0bd0a7 (⌂|🏘|0101)
+●  ·353471f (⌂|🏘)
+●  ·8a4b945 (⌂|🏘)
+●  ·e0bd0a7 (⌂|🏘)
 │ ◎  origin/D
-│ ●  🟣bbd4ff6 (0x0|1000)
+│ ●  🟣bbd4ff6 (0x0)
 │ ◎  origin/C
-│ ●  🟣e5f5a87 (0x0|1000)
+│ ●  🟣e5f5a87 (0x0)
 │ ◎  origin/B
-│ ●  🟣da597e8 (0x0|1000)
+│ ●  🟣da597e8 (0x0)
 │ ◎  origin/A
-│ ●  🟣1818c17 (0x0|1000)
+│ ●  🟣1818c17 (0x0)
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
-● │  ·0b6b861 (⌂|🏘|✓|0111)
+● │  ·0b6b861 (⌂|🏘|✓)
 ├─╯
-●  🏁·281456a (⌂|🏘|✓|1111)
+●  🏁·281456a (⌂|🏘|✓)
 "#]]
     );
 
@@ -5935,9 +6547,9 @@ fn two_dependent_branches_rebased_with_remotes_squash_merge_remote() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0b6b861
-└── ≡📙:3:D <> origin/D →:4:⇡3⇣1 on 0b6b861 {0}
-    └── 📙:3:D <> origin/D →:4:⇡3⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 0b6b861
+└── ≡📙:D <> origin/D⇡3⇣1 on 0b6b861 {0}
+    └── 📙:D <> origin/D⇡3⇣1
         ├── 🟣bbd4ff6
         ├── ·353471f (🏘️)
         ├── ·8a4b945 (🏘️)
@@ -5950,7 +6562,7 @@ fn two_dependent_branches_rebased_with_remotes_squash_merge_remote() -> anyhow::
 
 #[test]
 fn without_target_ref_or_managed_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/no-target-without-ws-commit")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/no-target-without-ws-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -5963,32 +6575,38 @@ fn without_target_ref_or_managed_commit() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
 │ ◎  origin/A
-│ ●  🟣4fe5a6f (0x0|10)
+│ ●  🟣4fe5a6f (0x0)
 ├─╯
 ◎  A <> origin/A
-●  ·a62b0de (⌂|🏘|11)
-●  ·120a217 (⌂|🏘|11)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:A <> origin/A →:2:⇣1
-    ├── :1:A <> origin/A →:2:⇣1
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:A <> origin/A⇣1
+    ├── :A <> origin/A⇣1
     │   ├── 🟣4fe5a6f
     │   ├── ❄️a62b0de (🏘️)
     │   └── ❄️120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6000,6 +6618,7 @@ fn without_target_ref_or_managed_commit() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6008,13 +6627,13 @@ fn without_target_ref_or_managed_commit() -> anyhow::Result<()> {
         snapbox::str![[r#"
 ◎  📕gitbutler/workspace[🌳]
 │ ◎  origin/A
-│ ●  🟣4fe5a6f (0x0|10)
+│ ●  🟣4fe5a6f (0x0)
 ├─╯
 ◎  👉A <> origin/A
-●  ·a62b0de (⌂|🏘|11)
-●  ·120a217 (⌂|🏘|11)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -6022,13 +6641,13 @@ fn without_target_ref_or_managed_commit() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉:0:A <> origin/A →:2:⇣1
-    ├── 👉:0:A <> origin/A →:2:⇣1
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉:A <> origin/A⇣1
+    ├── 👉:A <> origin/A⇣1
     │   ├── 🟣4fe5a6f
     │   ├── ❄️a62b0de (🏘️)
     │   └── ❄️120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6038,7 +6657,7 @@ fn without_target_ref_or_managed_commit() -> anyhow::Result<()> {
 
 #[test]
 fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/no-target-without-ws-commit-ambiguous")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -6053,34 +6672,40 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
 
     add_workspace(&mut meta);
     // Without disambiguation, there is no segment name.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  B
 │ ◎  👉📕gitbutler/workspace[🌳]
 │ │ ◎  origin/A
-│ │ ●  🟣4fe5a6f (0x0|10)
+│ │ ●  🟣4fe5a6f (0x0)
 │ ├─╯
 │ ◎  A <> origin/A
 ├─╯
-●  ·a62b0de (⌂|🏘|11)
-●  ·120a217 (⌂|🏘|11)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:A <> origin/A →:2:⇣1
-    ├── :1:A <> origin/A →:2:⇣1
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:A <> origin/A⇣1
+    ├── :A <> origin/A⇣1
     │   ├── 🟣4fe5a6f
     │   ├── ❄️a62b0de (🏘️) ►B
     │   └── ❄️120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6096,6 +6721,7 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
         a_ref.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6104,14 +6730,14 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
         snapbox::str![[r#"
 ◎  📕gitbutler/workspace[🌳]
 │ ◎  origin/A
-│ ●  🟣4fe5a6f (0x0|10)
+│ ●  🟣4fe5a6f (0x0)
 ├─╯
 ◎  👉A <> origin/A
 ◎  📙B
-●  ·a62b0de (⌂|🏘|11)
-●  ·120a217 (⌂|🏘|11)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -6119,48 +6745,54 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉:4:A <> origin/A →:2:⇣1 {1}
-    ├── 👉:4:A <> origin/A →:2:⇣1
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉:A <> origin/A⇣1 {1}
+    ├── 👉:A <> origin/A⇣1
     │   └── 🟣4fe5a6f
-    ├── 📙:0:B
+    ├── 📙:B
     │   ├── ❄a62b0de (🏘️)
     │   └── ❄120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
     );
 
     // Finally, show the normal version with just disambiguated 'B".
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  A
 │ ◎  👉📕gitbutler/workspace[🌳]
 │ │ ◎  origin/A
-│ │ ●  🟣4fe5a6f (0x0|10)
+│ │ ●  🟣4fe5a6f (0x0)
 │ ├─╯
 │ ◎  📙B
 ├─╯
-●  ·a62b0de (⌂|🏘|11)
-●  ·120a217 (⌂|🏘|11)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡📙:1:B {1}
-    ├── 📙:1:B
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡📙:B {1}
+    ├── 📙:B
     │   ├── ·a62b0de (🏘️) ►A
     │   └── ·120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ·fafd9d0 (🏘️)
 
 "#]]
@@ -6173,6 +6805,7 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
         a_ref.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6180,14 +6813,14 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡📙:4:B {1}
-    ├── 📙:4:B
-    ├── 👉📙:5:A <> origin/A →:2:⇣1
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡📙:B {1}
+    ├── 📙:B
+    ├── 👉📙:A <> origin/A⇣1
     │   ├── 🟣4fe5a6f
     │   ├── ❄️a62b0de (🏘️)
     │   └── ❄️120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6200,20 +6833,21 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
         a_ref,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉📙:4:A <> origin/A →:2:⇣1 {1}
-    ├── 👉📙:4:A <> origin/A →:2:⇣1
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉📙:A <> origin/A⇣1 {1}
+    ├── 👉📙:A <> origin/A⇣1
     │   └── 🟣4fe5a6f
-    ├── 📙:5:B
+    ├── 📙:B
     │   ├── ❄a62b0de (🏘️)
     │   └── ❄120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6224,7 +6858,7 @@ fn without_target_ref_or_managed_commit_ambiguous() -> anyhow::Result<()> {
 
 #[test]
 fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/no-target-without-ws-commit-ambiguous-with-remotes")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -6238,8 +6872,14 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
 
     add_workspace(&mut meta);
     // Without disambiguation, there is no segment name.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -6252,21 +6892,21 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
 ├─╯
 │ ◎  origin/B
 ├─╯
-●  ·a62b0de (⌂|🏘|1)
-●  ·120a217 (⌂|🏘|1)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:anon:
-    ├── :1:anon:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:anon:
+    ├── :anon:
     │   ├── ·a62b0de (🏘️) ►A, ►B
     │   └── ·120a217 (🏘️)
-    └── :4:main <> origin/main⇡1
+    └── :main <> origin/main⇡1
         └── ·fafd9d0 (🏘️)
 
 "#]]
@@ -6279,6 +6919,7 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
         a_ref.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6293,21 +6934,21 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
 │ ├─╯
 │ ◎  👉A <> origin/A
 ├─╯
-●  ·a62b0de (⌂|🏘|1)
-●  ·120a217 (⌂|🏘|1)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉:0:A <> origin/A →:2:
-    ├── 👉:0:A <> origin/A →:2:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉:A <> origin/A
+    ├── 👉:A <> origin/A
     │   ├── ❄️a62b0de (🏘️) ►B
     │   └── ❄️120a217 (🏘️)
-    └── :4:main <> origin/main
+    └── :main <> origin/main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6320,18 +6961,19 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
         b_ref,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉:0:B <> origin/B →:3:
-    ├── 👉:0:B <> origin/B →:3:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉:B <> origin/B
+    ├── 👉:B <> origin/B
     │   ├── ❄️a62b0de (🏘️) ►A
     │   └── ❄️120a217 (🏘️)
-    └── :4:main <> origin/main
+    └── :main <> origin/main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6344,6 +6986,7 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
         a_ref.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6365,22 +7008,22 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
 │ ◎  origin/B
 ├─╯
 ◎  📙B <> origin/B
-●  ·a62b0de (⌂|🏘|1)
-●  ·120a217 (⌂|🏘|1)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉:5:A <> origin/A →:2: {1}
-    ├── 👉:5:A <> origin/A →:2:
-    ├── 📙:0:B <> origin/B →:3:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉:A <> origin/A {1}
+    ├── 👉:A <> origin/A
+    ├── 📙:B <> origin/B
     │   ├── ❄️a62b0de (🏘️)
     │   └── ❄️120a217 (🏘️)
-    └── :4:main <> origin/main
+    └── :main <> origin/main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6390,7 +7033,7 @@ fn without_target_ref_or_managed_commit_ambiguous_with_remotes() -> anyhow::Resu
 
 #[test]
 fn without_target_ref_with_managed_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/no-target-with-ws-commit")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/no-target-with-ws-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -6406,34 +7049,40 @@ fn without_target_ref_with_managed_commit() -> anyhow::Result<()> {
 
     add_workspace(&mut meta);
     // The commit is ambiguous, so there is just the entrypoint to split the segment.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·3ea2742 (⌂|🏘|001)
+●  ·3ea2742 (⌂|🏘)
 │ ◎  origin/A
-│ ●  🟣4fe5a6f (0x0|100)
+│ ●  🟣4fe5a6f (0x0)
 ├─╯
 ◎  A <> origin/A
-●  ·a62b0de (⌂|🏘|111)
-●  ·120a217 (⌂|🏘|111)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|111)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
     // TODO: add more stacks.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:A <> origin/A →:2:⇣1
-    ├── :1:A <> origin/A →:2:⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:A <> origin/A⇣1
+    ├── :A <> origin/A⇣1
     │   ├── 🟣4fe5a6f
     │   ├── ❄️a62b0de (🏘️)
     │   └── ❄️120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6445,6 +7094,7 @@ fn without_target_ref_with_managed_commit() -> anyhow::Result<()> {
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6454,26 +7104,26 @@ fn without_target_ref_with_managed_commit() -> anyhow::Result<()> {
 ◎  📕gitbutler/workspace[🌳]
 ●  ·3ea2742 (⌂|🏘)
 │ ◎  origin/A
-│ ●  🟣4fe5a6f (0x0|10)
+│ ●  🟣4fe5a6f (0x0)
 ├─╯
 ◎  👉A <> origin/A
-●  ·a62b0de (⌂|🏘|11)
-●  ·120a217 (⌂|🏘|11)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓!
-└── ≡👉:0:A <> origin/A →:2:⇣1
-    ├── 👉:0:A <> origin/A →:2:⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡👉:A <> origin/A⇣1
+    ├── 👉:A <> origin/A⇣1
     │   ├── 🟣4fe5a6f
     │   ├── ❄️a62b0de (🏘️)
     │   └── ❄️120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ❄fafd9d0 (🏘️)
 
 "#]]
@@ -6484,7 +7134,7 @@ fn without_target_ref_with_managed_commit() -> anyhow::Result<()> {
 
 #[test]
 fn workspace_commit_pushed_to_target() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/ws-commit-pushed-to-target")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/ws-commit-pushed-to-target")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -6496,25 +7146,31 @@ fn workspace_commit_pushed_to_target() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  origin/main
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·8ee08de (⌂|🏘|✓|1)
+●  ·8ee08de (⌂|🏘|✓)
 ◎  A
-●  ·120a217 (⌂|🏘|✓|1)
+●  ·120a217 (⌂|🏘|✓)
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     // Everything is integrated, so nothing is shown.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 120a217
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 120a217
 
 "#]]
     );
@@ -6523,7 +7179,7 @@ fn workspace_commit_pushed_to_target() -> anyhow::Result<()> {
 
 #[test]
 fn no_workspace_no_target_commit_under_managed_ref() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/no-ws-no-target-commit-with-managed-ref")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -6536,17 +7192,23 @@ fn no_workspace_no_target_commit_under_managed_ref() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·dca94a4 (⌂|🏘|1)
+●  ·dca94a4 (⌂|🏘)
 ◎  A
-●  ·120a217 (⌂|🏘|1)
+●  ·120a217 (⌂|🏘)
 ◎  main
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -6555,13 +7217,13 @@ fn no_workspace_no_target_commit_under_managed_ref() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:anon:
-    ├── :1:anon:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:anon:
+    ├── :anon:
     │   └── ·dca94a4 (🏘️)
-    ├── :2:A
+    ├── :A
     │   └── ·120a217 (🏘️)
-    └── :3:main
+    └── :main
         └── ·fafd9d0 (🏘️)
 
 "#]]
@@ -6571,7 +7233,7 @@ fn no_workspace_no_target_commit_under_managed_ref() -> anyhow::Result<()> {
 
 #[test]
 fn no_workspace_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/multiple-dependent-branches-per-stack-without-ws-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -6598,8 +7260,14 @@ fn no_workspace_commit() -> anyhow::Result<()> {
         &["lane-2-segment-01", "lane-2-segment-02"],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // Notably we also pick up 'lane' which sits on the base.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
@@ -6607,7 +7275,7 @@ fn no_workspace_commit() -> anyhow::Result<()> {
 ◎    👉📕gitbutler/workspace[🌳]
 ├─╮
 ◎ │  📙lane
-● │  ·cbc6713 (⌂|🏘|01)
+● │  ·cbc6713 (⌂|🏘)
 ◎ │  📙lane-segment-01
 ◎ │  📙lane-segment-02
 │ ◎  📙lane-2
@@ -6617,22 +7285,22 @@ fn no_workspace_commit() -> anyhow::Result<()> {
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:lane on fafd9d0 {0}
-│   ├── 📙:3:lane
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:lane on fafd9d0 {0}
+│   ├── 📙:lane
 │   │   └── ·cbc6713 (🏘️)
-│   ├── 📙:7:lane-segment-01
-│   └── 📙:8:lane-segment-02
-└── ≡📙:4:lane-2 on fafd9d0 {1}
-    ├── 📙:4:lane-2
-    ├── 📙:5:lane-2-segment-01
-    └── 📙:6:lane-2-segment-02
+│   ├── 📙:lane-segment-01
+│   └── 📙:lane-segment-02
+└── ≡📙:lane-2 on fafd9d0 {1}
+    ├── 📙:lane-2
+    ├── 📙:lane-2-segment-01
+    └── 📙:lane-2-segment-02
 
 "#]]
     );
@@ -6654,8 +7322,14 @@ fn no_workspace_commit() -> anyhow::Result<()> {
         &["lane-segment-01", "lane-segment-02"],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // the order is maintained as provided in the workspace.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
@@ -6666,29 +7340,29 @@ fn no_workspace_commit() -> anyhow::Result<()> {
 ◎ │  📙lane-2-segment-01
 ◎ │  📙lane-2-segment-02
 │ ◎  📙lane
-│ ●  ·cbc6713 (⌂|🏘|01)
+│ ●  ·cbc6713 (⌂|🏘)
 │ ◎  📙lane-segment-01
 │ ◎  📙lane-segment-02
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:4:lane-2 on fafd9d0 {0}
-│   ├── 📙:4:lane-2
-│   ├── 📙:5:lane-2-segment-01
-│   └── 📙:6:lane-2-segment-02
-└── ≡📙:3:lane on fafd9d0 {1}
-    ├── 📙:3:lane
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:lane-2 on fafd9d0 {0}
+│   ├── 📙:lane-2
+│   ├── 📙:lane-2-segment-01
+│   └── 📙:lane-2-segment-02
+└── ≡📙:lane on fafd9d0 {1}
+    ├── 📙:lane
     │   └── ·cbc6713 (🏘️)
-    ├── 📙:7:lane-segment-01
-    └── 📙:8:lane-segment-02
+    ├── 📙:lane-segment-01
+    └── 📙:lane-segment-02
 
 "#]]
     );
@@ -6697,7 +7371,7 @@ fn no_workspace_commit() -> anyhow::Result<()> {
 
 #[test]
 fn two_dependent_branches_first_merged_by_rebase() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/two-dependent-branches-first-rebased-and-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -6713,34 +7387,40 @@ fn two_dependent_branches_first_merged_by_rebase() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·4f08b8d (⌂|🏘|0001)
+●  ·4f08b8d (⌂|🏘)
 ◎  B
-●  ·da597e8 (⌂|🏘|0001)
+●  ·da597e8 (⌂|🏘)
 ◎  A <> origin/A
-●  ·1818c17 (⌂|🏘|0101)
+●  ·1818c17 (⌂|🏘)
 │ ◎  origin/A
 │ ◎  origin/main
-│ ●  🟣0b6b861 (✓|1000)
+│ ●  🟣0b6b861 (✓)
 ├─╯
 ◎  main <> origin/main
-●  🏁·281456a (⌂|🏘|✓|1111)
+●  🏁·281456a (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 281456a
-└── ≡:3:B on 281456a
-    ├── :3:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 281456a
+└── ≡:B on 281456a
+    ├── :B
     │   └── ·da597e8 (🏘️)
-    └── :4:A <> origin/A →:5:⇡1⇣1
+    └── :A <> origin/A⇡1⇣1
         ├── 🟣0b6b861 (✓)
         └── ·1818c17 (🏘️)
 
@@ -6751,7 +7431,7 @@ fn two_dependent_branches_first_merged_by_rebase() -> anyhow::Result<()> {
 
 #[test]
 fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/special-branches")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/special-branches")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -6764,20 +7444,26 @@ fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // Standard handling after traversal and post-processing.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·8926b15 (⌂|🏘|1)
+●  ·8926b15 (⌂|🏘)
 ◎  main
-●  ·3686017 (⌂|🏘|1)
+●  ·3686017 (⌂|🏘)
 ◎  gitbutler/edit
-●  ·9725482 (⌂|🏘|1)
+●  ·9725482 (⌂|🏘)
 ◎  gitbutler/target
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -6785,9 +7471,9 @@ fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:1:main
-    └── :1:main
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:main
+    └── :main
         ├── ·3686017 (🏘️)
         ├── ·9725482 (🏘️)
         └── ·fafd9d0 (🏘️)
@@ -6799,7 +7485,7 @@ fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
 
 #[test]
 fn special_branch_do_not_allow_overly_long_segments() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/special-branches-edgecase")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/special-branches-edgecase")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -6822,6 +7508,7 @@ fn special_branch_do_not_allow_overly_long_segments() -> anyhow::Result<()> {
         &*meta,
         project_meta,
         // standard_options_with_extra_target(&repo, "gitbutler/target"),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -6833,19 +7520,19 @@ fn special_branch_do_not_allow_overly_long_segments() -> anyhow::Result<()> {
         snapbox::str![[r#"
 
 ├── 👉📕►►►:0[0]:gitbutler/workspace[🌳]
-│   └── ·270738b (⌂|🏘|001)
+│   └── ·270738b (⌂|🏘)
 │       └── ►:3[1]:A
-│           └── ·c59457b (⌂|🏘|001)
+│           └── ·c59457b (⌂|🏘)
 │               └── ►:4[2]:gitbutler/edit
-│                   └── ·e146f13 (⌂|🏘|001)
-│                       └── ►:5[3]:main <> origin/main →:6:
-│                           └── ·971953d (⌂|🏘|101)
-│                               └── ►:2[4]:gitbutler/target <> origin/gitbutler/target →:1:
-│                                   ├── ·ce09734 (⌂|🏘|✓|111)
-│                                   └── 🏁·fafd9d0 (⌂|🏘|✓|111)
-├── ►:1[0]:origin/gitbutler/target →:2:
+│                   └── ·e146f13 (⌂|🏘)
+│                       └── ►:5[3]:main <> origin/main
+│                           └── ·971953d (⌂|🏘)
+│                               └── ►:2[4]:gitbutler/target <> origin/gitbutler/target
+│                                   ├── ·ce09734 (⌂|🏘|✓)
+│                                   └── 🏁·fafd9d0 (⌂|🏘|✓)
+├── ►:1[0]:origin/gitbutler/target
 │   └── →:2: (gitbutler/target →:1:)
-└── ►:6[0]:origin/main →:5:
+└── ►:6[0]:origin/main
     └── →:5: (main →:6:)
 
 "#]]
@@ -6856,12 +7543,12 @@ fn special_branch_do_not_allow_overly_long_segments() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/gitbutler/target on ce09734
-└── ≡:3:A on ce09734
-    ├── :3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/gitbutler/target on ce09734
+└── ≡:A on ce09734
+    ├── :A
     │   ├── ·c59457b (🏘️)
     │   └── ·e146f13 (🏘️)
-    └── :5:main <> origin/main →:6:
+    └── :main <> origin/main
         └── ❄️971953d (🏘️)
 
 "#]]
@@ -6871,7 +7558,7 @@ fn special_branch_do_not_allow_overly_long_segments() -> anyhow::Result<()> {
 
 #[test]
 fn branch_ahead_of_workspace() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/branches-ahead-of-workspace")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/branches-ahead-of-workspace")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -6925,6 +7612,7 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -6932,29 +7620,29 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●        ·fe6ba62 (⌂|🏘|01)
+●        ·fe6ba62 (⌂|🏘)
 ├─┬─┬─╮
 │ ◎ │ │  B
-│ ● │ │  ·2f8f06d (⌂|🏘|01)
+│ ● │ │  ·2f8f06d (⌂|🏘)
 │ │ ◎ │  C
-│ │ ● │  ·3f7c4e6 (⌂|🏘|01)
-│ │ ● │  ·b6895d7 (⌂|🏘|01)
+│ │ ● │  ·3f7c4e6 (⌂|🏘)
+│ │ ● │  ·b6895d7 (⌂|🏘)
 │ │ │ ◎  new-name-for-D
-│ │ │ ●  ·ed36e3b (⌂|🏘|01)
+│ │ │ ●  ·ed36e3b (⌂|🏘)
 │ │ ├─╯
 │ │ │ ◎  origin/main
 │ │ │ ◎  main <> origin/main
-│ │ │ ●  ·867927f (⌂|✓|10)
+│ │ │ ●  ·867927f (⌂|✓)
 │ ╭───┤
-│ │ │ ●  ·6e03461 (⌂|✓|10)
+│ │ │ ●  ·6e03461 (⌂|✓)
 ╭───┬─╯
-● │ │  ·a62b0de (⌂|🏘|✓|11)
-● │ │  ·120a217 (⌂|🏘|✓|11)
+● │ │  ·a62b0de (⌂|🏘|✓)
+● │ │  ·120a217 (⌂|🏘|✓)
 ├───╯
-│ ●  ·91bc3fc (⌂|🏘|✓|11)
-│ ●  ·cf9330f (⌂|🏘|✓|11)
+│ ●  ·91bc3fc (⌂|🏘|✓)
+│ ●  ·cf9330f (⌂|🏘|✓)
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -6964,16 +7652,16 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣2 on fafd9d0
-├── ≡:6:B on fafd9d0
-│   └── :6:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣2 on fafd9d0
+├── ≡:B on 91bc3fc
+│   └── :B
 │       └── ·2f8f06d (🏘️)
-├── ≡:7:C on fafd9d0
-│   └── :7:C
+├── ≡:C on fafd9d0
+│   └── :C
 │       ├── ·3f7c4e6 (🏘️)
 │       └── ·b6895d7 (🏘️)
-└── ≡:8:new-name-for-D on fafd9d0
-    └── :8:new-name-for-D
+└── ≡:new-name-for-D on fafd9d0
+    └── :new-name-for-D
         └── ·ed36e3b (🏘️)
 
 "#]]
@@ -6989,6 +7677,7 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, ":/init"),
     )?
     .validated()?;
@@ -6998,9 +7687,9 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
 ◎  📙A
 ●  ·c83f258 (⌂)
 │ ◎  📙B-middle <> origin/B-middle
-│ ●  ·c8f73c7 (⌂|01000)
+│ ●  ·c8f73c7 (⌂)
 │ ◎  intermediate-branch
-│ ●  ·ff75b80 (⌂|01000)
+│ ●  ·ff75b80 (⌂)
 │ │ ◎  📙C-bottom
 │ │ ●    ·790a17d (⌂)
 │ │ ├─╮
@@ -7011,37 +7700,37 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
 │ │ │ ◎  📙D
 │ │ │ ●  ·71dad1a (⌂)
 │ │ │ │ ◎  👉📕gitbutler/workspace[🌳]
-│ │ │ │ ●    ·fe6ba62 (⌂|🏘|00001)
+│ │ │ │ ●    ·fe6ba62 (⌂|🏘)
 ╭─────┬─┼─╮
 │ │ │ │ ◎ │  📙B
-│ │ │ │ ● │  ·2f8f06d (⌂|🏘|00001)
+│ │ │ │ ● │  ·2f8f06d (⌂|🏘)
 │ ├─────╯ │
 │ │ │ │   ◎  📙C
-│ │ │ │   ●  ·3f7c4e6 (⌂|🏘|00001)
+│ │ │ │   ●  ·3f7c4e6 (⌂|🏘)
 │ │ ├─────╯
-│ │ ● │  ·b6895d7 (⌂|🏘|00001)
+│ │ ● │  ·b6895d7 (⌂|🏘)
 │ │ │ ◎  new-name-for-D
-│ │ │ ●  ·ed36e3b (⌂|🏘|00001)
+│ │ │ ●  ·ed36e3b (⌂|🏘)
 │ │ ├─╯
 │ │ │ ◎  origin/A-middle
 │ │ │ ◎  📙A-middle <> origin/A-middle
-│ │ │ ●  ·27c2545 (⌂|00100)
+│ │ │ ●  ·27c2545 (⌂)
 │ │ │ │ ◎  origin/B-middle
 │ ├─────╯
 │ │ │ │ ◎  origin/main
 │ │ │ │ ◎  main <> origin/main
-│ │ │ │ ●  ·867927f (⌂|✓|00010)
+│ │ │ │ ●  ·867927f (⌂|✓)
 │ ╭─────┤
-│ │ │ │ ●  ·6e03461 (⌂|✓|00010)
+│ │ │ │ ●  ·6e03461 (⌂|✓)
 ╭───┬───╯
-● │ │ │  ·a62b0de (⌂|🏘|✓|00011)
+● │ │ │  ·a62b0de (⌂|🏘|✓)
 ├─────╯
-● │ │  ·120a217 (⌂|🏘|✓|00111)
+● │ │  ·120a217 (⌂|🏘|✓)
 ├───╯
-│ ●  ·91bc3fc (⌂|🏘|✓|11011)
-│ ●  ·cf9330f (⌂|🏘|✓|11011)
+│ ●  ·91bc3fc (⌂|🏘|✓)
+│ ●  ·cf9330f (⌂|🏘|✓)
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11111)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -7055,32 +7744,32 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣2 on fafd9d0
-├── ≡📙:19:A →:4: on fafd9d0 {0}
-│   ├── 📙:19:A →:4:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣2 on fafd9d0
+├── ≡📙:A on fafd9d0 {0}
+│   ├── 📙:A
 │   │   ├── ·c83f258*
 │   │   └── ·a62b0de (🏘️|✓)
-│   └── 📙:21:A-middle <> origin/A-middle →:5:
+│   └── 📙:A-middle <> origin/A-middle
 │       ├── ·27c2545*
 │       └── ·120a217 (🏘️|✓)
-├── ≡📙:6:B on fafd9d0 {1}
-│   ├── 📙:6:B
+├── ≡📙:B on fafd9d0 {1}
+│   ├── 📙:B
 │   │   └── ·2f8f06d (🏘️)
-│   └── 📙:15:B-middle <> origin/B-middle →:7:
+│   └── 📙:B-middle <> origin/B-middle
 │       ├── ·c8f73c7*
 │       ├── ·ff75b80*
 │       ├── ·91bc3fc (🏘️|✓)
 │       └── ·cf9330f (🏘️|✓)
-├── ≡📙:8:C on fafd9d0 {2}
-│   ├── 📙:8:C
+├── ≡📙:C on fafd9d0 {2}
+│   ├── 📙:C
 │   │   └── ·3f7c4e6 (🏘️)
-│   └── 📙:20:C-bottom →:9:
+│   └── 📙:C-bottom
 │       ├── ·790a17d*
 │       ├── ·969aaec*
 │       ├── ·631be19*
 │       └── ·b6895d7 (🏘️)
-└── ≡:18:new-name-for-D on fafd9d0
-    └── :18:new-name-for-D
+└── ≡:new-name-for-D on fafd9d0
+    └── :new-name-for-D
         └── ·ed36e3b (🏘️)
 
 "#]]
@@ -7090,7 +7779,7 @@ fn branch_ahead_of_workspace() -> anyhow::Result<()> {
 
 #[test]
 fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "ws/two-branches-one-advanced-two-parent-ws-commit-diverged-ttb",
     )?;
     snapbox::assert_data_eq!(
@@ -7117,6 +7806,7 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
         ref_name,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -7132,7 +7822,7 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 ◎  origin/main
 ●  🏁🟣da83717 (✓)
 "#]]
@@ -7140,11 +7830,11 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡👉📙:4:lane on fafd9d0 {0}
-│   └── 👉📙:4:lane
-└── ≡📙:3:advanced-lane on fafd9d0 {1}
-    └── 📙:3:advanced-lane
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡👉📙:lane on fafd9d0 {0}
+│   └── 👉📙:lane
+└── ≡📙:advanced-lane on fafd9d0 {1}
+    └── 📙:advanced-lane
         └── ·cbc6713 (🏘️)
 
 "#]]
@@ -7154,6 +7844,7 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -7161,15 +7852,15 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·873d056 (⌂|🏘|1)
+●    ·873d056 (⌂|🏘)
 ├─╮
 ◎ │  📙advanced-lane
-● │  ·cbc6713 (⌂|🏘|1)
+● │  ·cbc6713 (⌂|🏘)
 │ ◎  📙lane
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|1)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 ◎  origin/main
 ●  🏁🟣da83717 (✓)
 "#]]
@@ -7178,31 +7869,37 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡📙:4:lane on fafd9d0 {0}
-│   └── 📙:4:lane
-└── ≡📙:3:advanced-lane on fafd9d0 {1}
-    └── 📙:3:advanced-lane
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡📙:lane on fafd9d0 {0}
+│   └── 📙:lane
+└── ≡📙:advanced-lane on fafd9d0 {1}
+    └── 📙:advanced-lane
         └── ·cbc6713 (🏘️)
 
 "#]]
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·873d056 (⌂|🏘|1)
+●    ·873d056 (⌂|🏘)
 ├─╮
 ◎ │  📙advanced-lane
-● │  ·cbc6713 (⌂|🏘|1)
+● │  ·cbc6713 (⌂|🏘)
 │ ◎  📙lane
 ├─╯
 │ ◎  main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|1)
+●  🏁·fafd9d0 (⌂|🏘)
 ◎  origin/main
 ●  🏁🟣da83717 (✓)
 "#]]
@@ -7211,11 +7908,11 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡📙:4:lane on fafd9d0 {0}
-│   └── 📙:4:lane
-└── ≡📙:3:advanced-lane on fafd9d0 {1}
-    └── 📙:3:advanced-lane
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡📙:lane on fafd9d0 {0}
+│   └── 📙:lane
+└── ≡📙:advanced-lane on fafd9d0 {1}
+    └── 📙:advanced-lane
         └── ·cbc6713 (🏘️)
 
 "#]]
@@ -7225,7 +7922,7 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_ttb() -> anyhow::Resu
 
 #[test]
 fn advanced_workspace_ref() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/advanced-workspace-ref")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/advanced-workspace-ref")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -7251,33 +7948,39 @@ fn advanced_workspace_ref() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a7131b1 (⌂|🏘|01)
+●  ·a7131b1 (⌂|🏘)
 ◎  intermediate-ref
-●  ·4d3831e (⌂|🏘|01)
-●    ·468357f (⌂|🏘|01)
+●  ·4d3831e (⌂|🏘)
+●    ·468357f (⌂|🏘)
 ├─╮
 │ ◎  branch-on-top
-│ ●  ·d3166f7 (⌂|🏘|01)
+│ ●  ·d3166f7 (⌂|🏘)
 ├─╯
-●  ·118ddbb (⌂|🏘|01)
-●    ·619d548 (⌂|🏘|01)
+●  ·118ddbb (⌂|🏘)
+●    ·619d548 (⌂|🏘)
 ├─╮
 ◎ │  📙B
-● │  ·8a352d5 (⌂|🏘|01)
+● │  ·8a352d5 (⌂|🏘)
 │ ◎  📙A
-│ ●  ·6fdab32 (⌂|🏘|01)
+│ ●  ·6fdab32 (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  ·bce0c5e (⌂|🏘|✓|11)
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  ·bce0c5e (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -7287,16 +7990,16 @@ fn advanced_workspace_ref() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
-└── ≡:5:anon: on bce0c5e {1}
-    ├── :5:anon:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+└── ≡:anon: on bce0c5e {1}
+    ├── :anon:
     │   └── ·a7131b1 (🏘️)
-    ├── :6:intermediate-ref
+    ├── :intermediate-ref
     │   ├── ·4d3831e (🏘️)
     │   ├── ·468357f (🏘️)
     │   ├── ·118ddbb (🏘️)
     │   └── ·619d548 (🏘️)
-    └── 📙:4:B
+    └── 📙:B
         └── ·8a352d5 (🏘️)
 
 "#]]
@@ -7306,6 +8009,7 @@ fn advanced_workspace_ref() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
@@ -7314,43 +8018,43 @@ fn advanced_workspace_ref() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a7131b1 (⌂|🏘|01)
+●  ·a7131b1 (⌂|🏘)
 ◎  intermediate-ref
-●  ·4d3831e (⌂|🏘|01)
-●    ·468357f (⌂|🏘|01)
+●  ·4d3831e (⌂|🏘)
+●    ·468357f (⌂|🏘)
 ├─╮
 │ ◎  branch-on-top
-│ ●  ·d3166f7 (⌂|🏘|01)
+│ ●  ·d3166f7 (⌂|🏘)
 ├─╯
-●  ·118ddbb (⌂|🏘|01)
-●    ·619d548 (⌂|🏘|01)
+●  ·118ddbb (⌂|🏘)
+●    ·619d548 (⌂|🏘)
 ├─╮
 ◎ │  📙B
-● │  ·8a352d5 (⌂|🏘|01)
+● │  ·8a352d5 (⌂|🏘)
 │ ◎  📙A
-│ ●  ·6fdab32 (⌂|🏘|01)
+│ ●  ·6fdab32 (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  ·bce0c5e (⌂|🏘|✓|11)
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  ·bce0c5e (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
-└── ≡:5:anon: on bce0c5e {1}
-    ├── :5:anon:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+└── ≡:anon: on bce0c5e {1}
+    ├── :anon:
     │   └── ·a7131b1 (🏘️)
-    ├── :6:intermediate-ref
+    ├── :intermediate-ref
     │   ├── ·4d3831e (🏘️)
     │   ├── ·468357f (🏘️)
     │   ├── ·118ddbb (🏘️)
     │   └── ·619d548 (🏘️)
-    └── 📙:4:B
+    └── 📙:B
         └── ·8a352d5 (🏘️)
 
 "#]]
@@ -7360,7 +8064,7 @@ fn advanced_workspace_ref() -> anyhow::Result<()> {
 
 #[test]
 fn advanced_workspace_ref_single_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/advanced-workspace-ref-and-single-stack")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -7383,29 +8087,35 @@ fn advanced_workspace_ref_single_stack() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·da912a8 (⌂|🏘|01)
+●  ·da912a8 (⌂|🏘)
 ◎  intermediate-ref
-●  ·198eaf8 (⌂|🏘|01)
-●    ·3147997 (⌂|🏘|01)
+●  ·198eaf8 (⌂|🏘)
+●    ·3147997 (⌂|🏘)
 ├─╮
 │ ◎  branch-on-top
-│ ●  ·dd7bb9a (⌂|🏘|01)
+│ ●  ·dd7bb9a (⌂|🏘)
 ├─╯
-●  ·9785229 (⌂|🏘|01)
-●  ·c58f157 (⌂|🏘|01)
+●  ·9785229 (⌂|🏘)
+●  ·c58f157 (⌂|🏘)
 ◎  📙A
-●  ·6fdab32 (⌂|🏘|01)
+●  ·6fdab32 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  ·bce0c5e (⌂|🏘|✓|11)
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  ·bce0c5e (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -7414,16 +8124,16 @@ fn advanced_workspace_ref_single_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
-└── ≡:4:anon: on bce0c5e {0}
-    ├── :4:anon:
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+└── ≡:anon: on bce0c5e {0}
+    ├── :anon:
     │   └── ·da912a8 (🏘️)
-    ├── :5:intermediate-ref
+    ├── :intermediate-ref
     │   ├── ·198eaf8 (🏘️)
     │   ├── ·3147997 (🏘️)
     │   ├── ·9785229 (🏘️)
     │   └── ·c58f157 (🏘️)
-    └── 📙:3:A
+    └── 📙:A
         └── ·6fdab32 (🏘️)
 
 "#]]
@@ -7433,7 +8143,7 @@ fn advanced_workspace_ref_single_stack() -> anyhow::Result<()> {
 
 #[test]
 fn shallow_boundary_below_workspace_lower_bound() -> anyhow::Result<()> {
-    let (repo, mut meta) = named_read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = named_read_only_in_memory_scenario(
         "special-conditions",
         "shallow-workspace-boundary-below-lower-bound",
     )?;
@@ -7451,31 +8161,37 @@ fn shallow_boundary_below_workspace_lower_bound() -> anyhow::Result<()> {
     );
 
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳] <> origin/gitbutler/workspace
-●  ·00e1860 (⌂|🏘|001)
+●  ·00e1860 (⌂|🏘)
 │ ◎  origin/A
 ├─╯
 ◎  📙A <> origin/A
-●  ·6507810 (⌂|🏘|101)
+●  ·6507810 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  ·b625665 (⌂|🏘|✓|111)
-●  ·a821094 (⌂|🏘|✓|111)
-●  ⛰·bce0c5e (⌂|🏘|✓|⛰|111)
+●  ·b625665 (⌂|🏘|✓)
+●  ·a821094 (⌂|🏘|✓)
+●  ⛰·bce0c5e (⌂|🏘|✓|⛰)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on b625665
-└── ≡📙:3:A <> origin/A →:4: on b625665 {1}
-    └── 📙:3:A <> origin/A →:4:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on b625665
+└── ≡📙:A <> origin/A on b625665 {1}
+    └── 📙:A <> origin/A
         └── ❄️6507810 (🏘️)
 
 "#]]
@@ -7486,29 +8202,35 @@ fn shallow_boundary_below_workspace_lower_bound() -> anyhow::Result<()> {
 
 #[test]
 fn shallow_boundary_in_workspace_prevents_lower_bound() -> anyhow::Result<()> {
-    let (repo, mut meta) = named_read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = named_read_only_in_memory_scenario(
         "special-conditions",
         "shallow-workspace-boundary-in-workspace",
     )?;
 
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳] <> origin/gitbutler/workspace
-●  ·00e1860 (⌂|🏘|1)
+●  ·00e1860 (⌂|🏘)
 ◎  📙A
-●  ⛰·6507810 (⌂|🏘|⛰|1)
+●  ⛰·6507810 (⌂|🏘|⛰)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡📙:1:A {1}
-    └── 📙:1:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡📙:A {1}
+    └── 📙:A
         └── ·6507810 (🏘️|⛰)
 
 "#]]
@@ -7519,7 +8241,7 @@ fn shallow_boundary_in_workspace_prevents_lower_bound() -> anyhow::Result<()> {
 
 #[test]
 fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/two-branches-one-below-base")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/two-branches-one-below-base")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -7540,22 +8262,28 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·e82dfab (⌂|🏘|1)
+●    ·e82dfab (⌂|🏘)
 ├─╮
 ◎ │  B
-● │  ·78b1b59 (⌂|🏘|1)
-● │  ·f52fcec (⌂|🏘|1)
+● │  ·78b1b59 (⌂|🏘)
+● │  ·f52fcec (⌂|🏘)
 │ ◎  A
-│ ●  ·6fdab32 (⌂|🏘|1)
+│ ●  ·6fdab32 (⌂|🏘)
 ├─╯
-●  ·bce0c5e (⌂|🏘|1)
-●  🏁·3183e43 (⌂|🏘|1)
+●  ·bce0c5e (⌂|🏘)
+●  🏁·3183e43 (⌂|🏘)
 "#]]
     );
 
@@ -7563,13 +8291,13 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓! on bce0c5e
-├── ≡:1:B on bce0c5e
-│   └── :1:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓! on bce0c5e
+├── ≡:B on bce0c5e
+│   └── :B
 │       ├── ·78b1b59 (🏘️)
 │       └── ·f52fcec (🏘️)
-└── ≡:2:A on bce0c5e
-    └── :2:A
+└── ≡:A on bce0c5e
+    └── :A
         └── ·6fdab32 (🏘️)
 
 "#]]
@@ -7578,38 +8306,44 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // The same is true if stacks are known in workspace metadata.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·e82dfab (⌂|🏘|01)
+●    ·e82dfab (⌂|🏘)
 ├─╮
 ◎ │  📙B
-● │  ·78b1b59 (⌂|🏘|01)
+● │  ·78b1b59 (⌂|🏘)
 │ ◎  📙A
-│ ●  ·6fdab32 (⌂|🏘|01)
+│ ●  ·6fdab32 (⌂|🏘)
 │ │ ◎  origin/main
 │ │ ◎  main <> origin/main
-│ │ ●  ·938e6f2 (⌂|✓|10)
+│ │ ●  ·938e6f2 (⌂|✓)
 ├───╯
-● │  ·f52fcec (⌂|🏘|✓|11)
+● │  ·f52fcec (⌂|🏘|✓)
 ├─╯
-●  ·bce0c5e (⌂|🏘|✓|11)
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  ·bce0c5e (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on bce0c5e
-├── ≡📙:3:A on bce0c5e {0}
-│   └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on bce0c5e
+├── ≡📙:A on bce0c5e {0}
+│   └── 📙:A
 │       └── ·6fdab32 (🏘️)
-└── ≡📙:4:B on bce0c5e {1}
-    └── 📙:4:B
+└── ≡📙:B on f52fcec {1}
+    └── 📙:B
         └── ·78b1b59 (🏘️)
 
 "#]]
@@ -7620,6 +8354,7 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, ":/M3"),
     )?
     .validated()?;
@@ -7627,20 +8362,20 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·e82dfab (⌂|🏘|01)
+●    ·e82dfab (⌂|🏘)
 ├─╮
 ◎ │  📙B
-● │  ·78b1b59 (⌂|🏘|01)
+● │  ·78b1b59 (⌂|🏘)
 │ ◎  📙A
-│ ●  ·6fdab32 (⌂|🏘|01)
+│ ●  ·6fdab32 (⌂|🏘)
 │ │ ◎  origin/main
 │ │ ◎  main <> origin/main
-│ │ ●  ·938e6f2 (⌂|✓|10)
+│ │ ●  ·938e6f2 (⌂|✓)
 ├───╯
-● │  ·f52fcec (⌂|🏘|✓|11)
+● │  ·f52fcec (⌂|🏘|✓)
 ├─╯
-●  ·bce0c5e (⌂|🏘|✓|11)
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  ·bce0c5e (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -7650,12 +8385,12 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on bce0c5e
-├── ≡📙:4:A on bce0c5e {0}
-│   └── 📙:4:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on bce0c5e
+├── ≡📙:A on bce0c5e {0}
+│   └── 📙:A
 │       └── ·6fdab32 (🏘️)
-└── ≡📙:5:B on f52fcec {1}
-    └── 📙:5:B
+└── ≡📙:B on f52fcec {1}
+    └── 📙:B
         └── ·78b1b59 (🏘️)
 
 "#]]
@@ -7666,7 +8401,7 @@ fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
 
 #[test]
 fn applied_stack_above_explicit_lower_bound() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/two-branches-one-above-base")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/two-branches-one-above-base")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -7684,25 +8419,31 @@ fn applied_stack_above_explicit_lower_bound() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·c5587c9 (⌂|🏘|01)
+●    ·c5587c9 (⌂|🏘)
 ├─╮
 ◎ │  B
-● │  ·ce25240 (⌂|🏘|01)
+● │  ·ce25240 (⌂|🏘)
 │ ◎  A
-│ ●  ·de6d39c (⌂|🏘|01)
+│ ●  ·de6d39c (⌂|🏘)
 │ │ ◎  origin/main
 │ ├─╯
 │ ◎  main <> origin/main
-│ ●  ·a821094 (⌂|🏘|11)
+│ ●  ·a821094 (⌂|🏘)
 ├─╯
-●  ·bce0c5e (⌂|🏘|11)
-●  🏁·3183e43 (⌂|🏘|11)
+●  ·bce0c5e (⌂|🏘)
+●  🏁·3183e43 (⌂|🏘)
 "#]]
     );
 
@@ -7711,14 +8452,14 @@ fn applied_stack_above_explicit_lower_bound() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓! on bce0c5e
-├── ≡:1:B on bce0c5e
-│   └── :1:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓! on bce0c5e
+├── ≡:B on bce0c5e
+│   └── :B
 │       └── ·ce25240 (🏘️)
-└── ≡:2:A on bce0c5e
-    ├── :2:A
+└── ≡:A on bce0c5e
+    ├── :A
     │   └── ·de6d39c (🏘️)
-    └── :3:main <> origin/main →:4:
+    └── :main <> origin/main
         └── ❄️a821094 (🏘️)
 
 "#]]
@@ -7728,7 +8469,7 @@ fn applied_stack_above_explicit_lower_bound() -> anyhow::Result<()> {
 
 #[test]
 fn dependent_branch_on_base() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/dependent-branch-on-base")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/dependent-branch-on-base")?;
     snapbox::assert_data_eq!(visualize_commit_graph_all(&repo)?, snapbox::str![[r#"
 *-.   a0385a8 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |\ \  
@@ -7773,13 +8514,19 @@ fn dependent_branch_on_base() -> anyhow::Result<()> {
         ],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●      ·a0385a8 (⌂|🏘|01)
+●      ·a0385a8 (⌂|🏘)
 ├─┬─╮
 ◎ │ │  📙B
 ◎ │ │  📙below-B
@@ -7788,23 +8535,23 @@ fn dependent_branch_on_base() -> anyhow::Result<()> {
 │ ◎ │  📙C2-1
 │ ◎ │  📙C2-2
 │ ◎ │  📙C2-3
-│ ● │  ·f9e2cb7 (⌂|🏘|01)
+│ ● │  ·f9e2cb7 (⌂|🏘)
 │ ◎ │  📙C1-3
 │ ◎ │  📙C1-2
 │ ◎ │  📙C1-1
-│ ● │  ·aaa195b (⌂|🏘|01)
+│ ● │  ·aaa195b (⌂|🏘)
 │ ◎ │  📙below-C
 │ ◎ │  📙below-below-C
 ├─╯ │
 │   ◎  📙A
-│   ●  ·49d4b34 (⌂|🏘|01)
+│   ●  ·49d4b34 (⌂|🏘)
 │   ◎  📙below-A
 │   ◎  📙below-below-A
 ├───╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·3183e43 (⌂|🏘|✓|11)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -7813,28 +8560,28 @@ fn dependent_branch_on_base() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
-├── ≡📙:3:A on 3183e43 {1}
-│   ├── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+├── ≡📙:A on 3183e43 {1}
+│   ├── 📙:A
 │   │   └── ·49d4b34 (🏘️)
-│   ├── 📙:18:below-A
-│   └── 📙:19:below-below-A
-├── ≡📙:6:B on 3183e43 {2}
-│   ├── 📙:6:B
-│   ├── 📙:7:below-B
-│   └── 📙:8:below-below-B
-└── ≡📙:9:C on 3183e43 {3}
-    ├── 📙:9:C
-    ├── 📙:10:C2-1
-    ├── 📙:11:C2-2
-    ├── 📙:12:C2-3
+│   ├── 📙:below-A
+│   └── 📙:below-below-A
+├── ≡📙:B on 3183e43 {2}
+│   ├── 📙:B
+│   ├── 📙:below-B
+│   └── 📙:below-below-B
+└── ≡📙:C on 3183e43 {3}
+    ├── 📙:C
+    ├── 📙:C2-1
+    ├── 📙:C2-2
+    ├── 📙:C2-3
     │   └── ·f9e2cb7 (🏘️)
-    ├── 📙:13:C1-3
-    ├── 📙:14:C1-2
-    ├── 📙:15:C1-1
+    ├── 📙:C1-3
+    ├── 📙:C1-2
+    ├── 📙:C1-1
     │   └── ·aaa195b (🏘️)
-    ├── 📙:16:below-C
-    └── 📙:17:below-below-C
+    ├── 📙:below-C
+    └── 📙:below-below-C
 
 "#]]
     );
@@ -7856,25 +8603,25 @@ fn dependent_branch_on_base() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
-├── ≡📙:6:B on 3183e43 {2}
-│   ├── 📙:6:B
-│   ├── 📙:7:below-B
-│   └── 📙:8:below-below-B
-├── ≡📙:9:C on 3183e43 {3}
-│   ├── 📙:9:C
-│   ├── 📙:10:C2-1
-│   ├── 📙:11:C2-2
-│   ├── 📙:12:C2-3
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+├── ≡📙:B on 3183e43 {2}
+│   ├── 📙:B
+│   ├── 📙:below-B
+│   └── 📙:below-below-B
+├── ≡📙:C on 3183e43 {3}
+│   ├── 📙:C
+│   ├── 📙:C2-1
+│   ├── 📙:C2-2
+│   ├── 📙:C2-3
 │   │   └── ·f9e2cb7 (🏘️)
-│   ├── 📙:13:C1-3
-│   ├── 📙:14:C1-2
-│   ├── 📙:15:C1-1
+│   ├── 📙:C1-3
+│   ├── 📙:C1-2
+│   ├── 📙:C1-1
 │   │   └── ·aaa195b (🏘️)
-│   ├── 📙:16:below-C
-│   └── 📙:17:below-below-C
-└── ≡📙:5:A on 3183e43 {1}
-    └── 📙:5:A
+│   ├── 📙:below-C
+│   └── 📙:below-below-C
+└── ≡📙:A on 3183e43 {1}
+    └── 📙:A
         └── ·49d4b34 (🏘️)
 
 "#]]
@@ -7884,7 +8631,8 @@ fn dependent_branch_on_base() -> anyhow::Result<()> {
 
 #[test]
 fn remote_and_integrated_tracking_branch_on_merge() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/remote-and-integrated-tracking")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/remote-and-integrated-tracking")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -7910,15 +8658,16 @@ fn remote_and_integrated_tracking_branch_on_merge() -> anyhow::Result<()> {
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_extra_target_commit_id(repo.rev_parse_single("origin/main")?),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 1ee1e34
-└── ≡📙:8:A <> origin/A →:4:⇣1 on 1ee1e34 {1}
-    └── 📙:8:A <> origin/A →:4:⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 1ee1e34
+└── ≡📙:A <> origin/A⇣1 on 1ee1e34 {1}
+    └── 📙:A <> origin/A⇣1
         └── 🟣2181501
 
 "#]]
@@ -7929,7 +8678,7 @@ fn remote_and_integrated_tracking_branch_on_merge() -> anyhow::Result<()> {
 
 #[test]
 fn remote_and_integrated_tracking_branch_on_linear_segment() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/remote-and-integrated-tracking-linear")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -7950,15 +8699,16 @@ fn remote_and_integrated_tracking_branch_on_linear_segment() -> anyhow::Result<(
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_extra_target_commit_id(repo.rev_parse_single("origin/main")?),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 081bae9
-└── ≡📙:5:A <> origin/A →:4:⇣1 on 081bae9 {1}
-    └── 📙:5:A <> origin/A →:4:⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 081bae9
+└── ≡📙:A <> origin/A⇣1 on 081bae9 {1}
+    └── 📙:A <> origin/A⇣1
         └── 🟣197ddce
 
 "#]]
@@ -7969,7 +8719,7 @@ fn remote_and_integrated_tracking_branch_on_linear_segment() -> anyhow::Result<(
 
 #[test]
 fn remote_and_integrated_tracking_branch_on_merge_extra_target() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/remote-and-integrated-tracking-extra-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -7996,15 +8746,16 @@ fn remote_and_integrated_tracking_branch_on_merge_extra_target() -> anyhow::Resu
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options().with_extra_target_commit_id(repo.rev_parse_single("origin/main")?),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 1ee1e34
-└── ≡📙:3:A <> origin/A →:4:⇡1⇣1 on 1ee1e34 {1}
-    └── 📙:3:A <> origin/A →:4:⇡1⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 1ee1e34
+└── ≡📙:A <> origin/A⇡1⇣1 on 1ee1e34 {1}
+    └── 📙:A <> origin/A⇡1⇣1
         ├── 🟣2181501
         └── ·9f47a25 (🏘️)
 
@@ -8016,7 +8767,7 @@ fn remote_and_integrated_tracking_branch_on_merge_extra_target() -> anyhow::Resu
 
 #[test]
 fn unapplied_branch_on_base() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/unapplied-branch-on-base")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/unapplied-branch-on-base")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -8027,19 +8778,25 @@ fn unapplied_branch_on_base() -> anyhow::Result<()> {
     );
     add_workspace(&mut meta);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a26ae77 (⌂|🏘|01)
+●  ·a26ae77 (⌂|🏘)
 │ ◎  unapplied
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -8047,21 +8804,27 @@ fn unapplied_branch_on_base() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
 
 "#]]
     );
 
     // An applied branch would be present, but has no commit.
     add_stack_with_segments(&mut meta, 1, "unapplied", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:unapplied on fafd9d0 {1}
-    └── 📙:3:unapplied
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:unapplied on fafd9d0 {1}
+    └── 📙:unapplied
 
 "#]]
     );
@@ -8069,14 +8832,20 @@ fn unapplied_branch_on_base() -> anyhow::Result<()> {
     // We simulate an unapplied branch on the base by giving it branch metadata, but not listing
     // it in the workspace.
     add_stack_with_segments(&mut meta, 1, "unapplied", StackState::Inactive, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
 
     // This will be an empty workspace.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
 
 "#]]
     );
@@ -8087,7 +8856,7 @@ fn unapplied_branch_on_base() -> anyhow::Result<()> {
 #[test]
 fn shared_target_base_keeps_exact_target_segment_with_inactive_unapplied_branch()
 -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/target-shared-with-unapplied-and-origin-head")?;
     add_workspace(&mut meta);
     add_stack_with_segments(&mut meta, 1, "survivor", StackState::InWorkspace, &[]);
@@ -8105,8 +8874,14 @@ fn shared_target_base_keeps_exact_target_segment_with_inactive_unapplied_branch(
         "fixture must contain {target_head_ref}",
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -8128,17 +8903,17 @@ fn shared_target_base_keeps_exact_target_segment_with_inactive_unapplied_branch(
 │ ◎  base-peer-8
 ├─╯
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·20f65b7 (⌂|🏘|01)
+│ ●  ·20f65b7 (⌂|🏘)
 │ ◎  📙survivor
-│ ●  ·4ca0966 (⌂|🏘|01)
-│ ●  ·a3b180e (⌂|🏘|01)
+│ ●  ·4ca0966 (⌂|🏘)
+│ ●  ·a3b180e (⌂|🏘)
 │ │ ◎  origin/main
 │ │ ◎  main <> origin/main
 │ ├─╯
 │ ◎  📙unapplied
 ├─╯
-●  ·ce09734 (⌂|🏘|✓|11)
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  ·ce09734 (⌂|🏘|✓)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     let debug_graph = graph_tree(&graph);
@@ -8159,9 +8934,9 @@ fn shared_target_base_keeps_exact_target_segment_with_inactive_unapplied_branch(
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on ce09734
-└── ≡📙:3:survivor on ce09734 {1}
-    └── 📙:3:survivor
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on ce09734
+└── ≡📙:survivor on ce09734 {1}
+    └── 📙:survivor
         ├── ·4ca0966 (🏘️)
         └── ·a3b180e (🏘️)
 
@@ -8183,13 +8958,13 @@ fn shared_target_base_keeps_exact_target_segment_with_inactive_unapplied_branch(
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on ce09734
-├── ≡📙:3:survivor on ce09734 {1}
-│   └── 📙:3:survivor
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on ce09734
+├── ≡📙:survivor on ce09734 {1}
+│   └── 📙:survivor
 │       ├── ·4ca0966 (🏘️)
 │       └── ·a3b180e (🏘️)
-└── ≡📙:4:unapplied on ce09734 {2}
-    └── 📙:4:unapplied
+└── ≡📙:unapplied on ce09734 {2}
+    └── 📙:unapplied
 
 "#]]
     );
@@ -8199,7 +8974,7 @@ fn shared_target_base_keeps_exact_target_segment_with_inactive_unapplied_branch(
 
 #[test]
 fn worktree_tip_in_workspace_priority_mode() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/worktree-ahead")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/worktree-ahead-checkout")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -8213,47 +8988,59 @@ fn worktree_tip_in_workspace_priority_mode() -> anyhow::Result<()> {
     add_workspace(&mut meta);
 
     // Without the worktree tip, the branch ahead of the base is invisible.
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a26ae77 (⌂|🏘|01)
+●  ·a26ae77 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
-    // Seeding it adds the branch outside the workspace, leaving workspace,
+    // Discovering it adds the branch outside the workspace, leaving workspace,
     // target, and remote computations undisturbed.
-    let mut options = standard_options();
-    options.worktree_tips = vec![but_graph::init::WorktreeTip {
-        name: "workspace-with-external-branch-feature".into(),
-        ref_name: Some("refs/heads/wt-feature".try_into()?),
-        id: repo.find_reference("wt-feature")?.peel_to_id()?.detach(),
-    }];
-    let graph = Graph::from_head(&repo, &*meta, default_project_meta(), options)?.validated()?;
+    // Adoption already ran, so the fixture worktree counts as active.
+    db.worktree_meta_mut().mark_adopted()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        but_graph::init::Options {
+            worktrees: true,
+            ..standard_options()
+        },
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
-◎  👉📕gitbutler/workspace[🌳]
-●  ·a26ae77 (⌂|🏘|01)
-│ ◎  wt-feature
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·a26ae77 (⌂|🏘)
+│ ◎  wt-feature[📁worktree-ahead-checkout-feature]
 │ ●  ·26837d3 (⌂)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
 
 "#]]
     );
@@ -8262,7 +9049,7 @@ fn worktree_tip_in_workspace_priority_mode() -> anyhow::Result<()> {
 
 #[test]
 fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/worktree-ahead")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/worktree-ahead")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -8281,6 +9068,7 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
         ws_ref.clone(),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -8297,6 +9085,7 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
         )),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -8305,14 +9094,14 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a26ae77 (⌂|🏘|01)
+●  ·a26ae77 (⌂|🏘)
 │ ◎  wt-feature
 │ ●  ·26837d3 (⌂)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     assert_eq!(
@@ -8327,6 +9116,7 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
         Some(Tip::reachable(head_id.detach(), Some(ws_ref.clone()))),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -8343,6 +9133,7 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
         Some(Tip::reachable(main_id.detach(), Some(main_ref))),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -8358,6 +9149,7 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
         Some(Tip::detached_entrypoint(wt_feature_id)),
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )
     .unwrap_err();
@@ -8370,7 +9162,7 @@ fn workspace_traversal_with_extra_tips() -> anyhow::Result<()> {
 
 #[test]
 fn unapplied_branch_on_base_no_target() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/unapplied-branch-on-base")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/unapplied-branch-on-base")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -8381,19 +9173,25 @@ fn unapplied_branch_on_base_no_target() -> anyhow::Result<()> {
     );
     add_workspace(&mut meta);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a26ae77 (⌂|🏘|01)
+●  ·a26ae77 (⌂|🏘)
 │ ◎  unapplied
 │ │ ◎  origin/main
 ├───╯
 ◎ │  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|11)
+●  🏁·fafd9d0 (⌂|🏘)
 "#]]
     );
 
@@ -8401,9 +9199,9 @@ fn unapplied_branch_on_base_no_target() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓!
-└── ≡:2:main <> origin/main →:1:
-    └── :2:main <> origin/main →:1:
+📕🏘️:gitbutler/workspace[🌳] <> ✓!
+└── ≡:main <> origin/main
+    └── :main <> origin/main
         └── ❄️fafd9d0 (🏘️) ►unapplied
 
 "#]]
@@ -8413,29 +9211,35 @@ fn unapplied_branch_on_base_no_target() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 1, "unapplied", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 2, "main", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·a26ae77 (⌂|🏘|01)
+●  ·a26ae77 (⌂|🏘)
 ◎  📙unapplied
 │ ◎  origin/main
 │ ◎  📙main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:unapplied on fafd9d0 {1}
-│   └── 📙:3:unapplied
-└── ≡📙:4:main <> origin/main →:1: on fafd9d0 {2}
-    └── 📙:4:main <> origin/main →:1:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:unapplied on fafd9d0 {1}
+│   └── 📙:unapplied
+└── ≡📙:main <> origin/main on fafd9d0 {2}
+    └── 📙:main <> origin/main
 
 "#]]
     );
@@ -8443,16 +9247,22 @@ fn unapplied_branch_on_base_no_target() -> anyhow::Result<()> {
     // We simulate an unapplied branch on the base by giving it branch metadata, but not listing
     // it in the workspace.
     add_stack_with_segments(&mut meta, 1, "unapplied", StackState::Inactive, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
 
     // Now only `main` shows up.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:main <> origin/main →:1: on fafd9d0 {2}
-    └── 📙:3:main <> origin/main →:1:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:main <> origin/main on fafd9d0 {2}
+    └── 📙:main <> origin/main
 
 "#]]
     );
@@ -8462,7 +9272,8 @@ fn unapplied_branch_on_base_no_target() -> anyhow::Result<()> {
 
 #[test]
 fn no_ws_commit_two_branches_no_target() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/no-ws-ref-no-ws-commit-two-branches")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/no-ws-ref-no-ws-commit-two-branches")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -8474,8 +9285,14 @@ fn no_ws_commit_two_branches_no_target() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 0, "main", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 1, "A", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, ProjectMeta::default(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        ProjectMeta::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     // notably the target ref and local tracking branch have sibling links setup
     snapbox::assert_data_eq!(
         graph_dag(&graph),
@@ -8489,19 +9306,19 @@ fn no_ws_commit_two_branches_no_target() -> anyhow::Result<()> {
 │ ├─╯
 │ ◎  📙main <> origin/main
 ├─╯
-●  ·bce0c5e (⌂|🏘|1)
-●  🏁·3183e43 (⌂|🏘|1)
+●  ·bce0c5e (⌂|🏘)
+●  🏁·3183e43 (⌂|🏘)
 "#]]
     );
     // sibling links between origin/main and main are also set
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️⚠️:0:gitbutler/workspace[🌳] <> ✓! on bce0c5e
-├── ≡📙:3:main <> origin/main →:2: on bce0c5e {0}
-│   └── 📙:3:main <> origin/main →:2:
-└── ≡📙:4:A on bce0c5e {1}
-    └── 📙:4:A
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓! on bce0c5e
+├── ≡📙:main <> origin/main on bce0c5e {0}
+│   └── 📙:main <> origin/main
+└── ≡📙:A on bce0c5e {1}
+    └── 📙:A
 
 "#]]
     );
@@ -8510,7 +9327,7 @@ fn no_ws_commit_two_branches_no_target() -> anyhow::Result<()> {
 
 #[test]
 fn ambiguous_worktrees() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/ambiguous-worktrees")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/ambiguous-worktrees")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -8530,8 +9347,14 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
     );
 
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -8539,34 +9362,34 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
 │ ◎  A-outside[📁wt-A-outside]
 ├─╯
 │ ◎  👉📕gitbutler/workspace[🌳@repo]
-│ ●    ·a5f94a2 (⌂|🏘|0001)
+│ ●    ·a5f94a2 (⌂|🏘)
 │ ├─╮
 │ ◎ │  📙A <> origin/A
 ├─╯ │
 │   ◎  B[📁wt-B-inside]
-│   ●  ·3e01e28 (⌂|🏘|0001)
+│   ●  ·3e01e28 (⌂|🏘)
 ├───╯
 │ ◎  origin/A
-│ ●  🟣197ddce (0x0|1000)
+│ ●  🟣197ddce (0x0)
 ├─╯
 │ ◎  origin/main
 │ ◎  main <> origin/main
-│ ●  ·8dc508f (⌂|✓|0010)
+│ ●  ·8dc508f (⌂|✓)
 ├─╯
-●  ·081bae9 (⌂|🏘|✓|1111)
-●  🏁·3183e43 (⌂|🏘|✓|1111)
+●  ·081bae9 (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main⇣1 on 081bae9
-├── ≡📙:6:A <> origin/A →:4:⇣1 on 081bae9 {0}
-│   └── 📙:6:A <> origin/A →:4:⇣1
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main⇣1 on 081bae9
+├── ≡📙:A <> origin/A⇣1 on 081bae9 {0}
+│   └── 📙:A <> origin/A⇣1
 │       └── 🟣197ddce
-└── ≡:5:B[📁wt-B-inside] on 081bae9
-    └── :5:B[📁wt-B-inside]
+└── ≡:B[📁wt-B-inside] on 081bae9
+    └── :B[📁wt-B-inside]
         └── ·3e01e28 (🏘️)
 
 "#]]
@@ -8584,6 +9407,7 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
         &linked_repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -8600,17 +9424,17 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
 │ ◎ │  📙A <> origin/A
 ├─╯ │
 │   ◎  👉B[📁wt-B-inside@repo]
-│   ●  ·3e01e28 (⌂|🏘|0001)
+│   ●  ·3e01e28 (⌂|🏘)
 ├───╯
 │ ◎  origin/A
-│ ●  🟣197ddce (0x0|1000)
+│ ●  🟣197ddce (0x0)
 ├─╯
 │ ◎  origin/main
 │ ◎  main <> origin/main
-│ ●  ·8dc508f (⌂|✓|0010)
+│ ●  ·8dc508f (⌂|✓)
 ├─╯
-●  ·081bae9 (⌂|🏘|✓|1111)
-●  🏁·3183e43 (⌂|🏘|✓|1111)
+●  ·081bae9 (⌂|🏘|✓)
+●  🏁·3183e43 (⌂|🏘|✓)
 "#]]
     );
 
@@ -8618,12 +9442,12 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 081bae9
-├── ≡📙:6:A <> origin/A →:5:⇣1 on 081bae9 {0}
-│   └── 📙:6:A <> origin/A →:5:⇣1
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 081bae9
+├── ≡📙:A <> origin/A⇣1 on 081bae9 {0}
+│   └── 📙:A <> origin/A⇣1
 │       └── 🟣197ddce
-└── ≡👉:0:B[📁wt-B-inside@repo] on 081bae9
-    └── 👉:0:B[📁wt-B-inside@repo]
+└── ≡👉:B[📁wt-B-inside@repo] on 081bae9
+    └── 👉:B[📁wt-B-inside@repo]
         └── ·3e01e28 (🏘️)
 
 "#]]
@@ -8634,7 +9458,7 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
 #[test]
 fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch_no_advanced_target()
 -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/duplicate-workspace-connection-no-target")?;
     // Note that HEAD isn't actually pointing at origin/main, but twice at main
     snapbox::assert_data_eq!(
@@ -8650,21 +9474,27 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch_no_advanced_ta
 
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
     // Our graph is incapable of showing these two connections due to traversal
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  B
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·f18d244 (⌂|🏘|01)
+│ ●  ·f18d244 (⌂|🏘)
 ╭─┤
 │ ◎  📙A
 │ │ ◎  origin/main
 │ ├─╯
 │ ◎  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -8673,9 +9503,9 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch_no_advanced_ta
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:A on fafd9d0 {1}
-    └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    └── 📙:A
 
 "#]]
     );
@@ -8689,11 +9519,11 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch_no_advanced_ta
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-├── ≡📙:3:A on fafd9d0 {1}
-│   └── 📙:3:A
-└── ≡📙:4:B on fafd9d0 {2}
-    └── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+└── ≡📙:B on fafd9d0 {2}
+    └── 📙:B
 
 "#]]
     );
@@ -8708,10 +9538,10 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch_no_advanced_ta
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡📙:3:A on fafd9d0 {1}
-    ├── 📙:3:A
-    └── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    ├── 📙:A
+    └── 📙:B
 
 "#]]
     );
@@ -8721,7 +9551,8 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch_no_advanced_ta
 
 #[test]
 fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/duplicate-workspace-connection")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/duplicate-workspace-connection")?;
     // Note that HEAD isn't actually pointing at origin/main, but twice at main
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -8738,14 +9569,20 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
 
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  B
 │ ◎  👉📕gitbutler/workspace[🌳]
-│ ●  ·f18d244 (⌂|🏘|01)
+│ ●  ·f18d244 (⌂|🏘)
 ╭─┤
 │ ◎  📙A
 │ │ ◎  origin/main
@@ -8753,7 +9590,7 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
 │ ├─╯
 │ ◎  main <> origin/main
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -8762,9 +9599,9 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-└── ≡📙:3:A on fafd9d0 {1}
-    └── 📙:3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    └── 📙:A
 
 "#]]
     );
@@ -8778,11 +9615,11 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡📙:3:A on fafd9d0 {1}
-│   └── 📙:3:A
-└── ≡📙:4:B on fafd9d0 {2}
-    └── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+└── ≡📙:B on fafd9d0 {2}
+    └── 📙:B
 
 "#]]
     );
@@ -8797,10 +9634,10 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-└── ≡📙:3:A on fafd9d0 {1}
-    ├── 📙:3:A
-    └── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    ├── 📙:A
+    └── 📙:B
 
 "#]]
     );
@@ -8813,16 +9650,17 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-├── ≡📙:3:A on fafd9d0 {1}
-│   └── 📙:3:A
-└── ≡📙:4:B on fafd9d0 {2}
-    └── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+├── ≡📙:A on fafd9d0 {1}
+│   └── 📙:A
+└── ≡📙:B on fafd9d0 {2}
+    └── 📙:B
 
 "#]]
     );
@@ -8833,15 +9671,16 @@ fn duplicate_parent_connection_from_ws_commit_to_ambiguous_branch() -> anyhow::R
         &repo,
         &*meta,
         default_project_meta(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-└── ≡📙:3:A on fafd9d0 {1}
-    ├── 📙:3:A
-    └── 📙:4:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+└── ≡📙:A on fafd9d0 {1}
+    ├── 📙:A
+    └── 📙:B
 
 "#]]
     );
@@ -8859,7 +9698,7 @@ mod edit_commit {
 
     #[test]
     fn applied_stack_below_explicit_lower_bound() -> anyhow::Result<()> {
-        let (repo, mut meta) = read_only_in_memory_scenario("ws/edit-commit/simple")?;
+        let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/edit-commit/simple")?;
         snapbox::assert_data_eq!(
             visualize_commit_graph_all(&repo)?,
             snapbox::str![[r#"
@@ -8872,21 +9711,27 @@ mod edit_commit {
         );
 
         add_workspace(&mut meta);
-        let graph = Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?
-            .validated()?;
+        let graph = Graph::from_head(
+            &repo,
+            &*meta,
+            default_project_meta(),
+            &mut db,
+            standard_options(),
+        )?
+        .validated()?;
         snapbox::assert_data_eq!(
             graph_dag(&graph),
             snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·3ea2742 (⌂|🏘|01)
+●  ·3ea2742 (⌂|🏘)
 ◎  A
-●  ·a62b0de (⌂|🏘|01)
+●  ·a62b0de (⌂|🏘)
 ◎  gitbutler/edit
-●  ·120a217 (⌂|🏘|01)
+●  ·120a217 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
         );
 
@@ -8894,9 +9739,9 @@ mod edit_commit {
         snapbox::assert_data_eq!(
             graph_workspace(&graph.into_workspace()?).to_string(),
             snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:A on fafd9d0
-    └── :3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:A on fafd9d0
+    └── :A
         ├── ·a62b0de (🏘️)
         └── ·120a217 (🏘️)
 
@@ -8910,6 +9755,7 @@ mod edit_commit {
             ref_name,
             &*meta,
             default_project_meta(),
+            &mut db,
             standard_options(),
         )?
         .validated()?;
@@ -8921,22 +9767,22 @@ mod edit_commit {
 ◎  A
 ●  ·a62b0de (⌂|🏘)
 ◎  👉gitbutler/edit
-●  ·120a217 (⌂|🏘|01)
+●  ·120a217 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
         );
         // …then the segment becomes visible.
         snapbox::assert_data_eq!(
             graph_workspace(&graph.into_workspace()?).to_string(),
             snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:A on fafd9d0
-    ├── :4:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:A on fafd9d0
+    ├── :A
     │   └── ·a62b0de (🏘️)
-    └── 👉:0:gitbutler/edit
+    └── 👉:gitbutler/edit
         └── ·120a217 (🏘️)
 
 "#]]
@@ -8952,7 +9798,7 @@ mod edit_commit {
 /// - The local stack branches off from an earlier point in history (nightly/0.5.1754)
 #[test]
 fn complex_merge_history_with_origin_main_target() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/complex-merge-origin-main")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/complex-merge-origin-main")?;
     snapbox::assert_data_eq!(visualize_commit_graph_all(&repo)?, snapbox::str![[r#"
 * 4d53bb1 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 * 4eaff93 (reimplement-insert-blank-commit, reconstructed-insert-blank-commit-branch, local-stack) composability improvements
@@ -8988,14 +9834,20 @@ fn complex_merge_history_with_origin_main_target() -> anyhow::Result<()> {
     // Add workspace with origin/main as target (not origin/main)
     add_workspace(&mut meta);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣10 on 68e62aa
-└── ≡:12:anon: on 68e62aa
-    └── :12:anon:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣10 on 68e62aa
+└── ≡:anon: on 68e62aa
+    └── :anon:
         ├── ·4eaff93 (🏘️) ►local-stack, ►reconstructed-insert-blank-commit-branch, ►reimplement-insert-blank-commit
         ├── ·d19db1d (🏘️)
         └── ·fb0a67e (🏘️)
@@ -9012,15 +9864,21 @@ fn complex_merge_history_with_origin_main_target() -> anyhow::Result<()> {
         &["reconstructed-insert-blank-commit-branch"],
     );
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣10 on 68e62aa
-└── ≡📙:13:reimplement-insert-blank-commit on 68e62aa {0}
-    ├── 📙:13:reimplement-insert-blank-commit
-    └── 📙:14:reconstructed-insert-blank-commit-branch
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣10 on 68e62aa
+└── ≡📙:reimplement-insert-blank-commit on 68e62aa {0}
+    ├── 📙:reimplement-insert-blank-commit
+    └── 📙:reconstructed-insert-blank-commit-branch
         ├── ·4eaff93 (🏘️) ►local-stack
         ├── ·d19db1d (🏘️)
         └── ·fb0a67e (🏘️)
@@ -9033,7 +9891,7 @@ fn complex_merge_history_with_origin_main_target() -> anyhow::Result<()> {
 
 #[test]
 fn reproduce_12146() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/reproduce-12146")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/reproduce-12146")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9051,23 +9909,29 @@ fn reproduce_12146() -> anyhow::Result<()> {
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &[]);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·d77ecda (⌂|🏘|01)
+●    ·d77ecda (⌂|🏘)
 ├─╮
 ◎ │  📙A
 │ ◎  📙B
-│ ●  ·7163661 (⌂|🏘|01)
+│ ●  ·7163661 (⌂|🏘)
 ├─╯
-●  ·81d4e38 (⌂|🏘|01)
+●  ·81d4e38 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·e32cf47 (⌂|🏘|✓|11)
+●  🏁·e32cf47 (⌂|🏘|✓)
 "#]]
     );
 
@@ -9077,12 +9941,12 @@ fn reproduce_12146() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on e32cf47
-├── ≡📙:5:A on e32cf47 {0}
-│   └── 📙:5:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on e32cf47
+├── ≡📙:A on e32cf47 {0}
+│   └── 📙:A
 │       └── ·81d4e38 (🏘️)
-└── ≡📙:4:B on e32cf47 {1}
-    └── 📙:4:B
+└── ≡📙:B on e32cf47 {1}
+    └── 📙:B
         ├── ·7163661 (🏘️)
         └── ·81d4e38 (🏘️)
 
@@ -9098,7 +9962,7 @@ fn reproduce_12146() -> anyhow::Result<()> {
 /// pruned at or below the target.
 #[test]
 fn integrated_merge_at_bottom_is_kept() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/integrated-merge-at-bottom")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/integrated-merge-at-bottom")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9119,15 +9983,21 @@ fn integrated_merge_at_bottom_is_kept() -> anyhow::Result<()> {
     );
 
     add_stack_with_segments(&mut meta, 0, "local-stack", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on f5f42e0
-└── ≡📙:3:local-stack {0}
-    └── 📙:3:local-stack
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on f5f42e0
+└── ≡📙:local-stack on fafd9d0 {0}
+    └── 📙:local-stack
         ├── ·66ea651 (🏘️)
         ├── ·e5a88a7 (🏘️)
         └── ·0b3ccaf (🏘️)
@@ -9143,7 +10013,7 @@ fn integrated_merge_at_bottom_is_kept() -> anyhow::Result<()> {
 /// commits (including those below the merge-from-main) remain visible.
 #[test]
 fn merge_from_main_keeps_all_branch_commits() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/merge-from-main-in-branch")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/merge-from-main-in-branch")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9161,24 +10031,30 @@ fn merge_from_main_keeps_all_branch_commits() -> anyhow::Result<()> {
     );
 
     add_stack_with_segments(&mut meta, 0, "my-branch", StackState::InWorkspace, &[]);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·891e228 (⌂|🏘|01)
+●  ·891e228 (⌂|🏘)
 ◎  📙my-branch
-●  ·cd76046 (⌂|🏘|01)
-●    ·f8ff9a3 (⌂|🏘|01)
+●  ·cd76046 (⌂|🏘)
+●    ·f8ff9a3 (⌂|🏘)
 ├─╮
-● │  ·6f65768 (⌂|🏘|01)
+● │  ·6f65768 (⌂|🏘)
 │ │ ◎  origin/main
 │ ├─╯
 │ ◎  main <> origin/main
-│ ●  ·ef56fab (⌂|🏘|✓|11)
+│ ●  ·ef56fab (⌂|🏘|✓)
 ├─╯
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
@@ -9189,9 +10065,9 @@ fn merge_from_main_keeps_all_branch_commits() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on ef56fab
-└── ≡📙:3:my-branch {0}
-    └── 📙:3:my-branch
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on ef56fab
+└── ≡📙:my-branch on fafd9d0 {0}
+    └── 📙:my-branch
         ├── ·cd76046 (🏘️)
         ├── ·f8ff9a3 (🏘️)
         └── ·6f65768 (🏘️)
@@ -9208,7 +10084,7 @@ fn merge_from_main_keeps_all_branch_commits() -> anyhow::Result<()> {
 /// can detect them. Once the target advances past them, they are pruned.
 #[test]
 fn integrated_commits_above_target_are_kept() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/integrated-above-target")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/integrated-above-target")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9230,15 +10106,16 @@ fn integrated_commits_above_target_are_kept() -> anyhow::Result<()> {
     let project_meta = add_workspace_with_target(&mut meta, init_id);
     add_stack_with_segments(&mut meta, 0, "my-branch", StackState::InWorkspace, &[]);
 
-    let graph = Graph::from_head(&repo, &*meta, project_meta, standard_options())?.validated()?;
+    let graph =
+        Graph::from_head(&repo, &*meta, project_meta, &mut db, standard_options())?.validated()?;
     // With the target at "init", A and B are above the target and should be
     // kept even though they are marked integrated.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
-└── ≡📙:4:my-branch on fafd9d0 {0}
-    └── 📙:4:my-branch
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on fafd9d0
+└── ≡📙:my-branch on fafd9d0 {0}
+    └── 📙:my-branch
         ├── ·312f819 (🏘️|✓)
         └── ·e255adc (🏘️|✓)
 
@@ -9251,14 +10128,20 @@ fn integrated_commits_above_target_are_kept() -> anyhow::Result<()> {
     let main_id = repo.rev_parse_single("main")?.detach();
     let project_meta = add_workspace_with_target(&mut meta, main_id);
 
-    let graph =
-        Graph::from_head(&repo, &*meta, project_meta.clone(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        project_meta.clone(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 312f819
-└── ≡📙:5:my-branch on 312f819 {0}
-    └── 📙:5:my-branch
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 312f819
+└── ≡📙:my-branch on 312f819 {0}
+    └── 📙:my-branch
 
 "#]]
     );
@@ -9267,6 +10150,7 @@ fn integrated_commits_above_target_are_kept() -> anyhow::Result<()> {
         &repo,
         &*meta,
         project_meta,
+        &mut db,
         standard_options().with_hard_limit(usize::MAX),
     )?
     .validated()?;
@@ -9284,7 +10168,7 @@ fn integrated_commits_above_target_are_kept() -> anyhow::Result<()> {
 /// disabled integrated-commit pruning entirely.
 #[test]
 fn integrated_commits_below_target_pruned_when_upstream_ahead() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("ws/integrated-below-target-upstream-ahead")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -9314,16 +10198,17 @@ fn integrated_commits_below_target_pruned_when_upstream_ahead() -> anyhow::Resul
     // 'W' and 'O' are above/beside the target and kept; 'target' and 'base' are
     // integrated and at or below the target, so they are pruned from both stacks
     // even though origin/main has advanced past the target.
-    let graph = Graph::from_head(&repo, &*meta, project_meta, standard_options())?.validated()?;
+    let graph =
+        Graph::from_head(&repo, &*meta, project_meta, &mut db, standard_options())?.validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 322cb14
-├── ≡📙:4:my-branch on 2121f9c {0}
-│   └── 📙:4:my-branch
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 322cb14
+├── ≡📙:my-branch on 2121f9c {0}
+│   └── 📙:my-branch
 │       └── ·f5055a1 (🏘️)
-└── ≡📙:5:old-branch on 322cb14 {1}
-    └── 📙:5:old-branch
+└── ≡📙:old-branch on 322cb14 {1}
+    └── 📙:old-branch
         └── ·f458f7d (🏘️)
 
 "#]]
@@ -9337,7 +10222,7 @@ fn integrated_commits_below_target_pruned_when_upstream_ahead() -> anyhow::Resul
 /// the trunk below the fork (`c1`, `init`) is pruned, leaving X's own commits.
 #[test]
 fn catchup_merge_below_target_floors_at_fork() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/catchup-merge-leak")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/catchup-merge-leak")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9363,13 +10248,14 @@ fn catchup_merge_below_target_floors_at_fork() -> anyhow::Result<()> {
     let project_meta = add_workspace_with_target(&mut meta, target_id);
     add_stack_with_segments(&mut meta, 0, "X", StackState::InWorkspace, &[]);
 
-    let graph = Graph::from_head(&repo, &*meta, project_meta, standard_options())?.validated()?;
+    let graph =
+        Graph::from_head(&repo, &*meta, project_meta, &mut db, standard_options())?.validated()?;
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on d263f88
-└── ≡📙:4:X on b4bd43f {0}
-    └── 📙:4:X
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on d263f88
+└── ≡📙:X on b4bd43f {0}
+    └── 📙:X
         ├── ·f210f41 (🏘️)
         ├── ·f8cd0ce (🏘️)
         └── ·4eec82a (🏘️)
@@ -9385,7 +10271,8 @@ fn catchup_merge_below_target_floors_at_fork() -> anyhow::Result<()> {
 /// coincides with the workspace commit.
 #[test]
 fn entrypoint_on_workspace_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/entrypoint-on-workspace-commit")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/entrypoint-on-workspace-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9398,8 +10285,14 @@ fn entrypoint_on_workspace_commit() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
@@ -9407,22 +10300,22 @@ fn entrypoint_on_workspace_commit() -> anyhow::Result<()> {
 │ ◎  origin/main
 │ │ ◎  tags/my-tag
 ├───╯
-● │  ·3ea2742 (⌂|🏘|01)
+● │  ·3ea2742 (⌂|🏘)
 ◎ │  A
-● │  ·a62b0de (⌂|🏘|01)
-● │  ·120a217 (⌂|🏘|01)
+● │  ·a62b0de (⌂|🏘)
+● │  ·120a217 (⌂|🏘)
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:A on fafd9d0
-    └── :3:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:A on fafd9d0
+    └── :A
         ├── ·a62b0de (🏘️)
         └── ·120a217 (🏘️)
 
@@ -9431,30 +10324,36 @@ fn entrypoint_on_workspace_commit() -> anyhow::Result<()> {
 
     // Now traverse from the tag that points at the workspace commit.
     let (id, name) = id_at(&repo, "my-tag");
-    let graph =
-        Graph::from_commit_traversal(id, name, &*meta, default_project_meta(), standard_options())?
-            .validated()?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        name,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  origin/main
 │ ◎  👉tags/my-tag
 │ ◎  📕gitbutler/workspace[🌳]
-│ ●  ·3ea2742 (⌂|🏘|01)
+│ ●  ·3ea2742 (⌂|🏘)
 │ ◎  A
-│ ●  ·a62b0de (⌂|🏘|01)
-│ ●  ·120a217 (⌂|🏘|01)
+│ ●  ·a62b0de (⌂|🏘)
+│ ●  ·120a217 (⌂|🏘)
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:1:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:4:A on fafd9d0
-    └── :4:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:A on fafd9d0
+    └── :A
         ├── ·a62b0de (🏘️)
         └── ·120a217 (🏘️)
 
@@ -9469,7 +10368,7 @@ fn entrypoint_on_workspace_commit() -> anyhow::Result<()> {
 /// correctly (previously protected by front-pruning workaround).
 #[test]
 fn remote_only_stack_top() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/remote-only-stack-top")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/remote-only-stack-top")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9482,27 +10381,33 @@ fn remote_only_stack_top() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·3ea2742 (⌂|🏘|01)
-●  ·a62b0de (⌂|🏘|01)
-●  ·120a217 (⌂|🏘|01)
+●  ·3ea2742 (⌂|🏘)
+●  ·a62b0de (⌂|🏘)
+●  ·120a217 (⌂|🏘)
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:anon: on fafd9d0
-    └── :3:anon:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:anon: on fafd9d0
+    └── :anon:
         ├── ·a62b0de (🏘️)
         └── ·120a217 (🏘️)
 
@@ -9517,7 +10422,7 @@ fn remote_only_stack_top() -> anyhow::Result<()> {
 /// in a stack is handled correctly (previously protected by tail-pruning workaround).
 #[test]
 fn remote_trailing_local_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/remote-trailing-local-stack")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/remote-trailing-local-stack")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9532,26 +10437,32 @@ fn remote_trailing_local_stack() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●  ·5638b41 (⌂|🏘|01)
+●  ·5638b41 (⌂|🏘)
 ◎  B
-●  ·cb7021b (⌂|🏘|01)
-●  🏁·ce3278a (⌂|🏘|01)
+●  ·cb7021b (⌂|🏘)
+●  🏁·ce3278a (⌂|🏘)
 ◎  origin/main
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|✓|10)
+●  🏁·fafd9d0 (⌂|✓)
 "#]]
     );
     // this is a weird state as the target is actually disjoint from the workspace - it appears empty now
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on cb7021b
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on cb7021b
 
 "#]]
     );
@@ -9564,7 +10475,7 @@ fn remote_trailing_local_stack() -> anyhow::Result<()> {
 /// handles a stack that starts with a remote-only segment.
 #[test]
 fn remote_ref_as_stack_top() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("ws/remote-ref-as-stack-top")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/remote-ref-as-stack-top")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -9580,33 +10491,620 @@ fn remote_ref_as_stack_top() -> anyhow::Result<()> {
     );
 
     add_workspace(&mut meta);
-    let graph =
-        Graph::from_head(&repo, &*meta, default_project_meta(), standard_options())?.validated()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
 ◎  👉📕gitbutler/workspace[🌳]
-●    ·21bff1f (⌂|🏘|01)
+●    ·21bff1f (⌂|🏘)
 ├─╮
-│ ●  ·a62b0de (⌂|🏘|01)
-│ ●  ·120a217 (⌂|🏘|01)
+│ ●  ·a62b0de (⌂|🏘)
+│ ●  ·120a217 (⌂|🏘)
 ├─╯
 │ ◎  origin/main
 ├─╯
 ◎  main <> origin/main
-●  🏁·fafd9d0 (⌂|🏘|✓|11)
+●  🏁·fafd9d0 (⌂|🏘|✓)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
-└── ≡:3:anon: on fafd9d0
-    └── :3:anon:
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:anon: on fafd9d0
+    └── :anon:
         ├── ·a62b0de (🏘️)
         └── ·120a217 (🏘️)
 
 "#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_at_applied_branch() -> anyhow::Result<()> {
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* dd0cca8 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* e255adc (wsref, foo) A
+* fafd9d0 (origin/main, main) init
+
+"#]]
+    );
+
+    // Without metadata for `wsref`, the applied branch `foo` names the commit-owning
+    // segment and the worktree-checked-out `wsref` stays as a ref on the commit.
+    // Note that the shape is the same with or without seeded worktree tips.
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &[]);
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  📙foo
+│ ◎  wsref[📁worktree-ref-at-applied-branch-wt]
+├─╯
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo on fafd9d0 {0}
+    └── 📙:foo
+        └── ·e255adc (🏘️) ►wsref[📁worktree-ref-at-applied-branch-wt]
+
+"#]]
+    );
+
+    // With `wsref` recorded as a dependent branch below `foo`, it becomes an
+    // in-lane commit-owning segment, so it shows up as a stack branch even though
+    // the worktree listing represents it as well.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &["wsref"]);
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  📙foo
+◎  📙wsref[📁worktree-ref-at-applied-branch-wt]
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo on fafd9d0 {0}
+    ├── 📙:foo
+    └── 📙:wsref[📁worktree-ref-at-applied-branch-wt]
+        └── ·e255adc (🏘️)
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_at_applied_branch_with_discovery() -> anyhow::Result<()> {
+    let options = || but_graph::init::Options {
+        worktrees: true,
+        ..standard_options()
+    };
+    // With the worktree tip discovered, `wsref` leaves the lane: the commit is
+    // owned by an anonymous segment, `foo` keeps its place in the lane as an
+    // empty segment, and `wsref` forks directly into the commit.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &[]);
+    // Adoption already ran, so the fixture worktree counts as active.
+    db.worktree_meta_mut().mark_adopted()?;
+    let graph =
+        Graph::from_head(&repo, &*meta, default_project_meta(), &mut db, options())?.validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  📙foo
+│ ◎  wsref[📁worktree-ref-at-applied-branch-wt]
+├─╯
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    assert_worktree_ref_is_fork(&graph, "wsref")?;
+    // The worktree branch is no longer a stack row - the worktree listing
+    // represents it instead.
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo on fafd9d0 {0}
+    └── 📙:foo
+        └── ·e255adc (🏘️)
+
+"#]]
+    );
+
+    // Even when workspace metadata records `wsref` as a dependent branch below
+    // `foo`, the worktree classification wins and the shape is the same.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &["wsref"]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let graph =
+        Graph::from_head(&repo, &*meta, default_project_meta(), &mut db, options())?.validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  📙foo
+│ ◎  📙wsref[📁worktree-ref-at-applied-branch-wt]
+├─╯
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo on fafd9d0 {0}
+    └── 📙:foo
+        └── ·e255adc (🏘️)
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_mid_stack() -> anyhow::Result<()> {
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("ws/worktree-ref-mid-stack")?;
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 3ea2742 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* a62b0de (foo) A2
+* 120a217 (wsref) A1
+* fafd9d0 (origin/main, main) init
+
+"#]]
+    );
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &[]);
+    db.worktree_meta_mut().mark_adopted()?;
+    // The worktree branch points below `foo`'s tip: its commit is split into an
+    // anonymous segment that stays in the lane, and the branch forks into it.
+    // Rewrites relative to `wsref` thus never touch `foo` or the workspace.
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        but_graph::init::Options {
+            worktrees: true,
+            ..standard_options()
+        },
+    )?
+    .validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·3ea2742 (⌂|🏘)
+◎  📙foo
+●  ·a62b0de (⌂|🏘)
+│ ◎  wsref[📁worktree-ref-mid-stack-wt]
+├─╯
+●  ·120a217 (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    assert_worktree_ref_is_fork(&graph, "wsref")?;
+    // Both commits still belong to `foo`'s stack row.
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo on fafd9d0 {0}
+    └── 📙:foo
+        ├── ·a62b0de (🏘️)
+        └── ·120a217 (🏘️)
+
+"#]]
+    );
+    Ok(())
+}
+
+/// Assert `short_name` is represented as a worktree fork: an empty named
+/// segment that nothing routes through, whose single outgoing connection lands
+/// on the first commit of a differently-owned segment.
+fn assert_worktree_ref_is_fork(graph: &Graph, short_name: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use but_graph::petgraph::{Direction, visit::EdgeRef};
+    let full_name: gix::refs::FullName = format!("refs/heads/{short_name}").try_into()?;
+    let segment = graph
+        .segment_by_ref_name(full_name.as_ref())
+        .with_context(|| format!("{short_name} must still be addressable by name"))?;
+    assert!(
+        segment.commits.is_empty(),
+        "worktree-checked-out refs never own commits"
+    );
+    assert_eq!(
+        graph
+            .edges_directed(segment.id, Direction::Incoming)
+            .count(),
+        0,
+        "no lane routes through a worktree ref"
+    );
+    let outgoing: Vec<_> = graph
+        .edges_directed(segment.id, Direction::Outgoing)
+        .collect();
+    assert_eq!(outgoing.len(), 1, "a fork attaches to exactly one commit");
+    let target = &graph[outgoing[0].target()];
+    assert!(
+        target
+            .ref_name()
+            .is_none_or(|rn| { rn.category() != Some(gix::refs::Category::LocalBranch) })
+            || target.workspace_metadata().is_some(),
+        "no local branch names the commit-owning segment, so the editor \
+         attaches the fork to the commit instead of another reference"
+    );
+    assert_eq!(
+        segment.ref_info.as_ref().and_then(|ri| ri.commit_id),
+        target.commits.first().map(|c| c.id),
+        "the fork lands on the first commit of the owning segment, \
+         which the ref-info also remembers"
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_as_stack_top_is_spliced_into_fork() -> anyhow::Result<()> {
+    // Workspace metadata records `wsref` as the stack top above `foo`, which the
+    // workspace upgrades represent as an empty segment chained into the lane.
+    // The worktree classification wins: the chained segment is spliced out and
+    // re-attached as a fork onto the commit, while `foo` keeps the lane.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "wsref", StackState::InWorkspace, &["foo"]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        but_graph::init::Options {
+            worktrees: true,
+            ..standard_options()
+        },
+    )?
+    .validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  📙foo
+│ ◎  📙wsref[📁worktree-ref-at-applied-branch-wt]
+├─╯
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    assert_worktree_ref_is_fork(&graph, "wsref")?;
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo on fafd9d0 {0}
+    └── 📙:foo
+        └── ·e255adc (🏘️)
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_as_entrypoint_keeps_its_lane() -> anyhow::Result<()> {
+    // Viewing the graph from the worktree branch itself - like branch details
+    // for it would - keeps the ref addressable as a lane instead of forking it
+    // out from under the entrypoint.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &[]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let (wsref_id, wsref_ref) = id_at(&repo, "wsref");
+    let graph = Graph::from_commit_traversal(
+        wsref_id,
+        wsref_ref,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        but_graph::init::Options {
+            worktrees: true,
+            ..standard_options()
+        },
+    )?
+    .validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  👉wsref[📁worktree-ref-at-applied-branch-wt]
+◎  📙foo
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_at_remote_tracked_branch() -> anyhow::Result<()> {
+    // Both the applied branch sharing the commit and the worktree branch have
+    // remotes: hoisting `foo` must keep its remote linkage, and the pass must
+    // run after the remote improvements - otherwise those would re-name the
+    // anonymous owner from the refs left on the commit, or wire the worktree
+    // branch's remote through the fork, re-coupling it to the lane.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-remote-tracked-branch")?;
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* dd0cca8 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* e255adc (origin/wsref, origin/foo, wsref, foo) A
+* fafd9d0 (origin/main, main) init
+
+"#]]
+    );
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &[]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let options = || but_graph::init::Options {
+        worktrees: true,
+        ..standard_options()
+    };
+    let graph =
+        Graph::from_head(&repo, &*meta, default_project_meta(), &mut db, options())?.validated()?;
+    assert_worktree_ref_is_fork(&graph, "wsref")?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  👉📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+│ ◎  wsref[📁worktree-ref-at-remote-tracked-branch-wt]
+│ │ ◎  origin/foo
+├───╯
+│ │ ◎  origin/main
+│ │ │ ◎  origin/wsref
+├─────╯
+◎ │ │  📙foo <> origin/foo
+├─╯ │
+●   │  ·e255adc (⌂|🏘)
+├───╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡📙:foo <> origin/foo on fafd9d0 {0}
+    └── 📙:foo <> origin/foo
+        └── ❄️e255adc (🏘️)
+
+"#]]
+    );
+
+    // With `wsref` itself recorded as the stack branch, traversal names the
+    // commit-owning segment after it and the pass demotes it in place, moving
+    // the remote linkage onto the fork. The owner stays anonymous even though
+    // `foo`, with its own remote, is left on the commit - which is exactly what
+    // running after the remote improvements guarantees.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-remote-tracked-branch")?;
+    add_stack_with_segments(&mut meta, 0, "wsref", StackState::InWorkspace, &[]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let graph =
+        Graph::from_head(&repo, &*meta, default_project_meta(), &mut db, options())?.validated()?;
+    assert_worktree_ref_is_fork(&graph, "wsref")?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  foo
+│ ◎  👉📕gitbutler/workspace[🌳@repo]
+│ ●  ·dd0cca8 (⌂|🏘)
+├─╯
+│ ◎  📙wsref[📁worktree-ref-at-remote-tracked-branch-wt] <> origin/wsref
+├─╯
+│ ◎  origin/foo
+├─╯
+│ ◎  origin/main
+│ │ ◎  origin/wsref
+├───╯
+● │  ·e255adc (⌂|🏘)
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    snapbox::assert_data_eq!(
+        graph_workspace(&graph.into_workspace()?).to_string(),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on fafd9d0
+└── ≡:anon: on fafd9d0
+    └── :anon:
+        └── ·e255adc (🏘️) ►foo
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_beside_entrypoint_branch() -> anyhow::Result<()> {
+    // Viewing the graph from `foo` while the worktree branch shares its commit:
+    // extracting `foo`'s name into an empty in-lane segment must carry the
+    // entrypoint along, and the worktree branch still forks out.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &[]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let (foo_id, foo_ref) = id_at(&repo, "foo");
+    let graph = Graph::from_commit_traversal(
+        foo_id,
+        foo_ref,
+        &*meta,
+        default_project_meta(),
+        &mut db,
+        but_graph::init::Options {
+            worktrees: true,
+            ..standard_options()
+        },
+    )?
+    .validated()?;
+    assert_worktree_ref_is_fork(&graph, "wsref")?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  📕gitbutler/workspace[🌳@repo]
+●  ·dd0cca8 (⌂|🏘)
+◎  👉📙foo
+│ ◎  wsref[📁worktree-ref-at-applied-branch-wt]
+├─╯
+●  ·e255adc (⌂|🏘)
+│ ◎  origin/main
+├─╯
+◎  main <> origin/main
+●  🏁·fafd9d0 (⌂|🏘|✓)
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn worktree_ref_survives_metadata_normalization() -> anyhow::Result<()> {
+    let options = || but_graph::init::Options {
+        worktrees: true,
+        ..standard_options()
+    };
+    // As a dependent branch below `foo`: the projection hides `wsref`, but
+    // deriving metadata from the projection must not drop it from its stack -
+    // being checked out in a worktree is transient, not a workspace change.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "foo", StackState::InWorkspace, &["wsref"]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let ws = Graph::from_head(&repo, &*meta, default_project_meta(), &mut db, options())?
+        .validated()?
+        .into_workspace()?;
+    let md = ws
+        .metadata_from_projection()?
+        .expect("workspace metadata exists");
+    let stack = md
+        .stacks
+        .iter()
+        .find(|stack| {
+            stack
+                .branches
+                .iter()
+                .any(|branch| branch.ref_name.as_ref().shorten() == "foo")
+        })
+        .expect("foo's stack is recorded");
+    assert!(
+        stack
+            .branches
+            .iter()
+            .any(|branch| branch.ref_name.as_ref().shorten() == "wsref"),
+        "the worktree-checked-out branch stays recorded in its stack"
+    );
+    assert!(
+        stack.workspacecommit_relation.is_in_workspace(),
+        "the stack remains applied"
+    );
+
+    // As the only branch of its stack: no projected stack matches it at all,
+    // yet it must not be flipped to outside-the-workspace.
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("ws/worktree-ref-at-applied-branch")?;
+    add_stack_with_segments(&mut meta, 0, "wsref", StackState::InWorkspace, &[]);
+    db.worktree_meta_mut().mark_adopted()?;
+    let ws = Graph::from_head(&repo, &*meta, default_project_meta(), &mut db, options())?
+        .validated()?
+        .into_workspace()?;
+    let md = ws
+        .metadata_from_projection()?
+        .expect("workspace metadata exists");
+    let stack = md
+        .stacks
+        .iter()
+        .find(|stack| {
+            stack
+                .branches
+                .iter()
+                .any(|branch| branch.ref_name.as_ref().shorten() == "wsref")
+        })
+        .expect("the single-branch stack is still recorded");
+    assert!(
+        stack.workspacecommit_relation.is_in_workspace(),
+        "a stack whose only branch is checked out in a worktree remains applied"
     );
     Ok(())
 }

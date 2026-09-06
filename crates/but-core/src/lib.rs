@@ -133,9 +133,10 @@ pub const WORKSPACE_REF_NAME: &str = "refs/heads/gitbutler/workspace";
 /// check for the presence of workspace ref-metadata.
 ///
 /// TODO: no special handling by branch-name should be needed, it's all in the ref-metadata.
+///
+/// `but_db::worktrees` keeps a hand-copy of this to stay off but-core; change both.
 pub fn is_workspace_ref_name(ref_name: &FullNameRef) -> bool {
-    ref_name.as_bstr() == WORKSPACE_REF_NAME
-        || ref_name.as_bstr() == "refs/heads/gitbutler/integration"
+    ref_name == WORKSPACE_REF_NAME || ref_name == "refs/heads/gitbutler/integration"
 }
 
 /// A utility to extract the name of the remote from a remote tracking ref with `ref_name`,
@@ -483,7 +484,7 @@ pub struct ChangeState {
 }
 
 /// The status we can't handle, which always originated in the worktree.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 pub enum IgnoredWorktreeTreeChangeStatus {
     /// A conflicting entry in the index. The worktree state of the entry is unclear.
@@ -498,7 +499,7 @@ pub enum IgnoredWorktreeTreeChangeStatus {
 but_schemars::register_sdk_type!(IgnoredWorktreeTreeChangeStatus);
 
 /// A way to indicate that a path in the index isn't suitable for committing and needs to be dealt with.
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 pub struct IgnoredWorktreeChange {
     /// The worktree-relative path to the change.

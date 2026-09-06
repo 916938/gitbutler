@@ -34,6 +34,7 @@ import type {
 	TreeStats,
 	TreeChanges,
 	CommitDetails,
+	TargetCommitPage,
 	DiffSpec,
 	MoveChangesResult,
 	CommitCherryPickResult,
@@ -201,6 +202,16 @@ export const changesSelectors = changesAdapter.getSelectors();
 
 export const selectChangesByPaths = createSelectByIds<TreeChange>();
 
+function branchChangesInvalidations(headInfo?: RefInfo) {
+	if (!headInfo) return [invalidatesType(ReduxTag.BranchChanges)];
+
+	return headInfo.stacks.flatMap((stack) =>
+		stack.segments.flatMap((segment) =>
+			segment.refName ? [invalidatesItem(ReduxTag.BranchChanges, segment.refName.displayName)] : [],
+		),
+	);
+}
+
 export function buildStackEndpoints(build: BackendEndpointBuilder) {
 	return {
 		workspaceDetails: build.query<WorkspaceDetails, { projectId: string }>({
@@ -223,7 +234,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 				actionName: "Update Workspace",
 			},
 			query: (args) => args,
-			invalidatesTags: (_result, _error, args) => {
+			invalidatesTags: (result, _error, args) => {
 				if (args.dryRun) return [];
 
 				return [
@@ -231,7 +242,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 					invalidatesList(ReduxTag.WorktreeChanges),
 					invalidatesList(ReduxTag.Stacks),
 					invalidatesList(ReduxTag.StackDetails),
-					invalidatesList(ReduxTag.BranchChanges),
+					...branchChangesInvalidations(result?.workspaceState.headInfo),
 					invalidatesList(ReduxTag.BranchListing),
 					invalidatesType(ReduxTag.BaseBranchData),
 				];
@@ -392,7 +403,8 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 		>({
 			extraOptions: { command: "branch_diff" },
 			query: (args) => args,
-			providesTags: (_result, _error, { branch }) => providesItem(ReduxTag.BranchChanges, branch),
+			// Do not use providesItem: its LIST sentinel collides with the valid branch name "LIST".
+			providesTags: (_result, _error, { branch }) => [{ type: ReduxTag.BranchChanges, id: branch }],
 			transformResponse(rsp: TreeChanges) {
 				return {
 					changes: changesAdapter.addMany(changesAdapter.getInitialState(), rsp.changes),
@@ -435,7 +447,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 			}),
 			invalidatesTags: (_result, _error, { stackId }) => [
 				invalidatesList(ReduxTag.HeadSha),
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				invalidatesList(ReduxTag.WorktreeChanges),
 				...(stackId ? [invalidatesItem(ReduxTag.StackDetails, stackId)] : []),
 			],
@@ -523,7 +535,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 				dryRun: false,
 			}),
 			invalidatesTags: [
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				invalidatesList(ReduxTag.WorktreeChanges),
 				invalidatesList(ReduxTag.HeadSha),
 			],
@@ -551,7 +563,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 			transformResponse: normalizeCreateCommitOutcome,
 			invalidatesTags: [
 				invalidatesList(ReduxTag.WorktreeChanges),
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				invalidatesList(ReduxTag.HeadSha),
 			],
 		}),
@@ -650,7 +662,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 				return [
 					invalidatesList(ReduxTag.HeadSha),
 					invalidatesList(ReduxTag.WorktreeChanges),
-					invalidatesList(ReduxTag.BranchChanges),
+					invalidatesType(ReduxTag.BranchChanges),
 				];
 			},
 		}),
@@ -706,7 +718,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 			invalidatesTags: [
 				invalidatesList(ReduxTag.HeadSha),
 				invalidatesList(ReduxTag.WorktreeChanges), // Cherry-picking can cause conflicts
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				invalidatesList(ReduxTag.Stacks),
 				invalidatesList(ReduxTag.StackDetails),
 			],
@@ -737,7 +749,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 			invalidatesTags: [
 				invalidatesList(ReduxTag.HeadSha),
 				invalidatesList(ReduxTag.WorktreeChanges), // Moving commits can cause conflicts
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				invalidatesList(ReduxTag.Stacks),
 				invalidatesList(ReduxTag.StackDetails),
 			],
@@ -763,7 +775,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 			invalidatesTags: [
 				invalidatesList(ReduxTag.HeadSha),
 				invalidatesList(ReduxTag.WorktreeChanges), // Moving commits can cause conflicts
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				// Reordering empty branches in single-branch mode is metadata-only and doesn't move
 				// HEAD, so the stack/branch list must be invalidated explicitly to reflect the new order.
 				invalidatesList(ReduxTag.Stacks),
@@ -791,7 +803,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 				invalidatesList(ReduxTag.HeadSha),
 				invalidatesList(ReduxTag.WorktreeChanges), // Moving commits can cause conflicts
 				invalidatesList(ReduxTag.Stacks),
-				invalidatesList(ReduxTag.BranchChanges),
+				invalidatesType(ReduxTag.BranchChanges),
 				...(args.sourceStackId ? [invalidatesItem(ReduxTag.StackDetails, args.sourceStackId)] : []),
 			],
 		}),
@@ -804,12 +816,12 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 				actionName: "Land Branch",
 			},
 			query: (args) => args,
-			invalidatesTags: [
+			invalidatesTags: (result) => [
 				invalidatesList(ReduxTag.HeadSha),
 				invalidatesList(ReduxTag.WorktreeChanges),
 				invalidatesList(ReduxTag.Stacks),
 				invalidatesList(ReduxTag.StackDetails),
-				invalidatesList(ReduxTag.BranchChanges),
+				...branchChangesInvalidations(result?.workspace.headInfo),
 				invalidatesList(ReduxTag.BranchListing),
 				invalidatesType(ReduxTag.BaseBranchData),
 			],
@@ -927,7 +939,7 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 				projectId: string;
 			}
 		>({
-			extraOptions: { command: "canned_branch_name" },
+			extraOptions: { command: "branch_canned_name" },
 			query: (args) => args,
 		}),
 		normalizeBranchName: build.query<
@@ -940,17 +952,15 @@ export function buildStackEndpoints(build: BackendEndpointBuilder) {
 			query: (args) => args,
 		}),
 		targetCommits: build.query<
-			EntityState<Commit, string>,
+			TargetCommitPage,
 			{
 				projectId: string;
-				lastCommitId: string | undefined;
-				pageSize: number;
+				from: string | undefined;
+				limit: number;
 			}
 		>({
-			extraOptions: { command: "target_commits" },
+			extraOptions: { command: "workspace_target_commits" },
 			query: (args) => args,
-			transformResponse: (commits: Commit[]) =>
-				commitAdapter.addMany(commitAdapter.getInitialState(), commits),
 		}),
 		templates: build.query<string[], { projectId: string; forge: string }>({
 			extraOptions: { command: "pr_templates" },

@@ -298,7 +298,7 @@ pub(crate) fn apply(
     perm: &mut RepoExclusive,
 ) -> anyhow::Result<AppliedResolution> {
     let mut meta = ctx.meta()?;
-    let (repo, mut ws, db) = ctx.workspace_mut_and_db_with_perm(perm)?;
+    let (repo, mut ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
 
     // Narrow the sides: every resolved hunk's content goes into both side
     // trees, which the re-merge below sees as an identical change against the
@@ -362,7 +362,7 @@ pub(crate) fn apply(
         );
     }
 
-    let mut editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let (target_selector, mut commit) = editor.find_selectable_commit(request.commit_id)?;
     // Fully resolving in favor of the base can leave the commit with no
     // changes of its own — legitimate, but worth telling the user about.
@@ -373,7 +373,7 @@ pub(crate) fn apply(
         && match *commit.parents.as_slice() {
             [parent] => but_core::Commit::from_id(parent.attach(&repo))
                 .and_then(|parent| parent.tree_id_or_auto_resolution())
-                .is_ok_and(|parent_tree| parent_tree.detach() == merged_tree_id),
+                .is_ok_and(|parent_tree| parent_tree == merged_tree_id),
             _ => false,
         };
     if unresolved {
@@ -414,7 +414,7 @@ pub(crate) fn apply(
 
     let rebase = editor.rebase()?;
     let new_commit = rebase.lookup_pick(target_selector)?;
-    let workspace = WorkspaceState::from_successful_rebase_with_db(rebase, &repo, dry_run, &db)?;
+    let workspace = WorkspaceState::from_successful_rebase(rebase, &repo, dry_run)?;
 
     Ok(AppliedResolution {
         new_commit,

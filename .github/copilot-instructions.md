@@ -43,7 +43,7 @@ tests.
 ### Prerequisites
 
 1. **Rust**: as specified in `rust-toolchain.toml`. Install via rustup.
-2. **Node.js**: as specified in `package.json`. Use the version in `.nvmrc` (lts/jod, which resolves to Node 22).
+2. **Node.js**: as specified in `package.json`. Use the version in `.nvmrc` (lts/krypton, which resolves to Node 24).
 3. **pnpm**: as specified in `package.json`. Enabled via corepack. Run `corepack enable` in the project root.
 4. **System Dependencies**: Tauri requires platform-specific dependencies (see DEVELOPMENT.md for details).
 
@@ -344,3 +344,10 @@ corepack prepare pnpm@10.17.0 --activate
 9. **Security**: Check dependencies for vulnerabilities before adding them
 10. **Code marked for refactoring**: Be extra careful with crates in the "Code Hitlist" section
 11. **but CLI happy path testing only**: CLI tests are expensive and should be limited to what really matters.
+
+## Review Guidelines
+
+Follow these guidelines when reviewing code.
+
+- Do not report type errors. CI will catch those.
+- Don't review formatting such as commas, indentation, etc

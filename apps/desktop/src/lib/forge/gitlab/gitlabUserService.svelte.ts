@@ -1,4 +1,5 @@
-import { providesItem, providesList, ReduxTag } from "$lib/state/tags";
+import { getUserErrorCode } from "$lib/backend/ipc";
+import { invalidatesList, providesItem, providesList, ReduxTag } from "$lib/state/tags";
 import { InjectionToken } from "@gitbutler/core/context";
 import type { SecretsService } from "$lib/secrets/secretsService";
 import type { BackendApi } from "$lib/state/backendApi";
@@ -10,6 +11,17 @@ import type {
 } from "@gitbutler/but-sdk";
 
 export const GITLAB_USER_SERVICE = new InjectionToken<GitLabUserService>("GitLabUserService");
+
+export function gitLabEnterprisePatError(error: unknown): string {
+	switch (getUserErrorCode(error)) {
+		case "GitLabUnauthorized":
+			return "The token was not accepted. Check that it is correct, active, and issued by this GitLab host.";
+		case "GitLabForbidden":
+			return "GitLab refused access. Check the token scopes and account permissions, or ask your administrator about instance policies.";
+		default:
+			return "Invalid token or host";
+	}
+}
 
 export function isSameGitLabAccountIdentifier(
 	a: GitlabAccountIdentifier,
@@ -155,7 +167,11 @@ function injectBackendEndpoints(api: BackendApi) {
 				query: (account) => ({
 					account,
 				}),
-				invalidatesTags: [providesList(ReduxTag.GitLabUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitLabUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 			getGitLabUser: build.query<
 				GitlabAuthenticatedUserSensitive | null,
@@ -182,7 +198,11 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Clear All GitLab Accounts",
 				},
 				query: () => ({}),
-				invalidatesTags: [providesList(ReduxTag.GitLabUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitLabUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 			storeGitLabPat: build.mutation<GitlabAuthStatusResponse, { accessToken: string }>({
 				extraOptions: {
@@ -190,7 +210,11 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Store GitLab PAT",
 				},
 				query: (args) => args,
-				invalidatesTags: [providesList(ReduxTag.GitLabUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitLabUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 			storeGitLabEnterprisePat: build.mutation<
 				GitlabAuthStatusResponse,
@@ -201,7 +225,11 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Store GitLab Enterprise PAT",
 				},
 				query: (args) => args,
-				invalidatesTags: [providesList(ReduxTag.GitLabUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitLabUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 		}),
 	});

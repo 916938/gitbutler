@@ -8,7 +8,7 @@ import {
 import { Annotation } from "#ui/components/Annotation.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
-import type { FileParent } from "#ui/operands.ts";
+import type { FileParent } from "#ui/addresses.ts";
 import { useHotkey } from "@tanstack/react-hotkeys";
 import { useRef, useState, type FC, type RefObject } from "react";
 
@@ -21,7 +21,7 @@ type Props = {
 	annotationsByPath: LocalAnnotationsByPath;
 	/** Set to an annotation id to focus its textarea on mount (freshly created comments). */
 	focusAnnotationIdRef: RefObject<string | null>;
-	selectionScopeRef: RefObject<HTMLDivElement | null>;
+	focusScopeRef: RefObject<HTMLDivElement | null>;
 };
 
 /** One backend-persisted comment rendered inline in the diff, with its edit and action surface. */
@@ -57,17 +57,17 @@ export const AnnotationCard: FC<Props> = (p) => {
 		// handler would persist it immediately before the archive mutation.
 		textareaRef.current?.form?.reset();
 		archiveComment({ projectId: p.projectId, id: annotation.id });
-		p.selectionScopeRef.current?.focus({ focusVisible: false });
+		p.focusScopeRef.current?.focus({ focusVisible: false });
 	};
 
 	const saveAndRefocus = (body: string) => {
 		persistBody(body);
 		setIsDraft(false);
-		p.selectionScopeRef.current?.focus({ focusVisible: false });
+		p.focusScopeRef.current?.focus({ focusVisible: false });
 	};
 
 	const copyAll = () => {
-		const forms = p.selectionScopeRef.current?.querySelectorAll<HTMLFormElement>(
+		const forms = p.focusScopeRef.current?.querySelectorAll<HTMLFormElement>(
 			"form[data-local-annotation]",
 		);
 
@@ -77,7 +77,7 @@ export const AnnotationCard: FC<Props> = (p) => {
 				.flatMap((form) =>
 					new FormData(form)
 						.entries()
-						.flatMap(([id, body]) => (typeof body === "string" ? [[id, body]] : [])),
+						.filter((pair): pair is [string, string] => typeof pair[1] === "string"),
 				),
 		);
 

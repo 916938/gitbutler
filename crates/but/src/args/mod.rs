@@ -120,7 +120,8 @@ pub enum HelpTopic {
     /// obvious identifiers like full commit hashes and entire branch names are viable CLI IDs,
     /// there are also various shorter identifiers that can be used in place of the full names.
     ///
-    /// In general, `but status` will show all currently available CLI IDs in front of the "thing".
+    /// In general, `but status` or `but diff` will show currently available CLI IDs in front of
+    /// the "thing".
     ///
     /// Typical CLI IDs include:
     ///
@@ -135,9 +136,11 @@ pub enum HelpTopic {
     /// * **Uncommitted file:** A path-derived ID that is typically 1-3 characters
     /// * **Uncommitted hunk:** `<uncommitted_file_cli_id>:<hunk_cli_id>`
     ///     - Run `but diff` to show all current uncommitted hunks and their IDs
-    /// * **Uncommitted area:** Always `zz`
+    /// * **Uncommitted area:** Always `@`
     /// * **Committed file:** `<commit_cli_id>:<file_cli_id>`
     ///     - Run `but status -f` to show committed files
+    /// * **Committed hunk:** `<commit_cli_id>:<file_cli_id>:<hunk_cli_id>`
+    ///     - Run `but diff <commit_cli_id>` to show committed hunks and their IDs
     ///
     /// Many CLI IDs depend on the context and may change if the context changes, such as when new
     /// data is written to files, commits are made or rearranged and branches are created or
@@ -223,30 +226,9 @@ pub enum Subcommands {
         short: bool,
     },
 
-    /// Displays the diff of changes in the repo.
-    ///
-    /// Without any arguments, it shows the diff of all uncommitted changes.
-    /// Optionally, provide one CLI ID to show the diff specific to:
-    /// - an uncommitted file
-    /// - a branch
-    /// - an entire stack
-    /// - a commit
-    /// - a file change within a commit
-    ///
-    /// `TARGET` accepts at most one entity. To show several entities, run this command once per
-    /// entity.
     #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    Diff {
-        /// The CLI ID of one entity to show the diff for
-        target: Option<String>,
-        /// Open an interactive TUI diff viewer
-        #[clap(long = "tui", conflicts_with = "no_tui")]
-        tui: bool,
-        /// Disable the interactive TUI diff viewer (overrides but.ui.tui config)
-        #[clap(long = "no-tui", conflicts_with = "tui")]
-        no_tui: bool,
-    },
+    Diff(diff::Platform),
 
     /// Shows detailed information about a commit or branch.
     ///
@@ -306,8 +288,7 @@ pub enum Subcommands {
 
     #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    #[clap(hide = true, name = "_diff2")]
-    _Diff2(diff2::Platform),
+    Split(split::Platform),
 
     #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
@@ -336,6 +317,8 @@ pub enum Subcommands {
     ///
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Branch(branch::Platform),
+
+    Worktree(worktree::Platform),
 
     /// Land a branch directly onto the target branch.
     ///
@@ -403,10 +386,12 @@ pub enum Subcommands {
     #[clap(hide = true, name = "_comment")]
     _Comment(comment::Platform),
 
-    /// Resolve conflicts in a commit.
+    /// Resolve conflicts in a commit or in uncommitted files.
     ///
     /// When a commit is in a conflicted state (marked with conflicts during rebase),
     /// use this command to enter resolution mode, resolve the conflicts, and finalize.
+    /// Uncommitted files marked `{conflicted}` by `but status` are resolved with
+    /// `but resolve <path>...` once they hold the desired content (or were deleted).
     ///
     /// ## Workflow
     ///
@@ -427,8 +412,10 @@ pub enum Subcommands {
         /// Subcommand to run (defaults to entering resolution mode)
         #[clap(subcommand)]
         cmd: Option<resolve::Subcommands>,
-        /// Commit ID to enter resolution mode for (when no subcommand is provided)
-        commit: Option<String>,
+        /// A commit to enter resolution mode for, or one or more conflicted uncommitted
+        /// files (as listed by `but status`) to mark as resolved with their current
+        /// worktree content (when no subcommand is provided)
+        targets: Vec<String>,
         /// Resolve the conflicts with the configured AI model and apply the result.
         ///
         /// With a commit ID this resolves only that commit; without one it
@@ -445,6 +432,10 @@ pub enum Subcommands {
     #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Apply(apply::Platform),
+
+    #[cfg(feature = "legacy")]
+    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
+    Open(open::Platform),
 
     /// Push changes in a branch to remote.
     ///
@@ -492,7 +483,6 @@ pub enum Subcommands {
     /// will prompt you to select a branch to create a PR for.
     ///
     #[cfg(feature = "legacy")]
-    #[clap(visible_alias = "review")]
     #[clap(visible_alias = "mr")]
     Pr(forge::pr::Platform),
 
@@ -535,12 +525,13 @@ pub enum Subcommands {
     /// This will recreate the commit with the new message and then rebase any
     /// dependent commits on top of it.
     ///
-    /// You can also use `but reword <branch-id>` to rename the branch.
+    /// You can also use `but reword <branch-id>` to rename the branch, or
+    /// `but reword <anonymous-branch-id>` to give an anonymous branch a name.
     ///
     #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Reword {
-        /// Commit ID to edit the message for, or branch ID to rename
+        /// Commit ID to edit, branch ID to rename, or anonymous branch ID to name
         target: CliIdArg,
         /// The new commit message or branch name. If not provided, opens an editor.
         #[clap(short = 'm', long = "message", conflicts_with = "fix_formatting")]
@@ -686,7 +677,7 @@ pub enum Subcommands {
     #[clap(hide = true, name = "_open")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     _Open {
-        /// One or more uncommitted files or hunks to open.
+        /// One or more files or hunks to open.
         #[clap(num_args = 1..)]
         sources: Vec<CliIdArg>,
         /// The program to use for opening.
@@ -829,50 +820,10 @@ pub enum Subcommands {
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Pick(pick::Platform),
 
-    /// Switch to a local branch, workspace branch ID, or the GitButler workspace.
-    ///
-    /// ## Examples
-    ///
-    /// Switch to a branch:
-    ///
-    /// ```text
-    /// but switch my-feature
-    /// ```
-    ///
-    /// Switch back to the GitButler workspace:
-    ///
-    /// ```text
-    /// but switch --workspace
-    /// ```
-    ///
-    /// Create a new branch at the project target and switch to it:
-    ///
-    /// ```text
-    /// but switch --new
-    /// ```
-    ///
-    /// Create a named branch at the project target and switch to it:
-    ///
-    /// ```text
-    /// but switch --new my-feature
-    /// ```
+    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    #[clap(hide = true, group(
-        clap::ArgGroup::new("switch_target")
-            .args(["target", "workspace", "new"])
-            .required(true)
-            .multiple(true)
-    ))]
-    Switch {
-        /// Branch name, full local branch ref, workspace CLI branch ID, or new branch name with --new
-        target: Option<CliIdArg>,
-        /// Switch back to gitbutler/workspace
-        #[clap(long, short = 'w', conflicts_with_all = &["target", "new"])]
-        workspace: bool,
-        /// Create a branch at the project target and switch to it
-        #[clap(long = "new", short = 'n')]
-        new: bool,
-    },
+    #[clap(hide = true)]
+    Switch(r#switch::Platform),
 
     /// Manage AI agent skills for GitButler.
     ///
@@ -942,20 +893,6 @@ pub enum Subcommands {
         /// Path to the file to edit (created if it doesn't exist)
         file: String,
     },
-
-    /// Commands for managing worktrees.
-    ///
-    /// GitButler worktrees allow you to have multiple working directories
-    /// associated with a single Git repository, each tied to a specific
-    /// GitButler branch.
-    ///
-    /// This can be useful for working on multiple versions of a branch at
-    /// the same time, or for isolating changes in different workspaces.
-    ///
-    #[cfg(feature = "legacy")]
-    #[clap(hide = true)]
-    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    Worktree(worktree::Platform),
 
     /// Trigger a refresh of remote data fetching from the remote, Pull Requests, and CI status.
     ///
@@ -1077,12 +1014,14 @@ pub mod comment;
 pub mod commit;
 pub mod config;
 #[cfg(feature = "legacy")]
-pub mod diff2;
+pub mod diff;
 #[cfg(feature = "legacy")]
 pub mod discard;
 pub mod mcp;
 #[cfg(feature = "legacy")]
 pub mod r#move;
+#[cfg(feature = "legacy")]
+pub mod open;
 #[cfg(feature = "legacy")]
 pub mod pick;
 #[cfg(feature = "legacy")]
@@ -1091,7 +1030,11 @@ pub mod redo;
 pub mod reword2;
 pub mod skill;
 #[cfg(feature = "legacy")]
+pub mod split;
+#[cfg(feature = "legacy")]
 pub mod squash;
+#[cfg(feature = "legacy")]
+pub mod r#switch;
 #[cfg(feature = "legacy")]
 pub mod tui;
 #[cfg(feature = "legacy")]
@@ -1136,45 +1079,8 @@ pub mod push;
 #[cfg(feature = "legacy")]
 pub mod resolve;
 
-pub mod worktree {
-    #[derive(Debug, clap::Parser)]
-    pub struct Platform {
-        #[clap(subcommand)]
-        pub cmd: Subcommands,
-    }
-
-    #[derive(Debug, clap::Subcommand)]
-    pub enum Subcommands {
-        /// Create a new worktree from a reference
-        New {
-            /// The reference (branch, commit, etc.) to create the worktree from
-            reference: String,
-        },
-        /// List all worktrees
-        List,
-        /// Integrate a worktree
-        Integrate {
-            /// The path or name of the worktree to integrate
-            path: String,
-            /// The target reference to integrate into (defaults to the reference the worktree was created from)
-            #[clap(long)]
-            target: Option<String>,
-            /// Perform a dry run without making changes
-            #[clap(long)]
-            dry: bool,
-        },
-        /// Destroy worktree(s)
-        Destroy {
-            /// The path to the worktree to destroy, or a reference to destroy all worktrees created from it
-            target: String,
-            /// Treat the target as a reference instead of a path
-            #[clap(long)]
-            reference: bool,
-        },
-    }
-}
-
 pub mod branch;
+pub mod worktree;
 
 /// Find the subcommand token and its index in raw argv, skipping root options.
 pub(crate) fn find_subcommand(args: &[std::ffi::OsString]) -> Option<(usize, &std::ffi::OsString)> {

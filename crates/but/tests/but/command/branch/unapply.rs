@@ -9,6 +9,35 @@ use crate::{
 };
 
 #[test]
+fn anonymous_segment_reports_recovery_workflow() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+
+    env.but("unapply g0")
+        .assert()
+        .failure()
+        .stderr_eq(str![[r#"
+Error: Cannot operate on anonymous branch 'g0'
+
+Hint: Name it with `but reword g0` first! Note that the short ID is likely to change when the branch is named.
+
+"#]])
+        .stdout_eq(str![]);
+
+    let anonymous_commit = env.invoke_git("rev-parse gitbutler/workspace^");
+    env.but("branch new recovered --above sxu")
+        .assert()
+        .success();
+    env.but("unapply recovered").assert().success();
+    assert_eq!(
+        env.invoke_git("rev-parse recovered"),
+        anonymous_commit,
+        "recovery branch should preserve the anonymous commit"
+    );
+}
+
+#[test]
 fn single_branch() {
     let env = Sandbox::open_or_init_scenario_with_target_and_default_settings("one-stack");
     snapbox::assert_data_eq!(
@@ -58,9 +87,8 @@ Unapplied stack with 'feature-branch' from workspace
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 9f9d5a6 (feature-branch) Add feature
-| * 0bbfbfd (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-| * 9477ae7 (A) add A
+* 9477ae7 (HEAD -> A) add A
+| * 9f9d5a6 (feature-branch) Add feature
 |/  
 * 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
@@ -100,9 +128,8 @@ fn unapply_with_json_output() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 9f9d5a6 (feature-branch) Add feature
-| * 0bbfbfd (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-| * 9477ae7 (A) add A
+* 9477ae7 (HEAD -> A) add A
+| * 9f9d5a6 (feature-branch) Add feature
 |/  
 * 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
@@ -243,8 +270,7 @@ Unapplied stack with 'remote-feature' from workspace
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 0bbfbfd (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 9477ae7 (A) add A
+* 9477ae7 (HEAD -> A) add A
 | * ba02e5f (origin/remote-feature, remote-feature) Add remote feature
 |/  
 * 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
@@ -256,6 +282,10 @@ Unapplied stack with 'remote-feature' from workspace
 #[test]
 fn concurrent_unapply_of_independent_branches_succeeds() {
     let env = Sandbox::open_or_init_scenario_with_target_and_default_settings("one-stack");
+    // Keep the managed workspace: in single-branch mode unapply would check out a plain branch.
+    env.but("config feature single-branch disable")
+        .assert()
+        .success();
     env.setup_metadata(&["A"]);
 
     create_local_branch_with_commit(&env, "feature-branch-a");

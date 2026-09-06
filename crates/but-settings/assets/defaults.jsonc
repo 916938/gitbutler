@@ -3,6 +3,8 @@
 	"contextLines": 3,
 	// Whether the user has passed the onboarding flow.
 	"onboardingComplete": false,
+	// Whether the CLI shows agent skill installation and freshness notices.
+	"agentSkillNotices": true,
 	"telemetry": {
 		// Whether the anonymous metrics are enabled.
 		"appMetricsEnabled": true,
@@ -19,8 +21,6 @@
 		"oauthClientId": "cd51880daa675d9e6452"
 	},
 	"featureFlags": {
-		/// Use the V3 unapply compatibility mode that keeps workspace commits unless deleting the workspace ref.
-		"unapplyV3Pgm": false,
 		/// Enable single branch mode.
 		"singleBranch": false,
 		/// Control how the filesystem watch should be established.

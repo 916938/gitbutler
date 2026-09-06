@@ -4,7 +4,7 @@ use serde::Serialize;
 use crate::{
     CliId, CliResult, IdMap,
     args::atoms::CliIdArg,
-    id::{CommitId, CommittedFileId},
+    id::{CommitId, CommittedFileId, CommittedHunk},
     theme::Theme,
     utils::{CliOutput, CliOutputHuman, WriteWithUtils},
 };
@@ -35,10 +35,21 @@ enum Resource {
         commit_id: String,
         path: String,
     },
+    CommittedHunk {
+        commit_id: String,
+        path: String,
+        hunk_header: String,
+    },
     PathPrefix {
         path: String,
     },
     Uncommitted,
+    Worktree {
+        name: String,
+    },
+    WorktreeUncommitted {
+        name: String,
+    },
     Stack {
         stack_id: String,
     },
@@ -65,8 +76,19 @@ impl std::fmt::Display for Resource {
             Resource::CommittedFile { commit_id, path } => {
                 write!(f, "committed file: {commit_id} {path}")
             }
+            Resource::CommittedHunk {
+                commit_id,
+                path,
+                hunk_header,
+            } => {
+                write!(f, "committed hunk: {commit_id} {path} {hunk_header}")
+            }
             Resource::PathPrefix { path } => write!(f, "path prefix: {path}"),
             Resource::Uncommitted => f.write_str("uncommitted area"),
+            Resource::Worktree { name } => write!(f, "worktree: {name}"),
+            Resource::WorktreeUncommitted { name } => {
+                write!(f, "worktree uncommitted area: {name}")
+            }
             Resource::Stack { stack_id } => write!(f, "stack: {stack_id}"),
         }
     }
@@ -113,6 +135,12 @@ pub fn handle(ctx: &but_ctx::Context, cli_id: CliIdArg) -> CliResult<ExpandOutco
     let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
     let repo = ctx.repo.get()?;
     let matches = cli_id.parse(&repo, &id_map)?;
+    if let Some(segment) = matches.iter().find_map(|id| match id {
+        CliId::AnonymousSegment(segment) => Some(segment),
+        _ => None,
+    }) {
+        return Err(crate::args::atoms::anonymous_segment_error(&segment.id));
+    }
     let resources = matches
         .into_iter()
         .flat_map(resources_from_cli_id)
@@ -139,6 +167,9 @@ fn resources_from_cli_id(cli_id: CliId) -> Vec<Resource> {
             short_id: branch.id,
             name: branch.name,
         }],
+        CliId::AnonymousSegment(_) => {
+            unreachable!("anonymous segments are rejected before resource conversion")
+        }
         CliId::UncommittedHunkOrFile(uncommitted) if uncommitted.is_entire_file => {
             vec![Resource::UncommittedFile {
                 path: uncommitted.hunks.first().hunk.path.to_string(),
@@ -165,8 +196,28 @@ fn resources_from_cli_id(cli_id: CliId) -> Vec<Resource> {
             commit_id: commit_id.to_string(),
             path: path.to_string(),
         }],
+        CliId::CommittedHunk(CommittedHunk {
+            committed_file: CommittedFileId {
+                commit_id, path, ..
+            },
+            hunk,
+            ..
+        }) => vec![Resource::CommittedHunk {
+            commit_id: commit_id.to_string(),
+            path: path.to_string(),
+            hunk_header: hunk
+                .hunk_header
+                .map(format_hunk_header)
+                .unwrap_or_else(|| "<no hunk header>".to_string()),
+        }],
         CliId::PathPrefix { id, .. } => vec![Resource::PathPrefix { path: id }],
         CliId::Uncommitted { .. } => vec![Resource::Uncommitted],
+        CliId::Worktree { name, .. } => vec![Resource::Worktree {
+            name: name.to_string(),
+        }],
+        CliId::WorktreeUncommitted { name, .. } => vec![Resource::WorktreeUncommitted {
+            name: name.to_string(),
+        }],
         CliId::Stack { stack_id, .. } => vec![Resource::Stack {
             stack_id: stack_id.to_string(),
         }],

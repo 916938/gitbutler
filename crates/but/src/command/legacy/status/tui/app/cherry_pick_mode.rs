@@ -42,7 +42,9 @@ impl ModeRender for CherryPickMode {
             && !self.source.contains(target)
         {
             self.insert_side.into()
-        } else if matches!(data, StatusOutputLineData::Branch { .. }) {
+        } else if matches!(data, StatusOutputLineData::Branch { .. })
+            || matches!(data, StatusOutputLineData::Worktree { .. })
+        {
             ExtensionDirection::Below
         } else {
             return None;
@@ -153,11 +155,15 @@ impl App {
 
                     let source = match &**selection {
                         CliId::Commit { commit, .. } => CherryPickSource::Commit(commit.clone()),
-                        CliId::UncommittedHunkOrFile(..)
+                        CliId::AnonymousSegment(..)
+                        | CliId::UncommittedHunkOrFile(..)
                         | CliId::PathPrefix { .. }
                         | CliId::CommittedFile { .. }
+                        | CliId::CommittedHunk { .. }
                         | CliId::Branch(..)
                         | CliId::Uncommitted { .. }
+                        | CliId::Worktree { .. }
+                        | CliId::WorktreeUncommitted { .. }
                         | CliId::Stack { .. } => return,
                     };
 
@@ -202,33 +208,50 @@ impl App {
         ctx: &mut Context,
         messages: &mut Vec<Message>,
     ) -> anyhow::Result<()> {
-        self.cherry_pick_confirm_with(ctx, messages, |commits, target, insert_side| match target {
-            CliId::Branch(branch_id) => {
-                let name = Category::LocalBranch.to_full_name(&*branch_id.name)?;
-                Ok(Some(PickOperation {
+        self.cherry_pick_confirm_with(ctx, messages, |ctx, commits, target, insert_side| {
+            match target {
+                CliId::Branch(branch_id) => {
+                    let name = Category::LocalBranch.to_full_name(&*branch_id.name)?;
+                    Ok(Some(PickOperation {
+                        sources: commits,
+                        commit_op: CommitOperation::CommitAt(CommitAtOperation {
+                            target: CommitRelativeToTarget::BranchTip { name },
+                        }),
+                        order_commits_by_parentage: true,
+                    }))
+                }
+                CliId::Commit { commit: target, .. } => Ok(Some(PickOperation {
                     sources: commits,
                     commit_op: CommitOperation::CommitAt(CommitAtOperation {
-                        target: CommitRelativeToTarget::BranchTip { name },
+                        target: CommitRelativeToTarget::Commit {
+                            commit: target.clone(),
+                            side: insert_side.into(),
+                        },
                     }),
                     order_commits_by_parentage: true,
-                }))
-            }
-            CliId::Commit { commit: target, .. } => Ok(Some(PickOperation {
-                sources: commits,
-                commit_op: CommitOperation::CommitAt(CommitAtOperation {
-                    target: CommitRelativeToTarget::Commit {
-                        commit: target.clone(),
-                        side: insert_side.into(),
-                    },
-                }),
-                order_commits_by_parentage: true,
-            })),
+                })),
+                CliId::Worktree { name, .. } => {
+                    let repo = ctx.repo.get()?;
+                    let name = crate::utils::worktrees::worktree_branch(&repo, name.as_ref())?;
 
-            CliId::UncommittedHunkOrFile(..)
-            | CliId::PathPrefix { .. }
-            | CliId::CommittedFile { .. }
-            | CliId::Uncommitted { .. }
-            | CliId::Stack { .. } => Ok(None),
+                    Ok(Some(PickOperation {
+                        sources: commits,
+                        commit_op: CommitOperation::CommitAt(CommitAtOperation {
+                            target: CommitRelativeToTarget::BranchTip { name },
+                        }),
+                        order_commits_by_parentage: true,
+                    }))
+                }
+
+                CliId::AnonymousSegment(..)
+                | CliId::UncommittedHunkOrFile(..)
+                | CliId::PathPrefix { .. }
+                | CliId::CommittedFile { .. }
+                | CliId::CommittedHunk(..)
+                | CliId::Uncommitted { .. }
+                | CliId::WorktreeUncommitted { .. }
+                | CliId::Stack { .. } => Ok(None),
+            }
         })
     }
 
@@ -237,7 +260,7 @@ impl App {
         ctx: &mut Context,
         messages: &mut Vec<Message>,
     ) -> anyhow::Result<()> {
-        self.cherry_pick_confirm_with(ctx, messages, |commits, target, _| match target {
+        self.cherry_pick_confirm_with(ctx, messages, |_, commits, target, _| match target {
             CliId::Branch(branch_id) => {
                 let name = Category::LocalBranch.to_full_name(&*branch_id.name)?;
                 Ok(Some(PickOperation {
@@ -251,11 +274,15 @@ impl App {
                     order_commits_by_parentage: true,
                 }))
             }
-            CliId::Commit { .. }
+            CliId::AnonymousSegment(..)
+            | CliId::Commit { .. }
             | CliId::UncommittedHunkOrFile(..)
             | CliId::PathPrefix { .. }
             | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
             | CliId::Uncommitted { .. }
+            | CliId::Worktree { .. }
+            | CliId::WorktreeUncommitted { .. }
             | CliId::Stack { .. } => Ok(None),
         })
     }
@@ -267,7 +294,12 @@ impl App {
         make_pick_operation: F,
     ) -> anyhow::Result<()>
     where
-        F: FnOnce(Vec<ObjectId>, &CliId, InsertSide) -> anyhow::Result<Option<PickOperation>>,
+        F: FnOnce(
+            &mut Context,
+            Vec<ObjectId>,
+            &CliId,
+            InsertSide,
+        ) -> anyhow::Result<Option<PickOperation>>,
     {
         let Mode::CherryPick(CherryPickMode {
             source,
@@ -297,7 +329,7 @@ impl App {
             CherryPickSource::Commit(commit) => Vec::from([commit.commit_id]),
         };
 
-        let Some(pick_operation) = make_pick_operation(commits, target, *insert_side)? else {
+        let Some(pick_operation) = make_pick_operation(ctx, commits, target, *insert_side)? else {
             return Ok(());
         };
 

@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context as _, bail};
 use but_core::{RefMetadata, is_workspace_ref_name, ref_metadata};
-use gix::{hashtable::hash_map::Entry, reference::Category, traverse::commit::Either};
+use gix::{reference::Category, traverse::commit::Either};
 use petgraph::{Direction, prelude::EdgeRef};
 
 use crate::{
@@ -329,27 +329,6 @@ pub fn replace_queued_segments(queue: &mut Queue, find: SegmentIndex, replace: S
         if cmp == find {
             *instruction_to_replace = instruction_to_replace.with_replaced_sidx(replace);
         }
-    }
-}
-
-pub fn swap_queued_segments(queue: &mut Queue, a: SegmentIndex, b: SegmentIndex) {
-    for instruction_to_replace in queue.iter_mut().map(|(_, _, instruction, _)| instruction) {
-        let cmp = instruction_to_replace.segment_idx();
-        if cmp == a {
-            *instruction_to_replace = instruction_to_replace.with_replaced_sidx(b);
-        } else if cmp == b {
-            *instruction_to_replace = instruction_to_replace.with_replaced_sidx(a);
-        }
-    }
-}
-
-pub fn swap_commits_and_connections(graph: &mut PetGraph, a: SegmentIndex, b: SegmentIndex) {
-    {
-        let (a, b) = graph.index_twice_mut(a, b);
-        std::mem::swap(&mut a.commits, &mut b.commits);
-    }
-    if graph.edges(a).next().is_some() || graph.edges(b).next().is_some() {
-        todo!("swap connections of nodes as well")
     }
 }
 
@@ -1010,44 +989,16 @@ pub fn possibly_split_occupied_segment(
     limit: Limit,
     parent_order: u32,
 ) -> anyhow::Result<()> {
-    let Entry::Occupied(mut existing_sidx) = seen.entry(id) else {
+    // `src` runs into the segment that already owns `id`. That segment keeps its commits,
+    // split below `id` if `id` isn't its first commit, and `src` is connected on top of it.
+    let Some(mut bottom_sidx) = seen.get(&id).copied() else {
         bail!("BUG: Can only work with occupied entries")
     };
-    let dst_sidx = *existing_sidx.get();
-    let (top_sidx, mut bottom_sidx) =
-        // If a normal branch walks into a workspace branch, put the workspace branch on top
-        // so it doesn't own the existing commit.
-        if graph[dst_sidx].workspace_metadata().is_some() &&
-            graph[src_sidx].ref_name()
-                .and_then(|rn| rn.category()).is_some_and(|c| matches!(c, Category::LocalBranch)) {
-            // `dst` is basically swapping with `src`, so must swap commits and connections.
-            swap_commits_and_connections(&mut graph.inner, dst_sidx, src_sidx);
-            swap_queued_segments(next, dst_sidx, src_sidx);
-
-            // Assure the first commit doesn't name the new owner segment.
-            {
-                let s: &mut Segment = &mut graph[src_sidx];
-                if let Some(c) = s.commits.first_mut() {
-                    c.refs.retain(|ri| Some(&ri.ref_name) != s.ref_info.as_ref().map(|rn| &rn.ref_name))
-                }
-                // Update the commit-ownership of the connecting commit, but also
-                // of all other commits in the segment.
-                existing_sidx.insert(src_sidx);
-                for commit_id in s.commits.iter().skip(1).map(|c| c.id) {
-                    seen.entry(commit_id).insert(src_sidx);
-                }
-            }
-            (dst_sidx, src_sidx)
-        } else {
-            // `src` naturally runs into destination, so nothing needs to be done
-            // except for connecting both. Commit ownership doesn't change.
-            (src_sidx, dst_sidx)
-        };
-    let top_cidx = graph[top_sidx].last_commit_index();
+    let top_cidx = graph[src_sidx].last_commit_index();
     let mut bottom_cidx = graph[bottom_sidx].commit_index_of(id).with_context(|| {
         format!(
             "BUG: Didn't find commit {id} in segment {bottom_sidx}",
-            bottom_sidx = dst_sidx.index(),
+            bottom_sidx = bottom_sidx.index(),
         )
     })?;
 
@@ -1059,8 +1010,7 @@ pub fn possibly_split_occupied_segment(
         // maybe all this can be simpler?
         let standin = {
             let s = &graph[src_sidx];
-            (top_sidx == src_sidx
-                && s.commits.is_empty()
+            (s.commits.is_empty()
                 && s.ref_info.is_some()
                 && graph
                     .neighbors_directed(src_sidx, Direction::Incoming)
@@ -1079,9 +1029,9 @@ pub fn possibly_split_occupied_segment(
     }
 
     // Standins will cause this, avoid self-connection.
-    if top_sidx != bottom_sidx {
+    if src_sidx != bottom_sidx {
         graph.connect_segments_with_ids(
-            top_sidx,
+            src_sidx,
             top_cidx,
             None,
             bottom_sidx,
@@ -1091,7 +1041,7 @@ pub fn possibly_split_occupied_segment(
         );
     }
     let top_flags = top_cidx
-        .map(|cidx| graph[top_sidx].commits[cidx].flags)
+        .map(|cidx| graph[src_sidx].commits[cidx].flags)
         .unwrap_or_default();
     let bottom_flags = graph[bottom_sidx].commits[bottom_cidx].flags;
     let new_flags = propagated_flags | top_flags | bottom_flags;

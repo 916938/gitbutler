@@ -84,7 +84,7 @@ fn uncommitted_file() {
         .stdout_eq(snapbox::str![[r#"
 Found 1 changed file to absorb:
 
-Absorbed to commit: 1 a.txt
+Absorbed to commit: pxx a.txt
   (files locked to commit due to hunk range overlap)
     a.txt @1,4 +1,4
     a.txt @6,4 +6,4
@@ -141,22 +141,29 @@ fn uncommitted_hunk() {
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-──────────╮
-nk:2 a.txt│
-──────────╯
-   1  │-first
-     1│+firsta
-   2 2│ line
-   3 3│ line
-   4 4│ line
-──────────╮
-nk:e a.txt│
-──────────╯
-    6  6│ line
-    7  7│ line
-    8  8│ line
-    9   │-last
-       9│+lasta
+────────────╮
+ nk:2 a.txt │
+────────────╯
+
+@@ -1,4 +1,4 @@
+───────────────
+1 ┊   │ -first
+  ┊ 1 │ +firsta
+2 ┊ 2 │  line
+3 ┊ 3 │  line
+4 ┊ 4 │  line
+
+────────────╮
+ nk:e a.txt │
+────────────╯
+
+@@ -6,4 +6,4 @@
+───────────────
+ 6 ┊  6 │  line
+ 7 ┊  7 │  line
+ 8 ┊  8 │  line
+ 9 ┊    │ -last
+   ┊  9 │ +lasta
 
 "#]]);
     env.but("absorb nk:2")
@@ -165,7 +172,7 @@ nk:e a.txt│
         .stdout_eq(snapbox::str![[r#"
 Found 1 changed file to absorb:
 
-Absorbed to commit: 1 a.txt
+Absorbed to commit: pxx a.txt
   (files locked to commit due to hunk range overlap)
     a.txt @1,4 +1,4
 
@@ -226,22 +233,29 @@ fn committed_hunk() {
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-──────────╮
-nk:2 a.txt│
-──────────╯
-   1  │-first
-     1│+firsta
-   2 2│ line
-   3 3│ line
-   4 4│ line
-──────────╮
-nk:e a.txt│
-──────────╯
-    6  6│ line
-    7  7│ line
-    8  8│ line
-    9   │-last
-       9│+lasta
+────────────╮
+ nk:2 a.txt │
+────────────╯
+
+@@ -1,4 +1,4 @@
+───────────────
+1 ┊   │ -first
+  ┊ 1 │ +firsta
+2 ┊ 2 │  line
+3 ┊ 3 │  line
+4 ┊ 4 │  line
+
+────────────╮
+ nk:e a.txt │
+────────────╯
+
+@@ -6,4 +6,4 @@
+───────────────
+ 6 ┊  6 │  line
+ 7 ┊  7 │  line
+ 8 ┊  8 │  line
+ 9 ┊    │ -last
+   ┊  9 │ +lasta
 
 "#]]);
 
@@ -263,14 +277,17 @@ nk:e a.txt│
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-──────────╮
-nk:f a.txt│
-──────────╯
-   1  │-firsta
-     1│+first
-   2 2│ line
-   3 3│ line
-   4 4│ line
+────────────╮
+ nk:f a.txt │
+────────────╯
+
+@@ -1,4 +1,4 @@
+───────────────
+1 ┊   │ -firsta
+  ┊ 1 │ +first
+2 ┊ 2 │  line
+3 ┊ 3 │  line
+4 ┊ 4 │  line
 
 "#]]);
 
@@ -290,14 +307,17 @@ nk:f a.txt│
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-──────────╮
-nk:1 a.txt│
-──────────╯
-    6  6│ line
-    7  7│ line
-    8  8│ line
-    9   │-lasta
-       9│+last
+────────────╮
+ nk:1 a.txt │
+────────────╯
+
+@@ -6,4 +6,4 @@
+───────────────
+ 6 ┊  6 │  line
+ 7 ┊  7 │  line
+ 8 ┊  8 │  line
+ 9 ┊    │ -lasta
+   ┊  9 │ +last
 
 "#]]);
 
@@ -317,22 +337,29 @@ nk:1 a.txt│
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-──────────╮
-nk:b a.txt│
-──────────╯
-   1  │-first
-     1│+first new
-   2 2│ line
-   3 3│ line
-   4 4│ line
-──────────╮
-nk:5 a.txt│
-──────────╯
-    6  6│ line
-    7  7│ line
-    8  8│ line
-    9   │-last
-       9│+last new
+────────────╮
+ nk:b a.txt │
+────────────╯
+
+@@ -1,4 +1,4 @@
+───────────────
+1 ┊   │ -first
+  ┊ 1 │ +first new
+2 ┊ 2 │  line
+3 ┊ 3 │  line
+4 ┊ 4 │  line
+
+────────────╮
+ nk:5 a.txt │
+────────────╯
+
+@@ -6,4 +6,4 @@
+───────────────
+ 6 ┊  6 │  line
+ 7 ┊  7 │  line
+ 8 ┊  8 │  line
+ 9 ┊    │ -last
+   ┊  9 │ +last new
 
 "#]]);
 
@@ -341,18 +368,18 @@ nk:5 a.txt│
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   nk M a.txt
 ┊
 ┊╭┄ g0 [A]
-┊●   1#0 partial change to a.txt 3
-┊│     1#0:n M a.txt
-┊●   1#1 partial change to a.txt 2
-┊│     1#1:n M a.txt
-┊●   1#2 partial change to a.txt 1
-┊│     1#2:n M a.txt
-┊●   1#3 a.txt
-┊│     1#3:n A a.txt
+┊●   sll partial change to a.txt 3
+┊│     sll:n M a.txt
+┊●   sol partial change to a.txt 2
+┊│     sol:n M a.txt
+┊●   rzm partial change to a.txt 1
+┊│     rzm:n M a.txt
+┊●   pxx a.txt
+┊│     pxx:n A a.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -374,11 +401,11 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
         .stdout_eq(snapbox::str![[r#"
 Found 1 changed file to absorb:
 
-Absorbed to commit: 1 partial change to a.txt 2
+Absorbed to commit: sol partial change to a.txt 2
   (files locked to commit due to hunk range overlap)
     a.txt @1,4 +1,4
 
-Absorbed to commit: 1 partial change to a.txt 3
+Absorbed to commit: sll partial change to a.txt 3
   (files locked to commit due to hunk range overlap)
     a.txt @6,4 +6,4
 
@@ -393,17 +420,17 @@ Hint: you can run `but undo` to undo these changes
         .success()
         .stderr_eq(snapbox::str![])
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
-┊●   1#0 partial change to a.txt 3
-┊│     1#0:n M a.txt
-┊●   1#1 partial change to a.txt 2
-┊│     1#1:n M a.txt
-┊●   1#2 partial change to a.txt 1
-┊│     1#2:n M a.txt
-┊●   1#3 a.txt
-┊│     1#3:n A a.txt
+┊●   sll partial change to a.txt 3
+┊│     sll:n M a.txt
+┊●   sol partial change to a.txt 2
+┊│     sol:n M a.txt
+┊●   rzm partial change to a.txt 1
+┊│     rzm:n M a.txt
+┊●   pxx a.txt
+┊│     pxx:n A a.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -505,7 +532,7 @@ fn dry_run_shows_plan_without_changes() {
         .stdout_eq(snapbox::str![[r#"
 Found 1 changed file to absorb:
 
-Absorbed to commit: 1 a.txt
+Absorbed to commit: pxx a.txt
   (files locked to commit due to hunk range overlap)
     a.txt @1,4 +1,4
     a.txt @6,4 +6,4
@@ -610,6 +637,43 @@ fn workspace_head_is_refreshed_after_absorb() {
         ws_before, ws_after,
         "gitbutler/workspace HEAD should be refreshed after absorb"
     );
+    // The refreshed workspace commit merges the rewritten stack tips.
+    let mut parents: Vec<_> = repo
+        .find_commit(ws_after)
+        .unwrap()
+        .parent_ids()
+        .map(|id| id.detach())
+        .collect();
+    let mut tips =
+        ["A", "B"].map(|branch| repo.rev_parse_single(branch.as_bytes()).unwrap().detach());
+    parents.sort();
+    tips.sort();
+    assert_eq!(
+        parents, tips,
+        "workspace commit parents must be the current stack tips"
+    );
+    // The workspace tree carries the absorbed content, so tools inspecting
+    // HEAD see the amended state rather than a stale one.
+    let blob = repo
+        .rev_parse_single(b"gitbutler/workspace:a.txt")
+        .unwrap()
+        .object()
+        .unwrap();
+    snapbox::assert_data_eq!(
+        blob.data.as_bstr().to_string(),
+        snapbox::str![[r#"
+firsta
+line
+line
+line
+line
+line
+line
+line
+lasta
+
+"#]]
+    );
 }
 
 #[test]
@@ -709,4 +773,46 @@ fn absorb_json_reports_partially_skipped_merged_upstream_commits() {
 warning: skipped absorbing into 1 merged-upstream commit(s): 756ee31. Run `but pull` to update the workspace, or pass --allow-merged to absorb anyway.
 
 "#]]);
+}
+
+/// Regression test for GB-1534: in single-branch mode absorb must amend the
+/// checked-out branch without recreating `gitbutler/workspace` and moving
+/// `HEAD` onto it.
+#[test]
+fn single_branch_absorb_keeps_head_on_branch() {
+    let env = Sandbox::open_with_default_settings("single-branch-mode");
+    env.but("branch new feature").assert().success();
+    env.file("file.txt", "a\nb\nc\n");
+    env.but("commit -m 'change b'").assert().success();
+    env.file("file.txt", "a\nB\nc\n");
+
+    env.but("absorb").assert().success().stderr_eq(str![""]);
+
+    let repo = env.open_repo();
+    let blob = repo
+        .rev_parse_single(b"feature:file.txt")
+        .unwrap()
+        .object()
+        .unwrap();
+    // The change was absorbed into the branch commit.
+    snapbox::assert_data_eq!(
+        blob.data.as_bstr().to_string(),
+        snapbox::str![[r#"
+a
+B
+c
+
+"#]]
+    );
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "feature",
+        "absorb must leave HEAD on the checked-out branch"
+    );
+    assert!(
+        repo.try_find_reference("refs/heads/gitbutler/workspace")
+            .unwrap()
+            .is_none(),
+        "absorb must not create a workspace ref in single-branch mode"
+    );
 }

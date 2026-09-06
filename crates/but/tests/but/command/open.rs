@@ -58,7 +58,7 @@ fn open_uncommitted_file_with() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   xk A new-file.txt
 ┊
 ┴ 0dc3733 (common base) 2000-01-02 add M
@@ -142,48 +142,67 @@ fn open_uncommitted_hunk() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-────────────────────────────╮
-rn:7 file-with-additions.txt│
-────────────────────────────╯
-     1│+new first
-   1 2│ this
-   2 3│ is
-   3 4│ some
-────────────────────────────╮
-rn:4 file-with-additions.txt│
-────────────────────────────╯
-    7  8│ with
-    8  9│ added
-    9 10│ lines
-      11│+new last
-────────────────────────────╮
-rw:b file-with-deletions.txt│
-────────────────────────────╯
-   1  │-this
-   2 1│ is
-   3 2│ some
-   4 3│ content
-────────────────────────────╮
-rw:6 file-with-deletions.txt│
-────────────────────────────╯
-    6  5│ diff
-    7  6│ with
-    8  7│ added
-    9   │-lines
-────────────────────────╮
-lp:6 file-with-mixed.txt│
-────────────────────────╯
-    1  1│ this
-    2   │-is
-       2│+IS
-    3  3│ some
-    4  4│ content
-    5  5│ to
-    6  6│ diff
-    7  7│ with
-    8   │-added
-    9   │-lines
-       8│+ADDED
+──────────────────────────────╮
+ rn:7 file-with-additions.txt │
+──────────────────────────────╯
+
+@@ -1,3 +1,4 @@
+───────────────
+  ┊ 1 │ +new first
+1 ┊ 2 │  this
+2 ┊ 3 │  is
+3 ┊ 4 │  some
+
+──────────────────────────────╮
+ rn:4 file-with-additions.txt │
+──────────────────────────────╯
+
+@@ -7,3 +8,4 @@
+───────────────
+ 7 ┊  8 │  with
+ 8 ┊  9 │  added
+ 9 ┊ 10 │  lines
+   ┊ 11 │ +new last
+
+──────────────────────────────╮
+ rw:b file-with-deletions.txt │
+──────────────────────────────╯
+
+@@ -1,4 +1,3 @@
+───────────────
+1 ┊   │ -this
+2 ┊ 1 │  is
+3 ┊ 2 │  some
+4 ┊ 3 │  content
+
+──────────────────────────────╮
+ rw:6 file-with-deletions.txt │
+──────────────────────────────╯
+
+@@ -6,4 +5,3 @@
+───────────────
+ 6 ┊ 5 │  diff
+ 7 ┊ 6 │  with
+ 8 ┊ 7 │  added
+ 9 ┊   │ -lines
+
+──────────────────────────╮
+ lp:6 file-with-mixed.txt │
+──────────────────────────╯
+
+@@ -1,9 +1,8 @@
+───────────────
+ 1 ┊ 1 │  this
+ 2 ┊   │ -is
+   ┊ 2 │ +IS
+ 3 ┊ 3 │  some
+ 4 ┊ 4 │  content
+ 5 ┊ 5 │  to
+ 6 ┊ 6 │  diff
+ 7 ┊ 7 │  with
+ 8 ┊   │ -added
+ 9 ┊   │ -lines
+   ┊ 8 │ +ADDED
 
 "#]]);
 
@@ -244,11 +263,11 @@ fn open_uncommitted_hunk_in_file_that_contains_spaces_and_shell_metacharacters()
     );
 
     env.but("status").assert().success().stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   pv M file with some $meta; cat A > new-file.txt; spaces in it.txt
 ┊
 ┊╭┄ br [a-branch-1]
-┊●   1 Add file
+┊●   psz Add file
 ├╯
 ┊
 ┴ 0dc3733 (common base) 2000-01-02 add M
@@ -274,7 +293,7 @@ fn cannot_open_non_existing_cli_id() {
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Could not find uncommitted change: 'notexist'
+Error: Could not find target: 'notexist'
 
 Hint: Run `but status` for applicable targets.
 
@@ -282,32 +301,55 @@ Hint: Run `but status` for applicable targets.
 }
 
 #[test]
-fn cannot_open_committed_changes() {
+fn open_committed_file() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
 
-    env.but("status -f")
+    env.but("_open tpm:t -p echo")
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
-┊
-┊╭┄ g0 [A]
-┊●   tpm add A
-┊│     tpm:t A A
-├╯
-┊
-┴ 0dc3733 (common base) 2000-01-02 add M
-
-Hint: run `but help` for all commands
+filepath='/[..]/A'
 
 "#]]);
+}
+
+#[test]
+fn open_committed_hunks() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    let content = "one\ntwo\nthree\nfour\nfive\nsix\nseven\n";
+
+    env.file("file", content);
+    env.but("commit -m 'Add file'").assert().success();
+    env.file("file", format!("beginning\n{content}end"));
+    env.but("commit -m 'Update file'").assert().success();
+
+    env.but("_open szk:q:3 -p echo")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+filepath='/[..]/file' line_number='1'
+
+"#]]);
+    env.but("_open szk:q:8 -p echo")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+filepath='/[..]/file' line_number='9'
+
+"#]]);
+}
+
+#[test]
+fn cannot_open_branch_or_commit() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
 
     env.but("_open A -p echo")
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Expected uncommitted file or hunk, got a branch
+Error: Expected file or hunk, got a branch
 
 "#]]);
 
@@ -315,15 +357,7 @@ Error: Expected uncommitted file or hunk, got a branch
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Expected uncommitted file or hunk, got a commit
-
-"#]]);
-
-    env.but("_open tpm:t -p echo")
-        .assert()
-        .failure()
-        .stderr_eq(snapbox::str![[r#"
-Error: Expected uncommitted file or hunk, got a committed file
+Error: Expected file or hunk, got a commit
 
 "#]]);
 }
@@ -380,12 +414,12 @@ fn user_defined_program_path_executable_handles_shell_metacharacters() {
     .unwrap();
 
     env.but("status -f").assert().success().stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   pv M file with some $meta; cat A > new-file.txt; spaces in it.txt
 ┊
 ┊╭┄ br [a-branch-1]
-┊●   1 Add file
-┊│     1:p A file with some $meta; cat A > new-file.txt; spaces in it.txt
+┊●   psz Add file
+┊│     psz:p A file with some $meta; cat A > new-file.txt; spaces in it.txt
 ├╯
 ┊
 ┴ 0dc3733 (common base) 2000-01-02 add M
@@ -403,20 +437,27 @@ Test Program - Open File: filepath='/[..]/file with some $meta; cat A > new-file
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-─────────────────────────────────────────────────────────────────╮
-pv:7 file with some $meta; cat A > new-file.txt; spaces in it.txt│
-─────────────────────────────────────────────────────────────────╯
-     1│+new first
-   1 2│ this
-   2 3│ is
-   3 4│ some
-─────────────────────────────────────────────────────────────────╮
-pv:4 file with some $meta; cat A > new-file.txt; spaces in it.txt│
-─────────────────────────────────────────────────────────────────╯
-    7  8│ with
-    8  9│ added
-    9 10│ lines
-      11│+new last
+───────────────────────────────────────────────────────────────────╮
+ pv:7 file with some $meta; cat A > new-file.txt; spaces in it.txt │
+───────────────────────────────────────────────────────────────────╯
+
+@@ -1,3 +1,4 @@
+───────────────
+  ┊ 1 │ +new first
+1 ┊ 2 │  this
+2 ┊ 3 │  is
+3 ┊ 4 │  some
+
+───────────────────────────────────────────────────────────────────╮
+ pv:4 file with some $meta; cat A > new-file.txt; spaces in it.txt │
+───────────────────────────────────────────────────────────────────╯
+
+@@ -7,3 +8,4 @@
+───────────────
+ 7 ┊  8 │  with
+ 8 ┊  9 │  added
+ 9 ┊ 10 │  lines
+   ┊ 11 │ +new last
 
 "#]]);
 
@@ -482,12 +523,12 @@ fn user_defined_program_defaults_to_default_open_args() {
     .unwrap();
 
     env.but("status -f").assert().success().stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   uv M file.txt
 ┊
 ┊╭┄ br [a-branch-1]
-┊●   1 Add file
-┊│     1:u A file.txt
+┊●   zon Add file
+┊│     zon:u A file.txt
 ├╯
 ┊
 ┴ 0dc3733 (common base) 2000-01-02 add M
@@ -500,20 +541,27 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-─────────────╮
-uv:7 file.txt│
-─────────────╯
-     1│+new first
-   1 2│ this
-   2 3│ is
-   3 4│ some
-─────────────╮
-uv:4 file.txt│
-─────────────╯
-    7  8│ with
-    8  9│ added
-    9 10│ lines
-      11│+new last
+───────────────╮
+ uv:7 file.txt │
+───────────────╯
+
+@@ -1,3 +1,4 @@
+───────────────
+  ┊ 1 │ +new first
+1 ┊ 2 │  this
+2 ┊ 3 │  is
+3 ┊ 4 │  some
+
+───────────────╮
+ uv:4 file.txt │
+───────────────╯
+
+@@ -7,3 +8,4 @@
+───────────────
+ 7 ┊  8 │  with
+ 8 ┊  9 │  added
+ 9 ┊ 10 │  lines
+   ┊ 11 │ +new last
 
 "#]]);
 
@@ -755,7 +803,7 @@ filepath='/[..]/file.txt'
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   tt A Dockerfile
 ┊   zn A file.md
 ┊   uv A file.txt
@@ -776,7 +824,7 @@ Hint: run `but branch new` to create a new branch to work on
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   tt A Dockerfile
 ┊   zn A file.md
 ┊   ul A file.md.touch
@@ -798,7 +846,7 @@ Hint: run `but branch new` to create a new branch to work on
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   tt A Dockerfile
 ┊   mu A Dockerfile.touch
 ┊   zn A file.md

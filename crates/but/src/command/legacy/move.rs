@@ -23,11 +23,14 @@ use crate::{
         r#move::Platform,
     },
     bad_input,
-    id::{CommitId, CommittedFileId},
+    id::{CommitId, CommittedFileId, CommittedHunk},
     theme::{self, Theme},
     utils::{
         CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils,
-        diff_specs::DiffSpecBuilder, merged_upstream::MergedUpstream, targeting::Side,
+        diff_specs::DiffSpecBuilder,
+        merged_upstream::MergedUpstream,
+        targeting::Side,
+        worktrees::{worktree_branch_target, worktree_tip_target},
     },
 };
 
@@ -241,7 +244,7 @@ pub fn r#move(
 /// and [`MoveOperation::UnstackBranch`]) stay allowed: they re-anchor commits
 /// without changing their content, so upstream-integration detection still
 /// recognizes them.
-fn ensure_not_touching_merged_upstream(
+pub fn ensure_not_touching_merged_upstream(
     op: &MoveOperation,
     merged: &MergedUpstream,
 ) -> CliResult<()> {
@@ -534,8 +537,23 @@ fn resolve(
 
     match (branch, above, below, unstack) {
         (Some(Some(branch)), None, None, false) => {
-            match (branch.try_resolve_branch(&repo, id_map)?, resolved_sources) {
-                (Some(target), ResolvedSources::Branch(source)) => {
+            // A `--branch` target is one of three things, resolved once for every
+            // source kind: a workspace branch, a worktree lane's tip (named by the
+            // worktree's ID or name, or by its checked-out branch), or nothing yet.
+            enum BranchTargetIsh {
+                Workspace(BranchArg),
+                WorktreeTip(FullName),
+                Missing,
+            }
+            let target = match branch.try_resolve_branch(&repo, id_map)? {
+                Some(target) => BranchTargetIsh::Workspace(target),
+                None => match worktree_branch_target(&repo, id_map, &branch)? {
+                    Some(name) => BranchTargetIsh::WorktreeTip(name),
+                    None => BranchTargetIsh::Missing,
+                },
+            };
+            match (target, resolved_sources) {
+                (BranchTargetIsh::Workspace(target), ResolvedSources::Branch(source)) => {
                     let target = target.resolve_local_branch_name()?;
                     if source == target {
                         return Err(bad_input("Source cannot also be target")
@@ -548,14 +566,26 @@ fn resolve(
                         target_branch: target,
                     }))
                 }
-                (None, ResolvedSources::Branch(_)) => Err(bad_input(format!(
+                // The branch exists when a worktree has it checked out, but stacking
+                // targets live in the workspace; refusing beats a misleading
+                // "not found".
+                (BranchTargetIsh::WorktreeTip(_), ResolvedSources::Branch(_)) => {
+                    Err(bad_input(format!(
+                        "Cannot stack a branch onto worktree branch {}",
+                        theme::Branch(&*branch.0)
+                    ))
+                    .arg_name("--branch")
+                    .arg_value(branch.to_string())
+                    .into())
+                }
+                (BranchTargetIsh::Missing, ResolvedSources::Branch(_)) => Err(bad_input(format!(
                     "Branch {} not found",
                     theme::Branch(&*branch.0)
                 ))
                 .hint("`--branch` can only move branches onto existing branches")
                 .into()),
                 (
-                    Some(branch),
+                    BranchTargetIsh::Workspace(target),
                     ResolvedSources::Commits {
                         resolved_commits: sources,
                         ..
@@ -564,12 +594,24 @@ fn resolve(
                     MoveCommitsRelativeToOperation {
                         sources,
                         target: MoveTarget::BranchTip {
-                            name: branch.resolve_local_branch_name()?,
+                            name: target.resolve_local_branch_name()?,
                         },
                     },
                 )),
                 (
-                    None,
+                    BranchTargetIsh::WorktreeTip(name),
+                    ResolvedSources::Commits {
+                        resolved_commits: sources,
+                        ..
+                    },
+                ) => Ok(MoveOperation::CommitsRelativeTo(
+                    MoveCommitsRelativeToOperation {
+                        sources,
+                        target: MoveTarget::BranchTip { name },
+                    },
+                )),
+                (
+                    BranchTargetIsh::Missing,
                     ResolvedSources::Commits {
                         resolved_commits: sources,
                         ..
@@ -584,16 +626,32 @@ fn resolve(
                         },
                     ))
                 }
-                (Some(branch), ResolvedSources::CommittedChanges((source_commit, changes))) => Ok(
-                    MoveOperation::ChangesRelativeTo(MoveChangesRelativeToOperation {
+                (
+                    BranchTargetIsh::Workspace(target),
+                    ResolvedSources::CommittedChanges(source_commit, changes),
+                ) => Ok(MoveOperation::ChangesRelativeTo(
+                    MoveChangesRelativeToOperation {
                         source_commit,
                         changes,
                         target: MoveTarget::BranchTip {
-                            name: branch.resolve_local_branch_name()?,
+                            name: target.resolve_local_branch_name()?,
                         },
-                    }),
-                ),
-                (None, ResolvedSources::CommittedChanges((source_commit, changes))) => {
+                    },
+                )),
+                (
+                    BranchTargetIsh::WorktreeTip(name),
+                    ResolvedSources::CommittedChanges(source_commit, changes),
+                ) => Ok(MoveOperation::ChangesRelativeTo(
+                    MoveChangesRelativeToOperation {
+                        source_commit,
+                        changes,
+                        target: MoveTarget::BranchTip { name },
+                    },
+                )),
+                (
+                    BranchTargetIsh::Missing,
+                    ResolvedSources::CommittedChanges(source_commit, changes),
+                ) => {
                     let branch_name =
                         BranchArg(branch.to_string()).resolve_for_creation(&repo, &ws)?;
                     Ok(MoveOperation::ChangesToNewBranch(
@@ -621,7 +679,7 @@ fn resolve(
                     branch_name: None,
                 },
             )),
-            ResolvedSources::CommittedChanges((source_commit, changes)) => Ok(
+            ResolvedSources::CommittedChanges(source_commit, changes) => Ok(
                 MoveOperation::ChangesToNewBranch(MoveChangesToNewBranchOperation {
                     source_commit,
                     changes,
@@ -650,7 +708,7 @@ fn resolve(
                     branch_name: None,
                 },
             )),
-            ResolvedSources::CommittedChanges((source_commit, changes)) => Ok(
+            ResolvedSources::CommittedChanges(source_commit, changes) => Ok(
                 MoveOperation::ChangesToNewBranch(MoveChangesToNewBranchOperation {
                     source_commit,
                     changes,
@@ -670,14 +728,16 @@ fn create_move_above_or_below_op(
     side: Side,
 ) -> CliResult<MoveOperation> {
     let target = {
-        match unresolved_target
-            .resolve_in_workspace(repo, id_map, Purpose::Anchor, None)?
-            .into_branch_or_commit()?
-        {
-            BranchOrCommit::Commit(commit) => MoveTarget::Commit { commit, side },
-            BranchOrCommit::Branch(branch_arg) => MoveTarget::BranchBucket {
-                name: branch_arg.resolve_existing_local_branch(repo)?,
-                side,
+        match unresolved_target.resolve_in_workspace(repo, id_map, Purpose::Anchor, None)? {
+            ResolvedCliIdArg::Worktree(name) => MoveTarget::BranchTip {
+                name: worktree_tip_target(repo, name.as_ref(), side, &unresolved_target)?,
+            },
+            resolved => match resolved.into_branch_or_commit()? {
+                BranchOrCommit::Commit(commit) => MoveTarget::Commit { commit, side },
+                BranchOrCommit::Branch(branch_arg) => MoveTarget::BranchBucket {
+                    name: branch_arg.resolve_existing_local_branch(repo)?,
+                    side,
+                },
             },
         }
     };
@@ -738,7 +798,7 @@ fn create_move_above_or_below_op(
                 },
             ))
         }
-        ResolvedSources::CommittedChanges((source_commit, changes)) => Ok(
+        ResolvedSources::CommittedChanges(source_commit, changes) => Ok(
             MoveOperation::ChangesRelativeTo(MoveChangesRelativeToOperation {
                 changes,
                 source_commit,
@@ -755,8 +815,22 @@ enum ResolvedSources {
         /// order as the resolved commits - access by index!
         args: NonEmpty<CliIdArg>,
     },
-    CommittedChanges((CommitId, NonEmpty<DiffSpec>)),
+    CommittedChanges(CommitId, NonEmpty<DiffSpec>),
     Branch(FullName),
+}
+
+enum CommittedChange {
+    Hunk(CommittedHunk),
+    File(CommittedFileId),
+}
+
+impl CommittedChange {
+    fn committed_file(&self) -> &CommittedFileId {
+        match self {
+            CommittedChange::Hunk(hunk) => &hunk.committed_file,
+            CommittedChange::File(file) => file,
+        }
+    }
 }
 
 fn resolve_sources(
@@ -766,7 +840,7 @@ fn resolve_sources(
     sources: impl IntoIterator<Item = CliIdArg>,
 ) -> CliResult<ResolvedSources> {
     let mut commit_sources = Vec::new();
-    let mut file_sources = Vec::new();
+    let mut change_sources = Vec::new();
     let mut branch_sources = Vec::new();
     let mut args = Vec::new();
 
@@ -778,27 +852,23 @@ fn resolve_sources(
             ResolvedCliIdArg::Commit(source) => {
                 commit_sources.push(source);
             }
-            ResolvedCliIdArg::CommittedFile(CommittedFileId {
-                commit_id,
-                path,
-                change_id,
-            }) => {
-                file_sources.push((
-                    CommitId {
-                        commit_id,
-                        change_id,
-                    },
-                    path,
-                ));
+            ResolvedCliIdArg::CommittedFile(file) => {
+                change_sources.push(CommittedChange::File(file));
+            }
+            ResolvedCliIdArg::CommittedHunk(hunk) => {
+                change_sources.push(CommittedChange::Hunk(*hunk));
             }
             ResolvedCliIdArg::Branch(branch) => {
                 branch_sources.push(branch.resolve_local_branch_name()?);
+            }
+            ResolvedCliIdArg::AnonymousSegment(segment) => {
+                return Err(crate::args::atoms::anonymous_segment_error(&segment.id));
             }
             resolved => {
                 return Err(bad_input(format!("Cannot pass {resolved} as source"))
                     .arg_value(source_str)
                     .arg_name("<SOURCES>")
-                    .hint("A source must be commit, committed file or branch")
+                    .hint("A source must be a commit, committed change or branch")
                     .into());
             }
         }
@@ -806,7 +876,7 @@ fn resolve_sources(
 
     match (
         NonEmpty::from_vec(commit_sources),
-        NonEmpty::from_vec(file_sources),
+        NonEmpty::from_vec(change_sources),
         NonEmpty::from_vec(branch_sources),
     ) {
         (Some(resolved_commits), None, None) => {
@@ -819,11 +889,13 @@ fn resolve_sources(
                 args,
             })
         }
-        (None, Some(files), None) => {
+        (None, Some(changes), None) => {
             let mut builder = DiffSpecBuilder::new(repo, context_lines);
-            let source_commit = files.head.0.clone();
-            for (commit, path) in files {
-                if commit.as_ref() != source_commit.as_ref() {
+            let source_file = changes.head.committed_file().clone();
+            let mut tree_changes = None;
+
+            for change in changes {
+                if change.committed_file().commit_id != source_file.commit_id {
                     return Err(
                         bad_input("Cannot move changes from multiple commits")
                             .hint("Move changes from a single commit at first, then squash additional changes into the new commit")
@@ -831,7 +903,36 @@ fn resolve_sources(
                     );
                 }
 
-                builder.push_changes_from_committed_file(commit.commit_id, path.as_bstr())?;
+                match change {
+                    CommittedChange::File(file) => {
+                        builder.push_changes_from_committed_file(
+                            file.commit_id,
+                            file.path.as_bstr(),
+                        )?;
+                    }
+                    CommittedChange::Hunk(hunk) => {
+                        if tree_changes.is_none() {
+                            let source_commit = repo.find_commit(source_file.commit_id)?;
+                            tree_changes = Some(
+                                but_core::diff::tree_changes(
+                                    repo,
+                                    source_commit.parent_ids().next().map(|id| id.detach()),
+                                    source_file.commit_id,
+                                )?
+                                .into_iter()
+                                .map(Into::into)
+                                .collect::<Vec<but_core::ui::TreeChange>>(),
+                            );
+                        }
+
+                        builder.push_hunks_with_changes(
+                            [hunk.hunk],
+                            tree_changes
+                                .as_ref()
+                                .expect("tree changes are initialized for committed hunks"),
+                        )
+                    }
+                }
             }
 
             // It doesn't appear as if we need to sort DiffSpecs when they're resolved on a file
@@ -839,7 +940,13 @@ fn resolve_sources(
             let changes = NonEmpty::from_vec(builder.into_diff_specs())
                 .expect("BUG: Cannot possibly not have any changes here");
 
-            Ok(ResolvedSources::CommittedChanges((source_commit, changes)))
+            Ok(ResolvedSources::CommittedChanges(
+                CommitId {
+                    commit_id: source_file.commit_id,
+                    change_id: source_file.change_id,
+                },
+                changes,
+            ))
         }
         (None, None, Some(branches)) => {
             if !branches.tail.is_empty() {
@@ -858,12 +965,31 @@ fn resolve_sources(
     }
 }
 
+/// Branch moves bypass `but-transaction`, which cannot persist the branch order or check out the
+/// new tip returned by single-branch moves, and use the checkout-aware `but-api` path instead.
 pub fn run(
     ctx: &mut Context,
     meta: &mut impl RefMetadata,
     perm: &mut RepoExclusive,
     move_op: MoveOperation,
 ) -> anyhow::Result<(MoveOutcome, WorkspaceState)> {
+    if let MoveOperation::StackBranch(op) = &move_op {
+        let result = but_api::branch::move_branch_with_perm(
+            ctx,
+            op.source_branch.as_ref(),
+            op.target_branch.as_ref(),
+            DryRun::No,
+            perm,
+        )?;
+        return Ok((
+            MoveOutcome::StackBranch {
+                source_branch: op.source_branch.clone(),
+                target_branch: op.target_branch.clone(),
+            },
+            result.workspace,
+        ));
+    }
+
     let snapshot_details = match &move_op {
         MoveOperation::CommitsRelativeTo(_) | MoveOperation::CommitsToNewBranch(_) => {
             SnapshotDetails::new(OperationKind::MoveCommit)

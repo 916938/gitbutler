@@ -18,5 +18,17 @@ pub mod onboarding;
 pub mod open;
 pub mod push;
 pub mod skill;
-pub mod r#switch;
 pub mod update;
+pub mod worktree;
+
+/// The durable result of a command, independent of rendering and transport.
+#[derive(Debug, Clone)]
+pub enum CommandOutcome {
+    AgentSetupPrintOnly,
+    AgentSetupCancelled,
+    AgentSetupCompleted {
+        manual_instructions_required: bool,
+    },
+    #[cfg(feature = "legacy")]
+    Commit(legacy::commit::CommitOutcome),
+}

@@ -4,60 +4,40 @@
 	gap: 4px;
 }
 
+/* A pill, not an outlined tag: the tally reads as a filled count chip. */
 .reactionChip {
-	padding: 2px 8px;
-	border: 1px solid var(--border-3);
-	border-radius: 100px;
-	background: none;
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 8px;
+	gap: 4px;
+	border: none;
+	border-radius: 14px;
+	background-color: var(--bg-2);
 	color: var(--text-2);
 }
 
 .reactionChipButton {
-	cursor: pointer;
-
 	&:hover:not(:disabled) {
-		border-color: var(--border-2);
+		background-color: color-mix(in srgb, var(--fill-gray-bg) 12%, var(--bg-2));
 	}
 }
 
+/* The caller's own reaction inverts, so their tallies stand out from the rest
+   of the row at a glance. */
 .reactionChipMine {
-	border-color: var(--text-blue);
-	color: var(--text-blue);
-}
+	background-color: var(--fill-gray-bg);
+	color: var(--fill-gray-fg);
 
-.addReaction {
-	display: flex;
-	align-items: center;
-	padding: 0;
-	border: none;
-	background: none;
-	color: var(--text-2);
-	cursor: pointer;
-
-	&:hover {
-		color: var(--text-1);
+	&.reactionChipButton:hover:not(:disabled) {
+		background-color: color-mix(in srgb, var(--fill-gray-bg) 85%, var(--scale-gray-0));
 	}
 }
 
-/* Horizontal emoji row, with the same chrome as the tooltip popup. */
+/* A horizontal row rather than the popup's usual stack of rows. */
 .reactionPicker {
-	display: flex;
+	flex-direction: row;
 	padding: 4px;
 	gap: 2px;
-	/* Grow out of the anchored corner, same curve as the picker dialog. */
-	transform-origin: var(--transform-origin);
-	border-radius: var(--radius-button);
-	background-color: var(--bg-1);
-	box-shadow: var(--shadow-tooltip);
-	transition:
-		transform 150ms cubic-bezier(0.45, 1.005, 0, 1.005),
-		opacity 150ms;
-
-	&[data-starting-style],
-	&[data-ending-style] {
-		transform: scale(0.9);
-		opacity: 0;
-	}
 }
 
 .pickerItem {

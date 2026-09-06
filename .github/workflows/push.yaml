@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -140,7 +140,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/init-env-node
       - id: get_playwright_version
-        uses: eviden-actions/get-playwright-version@18baf14d24c79ae56f6010cb1d4002419dabc89a # v1
+        uses: eviden-actions/get-playwright-version@b0cd9674901dfcdabb64e3cff99a4e582719f0f6 # v1
       - name: Cache playwright binaries
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         id: playwright-cache
@@ -152,7 +152,13 @@ jobs:
         if: ${{ steps.playwright-cache.outputs.cache-hit != 'true' }}
       - run: pnpm test
         env:
-          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.BUILDKITE_SUITE_TOKEN_VITEST }}
+          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.TEST_RESULTS_TOKEN_VITEST }}
+          BUILDKITE_ANALYTICS_BASE_URL: https://tests.but.dev/v1/uploads
+          # Normalized run identity, matching what the curl-based uploads send, so
+          # every suite reports the same key/branch/sha for one CI run.
+          BUILDKITE_ANALYTICS_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          BUILDKITE_ANALYTICS_BRANCH: ${{ github.head_ref || github.ref_name }}
+          BUILDKITE_ANALYTICS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
   but-sdk-build-check:
     needs: changes
@@ -175,7 +181,7 @@ jobs:
           sudo chown -R "$(id -u)":"$(id -g)" "$PWD/.apt-cache"
       - uses: ./.github/actions/init-env-node
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: but-sdk-build-check
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -202,7 +208,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: lint
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -275,7 +281,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: cargo-doc
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -303,7 +309,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: cargo-test-no-tauri
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -325,11 +331,11 @@ jobs:
         run: cargo nextest run --workspace --exclude gitbutler-tauri --exclude but-api-macros-tests --profile ci
       - name: Run doctests
         run: cargo test --doc --workspace --exclude gitbutler-tauri --exclude but-api-macros-tests
-      - name: Upload results to Buildkite Test Engine
+      - name: Upload results to tests.but.dev
         if: ${{ always() && !cancelled() }}
         continue-on-error: true
         env:
-          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.BUILDKITE_SUITE_TOKEN_CARGO }}
+          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.TEST_RESULTS_TOKEN_CARGO }}
           RUN_BRANCH: ${{ github.head_ref || github.ref_name }}
           RUN_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -349,7 +355,7 @@ jobs:
             -F "tags[framework]=nextest" \
             -F "tags[language]=rust" \
             -F "tags[type]=unit" \
-            https://analytics-api.buildkite.com/v1/uploads
+            https://tests.but.dev/v1/uploads
       # It's intentional to use 'name equals run-script' so it's easy to re-run locally on failure.
       - run: make test-modern-but
       - name: test vendored
@@ -395,7 +401,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: cargo-test-but-api-macros-${{ matrix.cache_suffix }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -421,7 +427,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: cargo-test-tauri
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -444,7 +450,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: cargo-test
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -488,7 +494,7 @@ jobs:
           echo "CARGO_BUILD_TARGET=${{ matrix.target }}" >> $GITHUB_ENV
           rustup target add ${{ matrix.target }}
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: installer
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -712,7 +718,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/init-env-node
       - id: get_playwright_version
-        uses: eviden-actions/get-playwright-version@18baf14d24c79ae56f6010cb1d4002419dabc89a # v1
+        uses: eviden-actions/get-playwright-version@b0cd9674901dfcdabb64e3cff99a4e582719f0f6 # v1
       - name: cache playwright binaries
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         id: playwright-cache
@@ -725,7 +731,13 @@ jobs:
       - name: run playwright tests
         run: pnpm test:ct
         env:
-          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.BUILDKITE_SUITE_TOKEN_PLAYWRIGHT_CT }}
+          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.TEST_RESULTS_TOKEN_PLAYWRIGHT_CT }}
+          BUILDKITE_ANALYTICS_BASE_URL: https://tests.but.dev/v1/uploads
+          # Normalized run identity, matching what the curl-based uploads send, so
+          # every suite reports the same key/branch/sha for one CI run.
+          BUILDKITE_ANALYTICS_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          BUILDKITE_ANALYTICS_BRANCH: ${{ github.head_ref || github.ref_name }}
+          BUILDKITE_ANALYTICS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
@@ -754,11 +766,11 @@ jobs:
         run: sudo ./scripts/install-minimal-debian-dependencies.sh
       - uses: ./.github/actions/init-env-node
       - name: Rust Cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: lite-e2e-rust-binaries
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Build native dependencies
+      - name: Build dependencies
         run: |
           pnpm --filter @gitbutler/but-sdk build:napi
           cargo build -p but
@@ -776,6 +788,14 @@ jobs:
       - name: Run Lite E2E tests
         # Concurrent Electron launches can fail during renderer bootstrap on GitHub's Linux runners.
         run: xvfb-run --auto-servernum pnpm --filter @gitbutler/lite test:e2e --forbid-only --workers=1
+        env:
+          BUILDKITE_ANALYTICS_TOKEN: ${{ secrets.TEST_RESULTS_TOKEN_LITE_E2E }}
+          BUILDKITE_ANALYTICS_BASE_URL: https://tests.but.dev/v1/uploads
+          # Normalized run identity, matching what the curl-based uploads send, so
+          # every suite reports the same key/branch/sha for one CI run.
+          BUILDKITE_ANALYTICS_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          BUILDKITE_ANALYTICS_BRANCH: ${{ github.head_ref || github.ref_name }}
+          BUILDKITE_ANALYTICS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

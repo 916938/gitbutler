@@ -1,19 +1,12 @@
 import rowStyles from "./Row.module.css";
-import { Scroller } from "#ui/components/Scroller.tsx";
-import { useApply, useBranchRemove } from "#ui/api/mutations.ts";
-import { branchDetailsQueryOptions } from "#ui/api/queries.ts";
+import uiStyles from "#ui/components/ui.module.css";
+import { useBranchRemove } from "#ui/api/mutations.ts";
 import { decodeBytes, encodeBytes } from "#ui/api/bytes.ts";
 import { assert } from "#ui/assert.ts";
-import {
-	branchDetailsParams,
-	branchIsEmpty,
-	branchOwnCommits,
-	type BranchFilters,
-} from "#ui/branch.ts";
+import { branchIsEmpty, type BranchFilters } from "#ui/branch.ts";
 import { commitIsDiverged, commitTitle } from "#ui/commit.ts";
-import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
-import { FieldControlWithIcon, FieldRootStyles } from "#ui/components/Field.tsx";
+import { EmptyState } from "#ui/components/EmptyState.tsx";
 import {
 	GraphSegment,
 	type GraphSegmentGlyph,
@@ -28,21 +21,27 @@ import {
 	showNativeMenuFromTrigger,
 	type NativeMenuItem,
 } from "#ui/native-menu.ts";
-import { branchOperand, commitOperand, operandIdentityKey, type Operand } from "#ui/operands.ts";
+import { branchAddress, commitAddress, addressIdentityKey, type Address } from "#ui/addresses.ts";
 import { projectSlice } from "#ui/projects/state.ts";
-import {
-	useAutofocusSelectionScope,
-	useNavigationIndexHotkeys,
-	type SelectionScope,
-} from "#ui/selection-scopes.ts";
+import { useAutofocusScope, useAddressSpaceHotkeys, type FocusScope } from "#ui/focus-scopes.ts";
 import { useAppDispatch, useAppSelector } from "#ui/store.ts";
 import { RelativeTime } from "#ui/components/RelativeTime.tsx";
+import { getRangeExtractorWithIndices } from "#ui/virtual.ts";
 import type { Commit, ListedBranch } from "@gitbutler/but-sdk";
-import { Field, Toolbar } from "@base-ui/react";
+import { Toolbar } from "@base-ui/react";
 import { useMergedRefs } from "@base-ui/utils/useMergedRefs";
-import { useQuery } from "@tanstack/react-query";
 import { useHotkey } from "@tanstack/react-hotkeys";
-import { type ComponentProps, type FC, Fragment, useEffect, useRef, useState } from "react";
+import { type Range, useVirtualizer } from "@tanstack/react-virtual";
+import {
+	type ComponentProps,
+	type FC,
+	Fragment,
+	type RefObject,
+	useCallback,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import {
 	Row,
 	RowFoldToggle,
@@ -52,16 +51,26 @@ import {
 	RowMeta,
 	RowMetaSeparator,
 	RowToolbar,
+	SectionHeaderRow,
 } from "./Row.tsx";
+import { ListFilterRow } from "./ListFilterRow.tsx";
+import { useListFilter } from "./useListFilter.ts";
 import {
 	getRowButtonClassName,
-	selectionOutOfSync,
 	treeItemId,
 	useIsSelected as useIsSelectedInList,
 } from "./Row-utils.ts";
 import { StackCard } from "./StackCard.tsx";
 import stackCardStyles from "./StackCard.module.css";
-import type { BranchesOutline } from "./useBranchesOutline.ts";
+import { emptyBranchesListContent, type BranchesListContent } from "./useBranchesList.ts";
+import {
+	startKeyboardTransfer,
+	setCursor,
+	useCursorWriteBack,
+	useSelection,
+} from "#ui/use-cursor.ts";
+import { useApplyToWorkspace } from "./useApplyToWorkspace.ts";
+import type { NewBranchActions } from "./useNewBranch.ts";
 import styles from "./BranchesList.module.css";
 
 /** The filter menu, in the order it is shown. */
@@ -79,8 +88,7 @@ const filterMenuLabels: Array<[keyof BranchFilters, string]> = [
 const branchGraphStatus = (branch: ListedBranch): GraphSegmentStatus =>
 	branch.remoteRefs.length > 0 ? "LocalAndRemote" : "LocalOnly";
 
-const useIsSelected = (projectId: string, operand: Operand): boolean =>
-	useIsSelectedInList(projectId, operand, projectSlice.selectors.selectPrimaryBranchesSelection);
+const useIsSelected = (address: Address): boolean => useIsSelectedInList(address, "unapplied");
 
 const InertRow: FC<{ branch: ListedBranch; label: string }> = ({ branch, label }) => (
 	<Row interactive={false} role="treeitem" aria-label={label}>
@@ -91,22 +99,38 @@ const InertRow: FC<{ branch: ListedBranch; label: string }> = ({ branch, label }
 	</Row>
 );
 
-const CommitItem: FC<{ projectId: string; commit: Commit }> = ({ projectId, commit }) => {
-	const dispatch = useAppDispatch();
-	const operand = commitOperand({ commitId: commit.id, changeId: commit.changeId });
-	const isSelected = useIsSelected(projectId, operand);
+const CommitItem: FC<{
+	commit: Commit;
+	positionInSet: number;
+	setSize: number;
+}> = ({ commit, positionInSet, setSize }) => {
+	const address = commitAddress({ commitId: commit.id, changeId: commit.changeId });
+	const isSelected = useIsSelected(address);
 	const title = commitTitle(commit.message);
+	const copyCommit = () =>
+		startKeyboardTransfer({ sources: [address], kind: "copy", placement: "above" });
+	const menuItems: Array<NativeMenuItem> = [
+		nativeMenuItem({
+			label: "Copy Commit",
+			accelerator: toElectronAccelerator(branchesHotkeys.copy.hotkey),
+			onSelect: copyCommit,
+		}),
+	];
 
 	return (
+		// oxlint-disable-next-line jsx-a11y/interactive-supports-focus -- This page was vibecoded and needs an accessibility pass.
 		<Row
-			id={treeItemId(operand)}
+			id={treeItemId(address)}
 			role="treeitem"
 			aria-label={title ?? "(no message)"}
+			aria-level={2}
+			aria-posinset={positionInSet}
+			aria-setsize={setSize}
 			aria-selected={isSelected}
 			isSelected={isSelected}
-			onSelect={() =>
-				dispatch(projectSlice.actions.selectBranches({ projectId, selection: operand }))
-			}
+			scrollSelectedIntoView={false}
+			onSelect={() => setCursor("unapplied", address)}
+			onContextMenu={(event) => void showNativeContextMenu(event, menuItems)}
 		>
 			<GraphSegment
 				glyph="commit"
@@ -121,19 +145,118 @@ const CommitItem: FC<{ projectId: string; commit: Commit }> = ({ projectId, comm
 	);
 };
 
-const BranchCommits: FC<{ projectId: string; branch: ListedBranch }> = ({ projectId, branch }) => {
-	const { data: branchDetails } = useQuery(
-		branchDetailsQueryOptions({ projectId, ...branchDetailsParams(branch.refName.full) }),
+const BranchCommits: FC<{
+	branch: ListedBranch;
+	commits: Array<Commit> | undefined;
+	scrollElementRef: RefObject<HTMLDivElement | null>;
+	stackScrollStart: number;
+	stackSize: number;
+	branchAddressIndex: number;
+	selectedCommitIndex: number | undefined;
+}> = ({
+	branch,
+	commits,
+	scrollElementRef,
+	stackScrollStart,
+	stackSize,
+	branchAddressIndex,
+	selectedCommitIndex,
+}) => {
+	const getCommitKey = useCallback((index: number) => commits?.[index]?.id ?? index, [commits]);
+	const rangeExtractorWithSelected = useCallback(
+		(range: Range) =>
+			getRangeExtractorWithIndices(
+				range,
+				selectedCommitIndex === undefined ? [] : [selectedCommitIndex],
+			),
+		[selectedCommitIndex],
 	);
 
-	if (!branchDetails) return <InertRow branch={branch} label="Loading…" />;
+	const commitListRef = useRef<HTMLDivElement>(null);
+	const [scrollMargin, setScrollMargin] = useState(stackScrollStart);
 
-	const commits = branchOwnCommits(branch, branchDetails.commits);
+	// oxlint-disable-next-line react-hooks-js/incompatible-library -- https://github.com/TanStack/virtual/issues/1119#issuecomment-4648268095
+	const rowVirtualizer = useVirtualizer({
+		directDomUpdates: true,
+		directDomUpdatesMode: "transform",
+		count: commits?.length ?? 0,
+		getScrollElement: () => scrollElementRef.current,
+		initialOffset: () => scrollElementRef.current?.scrollTop ?? 0,
+		// Keep in sync with --single-line-row-height.
+		estimateSize: () => 28,
+		getItemKey: getCommitKey,
+		rangeExtractor: rangeExtractorWithSelected,
+		scrollMargin,
+		// Matches --scroll-gradient-height.
+		scrollPaddingStart: 14,
+		scrollPaddingEnd: 14,
+	});
+
+	const containerRef = useMergedRefs(rowVirtualizer.containerRef, commitListRef);
+
+	// Nested commit lists share the outer scroller, so the virtualizer needs this list's start in
+	// scroller coordinates. A mounted list can move when an earlier branch changes without its own
+	// DOM node changing; remeasure only when the stack moves or resizes, or when visible rows before
+	// this branch change. This avoids forcing layout on ordinary virtualizer renders.
+	useLayoutEffect(() => {
+		const element = commitListRef.current;
+		if (!element) return;
+
+		const nextScrollMargin = stackScrollStart + element.offsetTop;
+		setScrollMargin((currentScrollMargin) =>
+			currentScrollMargin === nextScrollMargin ? currentScrollMargin : nextScrollMargin,
+		);
+	}, [branchAddressIndex, stackScrollStart, stackSize]);
+
+	// Reveal the selected commit before paint when its resolved index changes. Activity reconnects
+	// layout effects on reveal without changing that index, so remembering it preserves manual
+	// scroll.
+	const lastRevealedCommitIndexRef = useRef<number>(undefined);
+
+	useLayoutEffect(() => {
+		if (
+			selectedCommitIndex !== undefined &&
+			selectedCommitIndex !== lastRevealedCommitIndexRef.current
+		)
+			rowVirtualizer.scrollToIndex(selectedCommitIndex, { align: "auto" });
+
+		lastRevealedCommitIndexRef.current = selectedCommitIndex;
+	}, [rowVirtualizer, selectedCommitIndex]);
+
+	if (commits === undefined) return <InertRow branch={branch} label="Loading…" />;
+
 	if (commits.length === 0) return <InertRow branch={branch} label="No commits." />;
 
-	return commits.map((commit) => (
-		<CommitItem key={commit.id} projectId={projectId} commit={commit} />
-	));
+	return (
+		// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- Tree items need ARIA group semantics.
+		<div ref={containerRef} role="group" className={styles.virtualContainer}>
+			{rowVirtualizer.getVirtualItems().map((virtualRow) => {
+				const commit = commits[virtualRow.index];
+				if (commit === undefined) return null;
+
+				return (
+					<div
+						key={commit.id}
+						data-index={virtualRow.index}
+						ref={rowVirtualizer.measureElement}
+						style={{
+							position: "absolute",
+							top: 0,
+							left: 0,
+							width: "100%",
+							height: virtualRow.size,
+						}}
+					>
+						<CommitItem
+							commit={commit}
+							positionInSet={virtualRow.index + 1}
+							setSize={commits.length}
+						/>
+					</div>
+				);
+			})}
+		</div>
+	);
 };
 
 const BranchItem: FC<{
@@ -141,10 +264,31 @@ const BranchItem: FC<{
 	branch: ListedBranch;
 	isTopBranch: boolean;
 	isStacked: boolean;
-}> = ({ projectId, branch, isTopBranch, isStacked }) => {
+	commits: Array<Commit> | undefined;
+	scrollElementRef: RefObject<HTMLDivElement | null>;
+	stackScrollStart: number;
+	stackSize: number;
+	branchAddressIndex: number;
+	selectedCommitIndex: number | undefined;
+	positionInSet: number;
+	setSize: number;
+}> = ({
+	projectId,
+	branch,
+	isTopBranch,
+	isStacked,
+	commits,
+	scrollElementRef,
+	stackScrollStart,
+	stackSize,
+	branchAddressIndex,
+	selectedCommitIndex,
+	positionInSet,
+	setSize,
+}) => {
 	const dispatch = useAppDispatch();
 	const branchRef = branch.refName.full;
-	const operand = branchOperand({ branchRef: encodeBytes(branchRef) });
+	const address = branchAddress({ branchRef: encodeBytes(branchRef) });
 	// A branch with no commits of its own has nothing to unfold; an unknown
 	// count keeps the affordance.
 	const canUnfold = !branchIsEmpty(branch);
@@ -152,10 +296,10 @@ const BranchItem: FC<{
 		useAppSelector((state) =>
 			projectSlice.selectors.selectBranchUnfolded(state, projectId, branchRef),
 		) && canUnfold;
-	const isSelected = useIsSelected(projectId, operand);
+	const isSelected = useIsSelected(address);
 	const [now] = useState(() => Date.now());
 
-	// Same topology as the workspace outline: nothing above the branch means the
+	// Same topology as the applied list: nothing above the branch means the
 	// rail turns in from the right, otherwise it joins the branch above it. This
 	// describes where the branch sits in the stack, so it does not change with
 	// fold state.
@@ -163,31 +307,11 @@ const BranchItem: FC<{
 
 	const review = branch.review;
 
-	const { isPending: isApplyPending, mutate: apply } = useApply();
-	const { isPending: isBranchRemovePending, mutate: branchRemove } = useBranchRemove();
+	const { isPending: isApplyPending, apply } = useApplyToWorkspace(projectId);
+	const { isPending: isBranchRemovePending, mutate: branchRemove } = useBranchRemove(projectId);
 
 	const toggleUnfolded = () => {
 		dispatch(projectSlice.actions.toggleBranchUnfolded({ projectId, branchRef }));
-	};
-
-	const applyBranch = () => {
-		apply(
-			{ projectId, existingBranch: branchRef },
-			{
-				onSuccess: (response) => {
-					const appliedRef = response.appliedBranches[0];
-					if (!appliedRef) return;
-
-					dispatch(projectSlice.actions.setOutlineTab({ projectId, tab: "workspace" }));
-					dispatch(
-						projectSlice.actions.selectOutline({
-							projectId,
-							selection: branchOperand({ branchRef: encodeBytes(appliedRef.full) }),
-						}),
-					);
-				},
-			},
-		);
 	};
 
 	const openReviewInBrowser = async (): Promise<void> => {
@@ -200,7 +324,7 @@ const BranchItem: FC<{
 			// brings the whole stack with it — the label says so.
 			label: isTopBranch && isStacked ? "Apply Stack to Workspace" : "Apply to Workspace",
 			enabled: !isApplyPending,
-			onSelect: applyBranch,
+			onSelect: () => apply(branchRef),
 		}),
 		nativeMenuSeparator,
 		nativeMenuItem({
@@ -229,9 +353,12 @@ const BranchItem: FC<{
 
 	return (
 		<div
-			id={treeItemId(operand)}
+			id={treeItemId(address)}
 			role="treeitem"
 			aria-label={branch.displayName}
+			aria-level={1}
+			aria-posinset={positionInSet}
+			aria-setsize={setSize}
 			aria-selected={isSelected}
 			// A branch with nothing to unfold is a leaf: omit the attribute
 			// entirely rather than reporting it as collapsed.
@@ -239,9 +366,7 @@ const BranchItem: FC<{
 		>
 			<Row
 				isSelected={isSelected}
-				onSelect={() =>
-					dispatch(projectSlice.actions.selectBranches({ projectId, selection: operand }))
-				}
+				onSelect={() => setCursor("unapplied", address)}
 				onContextMenu={(event) => {
 					void showNativeContextMenu(event, menuItems);
 				}}
@@ -268,13 +393,19 @@ const BranchItem: FC<{
 					<RowMeta>
 						{showsAuthorMeta && (
 							<span
-								className={classes(rowStyles.fadedText, rowStyles.metaItem)}
+								className={classes(
+									rowStyles.fadedText,
+									rowStyles.metaItem,
+									rowStyles.metaItemShrinkable,
+								)}
 								title={branch.lastAuthor?.email}
 							>
-								{lastAuthorName !== undefined && <>{lastAuthorName} </>}
-								{branch.updatedAtMs !== null && (
-									<RelativeTime timestamp={branch.updatedAtMs} now={now} />
-								)}
+								<span className={rowStyles.metaItemText}>
+									{lastAuthorName !== undefined && <>{lastAuthorName} </>}
+									{branch.updatedAtMs !== null && (
+										<RelativeTime timestamp={branch.updatedAtMs} now={now} />
+									)}
+								</span>
 							</span>
 						)}
 
@@ -320,61 +451,179 @@ const BranchItem: FC<{
 			</Row>
 
 			{unfolded && (
-				// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- Tree items need ARIA group semantics.
-				<div role="group">
-					<BranchCommits projectId={projectId} branch={branch} />
-				</div>
+				<BranchCommits
+					branch={branch}
+					commits={commits}
+					scrollElementRef={scrollElementRef}
+					stackScrollStart={stackScrollStart}
+					stackSize={stackSize}
+					branchAddressIndex={branchAddressIndex}
+					selectedCommitIndex={selectedCommitIndex}
+				/>
 			)}
 		</div>
 	);
 };
 
 export const BranchesList: FC<
-	{ projectId: string; outline: BranchesOutline } & ComponentProps<"div">
-> = ({ projectId, outline, ...restProps }) => {
+	{
+		projectId: string;
+		branches: BranchesListContent | undefined;
+		isPending: boolean;
+		isError: boolean;
+		/**
+		 * Owned by the sidebar and shared with its unapplied header, so both `+`
+		 * buttons offer the same menu and see the same create in flight.
+		 */
+		newBranch: NewBranchActions;
+	} & ComponentProps<"div">
+> = ({ projectId, branches, isPending, isError, newBranch, ...restProps }) => {
 	const dispatch = useAppDispatch();
-	// Derived once in WorkspacePage and passed down, so the rendered list and the
-	// navigation index that resolves selection are the same object.
-	const { stacks, navigationIndex, isPending, isError } = outline;
+
+	// WorkspacePage resolves selection from this query data and passes the same data down, so
+	// selection and rendering consume the same snapshot.
+	const { stacks, stackIndexByAddressIndex, addressSpace } = branches ?? emptyBranchesListContent;
 	const filters = useAppSelector((state) =>
 		projectSlice.selectors.selectBranchFilters(state, projectId),
 	);
 	const search = useAppSelector((state) =>
 		projectSlice.selectors.selectBranchSearch(state, projectId),
 	);
-
-	const selection = useAppSelector((state) =>
-		projectSlice.selectors.selectSelectionBranches(state, projectId, navigationIndex),
-	);
-	const storedSelection = useAppSelector((state) =>
-		projectSlice.selectors.selectPrimaryBranchesSelection(state, projectId),
+	const noOperationPending = useAppSelector(
+		(state) => projectSlice.selectors.selectPendingOperation(state, projectId)._tag === "None",
 	);
 
-	const outOfSyncSelection = selectionOutOfSync(selection, storedSelection);
-	useEffect(() => {
-		if (outOfSyncSelection !== null)
-			dispatch(projectSlice.actions.selectBranches({ projectId, selection: outOfSyncSelection }));
-	}, [dispatch, outOfSyncSelection, projectId]);
+	// `onlyStacks` is the one filter that hides branches the resting list would
+	// show — the other two default to narrowing and only ever widen from there —
+	// so it, and a search, are what make an empty list a no-match rather than a
+	// state at rest.
+	const isNarrowed = (search ?? "").trim() !== "" || filters.onlyStacks;
+	const isEmptyAtRest = stacks.length === 0 && !isPending && !isError && !isNarrowed;
 
-	const hotkeysRef = useRef<HTMLDivElement>(null);
-	const { isPending: isBranchRemovePending, mutate: branchRemove } = useBranchRemove();
+	const selection = useSelection("unapplied", addressSpace);
+	useCursorWriteBack("unapplied", addressSpace);
+
+	const panelRef = useRef<HTMLDivElement>(null);
+	const treeRef = useRef<HTMLDivElement>(null);
+	const scrollElementRef = useRef<HTMLDivElement>(null);
+
+	// Activity preserves the scroller DOM but temporarily clears its ref; nested virtualizer
+	// effects reconnect before that ref is restored. Keep the last node available to them. A real
+	// unmount discards this ref, and the stable callback avoids ref churn on virtualizer renders.
+	const retainScrollElement = useCallback((element: HTMLDivElement | null) => {
+		if (element) scrollElementRef.current = element;
+	}, []);
+
+	// The virtualiser treats getItemKey identity as part of its measurement model. Keep it stable
+	// across selection renders, but refresh estimates when either stack identity or commit counts
+	// change.
+	const getStackKey = useCallback(
+		(index: number) => stacks[index]?.branches[0]?.branch.refName.full ?? index,
+		[stacks],
+	);
+	const selectedAddressKey = selection === null ? undefined : addressIdentityKey(selection);
+	const selectedAddressIndex =
+		selectedAddressKey === undefined ? undefined : addressSpace.indexByKey.get(selectedAddressKey);
+	const selectedStackIndex =
+		selectedAddressIndex === undefined ? undefined : stackIndexByAddressIndex[selectedAddressIndex];
+	const rangeExtractorWithSelected = useCallback(
+		(range: Range) =>
+			getRangeExtractorWithIndices(
+				range,
+				selectedStackIndex === undefined ? [] : [selectedStackIndex],
+			),
+		[selectedStackIndex],
+	);
+
+	// oxlint-disable-next-line react-hooks-js/incompatible-library -- https://github.com/TanStack/virtual/issues/1119#issuecomment-4648268095
+	const rowVirtualizer = useVirtualizer({
+		directDomUpdates: true,
+		directDomUpdatesMode: "transform",
+		count: stacks.length,
+		getScrollElement: () => scrollElementRef.current,
+		estimateSize: (index) => {
+			// Keep in sync with Row.module.css and StackCard.module.css.
+			const singleLineRowHeight = 28;
+			const branchMetaLineHeight = 20;
+			const branchMetaPaddingEnd = 6;
+			const stackBodyPaddingStart = 6;
+			const stackBorderHeight = 1;
+			const stackFinalConnectorHeight = 8;
+			const stackBetweenBranchConnectorHeight = 14;
+
+			const branchCount = stacks[index]?.branches.length ?? 0;
+			const commitCount = stacks[index]?.commitCount ?? 0;
+
+			return (
+				stackBodyPaddingStart +
+				stackBorderHeight +
+				stackFinalConnectorHeight +
+				branchCount * (singleLineRowHeight + branchMetaLineHeight + branchMetaPaddingEnd) +
+				commitCount * singleLineRowHeight +
+				Math.max(0, branchCount - 1) * stackBetweenBranchConnectorHeight
+			);
+		},
+		getItemKey: getStackKey,
+		rangeExtractor: rangeExtractorWithSelected,
+		// Matches --scroll-gradient-height.
+		scrollPaddingStart: 14,
+		scrollPaddingEnd: 14,
+	});
+
+	// Activity reconnects layout effects on reveal without changing the selection. Remember the
+	// handled address so revealing the tab preserves manual scroll.
+	const lastRevealedAddressKeyRef = useRef<string>(undefined);
+
+	// If the selected row's stack is not rendered, scroll the outer virtualizer to it. The row or
+	// nested virtualizer then handles precise alignment.
+	useLayoutEffect(() => {
+		const selectedStackIsMounted = rowVirtualizer
+			.getVirtualItems()
+			.some((virtualRow) => virtualRow.index === selectedStackIndex);
+
+		if (
+			selectedAddressKey !== undefined &&
+			selectedAddressKey !== lastRevealedAddressKeyRef.current &&
+			selectedStackIndex !== undefined &&
+			!selectedStackIsMounted
+		)
+			rowVirtualizer.scrollToIndex(selectedStackIndex, { align: "auto" });
+
+		lastRevealedAddressKeyRef.current = selectedAddressKey;
+	}, [rowVirtualizer, selectedAddressKey, selectedStackIndex]);
+
+	const { isPending: isBranchRemovePending, mutate: branchRemove } = useBranchRemove(projectId);
 	const selectedBranchIsLocal =
 		selection?._tag === "Branch" && decodeBytes(selection.branchRef).startsWith("refs/heads/");
 	const removeBranch = (branchRef: Array<number>) => {
 		branchRemove({ projectId, refName: branchRef });
 	};
 
-	useNavigationIndexHotkeys({
-		navigationIndex,
+	useAddressSpaceHotkeys({
 		projectId,
-		group: "Outline",
-		select: (newItem) =>
-			dispatch(projectSlice.actions.selectBranches({ projectId, selection: newItem })),
+		addressSpace,
+		group: "Sidebar",
+		select: (newItem) => setCursor("unapplied", newItem),
 		selection,
-		selectSectionPredicate: (operand) => operand._tag === "Branch",
-		ref: hotkeysRef,
-		getKey: operandIdentityKey,
+		selectSectionPredicate: (address) => address._tag === "Branch",
+		ref: treeRef,
+		getKey: addressIdentityKey,
 	});
+
+	useHotkey(
+		branchesHotkeys.copy.hotkey,
+		() => {
+			if (selection?._tag !== "Commit") return;
+			startKeyboardTransfer({ sources: [selection], kind: "copy", placement: "above" });
+		},
+		{
+			conflictBehavior: "allow",
+			enabled: noOperationPending && selection?._tag === "Commit",
+			ignoreInputs: true,
+			meta: branchesHotkeys.copy.meta,
+			target: treeRef,
+		},
+	);
 
 	useHotkey(
 		branchesHotkeys.deleteBranchRef.hotkey,
@@ -384,9 +633,28 @@ export const BranchesList: FC<
 		{
 			enabled: selectedBranchIsLocal && !isBranchRemovePending,
 			meta: branchesHotkeys.deleteBranchRef.meta,
-			target: hotkeysRef,
+			target: treeRef,
 		},
 	);
+
+	const firstBranch = stacks[0]?.branches[0]?.branch;
+	const branchFilter = useListFilter({
+		filter: search,
+		setFilter: (search) => dispatch(projectSlice.actions.setBranchSearch({ projectId, search })),
+		inputId: "branches-filter-input",
+		subject: "branches",
+		scope: "sidebar",
+		selectionKey: selection === null ? null : addressIdentityKey(selection),
+		firstKey:
+			firstBranch === undefined
+				? undefined
+				: addressIdentityKey(branchAddress({ branchRef: encodeBytes(firstBranch.refName.full) })),
+		onEnterList: () => {
+			if (selection !== null) setCursor("unapplied", selection);
+		},
+		panelRef,
+		listRef: treeRef,
+	});
 
 	const showFilterMenu = (trigger: HTMLElement) => {
 		void showNativeMenuFromTrigger(
@@ -404,90 +672,143 @@ export const BranchesList: FC<
 	};
 
 	return (
-		<div {...restProps} className={classes(restProps.className, styles.container)}>
-			<div className={styles.toolbar}>
-				<button
-					type="button"
-					aria-label="Branch filters"
-					className={getButtonClassName({ iconOnly: true })}
-					onClick={(evt) => showFilterMenu(evt.currentTarget)}
-				>
-					<Icon name="filter" />
-				</button>
+		<div {...restProps} className={classes(restProps.className, styles.container)} ref={panelRef}>
+			{branchFilter.rowProps === null ? (
+				<SectionHeaderRow
+					className={styles.header}
+					label="Recent branches"
+					actions={
+						<Toolbar.Root aria-label="Branch list actions" render={<RowToolbar forceVisible />}>
+							<Toolbar.Group className={styles.headerGroup}>
+								<Toolbar.Button
+									aria-label="Branch filters"
+									className={getRowButtonClassName({ size: "regular", iconOnly: true })}
+									onClick={(evt) => showFilterMenu(evt.currentTarget)}
+								>
+									<Icon name="filter" />
+								</Toolbar.Button>
 
-				<Field.Root render={<FieldRootStyles />} className={styles.filterField}>
-					<FieldControlWithIcon
-						className="text-13"
-						icon={<Icon name="search" />}
-						aria-label="Filter branches"
-						placeholder="Filter branches…"
-						value={search}
-						onChange={(evt) =>
-							dispatch(
-								projectSlice.actions.setBranchSearch({
-									projectId,
-									search: evt.currentTarget.value,
-								}),
-							)
-						}
-					/>
-				</Field.Root>
-			</div>
+								<Toolbar.Button
+									aria-label="Filter branches"
+									className={getRowButtonClassName({ size: "regular", iconOnly: true })}
+									onClick={branchFilter.open}
+								>
+									<Icon name="search" />
+								</Toolbar.Button>
+							</Toolbar.Group>
 
-			<Scroller className={styles.listArea} viewportClassName={styles.list}>
-				{stacks.length === 0 && (
-					<p className={classes("text-13", styles.msg)}>
-						{isPending
-							? "Loading branches…"
-							: isError
-								? "Unable to load branches."
-								: search.trim() !== ""
-									? "No matching branches."
-									: "No branches."}
-					</p>
-				)}
+							<Toolbar.Separator className={styles.headerSeparator} />
+
+							<Toolbar.Button
+								aria-label="New branch"
+								className={getRowButtonClassName({ size: "regular", iconOnly: true })}
+								onClick={(evt) => {
+									void showNativeMenuFromTrigger(evt.currentTarget, newBranch.menuItems);
+								}}
+							>
+								{newBranch.isPending ? <Icon name="spinner" /> : <Icon name="plus" />}
+							</Toolbar.Button>
+						</Toolbar.Root>
+					}
+				/>
+			) : (
+				<ListFilterRow {...branchFilter.rowProps} />
+			)}
+
+			<div
+				ref={retainScrollElement}
+				className={classes(uiStyles.scroller, styles.list)}
+				data-empty={isEmptyAtRest}
+			>
+				{/* Loading, failing and narrowed-to-nothing all stay one line where the
+				    rows would be: none of them is a surface at rest, and an answer about
+				    a filter belongs next to the filter that caused it. Only a list that
+				    is empty with nothing narrowing it gets the block. */}
+				{stacks.length === 0 &&
+					(isPending ? (
+						<p className={classes("text-13", styles.msg)}>Loading branches…</p>
+					) : isError ? (
+						<p className={classes("text-13", styles.msg)}>Unable to load branches.</p>
+					) : isNarrowed ? (
+						<p className={classes("text-13", styles.msg)}>No matching branches.</p>
+					) : (
+						<EmptyState
+							illustration="cactus"
+							title="No branches here"
+							// No button: the header's `+` already starts one, and it is the
+							// only action this state has.
+							description="Branches you are not working on show up in this list"
+						/>
+					))}
 
 				<div
 					tabIndex={0}
 					role="tree"
 					aria-label="Branches"
 					aria-activedescendant={selection ? treeItemId(selection) : undefined}
-					data-selection-scope={"outline" satisfies SelectionScope}
-					className={styles.tree}
-					onFocus={() =>
-						dispatch(projectSlice.actions.setDetailsSelectionScope({ projectId, scope: "outline" }))
-					}
-					ref={useMergedRefs(hotkeysRef, useAutofocusSelectionScope())}
+					data-focus-scope={"sidebar" satisfies FocusScope}
+					className={classes(styles.tree, styles.virtualContainer)}
+					ref={useMergedRefs(rowVirtualizer.containerRef, treeRef, useAutofocusScope())}
 				>
-					{stacks.map((stack) => (
-						<StackCard
-							key={assert(stack.branches[0]).refName.full}
-							// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- A stack is an ARIA group of tree items.
-							role="group"
-							aria-label="Stack"
-							bodyClassName={styles.stackBody}
-						>
-							{stack.branches.map((branch, index) => (
-								<Fragment key={branch.refName.full}>
-									<BranchItem
-										projectId={projectId}
-										branch={branch}
-										isTopBranch={index === 0}
-										isStacked={stack.branches.length > 1}
-									/>
+					{rowVirtualizer.getVirtualItems().map((virtualRow) => {
+						const stack = stacks[virtualRow.index];
+						if (stack === undefined) return null;
 
-									{/* Carries the rail down to the next branch, and past the
-									    last one as the card's floor — as the workspace card's
-									    segment connectors do. */}
-									<Row interactive={false} className={stackCardStyles.railConnector}>
-										<GraphSegment glyph="parent" status={branchGraphStatus(branch)} />
-									</Row>
-								</Fragment>
-							))}
-						</StackCard>
-					))}
+						return (
+							<StackCard
+								key={assert(stack.branches[0]).branch.refName.full}
+								data-index={virtualRow.index}
+								ref={rowVirtualizer.measureElement}
+								style={{
+									position: "absolute",
+									top: 0,
+									left: 0,
+									width: "100%",
+									transform: `translateY(${virtualRow.start}px)`,
+								}}
+								// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- A stack is an ARIA group of tree items.
+								role="group"
+								aria-label="Stack"
+							>
+								{stack.branches.map(({ branch, addressIndex, commits }, index) => {
+									const selectedCommitIndex =
+										selectedAddressIndex !== undefined &&
+										selectedAddressIndex > addressIndex &&
+										selectedAddressIndex <= addressIndex + (commits?.length ?? 0)
+											? selectedAddressIndex - addressIndex - 1
+											: undefined;
+
+									return (
+										<Fragment key={branch.refName.full}>
+											<BranchItem
+												projectId={projectId}
+												branch={branch}
+												isTopBranch={index === 0}
+												isStacked={stack.branches.length > 1}
+												commits={commits}
+												scrollElementRef={scrollElementRef}
+												stackScrollStart={virtualRow.start}
+												stackSize={virtualRow.size}
+												branchAddressIndex={addressIndex}
+												selectedCommitIndex={selectedCommitIndex}
+												positionInSet={index + 1}
+												setSize={stack.branches.length}
+											/>
+
+											{/* Carries the rail down to the next branch, and past the
+											    last one as the card's floor — as the workspace card's
+											    segment connectors do. */}
+											<Row interactive={false} className={stackCardStyles.railConnector}>
+												<GraphSegment glyph="parent" status={branchGraphStatus(branch)} />
+											</Row>
+										</Fragment>
+									);
+								})}
+							</StackCard>
+						);
+					})}
 				</div>
-			</Scroller>
+			</div>
 		</div>
 	);
 };

@@ -268,6 +268,7 @@ impl Sandbox {
             &repo,
             &meta,
             self.project_meta(),
+            &mut crate::project_db(&repo).expect("sandbox project database always opens"),
             but_graph::init::Options::default(),
         )
         .unwrap();
@@ -302,6 +303,18 @@ impl Sandbox {
     #[cfg(feature = "sandbox-but-api")]
     pub fn try_app_settings(&self) -> Option<&AppSettings> {
         self.app_settings.as_ref()
+    }
+
+    /// Mutable access to the app settings every [`Self::context()`] is built from, for tests
+    /// that need a non-default feature flag. Panics if these weren't initialized.
+    ///
+    /// This only changes the in-memory copy, which is what `context()` reads; it does not
+    /// rewrite the settings file that an invoked `but` binary would load.
+    #[cfg(feature = "sandbox-but-api")]
+    pub fn app_settings_mut(&mut self) -> &mut AppSettings {
+        self.app_settings
+            .as_mut()
+            .expect("BUG: app settings are not initialized")
     }
 
     /// Return app settings or panic if these weren't initialized.
@@ -481,6 +494,7 @@ impl Sandbox {
         let settings = AppSettings {
             context_lines: 3,
             onboarding_complete: true,
+            agent_skill_notices: true,
             telemetry: TelemetrySettings {
                 app_metrics_enabled: false,
                 app_error_reporting_enabled: false,
@@ -491,7 +505,6 @@ impl Sandbox {
                 oauth_client_id: "but journey tests won't use github".to_string(),
             },
             feature_flags: FeatureFlags {
-                unapply_v3_pgm: false,
                 single_branch: true,
                 watch_mode: "auto".into(),
                 write_commit_evolution: true,

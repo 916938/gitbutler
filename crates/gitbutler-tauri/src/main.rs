@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
 
                 // TODO(mtsgrd): Is there a better way to disable devtools in E2E tests?
                 #[cfg(debug_assertions)]
-                if tauri_app.config().product_name != Some("GitButler Test".to_string()) {
+                if tauri_app.config().product_name.as_deref() != Some("GitButler Test") {
                     window.open_devtools();
                 }
 
@@ -236,12 +236,15 @@ fn main() -> anyhow::Result<()> {
                 diff::tauri_commit_details_with_line_stats::commit_details_with_line_stats,
                 workspace::tauri_get_workspace::get_workspace,
                 workspace::tauri_set_target_ref_and_init_project::set_target_ref_and_init_project,
+                workspace::tauri_resolve_worktree_conflicts::resolve_worktree_conflicts,
                 but_api::branch::tauri_branch_diff::branch_diff,
                 but_api::branch::tauri_move_branch::move_branch,
                 but_api::branch::tauri_tear_off_branch::tear_off_branch,
                 but_api::branch::tauri_branch_remove::branch_remove,
                 but_api::branch::tauri_branch_create::branch_create,
                 but_api::branch::tauri_branch_rename::branch_rename,
+                but_api::branch::tauri_branch_canned_name::branch_canned_name,
+                but_api::target_commits::tauri_workspace_target_commits::workspace_target_commits,
                 legacy::git::tauri_git_remote_branches::git_remote_branches,
                 legacy::git::tauri_delete_all_data::delete_all_data,
                 legacy::git::tauri_git_set_global_config::git_set_global_config,
@@ -338,8 +341,6 @@ fn main() -> anyhow::Result<()> {
                 legacy::workspace::tauri_branch_details::branch_details,
                 legacy::workspace::tauri_discard_worktree_changes::discard_worktree_changes,
                 legacy::workspace::tauri_stash_into_branch::stash_into_branch,
-                legacy::workspace::tauri_canned_branch_name::canned_branch_name,
-                legacy::workspace::tauri_target_commits::target_commits,
                 legacy::workspace::tauri_workspace_branch_and_ancestors_push::workspace_branch_and_ancestors_push,
                 legacy::absorb::tauri_absorb::absorb,
                 legacy::absorb::tauri_absorption_plan::absorption_plan,

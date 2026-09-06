@@ -422,6 +422,9 @@ fn workspace_snapshot_with_meta(
     let mut info = but_workspace::head_info(
         repo,
         meta,
+        // A throwaway handle: observations are read-only and must not create or
+        // migrate the project database, and worktree discovery stays off.
+        &mut but_db::DbHandle::new_at_path(":memory:")?,
         but_workspace::ref_info::Options {
             expensive_commit_info: false,
             project_meta: but_core::ref_metadata::ProjectMeta::resolve(repo)?,
@@ -429,8 +432,8 @@ fn workspace_snapshot_with_meta(
         },
     )?;
 
-    // Derive each segment's PR association from the forge review cache instead of
-    // stored branch metadata, so the observation records live associations.
+    // Enrich active associations from the forge cache while retaining durable
+    // stored identity for integrated branches.
     info.apply_forge_review_associations(repo, &forge_prs_by_head(repo));
 
     let mut observed_targets = ObservedTargets::default();
@@ -514,27 +517,31 @@ fn workspace_snapshot_with_meta(
     })
 }
 
-/// Best-effort forge PR association map (`pushed short name -> PR number`), read
+/// Best-effort forge PR association map (`pushed short name -> ReviewAssociation`,
+/// i.e. `(PR number, is open, merged head)`), read
 /// from the project's cached review list. Opened read-only and returns empty when
 /// the project database is absent or unreadable, so the observation degrades to
 /// "no reviews" rather than failing.
-fn forge_prs_by_head(repo: &gix::Repository) -> HashMap<String, usize> {
+fn forge_prs_by_head(repo: &gix::Repository) -> HashMap<String, but_forge::ReviewAssociation> {
     let Ok(storage_dir) = repo.gitbutler_storage_path() else {
         return HashMap::new();
     };
     match but_db::DbHandle::open_existing_read_only_in_directory(&storage_dir) {
-        Ok(Some(db)) => but_forge::pr_numbers_by_head(&db).unwrap_or_default(),
+        Ok(Some(db)) => but_forge::review_associations_by_head(&db).unwrap_or_default(),
         _ => HashMap::new(),
     }
 }
 
 /// Resolve the cache-derived PR number for a single local branch by matching its
-/// remote-tracking short name against `prs_by_head`, mirroring the projection
-/// resolver used for workspace segments.
+/// remote-tracking short name against `prs_by_head`.
+///
+/// Deliberately looser than the workspace projection resolver: any review
+/// state is accepted (capture is observational), and there is no
+/// `owner:branch` prefixed-head fallback.
 fn resolve_branch_pr(
     repo: &gix::Repository,
     ref_name: &gix::refs::FullNameRef,
-    prs_by_head: &HashMap<String, usize>,
+    prs_by_head: &HashMap<String, but_forge::ReviewAssociation>,
 ) -> Option<usize> {
     let remote_tracking = repo
         .branch_remote_tracking_ref_name(ref_name, gix::remote::Direction::Fetch)
@@ -545,7 +552,11 @@ fn resolve_branch_pr(
         remote_tracking.as_ref(),
         &repo.remote_names(),
     )?;
-    prs_by_head.get(short.to_str().ok()?).copied()
+    // Observational capture: the association is wanted whatever became of the
+    // review, so turns recorded after a merge still carry its target.
+    prs_by_head
+        .get(short.to_str().ok()?)
+        .map(|(number, ..)| *number)
 }
 
 fn review_targets(branch_key: &str, metadata: Option<&Branch>) -> Vec<ReviewTarget> {

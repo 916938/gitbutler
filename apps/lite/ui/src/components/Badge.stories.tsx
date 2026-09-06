@@ -1,9 +1,15 @@
 import preview from "#storybook/preview";
-import { Badge, type BadgeVariant } from "./Badge.tsx";
+import { Badge, type BadgeSize, type BadgeVariant } from "./Badge.tsx";
 import { Icon } from "./Icon.tsx";
 
 const meta = preview.meta({
 	component: Badge,
+	parameters: {
+		design: {
+			type: "figma",
+			url: "https://www.figma.com/design/cqdnAotT8n9op8WGYLOHg4/%E2%9A%9B%EF%B8%8F-Lite-Core?node-id=706-453",
+		},
+	},
 	argTypes: {
 		variant: {
 			control: "select",
@@ -16,6 +22,10 @@ const meta = preview.meta({
 				"purple",
 				"blue",
 			] satisfies Array<BadgeVariant>,
+		},
+		size: {
+			control: "inline-radio",
+			options: ["regular", "large"] satisfies Array<BadgeSize>,
 		},
 	},
 	args: {
@@ -40,11 +50,26 @@ export const AllVariants = meta.story({
 	),
 });
 
+export const AllSizes = meta.story({
+	render: () => (
+		<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+			<Badge variant="fillGray">regular</Badge>
+			<Badge variant="fillGray" size="large">
+				large
+			</Badge>
+			<Badge variant="safe">42</Badge>
+			<Badge variant="safe" size="large">
+				42
+			</Badge>
+		</div>
+	),
+});
+
 export const Inverted = meta.story({
 	render: () => (
 		<div
 			style={{
-				["--badge-inverted" as string]: "true",
+				["--selection-inverted" as string]: "true",
 				display: "flex",
 				gap: 8,
 				alignItems: "center",
@@ -77,6 +102,14 @@ export const WithIcon = meta.story({
 			</Badge>
 			<Badge variant="warn">
 				<Icon name="warning" size={12} />
+			</Badge>
+			<Badge variant="safe">
+				<Icon name="tick" size={12} />
+				Passed
+			</Badge>
+			<Badge variant="safe" size="large">
+				<Icon name="tick" size={12} />
+				Passed
 			</Badge>
 		</div>
 	),

@@ -52,10 +52,10 @@ fn assert_single_branch_status_before_push(env: &Sandbox) {
         .success()
         .stderr_eq(str![])
         .stdout_eq(str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ ma [main]
-┊●   1 unpushed work
+┊●   pxt unpushed work
 ┊●   nmy M (no changes)
 ├╯
 ┊
@@ -72,14 +72,14 @@ fn assert_single_branch_status_after_push(env: &Sandbox) {
         .success()
         .stderr_eq(str![])
         .stdout_eq(str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ ma [main] (merged upstream)
-┊●   1 unpushed work
+┊●   pxt unpushed work
 ┊●   nmy M (no changes)
 ├╯
 ┊
-┊● d50ec84 (upstream: origin/main) 2 new commits
+┊● d781bd0 (upstream: origin/main) 2 new commits
 ├╯ e31e6ca (common base) 2000-01-02 add init
 
 Hint: origin/main moved ahead; run `but pull` to update the workspace
@@ -326,7 +326,6 @@ fn push_rejects_merged_upstream_branch() {
 Error: Branch 'A' is merged upstream
 
 Hint: Most likely you want `but pull`, which updates the workspace and removes landed work. In rare cases `--allow-merged` can bypass this check
-
 
 "#]]);
 }

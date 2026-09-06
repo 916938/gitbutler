@@ -1,24 +1,41 @@
 import { decodeBytes, encodeBytes } from "#ui/api/bytes.ts";
+import { remapSearchBranch, remapSearchCommits, setCursor } from "#ui/use-cursor.ts";
 import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
 import {
+	branchDetailsQueryOptions,
 	currentForgeLoginQueryOptions,
 	getReviewQueryOptions,
 	headInfoQueryOptions,
 	guiSettingsQueryOptions,
 	listCommentReactionsQueryOptions,
 	listReviewCommentsQueryOptions,
+	listReviewThreadsQueryOptions,
 	listReviewReactionsQueryOptions,
+	treeChangeDiffsQueryOptions,
 	workspaceFetchQueryOptions,
 } from "#ui/api/queries.ts";
 import { shortCommitId } from "#ui/commit.ts";
+import {
+	buildCommitMessagePrompt,
+	COMMIT_MESSAGE_SYSTEM_PROMPT,
+} from "#ui/commit-message-generation.ts";
+import { streamGeneratedText } from "#ui/ai-streaming.ts";
+import { branchDetailsParams } from "#ui/branch.ts";
+import {
+	buildPrDescriptionPrompt,
+	PR_DESCRIPTION_SYSTEM_PROMPT,
+	splitGeneratedDescription,
+} from "#ui/pr-description-generation.ts";
 import { errorMessageForToast } from "#ui/errors.ts";
+import { oversizedFile, toBase64, UPLOAD_SIZE_LIMIT } from "#ui/uploads.ts";
 import { createDiffSpec, resolveDiffSpecs } from "#ui/operations/diff-specs.ts";
 import {
 	discardChangesToastOptions,
 	rejectedChangesToastOptions,
 } from "#ui/operations/toastOptions.tsx";
-import { commitOperand, filesUnder, type FileParent } from "#ui/operands.ts";
+import { commitAddress, addressEquals, type FileParent } from "#ui/addresses.ts";
 import { projectSlice } from "#ui/projects/state.ts";
+import { projectAiSettingsQueryOptions } from "#ui/project-ai-settings.ts";
 import { type AppDispatch, useAppDispatch, useAppStore } from "#ui/store.ts";
 import { formatRelativeTime } from "#ui/time.ts";
 import { Toast } from "@base-ui/react";
@@ -28,6 +45,7 @@ import type {
 	DiffSpec,
 	ForgeReview,
 	ForgeReviewComment,
+	ForgeReviewThreadComment,
 	ForgeReviewReaction,
 	ForgeReviewUser,
 	Snapshot,
@@ -36,6 +54,7 @@ import type {
 import { type QueryClient, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { GUISettings } from "#electron/settings.ts";
 import { moveDraftPR } from "#ui/pr.ts";
+import { presentableOperation } from "#ui/snapshot.ts";
 
 declare module "@tanstack/react-query" {
 	interface Register {
@@ -54,6 +73,39 @@ const pluralRules = new Intl.PluralRules("en");
 // oxlint-disable-next-line typescript/no-explicit-any
 type PromiseReturnType<T> = T extends (...args: Array<any>) => Promise<infer U> ? U : never;
 type AnyResponse = PromiseReturnType<(typeof window.lite)[keyof typeof window.lite]>;
+
+type GenerateCommitMessageInput = {
+	projectId: string;
+	changes: Array<TreeChange>;
+	previousMessage: string;
+	onValue: (value: string) => void;
+};
+
+/** Loads selected patches and streams a generated commit message to the caller. */
+export const useGenerateCommitMessage = () => {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (input: GenerateCommitMessageInput) => {
+			const [settings, patches] = await Promise.all([
+				queryClient.ensureQueryData(projectAiSettingsQueryOptions(input.projectId)),
+				Promise.all(
+					input.changes.map((change) =>
+						queryClient.ensureQueryData(
+							treeChangeDiffsQueryOptions({ projectId: input.projectId, change }),
+						),
+					),
+				),
+			]);
+			const prompt = buildCommitMessagePrompt(settings.commitMessagePrompt, input.changes, patches);
+			return streamGeneratedText(
+				(onToken) => window.lite.streamAiResponse(COMMIT_MESSAGE_SYSTEM_PROMPT, prompt, onToken),
+				input.onValue,
+				() => input.onValue(input.previousMessage),
+			);
+		},
+		meta: { failureTitle: "Failed to generate commit message" },
+	});
+};
 
 export const syncCoreCaches = (
 	queryClient: QueryClient,
@@ -78,6 +130,8 @@ export const syncCoreCaches = (
 			replacedCommits: workspace.replacedCommits,
 		}),
 	);
+	// Same tick as the headInfo push, so a `commit:` URL param never dangles.
+	remapSearchCommits(workspace.replacedCommits);
 };
 
 export const useAbsorb = ({ projectId }: { projectId: string }) =>
@@ -145,26 +199,115 @@ export const useBranchCreate = () => {
 	});
 };
 
-export const usePublishReview = () =>
+/**
+ * Creates a branch at the target and checks it out, leaving the workspace
+ * behind the way a plain `git checkout -b` would — the counterpart to
+ * {@link useBranchCreate}, which adds one to the workspace instead.
+ */
+export const useBranchCheckoutNew = () => {
+	const dispatch = useAppDispatch();
+	return useMutation({
+		mutationFn: window.lite.branchCheckoutNew,
+		onSuccess: async (response, input, _context, mutation) => {
+			syncCoreCaches(mutation.client, dispatch, input.projectId, response);
+		},
+		meta: { failureTitle: "Failed to create and switch to branch" },
+	});
+};
+
+export const usePublishReview = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "publishReview"],
 		mutationFn: window.lite.publishReview,
 		meta: { failureTitle: "Failed to create pull request" },
 	});
 
-export const useUpdateReview = () =>
+type GeneratePrDescriptionInput = {
+	projectId: string;
+	sourceBranch: string;
+	previousTitle: string;
+	previousBody: string;
+	/** Receives the body only; the title lands once the answer is complete. */
+	onBody: (body: string) => void;
+};
+
+/** Loads the branch's commits and streams a generated PR title and description. */
+export const useGeneratePrDescription = () => {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: async (input: GeneratePrDescriptionInput) => {
+			const details = await queryClient.ensureQueryData(
+				branchDetailsQueryOptions({
+					projectId: input.projectId,
+					...branchDetailsParams(input.sourceBranch),
+				}),
+			);
+			const prompt = buildPrDescriptionPrompt(
+				input.previousTitle,
+				input.previousBody,
+				details.commits,
+			);
+			// Only the body is ever written mid-stream, so only the body is put
+			// back — the title is not touched until the answer is complete.
+			const response = await streamGeneratedText(
+				(onToken) => window.lite.streamAiResponse(PR_DESCRIPTION_SYSTEM_PROMPT, prompt, onToken),
+				(partial) => input.onBody(splitGeneratedDescription(partial).body),
+				() => input.onBody(input.previousBody),
+			);
+			return splitGeneratedDescription(response);
+		},
+		meta: { failureTitle: "Failed to generate description" },
+	});
+};
+
+/**
+ * Upload files and return them in the order given, so the markdown they turn
+ * into matches the order they were picked or dropped in.
+ *
+ * One failure fails the batch: a body half-linking a set of screenshots is
+ * worse than one the user retries.
+ */
+export const useUploadFiles = () =>
 	useMutation({
+		mutationFn: async (files: Array<File>) => {
+			const tooLarge = oversizedFile(files);
+			if (tooLarge !== undefined) {
+				throw new Error(
+					`${tooLarge.name} is ${(tooLarge.size / (1024 * 1024)).toFixed(1)} MB, over the ${
+						UPLOAD_SIZE_LIMIT / (1024 * 1024)
+					} MB upload limit`,
+				);
+			}
+			return Promise.all(
+				files.map(async (file) =>
+					window.lite.uploadFile({
+						filename: file.name,
+						content_type: file.type === "" ? null : file.type,
+						data_base64: await toBase64(file),
+					}),
+				),
+			);
+		},
+		meta: { failureTitle: "Failed to upload files" },
+	});
+
+export const useUpdateReview = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "updateReview"],
 		mutationFn: window.lite.updateReview,
 		meta: { failureTitle: "Failed to update pull request" },
 	});
 
-export const useAddReviewLabels = () =>
+export const useAddReviewLabels = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "addReviewLabels"],
 		mutationFn: window.lite.addReviewLabels,
 		meta: { failureTitle: "Failed to add label" },
 	});
 
-export const useRemoveReviewLabel = () =>
+export const useRemoveReviewLabel = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "removeReviewLabel"],
 		mutationFn: window.lite.removeReviewLabel,
 		meta: { failureTitle: "Failed to remove label" },
 	});
@@ -217,8 +360,9 @@ const withCommentReactionCount = (
 		return { ...comment, reactions };
 	});
 
-export const useAddReviewReaction = () =>
+export const useAddReviewReaction = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "addReviewReaction"],
 		mutationFn: window.lite.addReviewReaction,
 		meta: { failureTitle: "Failed to add reaction" },
 		onMutate: async (input, ctx) => {
@@ -247,8 +391,9 @@ export const useAddReviewReaction = () =>
 		},
 	});
 
-export const useRemoveReviewReaction = () =>
+export const useRemoveReviewReaction = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "removeReviewReaction"],
 		mutationFn: window.lite.removeReviewReaction,
 		meta: { failureTitle: "Failed to remove reaction" },
 		onMutate: async (input, ctx) => {
@@ -277,8 +422,15 @@ export const useRemoveReviewReaction = () =>
  * listing and the names on the per-comment reactions listing — so the
  * optimistic write and its rollback patch both.
  */
-export const useAddCommentReaction = ({ reviewId }: { reviewId: number }) =>
+export const useAddCommentReaction = ({
+	projectId,
+	reviewId,
+}: {
+	projectId: string;
+	reviewId: number;
+}) =>
 	useMutation({
+		mutationKey: [projectId, "addCommentReaction"],
 		mutationFn: window.lite.addCommentReaction,
 		meta: { failureTitle: "Failed to add reaction" },
 		onMutate: async (input, ctx) => {
@@ -323,8 +475,15 @@ export const useAddCommentReaction = ({ reviewId }: { reviewId: number }) =>
 		},
 	});
 
-export const useRemoveCommentReaction = ({ reviewId }: { reviewId: number }) =>
+export const useRemoveCommentReaction = ({
+	projectId,
+	reviewId,
+}: {
+	projectId: string;
+	reviewId: number;
+}) =>
 	useMutation({
+		mutationKey: [projectId, "removeCommentReaction"],
 		mutationFn: window.lite.removeCommentReaction,
 		meta: { failureTitle: "Failed to remove reaction" },
 		onMutate: async (input, ctx) => {
@@ -369,20 +528,23 @@ export const useRemoveCommentReaction = ({ reviewId }: { reviewId: number }) =>
 		},
 	});
 
-export const useRequestReview = () =>
+export const useRequestReview = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "requestReview"],
 		mutationFn: window.lite.requestReview,
 		meta: { failureTitle: "Failed to request review" },
 	});
 
-export const useWithdrawReviewRequest = () =>
+export const useWithdrawReviewRequest = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "withdrawReviewRequest"],
 		mutationFn: window.lite.withdrawReviewRequest,
 		meta: { failureTitle: "Failed to withdraw review request" },
 	});
 
-export const useCreateReviewComment = () =>
+export const useCreateReviewComment = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "createReviewComment"],
 		mutationFn: window.lite.createReviewComment,
 		meta: { failureTitle: "Failed to post comment" },
 		onMutate: async (input, ctx) => {
@@ -416,25 +578,75 @@ export const useCreateReviewComment = () =>
 		},
 	});
 
-export const useUpdateReviewComment = () =>
+/**
+ * Reply into a review's diff comment thread. The reply is keyed on the
+ * thread, but the cache is keyed on the review, so the number comes from the
+ * caller rather than the forge's reply.
+ */
+export const useCreateReviewThreadReply = (projectId: string, reviewId: number) =>
 	useMutation({
+		mutationKey: [projectId, "createReviewThreadReply"],
+		mutationFn: window.lite.createReviewThreadReply,
+		meta: { failureTitle: "Failed to post reply" },
+		onMutate: async (input, ctx) => {
+			const key = listReviewThreadsQueryOptions({ projectId, reviewId }).queryKey;
+			await ctx.client.cancelQueries({ queryKey: key });
+
+			const prev = ctx.client.getQueryData(key);
+			const login = ctx.client.getQueryData(
+				currentForgeLoginQueryOptions(input.projectId).queryKey,
+			);
+			const ghost: ForgeReviewThreadComment = {
+				id: takeOptimisticForgeId(),
+				body: input.body,
+				author: login == null ? null : ghostForgeUser(login),
+				createdAt: new Date().toISOString(),
+				modifiedAt: null,
+				htmlUrl: "",
+				diffHunk: null,
+				reviewId: null,
+			};
+			ctx.client.setQueryData(key, (threads) =>
+				threads?.map((thread) =>
+					thread.id === input.threadId
+						? { ...thread, comments: thread.comments.concat(ghost) }
+						: thread,
+				),
+			);
+
+			return prev;
+		},
+		onError: (error, input, prev, ctx) => {
+			const key = listReviewThreadsQueryOptions({ projectId, reviewId }).queryKey;
+			// Roll the optimistic write back, then refetch: the rollback snapshot
+			// may itself be stale by now.
+			if (prev) ctx.client.setQueryData(key, prev);
+			void ctx.client.invalidateQueries({ queryKey: key });
+		},
+	});
+
+export const useUpdateReviewComment = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "updateReviewComment"],
 		mutationFn: window.lite.updateReviewComment,
 		meta: { failureTitle: "Failed to update comment" },
 	});
 
-export const useDeleteReviewComment = () =>
+export const useDeleteReviewComment = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "deleteReviewComment"],
 		mutationFn: window.lite.deleteReviewComment,
 		meta: { failureTitle: "Failed to delete comment" },
 	});
 
-export const useSetReviewAutoMerge = () => {
+export const useSetReviewAutoMerge = (projectId: string) => {
 	const toastManager = Toast.useToastManager();
 
 	return useMutation({
+		mutationKey: [projectId, "setReviewAutoMerge"],
 		mutationFn: window.lite.setReviewAutoMerge,
 		onMutate: async (input, ctx) => {
-			const reviewsPrefix = ["listReviews", input.projectId] as const;
+			const reviewsPrefix = [input.projectId, "listReviews"] as const;
 			await ctx.client.cancelQueries({ queryKey: reviewsPrefix });
 
 			// The flag lives on every reviews listing (the key varies by cache
@@ -467,8 +679,8 @@ export const useSetReviewAutoMerge = () => {
 					prev.prevSingle,
 				);
 			}
-			void ctx.client.invalidateQueries({ queryKey: ["listReviews", input.projectId] });
-			void ctx.client.invalidateQueries({ queryKey: ["getReview", input.projectId] });
+			void ctx.client.invalidateQueries({ queryKey: [input.projectId, "listReviews"] });
+			void ctx.client.invalidateQueries({ queryKey: [input.projectId, "getReview"] });
 
 			toastManager.add({
 				type: "error",
@@ -480,8 +692,9 @@ export const useSetReviewAutoMerge = () => {
 	});
 };
 
-export const useMergeReview = () =>
+export const useMergeReview = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "mergeReview"],
 		mutationFn: window.lite.mergeReview,
 		onSuccess: async (_response, input, _context, mutation) => {
 			// The merge moved the target branch on the remote, but nothing local, so
@@ -502,68 +715,103 @@ export const useMergeReview = () =>
 		meta: { failureTitle: "Failed to merge pull request" },
 	});
 
-export const useSetReviewDraftiness = () =>
+/**
+ * Review numbers this session merged through `useMergeReview`. Kept beside
+ * the mutation so the key and payload shape cannot drift apart unseen.
+ */
+export const selfMergedNumbers = (client: QueryClient, projectId: string): Set<number> =>
+	new Set(
+		client
+			.getMutationCache()
+			.findAll({ mutationKey: [projectId, "mergeReview"], status: "success" })
+			.flatMap((mutation) => {
+				const variables = mutation.state.variables as
+					| Parameters<typeof window.lite.mergeReview>[0]
+					| undefined;
+				return variables ? [variables.reviewId] : [];
+			}),
+	);
+
+export const useSetReviewDraftiness = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "setReviewDraftiness"],
 		mutationFn: window.lite.setReviewDraftiness,
 		meta: { failureTitle: "Failed to update pull request" },
 	});
 
-export const useSetGbConfig = () =>
+export const useSetGbConfig = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "setGbConfig"],
 		mutationFn: window.lite.setGbConfig,
 		meta: { failureTitle: "Failed to save git settings" },
 	});
 
 export const useDeleteAllData = () =>
 	useMutation({
+		mutationKey: ["deleteAllData"],
 		mutationFn: window.lite.deleteAllData,
 		meta: { failureTitle: "Failed to remove projects" },
 	});
 
 export const useForgetGithubAccount = () =>
 	useMutation({
+		mutationKey: ["forgetGithubAccount"],
 		mutationFn: window.lite.forgetGithubAccount,
 		meta: { failureTitle: "Failed to forget account" },
 	});
 
 export const useForgetGitlabAccount = () =>
 	useMutation({
+		mutationKey: ["forgetGitlabAccount"],
 		mutationFn: window.lite.forgetGitlabAccount,
 		meta: { failureTitle: "Failed to forget account" },
 	});
 
 export const useForgetBitbucketAccount = () =>
 	useMutation({
+		mutationKey: ["forgetBitbucketAccount"],
 		mutationFn: window.lite.forgetBitbucketAccount,
 		meta: { failureTitle: "Failed to forget account" },
 	});
 
 export const useStoreGithubPat = () =>
 	useMutation({
+		mutationKey: ["storeGithubPat"],
 		mutationFn: window.lite.storeGithubPat,
 		meta: { failureTitle: "Failed to add GitHub account" },
 	});
 
 export const useStoreGitlabPat = () =>
 	useMutation({
+		mutationKey: ["storeGitlabPat"],
 		mutationFn: window.lite.storeGitlabPat,
 		meta: { failureTitle: "Failed to add GitLab account" },
 	});
 
 export const useStoreBitbucketApiToken = () =>
 	useMutation({
+		mutationKey: ["storeBitbucketApiToken"],
 		mutationFn: window.lite.storeBitbucketApiToken,
 		meta: { failureTitle: "Failed to add Bitbucket account" },
 	});
 
-export const useDeleteProject = () =>
+export const useDeleteProject = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "deleteProject"],
 		mutationFn: window.lite.deleteProject,
 		meta: { failureTitle: "Failed to remove project" },
 	});
 
-export const useUpdateProjectSettings = () =>
+export const useAddProject = () =>
 	useMutation({
+		mutationKey: ["addProject"],
+		mutationFn: window.lite.addProject,
+		meta: { failureTitle: "Failed to add project" },
+	});
+
+export const useUpdateProjectSettings = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "updateProjectSettings"],
 		mutationFn: window.lite.updateProjectSettings,
 		meta: { failureTitle: "Failed to save project settings" },
 	});
@@ -574,11 +822,12 @@ export const useOpenInProgram = () =>
 		meta: { failureTitle: "Failed to open in editor" },
 	});
 
-export const useCommitAmend = () => {
+export const useCommitAmend = (projectId: string) => {
 	const toastManager = Toast.useToastManager();
 	const dispatch = useAppDispatch();
 
 	return useMutation({
+		mutationKey: [projectId, "commitAmend"],
 		mutationFn: window.lite.commitAmend,
 		onSuccess: async (response, input, _ctx, mutation) => {
 			syncCoreCaches(
@@ -625,13 +874,11 @@ export const useCommitCreate = () => {
 				const newCommitCtx = headInfoIndex.commitContextByCommitId(response.newCommit);
 
 				if (newCommitCtx) {
-					dispatch(
-						projectSlice.actions.selectOutline({
-							projectId: input.projectId,
-							selection: commitOperand({
-								commitId: response.newCommit,
-								changeId: newCommitCtx.commit.changeId,
-							}),
+					setCursor(
+						"applied",
+						commitAddress({
+							commitId: response.newCommit,
+							changeId: newCommitCtx.commit.changeId,
 						}),
 					);
 				}
@@ -685,6 +932,33 @@ export const useDiscardWorktreeChanges = () => {
 	});
 };
 
+export const useResolveWorktreeConflicts = () =>
+	useMutation({
+		mutationFn: window.lite.resolveWorktreeConflicts,
+		meta: { failureTitle: "Failed to mark conflict as resolved" },
+	});
+
+export const useEnterEditMode = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "enterEditMode"],
+		mutationFn: window.lite.enterEditMode,
+		meta: { failureTitle: "Failed to enter edit mode" },
+	});
+
+export const useSaveEditAndReturnToWorkspace = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "saveEditAndReturnToWorkspace"],
+		mutationFn: window.lite.saveEditAndReturnToWorkspace,
+		meta: { failureTitle: "Failed to save the edited commit" },
+	});
+
+export const useAbortEditAndReturnToWorkspace = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "abortEditAndReturnToWorkspace"],
+		mutationFn: window.lite.abortEditAndReturnToWorkspace,
+		meta: { failureTitle: "Failed to leave edit mode" },
+	});
+
 /** Discards a file's changes, whichever of the two discards its parent calls for. */
 export const useDiscardFileChanges = ({
 	projectId,
@@ -726,27 +1000,29 @@ export const useDiscardFileChanges = ({
 	/**
 	 * Discard `change`, extended to the checked files when `extendToCheckedFiles` — a row's menu
 	 * passes its own checked state, as dragging does; a list hotkey passes true, as cut and move do.
+	 * A caller with no row of its own, like the checked-set toolbar, passes a null `change` and
+	 * leans wholly on the checked set.
 	 */
 	const discard = async ({
 		change,
 		extendToCheckedFiles,
 	}: {
-		change: TreeChange;
+		change: TreeChange | null;
 		extendToCheckedFiles: boolean;
 	}): Promise<void> => {
-		// A checked set belonging to another list says nothing about this file, so the subject then
-		// stands alone, as it does when nothing is checked at all.
-		const checkedFiles = extendToCheckedFiles
-			? filesUnder(
-					projectSlice.selectors.selectCheckedOperands(store.getState(), projectId),
-					fileParent,
-				)
-			: [];
-		if (checkedFiles.length === 0) return runDiscard([createDiffSpec(change, [])]);
+		const sources = projectSlice.selectors.selectCheckedAddresses(store.getState(), projectId);
+
+		const areAllFilesUnder = () =>
+			sources.every(
+				(address) => address._tag === "File" && addressEquals(address.parent, fileParent),
+			);
+
+		if (!extendToCheckedFiles || sources.length === 0 || !areAllFilesUnder())
+			return change === null ? undefined : runDiscard([createDiffSpec(change, [])]);
 
 		// Checked files carry only paths, so their changes have to be looked up.
 		try {
-			const changes = await resolveDiffSpecs({ projectId, queryClient, sources: checkedFiles });
+			const changes = await resolveDiffSpecs({ projectId, queryClient, sources });
 			// One of them gone stale fails resolution for the whole set — the reconciler is about to
 			// uncheck it — and discarding the subject instead is not what was asked for.
 			if (changes) runDiscard(changes);
@@ -777,13 +1053,11 @@ export const useCommitInsertBlank = () => {
 			const newCommitCtx = headInfoIndex.commitContextByCommitId(response.newCommit);
 
 			if (newCommitCtx) {
-				dispatch(
-					projectSlice.actions.selectOutline({
-						projectId: input.projectId,
-						selection: commitOperand({
-							commitId: response.newCommit,
-							changeId: newCommitCtx.commit.changeId,
-						}),
+				setCursor(
+					"applied",
+					commitAddress({
+						commitId: response.newCommit,
+						changeId: newCommitCtx.commit.changeId,
 					}),
 				);
 			}
@@ -817,7 +1091,7 @@ export const useCommitReword = () => {
 /**
  * Resolve some of a conflicted commit's conflicts. Every apply rewrites the
  * commit, so the reply carries the replaced ids that `syncCoreCaches` feeds to
- * the store — selection and checked operands follow the new commit on their own,
+ * the store — selection and checked addresses follow the new commit on their own,
  * and the conflicts query re-reads under the new id.
  */
 export const useResolveCommitConflictHunks = () => {
@@ -883,8 +1157,9 @@ export const useCommitUncommitChanges = () => {
 	});
 };
 
-export const useWorkspaceBranchAndAncestorsPush = () =>
+export const useWorkspaceBranchAndAncestorsPush = (projectId: string) =>
 	useMutation({
+		mutationKey: [projectId, "workspaceBranchAndAncestorsPush"],
 		mutationFn: window.lite.workspaceBranchAndAncestorsPush,
 		meta: { failureTitle: "Failed to push" },
 	});
@@ -909,9 +1184,10 @@ export const useWorkspaceIntegrateUpstream = () => {
 	});
 };
 
-export const useBranchRemove = () => {
+export const useBranchRemove = (projectId: string) => {
 	const dispatch = useAppDispatch();
 	return useMutation({
+		mutationKey: [projectId, "branchRemove"],
 		mutationFn: window.lite.branchRemove,
 		onSuccess: (response, input, _context, mutation) => {
 			syncCoreCaches(mutation.client, dispatch, input.projectId, response);
@@ -920,13 +1196,27 @@ export const useBranchRemove = () => {
 	});
 };
 
+type RestoreSnapshotInput =
+	| { _tag: "redo" }
+	| { _tag: "undo" }
+	| { _tag: "restore"; snapshot: Snapshot };
+
 export const useRestoreSnapshot = ({ projectId }: { projectId: string }) => {
 	const toastManager = Toast.useToastManager();
 
 	return useMutation({
-		mutationFn: async (direction: "redo" | "undo"): Promise<Snapshot | null> => {
+		mutationFn: async (input: RestoreSnapshotInput): Promise<Snapshot | null> => {
+			if (input._tag === "restore") {
+				await window.lite.restoreSnapshotWithKind({
+					projectId,
+					restoreKind: "ExplicitRestoreFromSnapshot",
+					sha: input.snapshot.commitId,
+				});
+				return input.snapshot;
+			}
+
 			const snapshot =
-				direction === "redo"
+				input._tag === "redo"
 					? await window.lite.getRedoTargetSnapshot(projectId)
 					: await window.lite.getUndoTargetSnapshot(projectId);
 			if (!snapshot) return null;
@@ -937,36 +1227,34 @@ export const useRestoreSnapshot = ({ projectId }: { projectId: string }) => {
 				window.lite.restoreSnapshotWithKind({
 					projectId,
 					restoreKind:
-						direction === "redo" ? "RestoreFromSnapshotViaRedo" : "RestoreFromSnapshotViaUndo",
+						input._tag === "redo" ? "RestoreFromSnapshotViaRedo" : "RestoreFromSnapshotViaUndo",
 					sha: snapshot.commitId,
 				}),
 			]);
 
 			return peeled ?? snapshot;
 		},
-		onSuccess: (snapshot, direction) => {
-			const title = direction === "redo" ? "Redo" : "Undo";
+		onSuccess: (snapshot, input) => {
+			const title = input._tag === "redo" ? "Redo" : input._tag === "undo" ? "Undo" : "Restore";
 
 			if (!snapshot) {
-				toastManager.add({ title, description: `Nothing to ${direction}` });
+				toastManager.add({ title, description: `Nothing to ${input._tag}` });
 				return;
 			}
 
-			// TODO: We should map this to something user-friendly.
-			const op = snapshot.details?.operation;
-
+			const op = presentableOperation(snapshot.details).text;
 			const relativeTime = formatRelativeTime(snapshot.createdAt);
 
 			toastManager.add({
 				type: "info",
 				title,
-				description: `Restored to ${shortCommitId(snapshot.commitId)} (${op !== undefined ? `${op}, ` : ""}${relativeTime})`,
+				description: `Restored to ${shortCommitId(snapshot.commitId)} (${op}, ${relativeTime})`,
 			});
 		},
-		onError: (error, direction) => {
+		onError: (error, input) => {
 			toastManager.add({
 				type: "error",
-				title: `Failed to ${direction}`,
+				title: input._tag === "restore" ? "Failed to restore snapshot" : `Failed to ${input._tag}`,
 				description: errorMessageForToast(error),
 				priority: "high",
 			});
@@ -991,9 +1279,10 @@ export const useUnapplyStack = () =>
 		meta: { failureTitle: "Failed to unapply stack" },
 	});
 
-export const useBranchRename = () => {
+export const useBranchRename = (projectId: string) => {
 	const dispatch = useAppDispatch();
 	return useMutation({
+		mutationKey: [projectId, "branchRename"],
 		mutationFn: window.lite.branchRename,
 		onSuccess: async (response, input, _context, mutation) => {
 			syncCoreCaches(mutation.client, dispatch, input.projectId, response);
@@ -1009,6 +1298,7 @@ export const useBranchRename = () => {
 					},
 				}),
 			);
+			remapSearchBranch(decodeBytes(input.refName), decodeBytes(response.newRef.fullNameBytes));
 
 			await moveDraftPR({
 				queryClient: mutation.client,
@@ -1019,7 +1309,7 @@ export const useBranchRename = () => {
 				newBranch: response.newRef.displayName,
 			});
 
-			dispatch(projectSlice.actions.exitMode({ projectId: input.projectId }));
+			dispatch(projectSlice.actions.clearPendingOperation({ projectId: input.projectId }));
 		},
 		meta: { failureTitle: "Failed to rename branch" },
 	});

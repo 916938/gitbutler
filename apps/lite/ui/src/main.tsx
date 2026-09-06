@@ -1,8 +1,9 @@
-import { MutationCache, QueryClient, focusManager } from "@tanstack/react-query";
-import { createRouter } from "@tanstack/react-router";
+import { MutationCache, QueryCache, QueryClient, focusManager } from "@tanstack/react-query";
 import { App } from "#ui/App.tsx";
-import { endpointOf, invalidateDeclared } from "#ui/api/tags.ts";
-import { routeTree } from "#ui/routeTree.ts";
+import { invalidateDeclared } from "#ui/api/tags.ts";
+import { createAppRouter } from "#ui/router.ts";
+import { createRouteTree } from "#ui/routes.tsx";
+import { Page } from "#ui/routes/project/$id/workspace/Page.tsx";
 import { createRoot } from "react-dom/client";
 import "./global.css";
 import { Toast } from "@base-ui/react";
@@ -20,15 +21,23 @@ const queryClient: QueryClient = new QueryClient({
 			staleTime: Number.POSITIVE_INFINITY,
 		},
 	},
+	// A failed query reports itself where its data would have gone — a panel says so in place
+	// rather than raising a toast — but the reason has to land somewhere.
+	queryCache: new QueryCache({
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+		},
+	}),
 	// A mutation's cache effects come from its endpoint's `invalidates`
-	// declaration, recognized by the `mutationFn` itself, and its failure
+	// declaration, named by its mutation key, and its failure
 	// toast from `meta.failureTitle`; per-mutation handlers keep only
 	// rollbacks, pushes, and dynamic wording.
 	mutationCache: new MutationCache({
 		// Returned on purpose: a mutation stays pending until the queries it
 		// invalidated are fresh, so success lands together with the new data.
-		onSuccess: (_data, variables, _context, mutation) =>
-			invalidateDeclared(queryClient, endpointOf(mutation.options.mutationFn), variables),
+		onSuccess: (_data, _variables, _context, mutation) =>
+			invalidateDeclared(queryClient, mutation.options.mutationKey),
 		onError: (error, _variables, _context, mutation) => {
 			// oxlint-disable-next-line no-console
 			console.error(error);
@@ -60,13 +69,16 @@ focusManager.setEventListener((setFocused) => {
 	};
 });
 
-const router = createRouter({ routeTree, context: { queryClient } });
+const router = createAppRouter(queryClient, createRouteTree({ workspace: Page }));
 
-declare module "@tanstack/react-router" {
-	interface Register {
-		router: typeof router;
-	}
-}
+// A link opened while the app is running is a navigation, not a page load: the
+// main process hands over the path it names and the router goes there, keeping
+// the state and the history the window already has. `href` is the option for a
+// path built elsewhere: the router splits it and parses the query with the
+// app's own parseSearch, so there is nothing to take apart here.
+window.lite.onDeepLink((path) => {
+	void router.navigate({ href: path });
+});
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Root element not found");

@@ -88,6 +88,10 @@ git init worktree-ahead
   (cd ../worktree-ahead-feature
     commit W
   )
+  git worktree add --detach ../worktree-ahead-detached
+  (cd ../worktree-ahead-detached
+    commit D
+  )
 )
 
 # A single root that splits up into 4 branches and merges again
@@ -232,6 +236,51 @@ mkdir ws
     git checkout B
       commit B-outside
     git checkout gitbutler/workspace
+  )
+
+  # Like above, but the advance is two commits deep so the workspace walk reaches
+  # the fork commit before the stack-branch walk does.
+  git init advanced-stack-tip-twice-outside-workspace
+  (cd advanced-stack-tip-twice-outside-workspace
+    commit M
+    setup_target_to_match_main
+    git checkout -b A
+      commit A
+    git checkout -b B
+      commit B
+    create_workspace_commit_once B
+    git checkout B
+      commit B-outside-1
+      commit B-outside-2
+    git checkout gitbutler/workspace
+  )
+
+  # Like above, but HEAD stays on the advanced branch (single-branch mode).
+  git init advanced-stack-tip-twice-outside-workspace-single-branch
+  (cd advanced-stack-tip-twice-outside-workspace-single-branch
+    commit M
+    setup_target_to_match_main
+    git checkout -b A
+      commit A
+    git checkout -b B
+      commit B
+    create_workspace_commit_once B
+    git checkout B
+      commit B-outside-1
+      commit B-outside-2
+  )
+
+  # A branch created on top of the workspace commit itself, with HEAD on it.
+  git init branch-on-top-of-workspace-commit
+  (cd branch-on-top-of-workspace-commit
+    commit M
+    setup_target_to_match_main
+    git checkout -b A
+      commit A
+    create_workspace_commit_once A
+    git checkout -b C
+      commit C-1
+      commit C-2
   )
 
   git init reproduce-11459
@@ -1341,6 +1390,18 @@ EOF
     create_workspace_commit_once main
   )
 
+  # Like worktree-ahead, but wt-feature is checked out in a real linked worktree.
+  git init worktree-ahead-checkout
+  (cd worktree-ahead-checkout
+    commit init
+    setup_target_to_match_main
+    git checkout -b wt-feature
+      commit W
+    git checkout main
+    create_workspace_commit_once main
+    git worktree add ../worktree-ahead-checkout-feature wt-feature
+  )
+
   git init target-shared-with-unapplied-and-origin-head
   (cd target-shared-with-unapplied-and-origin-head
     commit init
@@ -1721,5 +1782,48 @@ EOF
        git merge --no-ff main -m "catch up to origin/main"
        commit x2
      create_workspace_commit_once X
+  )
+
+  # A branch checked out in a linked worktree points at the tip commit of an
+  # applied workspace branch, so the worktree ref competes with the stack
+  # branch for that commit.
+  git init worktree-ref-at-applied-branch
+  (cd worktree-ref-at-applied-branch
+    commit init
+    setup_target_to_match_main
+    git checkout -b foo
+      commit A
+    git worktree add -b wsref ../worktree-ref-at-applied-branch-wt foo
+    create_workspace_commit_once foo
+  )
+
+  # A branch checked out in a linked worktree points at the tip of an applied
+  # branch that also has a remote tracking branch.
+  git init worktree-ref-at-remote-tracked-branch
+  (cd worktree-ref-at-remote-tracked-branch
+    commit init
+    setup_target_to_match_main
+    git checkout -b foo
+      commit A
+    git checkout -b soon-origin-foo foo
+    git checkout -b soon-origin-wsref foo
+    git checkout foo
+    setup_remote_tracking soon-origin-foo foo "move"
+    setup_remote_tracking soon-origin-wsref wsref "move"
+    git worktree add -b wsref ../worktree-ref-at-remote-tracked-branch-wt foo
+    create_workspace_commit_once foo
+  )
+
+  # A branch checked out in a linked worktree points into the middle of an
+  # applied branch's commits, below its tip.
+  git init worktree-ref-mid-stack
+  (cd worktree-ref-mid-stack
+    commit init
+    setup_target_to_match_main
+    git checkout -b foo
+      commit A1
+      commit A2
+    git worktree add -b wsref ../worktree-ref-mid-stack-wt foo~1
+    create_workspace_commit_once foo
   )
 )

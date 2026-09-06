@@ -5,10 +5,19 @@ use std::fmt::Display;
 use but_rebase::graph_rebase::mutate::InsertSide;
 use but_workspace::branch::create_reference::Position;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Side {
     Above,
     Below,
+}
+
+impl Side {
+    pub fn toggle(self) -> Self {
+        match self {
+            Side::Above => Side::Below,
+            Side::Below => Side::Above,
+        }
+    }
 }
 
 impl Display for Side {
