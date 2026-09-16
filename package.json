@@ -3,7 +3,7 @@
 	"private": true,
 	"repository": "https://github.com/gitbutlerapp/gitbutler.git",
 	"engines": {
-		"node": ">=20.11"
+		"node": ">=24"
 	},
 	"type": "module",
 	"packageManager": "pnpm@10.20.0",
@@ -11,6 +11,7 @@
 		"dev:ui": "pnpm --filter @gitbutler/ui storybook",
 		"dev:web": "turbo watch --filter @gitbutler/web dev",
 		"dev:lite": "turbo watch --filter @gitbutler/lite dev",
+		"demos:lite": "pnpm --filter @gitbutler/lite demos",
 		"dev:desktop": "cross-env CARGO_TARGET_DIR=\"$PNPM_SCRIPT_SRC_DIR/target/tauri\" pnpm dev:desktop-with-env",
 		"dev:desktop-http": "cross-env VITE_BUTLER_PORT=6978 VITE_BUTLER_HOST=localhost VITE_BUILD_TARGET=web turbo watch dev --filter=...@gitbutler/desktop",
 		"dev:desktop-with-env": "cargo build -p but && cargo build -p gitbutler-git && node ./scripts/run-desktop-tauri-with-env.mjs development pnpm tauri dev",
@@ -57,7 +58,7 @@
 		"@gitbutler/no-relative-imports": "workspace:*",
 		"@tauri-apps/cli": "^2.11.1",
 		"@types/eslint": "9.6.1",
-		"@types/node": "^22.19.11",
+		"@types/node": "^24.13.3",
 		"@typescript-eslint/parser": "^8.57.1",
 		"@vitest/coverage-v8": "^3.2.6",
 		"cross-env": "^10.1.0",

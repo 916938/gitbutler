@@ -4,7 +4,8 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT}
 use serde::{Deserialize, Serialize};
 
 use crate::graphql::{
-    GQL_DISABLE_PR_AUTO_MERGE, GQL_ENABLE_PR_AUTO_MERGE, GQL_GET_PR_NODE_ID, GQL_SET_PR_DRAFT,
+    GQL_ADD_REVIEW_THREAD_REPLY, GQL_DISABLE_PR_AUTO_MERGE, GQL_ENABLE_PR_AUTO_MERGE,
+    GQL_GET_PR_NODE_ID, GQL_LIST_PR_REVIEW_THREADS, GQL_LIST_PR_TIMELINE, GQL_SET_PR_DRAFT,
     GQL_SET_PR_READY_FOR_REVIEW,
 };
 
@@ -79,7 +80,8 @@ impl GitHubClient {
         } else {
             Err(anyhow::anyhow!(
                 "No GitHub access token found for account '{account_id}'.\nRun 'but config forge auth' to re-authenticate."
-            ))
+            )
+            .context(NOT_AUTHENTICATED))
         }
     }
 
@@ -202,7 +204,9 @@ impl GitHubClient {
 
     /// Fetch every page of a GitHub list endpoint, 100 items per page,
     /// stopping at the first short page or after `max_pages` (a silent
-    /// truncation bound for pathological list sizes).
+    /// truncation bound for pathological list sizes; callers that must
+    /// detect overflow pass one page beyond their limit and check the
+    /// returned item count).
     async fn get_all_pages<T: serde::de::DeserializeOwned>(
         &self,
         url: &str,
@@ -229,6 +233,33 @@ impl GitHubClient {
         Ok(items)
     }
 
+    /// Fetch the single page of the most recently updated closed pull
+    /// requests — merged or not.
+    ///
+    /// This is the fate sweep for the review cache: everything that left the
+    /// open listing since the last sync appears here, unless more than a
+    /// page's worth of closed pull requests were updated in between — the
+    /// leftovers then fall back to cache deletion, the pre-sweep behavior.
+    pub async fn list_recently_closed_pulls(
+        &self,
+        owner: &str,
+        repo: &str,
+    ) -> Result<Vec<PullRequest>> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls?state=closed&sort=updated&direction=desc",
+            self.base_url, owner, repo
+        );
+        let response = self
+            .client
+            .get(&url)
+            .query(&[("per_page", "100"), ("page", "1")])
+            .send()
+            .await?;
+        let response = ensure_success(response).await?;
+        let pulls: Vec<GitHubPullRequest> = response.json().await?;
+        Ok(pulls.into_iter().map(Into::into).collect())
+    }
+
     /// The actual REST API call to fetch a page of the checks.
     async fn fetch_check_runs(&self, url: &str, page: usize) -> Result<reqwest::Response> {
         let response = self
@@ -247,25 +278,37 @@ impl GitHubClient {
         Ok(response)
     }
 
-    /// Fetch the list of the open PRs on a repo.
+    /// Fetch the list of the open PRs on a repo, most recently updated first.
+    ///
+    /// Pages are fetched in ascending creation-time order so offset
+    /// pagination stays stable while the repository is active: updates never
+    /// move a PR and new PRs only append. A close or reopen racing the scan
+    /// can still shift a page boundary, duplicating a boundary PR (the
+    /// freshest copy is kept) or omitting one (a later refresh restores it,
+    /// though the review cache may briefly drop its row in between).
     pub async fn list_open_pulls(&self, owner: &str, repo: &str) -> Result<Vec<PullRequest>> {
-        let url = format!("{}/repos/{}/{}/pulls", self.base_url, owner, repo);
-
-        let response = self
-            .client
-            .get(&url)
-            .query(&[
-                ("state", "open"),
-                ("sort", "updated"),
-                ("direction", "desc"),
-                ("per_page", "100"),
-            ])
-            .send()
+        const MAX_PAGES: usize = 100;
+        let url = format!(
+            "{}/repos/{}/{}/pulls?state=open&sort=created&direction=asc",
+            self.base_url, owner, repo
+        );
+        let pulls = self
+            .get_all_pages::<GitHubPullRequest>(&url, MAX_PAGES + 1)
             .await?;
-
-        let response = ensure_success(response).await?;
-
-        let pulls: Vec<GitHubPullRequest> = response.json().await?;
+        // Every fetched page being full means the listing may extend past
+        // what was fetched; a short final page is complete however far past
+        // the nominal bound it runs.
+        anyhow::ensure!(
+            pulls.len() < (MAX_PAGES + 1) * 100,
+            "Open pull request listing exceeded {MAX_PAGES} pages"
+        );
+        // Later duplicates overwrite earlier ones, keeping the freshest copy.
+        let pulls: std::collections::BTreeMap<_, _> =
+            pulls.into_iter().map(|pull| (pull.number, pull)).collect();
+        let mut pulls = pulls.into_values().collect::<Vec<_>>();
+        // RFC 3339 timestamps compare chronologically as strings; consumers
+        // that pick one PR per branch rely on the freshest coming first.
+        pulls.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(pulls.into_iter().map(Into::into).collect())
     }
 
@@ -354,10 +397,7 @@ impl GitHubClient {
         };
 
         let response = self.client.post(&url).json(&body).send().await?;
-
-        if !response.status().is_success() {
-            bail!("Failed to create pull request: {}", response.status());
-        }
+        let response = ensure_success(response).await?;
 
         let pr: GitHubPullRequest = response.json().await?;
         Ok(pr.into())
@@ -425,9 +465,7 @@ impl GitHubClient {
             self.base_url, owner, repo, pr_number
         );
         let response = self.client.get(&url).send().await?;
-        if !response.status().is_success() {
-            bail!("Failed to get PR merge status: {}", response.status());
-        }
+        let response = ensure_success(response).await?;
         let body: PrMergeStatusResponse = response.json().await?;
         let is_mergeable = matches!(
             body.mergeable_state.as_deref(),
@@ -600,23 +638,103 @@ impl GitHubClient {
 
     /// List the pushed commits and review requests on a pull request's
     /// conversation timeline, oldest first. Other event kinds are dropped.
+    ///
+    /// GraphQL rather than REST: only `timelineItems` resolves a commit's
+    /// author to a GitHub account, and without a login the reader's own
+    /// pushes cannot be told apart from anyone else's.
     pub async fn list_pull_request_timeline(
         &self,
         owner: &str,
         repo: &str,
         pr_number: i64,
     ) -> Result<Vec<PullRequestTimelineEvent>> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/timeline",
-            self.base_url, owner, repo, pr_number
-        );
+        #[derive(Serialize)]
+        struct Variables<'a> {
+            owner: &'a str,
+            repo: &'a str,
+            number: i64,
+            cursor: Option<&'a str>,
+        }
 
-        Ok(self
-            .get_all_pages::<GitHubTimelineEventApi>(&url, 20)
-            .await?
-            .into_iter()
-            .filter_map(GitHubTimelineEventApi::into_event)
-            .collect())
+        #[derive(Deserialize)]
+        struct QueryData {
+            repository: Option<TimelineRepository>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TimelineRepository {
+            pull_request: Option<TimelinePullRequest>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TimelinePullRequest {
+            timeline_items: TimelineItems,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TimelineItems {
+            page_info: TimelinePageInfo,
+            nodes: Vec<GraphQlTimelineItem>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct TimelinePageInfo {
+            has_next_page: bool,
+            end_cursor: Option<String>,
+        }
+
+        let mut events = Vec::new();
+        let mut cursor: Option<String> = None;
+        // A hundred pushes and requests per page; the cap only stops a stuck
+        // cursor from looping.
+        const PAGE_CAP: usize = 10;
+        for _ in 0..PAGE_CAP {
+            let data: QueryData = self
+                .graphql_query(
+                    GQL_LIST_PR_TIMELINE,
+                    &Variables {
+                        owner,
+                        repo,
+                        number: pr_number,
+                        cursor: cursor.as_deref(),
+                    },
+                )
+                .await?;
+
+            let Some(items) = data
+                .repository
+                .and_then(|repository| repository.pull_request)
+                .map(|pull_request| pull_request.timeline_items)
+            else {
+                bail!("GitHub GraphQL pull request {owner}/{repo}#{pr_number} not found");
+            };
+
+            events.extend(
+                items
+                    .nodes
+                    .into_iter()
+                    .filter_map(GraphQlTimelineItem::into_event),
+            );
+            match items.page_info.end_cursor {
+                Some(next) if items.page_info.has_next_page => cursor = Some(next),
+                _ => {
+                    cursor = None;
+                    break;
+                }
+            }
+        }
+        if cursor.is_some() {
+            tracing::warn!(
+                "{owner}/{repo}#{pr_number} has more than {} timeline events; further pages were not fetched",
+                PAGE_CAP * 100
+            );
+        }
+
+        Ok(events)
     }
 
     /// List the labels defined on a repository, paginated.
@@ -831,6 +949,142 @@ impl GitHubClient {
             .into_iter()
             .map(PullRequestReview::from)
             .collect())
+    }
+
+    /// Reply into an existing review thread, returning the comment it made.
+    pub async fn add_review_thread_reply(
+        &self,
+        thread_id: &str,
+        body: &str,
+    ) -> Result<PullRequestReviewThreadComment> {
+        #[derive(Serialize)]
+        struct Variables<'a> {
+            #[serde(rename = "threadId")]
+            thread_id: &'a str,
+            body: &'a str,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct QueryData {
+            add_pull_request_review_thread_reply: Option<ReplyPayload>,
+        }
+
+        #[derive(Deserialize)]
+        struct ReplyPayload {
+            comment: Option<GraphQlReviewThreadComment>,
+        }
+
+        let data: QueryData = self
+            .graphql_query(GQL_ADD_REVIEW_THREAD_REPLY, &Variables { thread_id, body })
+            .await?;
+
+        let Some(comment) = data
+            .add_pull_request_review_thread_reply
+            .and_then(|payload| payload.comment)
+        else {
+            bail!("GitHub GraphQL addPullRequestReviewThreadReply returned no comment");
+        };
+
+        Ok(comment.into())
+    }
+
+    /// List the diff-anchored review threads on a pull request, oldest
+    /// first.
+    ///
+    /// GraphQL rather than REST: `/pulls/{n}/comments` reports neither the
+    /// thread a comment belongs to nor whether that thread was resolved,
+    /// and a resolved thread must not read as still waiting on a reply.
+    pub async fn list_pull_request_review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<Vec<PullRequestReviewThread>> {
+        #[derive(Serialize)]
+        struct Variables<'a> {
+            owner: &'a str,
+            repo: &'a str,
+            number: i64,
+            cursor: Option<&'a str>,
+        }
+
+        #[derive(Deserialize)]
+        struct QueryData {
+            repository: Option<Repository>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Repository {
+            pull_request: Option<GraphQlPullRequest>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GraphQlPullRequest {
+            review_threads: GraphQlReviewThreads,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GraphQlReviewThreads {
+            page_info: GraphQlPageInfo,
+            nodes: Vec<GraphQlReviewThread>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GraphQlPageInfo {
+            has_next_page: bool,
+            end_cursor: Option<String>,
+        }
+
+        let mut threads = Vec::new();
+        let mut cursor: Option<String> = None;
+        // Five pages of a hundred threads is well past any reviewable pull
+        // request; the cap only stops a stuck cursor from looping.
+        const PAGE_CAP: usize = 5;
+        for _ in 0..PAGE_CAP {
+            let data: QueryData = self
+                .graphql_query(
+                    GQL_LIST_PR_REVIEW_THREADS,
+                    &Variables {
+                        owner,
+                        repo,
+                        number: pr_number,
+                        cursor: cursor.as_deref(),
+                    },
+                )
+                .await?;
+
+            let Some(page) = data
+                .repository
+                .and_then(|repository| repository.pull_request)
+                .map(|pull_request| pull_request.review_threads)
+            else {
+                bail!("GitHub GraphQL pull request {owner}/{repo}#{pr_number} not found");
+            };
+
+            threads.extend(page.nodes.into_iter().map(PullRequestReviewThread::from));
+            match page.page_info.end_cursor {
+                Some(next) if page.page_info.has_next_page => cursor = Some(next),
+                _ => {
+                    cursor = None;
+                    break;
+                }
+            }
+        }
+        // Erroring here would take the whole tab down over the tail of a
+        // monster review; the partial listing is still worth showing.
+        if cursor.is_some() {
+            tracing::warn!(
+                "{owner}/{repo}#{pr_number} has more than {} review threads; further pages were not fetched",
+                PAGE_CAP * 100
+            );
+        }
+
+        Ok(threads)
     }
 
     /// Post a top-level conversation comment on a pull request.
@@ -1251,17 +1505,6 @@ impl GitHubClient {
             variables: &'a V,
         }
 
-        #[derive(Deserialize)]
-        struct GraphQlError {
-            message: String,
-        }
-
-        #[derive(Deserialize)]
-        struct GraphQlResponse<T> {
-            data: Option<T>,
-            errors: Option<Vec<GraphQlError>>,
-        }
-
         let url = graphql_endpoint_from_base_url(&self.base_url);
 
         let response = self
@@ -1271,27 +1514,55 @@ impl GitHubClient {
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            bail!("GitHub GraphQL request failed: {}", response.status());
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            // The same typed error the REST path returns, so token expiry and
+            // OAuth restrictions classify identically for GraphQL endpoints.
+            return Err(anyhow::Error::from(HttpStatusError { status }).context(body));
         }
 
-        let payload: GraphQlResponse<T> = response.json().await?;
-
-        if let Some(errors) = payload.errors {
-            let messages = errors
-                .into_iter()
-                .map(|error| error.message)
-                .collect::<Vec<_>>()
-                .join("; ");
-            bail!("GitHub GraphQL returned errors: {messages}");
-        }
-
-        let Some(data) = payload.data else {
-            bail!("GitHub GraphQL response did not include data");
-        };
-
-        Ok(data)
+        decode_graphql_response(&response.bytes().await?)
     }
+}
+
+/// Decode a GraphQL response body into `T`.
+///
+/// `data` is typed only once `errors` has been ruled out. GitHub reports a
+/// refused mutation as a null field *inside* `data` alongside `errors`, so
+/// typing the two together fails on that null and loses the message saying
+/// why it was refused.
+fn decode_graphql_response<T>(body: &[u8]) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    struct GraphQlError {
+        message: String,
+    }
+
+    #[derive(Deserialize)]
+    struct GraphQlResponse {
+        data: Option<serde_json::Value>,
+        errors: Option<Vec<GraphQlError>>,
+    }
+
+    let payload: GraphQlResponse = serde_json::from_slice(body)?;
+
+    if let Some(errors) = payload.errors {
+        let messages = errors
+            .into_iter()
+            .map(|error| error.message)
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("GitHub GraphQL returned errors: {messages}");
+    }
+
+    let Some(data) = payload.data else {
+        bail!("GitHub GraphQL response did not include data");
+    };
+
+    Ok(serde_json::from_value(data)?)
 }
 
 pub struct PullRequestNodeId {
@@ -1456,6 +1727,10 @@ pub struct GitHubRepository {
     pub permissions: Option<GitHubRepoPermissions>,
     #[serde(default)]
     pub fork: bool,
+    /// Whether the repository is private. Absent from the response only for
+    /// callers that cannot see the repo at all, which fail earlier.
+    #[serde(default)]
+    pub private: bool,
     #[serde(default)]
     pub delete_branch_on_merge: Option<bool>,
 }
@@ -1565,9 +1840,11 @@ impl From<GitHubApiUser> for GitHubUser {
             name: user.name,
             email: user.email,
             avatar_url: user.avatar_url,
+            // The REST api spells the type `Bot`; compare loosely so a casing
+            // drift can never silently unmark every bot again.
             is_bot: user
                 .user_type
-                .map(|user_type| user_type == "bot")
+                .map(|user_type| user_type.eq_ignore_ascii_case("bot"))
                 .unwrap_or(false),
         }
     }
@@ -1752,6 +2029,166 @@ impl From<GitHubPullRequestReviewApi> for PullRequestReview {
     }
 }
 
+/// One diff-anchored conversation on a pull request: where in the diff it
+/// hangs, whether it has been resolved, and the comments left in it.
+#[derive(Debug, Serialize)]
+pub struct PullRequestReviewThread {
+    /// The forge's thread identifier, opaque and only meaningful to it.
+    pub id: String,
+    pub is_resolved: bool,
+    /// Whether the diff the thread was left on has since changed.
+    pub is_outdated: bool,
+    pub path: String,
+    /// The line in the current diff. `None` once the thread is outdated,
+    /// where `original_line` still says where it was left.
+    pub line: Option<i64>,
+    /// The first line of a multi-line thread; equals `line` for a single one.
+    pub start_line: Option<i64>,
+    pub original_line: Option<i64>,
+    /// GitHub side string: `LEFT` (the pre-image) or `RIGHT`.
+    pub diff_side: String,
+    pub comments: Vec<PullRequestReviewThreadComment>,
+}
+
+/// One comment inside a review thread.
+#[derive(Debug, Serialize)]
+pub struct PullRequestReviewThreadComment {
+    pub id: i64,
+    pub body: String,
+    pub author: Option<GitHubUser>,
+    pub created_at: Option<String>,
+    pub modified_at: Option<String>,
+    pub html_url: String,
+    /// The diff the comment was anchored to, as a unified hunk.
+    pub diff_hunk: Option<String>,
+    /// The review submission this comment was posted under, when it was
+    /// part of one rather than left on its own.
+    pub review_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewThread {
+    id: String,
+    is_resolved: bool,
+    is_outdated: bool,
+    path: String,
+    line: Option<i64>,
+    start_line: Option<i64>,
+    original_line: Option<i64>,
+    diff_side: String,
+    comments: GraphQlReviewThreadComments,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewThreadComments {
+    page_info: GraphQlThreadCommentsPageInfo,
+    nodes: Vec<GraphQlReviewThreadComment>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlThreadCommentsPageInfo {
+    has_next_page: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewThreadComment {
+    database_id: Option<i64>,
+    body: Option<String>,
+    created_at: Option<String>,
+    last_edited_at: Option<String>,
+    url: String,
+    diff_hunk: Option<String>,
+    pull_request_review: Option<GraphQlReviewRef>,
+    author: Option<GraphQlActor>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewRef {
+    database_id: Option<i64>,
+}
+
+/// A comment author as GraphQL reports it. `database_id` and `name` come
+/// from inline fragments, so both are absent for actor kinds the query does
+/// not name; `__typename` is what says whether the author is a bot.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlActor {
+    #[serde(rename = "__typename")]
+    typename: String,
+    login: String,
+    avatar_url: Option<String>,
+    database_id: Option<i64>,
+    name: Option<String>,
+}
+
+impl From<GraphQlActor> for GitHubUser {
+    fn from(actor: GraphQlActor) -> Self {
+        GitHubUser {
+            // Actor kinds outside the query's fragments have no database id;
+            // nothing addresses a comment author by it, so zero stands in.
+            id: actor.database_id.unwrap_or_default(),
+            login: actor.login,
+            name: actor.name,
+            // GraphQL actors carry no email.
+            email: None,
+            avatar_url: actor.avatar_url,
+            is_bot: actor.typename == "Bot",
+        }
+    }
+}
+
+impl From<GraphQlReviewThread> for PullRequestReviewThread {
+    fn from(thread: GraphQlReviewThread) -> Self {
+        // The comment page is not paginated further; past GraphQL's per-page
+        // max the tail is cut, and a silent cut would also swallow a mention.
+        if thread.comments.page_info.has_next_page {
+            tracing::warn!(
+                "review thread {} on {} has more than 100 comments; later ones were not fetched",
+                thread.id,
+                thread.path
+            );
+        }
+        PullRequestReviewThread {
+            id: thread.id,
+            is_resolved: thread.is_resolved,
+            is_outdated: thread.is_outdated,
+            path: thread.path,
+            line: thread.line,
+            start_line: thread.start_line,
+            original_line: thread.original_line,
+            diff_side: thread.diff_side,
+            comments: thread
+                .comments
+                .nodes
+                .into_iter()
+                .map(PullRequestReviewThreadComment::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<GraphQlReviewThreadComment> for PullRequestReviewThreadComment {
+    fn from(comment: GraphQlReviewThreadComment) -> Self {
+        PullRequestReviewThreadComment {
+            id: comment.database_id.unwrap_or_default(),
+            body: comment.body.unwrap_or_default(),
+            author: comment.author.map(Into::into),
+            created_at: comment.created_at,
+            modified_at: comment.last_edited_at,
+            html_url: comment.url,
+            diff_hunk: comment.diff_hunk,
+            review_id: comment
+                .pull_request_review
+                .and_then(|review| review.database_id),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubIssueComment {
     id: i64,
@@ -1799,43 +2236,83 @@ pub struct PullRequestTimelineEvent {
     pub created_at: Option<String>,
 }
 
-/// One raw timeline entry; the endpoint returns a heterogeneous array, so
-/// every field is optional and unknown event kinds deserialize cleanly.
+/// One raw timeline node; the union is heterogeneous, so every field is
+/// optional and unnamed item kinds deserialize (and drop) cleanly.
 #[derive(Debug, Deserialize)]
-struct GitHubTimelineEventApi {
-    event: Option<String>,
-    actor: Option<GitHubApiUser>,
-    requested_reviewer: Option<GitHubApiUser>,
+#[serde(rename_all = "camelCase")]
+struct GraphQlTimelineItem {
+    #[serde(rename = "__typename")]
+    typename: String,
+    commit: Option<GraphQlTimelineCommit>,
     created_at: Option<String>,
-    sha: Option<String>,
-    message: Option<String>,
-    author: Option<GitHubCommitIdentityApi>,
+    actor: Option<GraphQlActor>,
+    requested_reviewer: Option<GraphQlRequestedReviewer>,
 }
 
 #[derive(Debug, Deserialize)]
-struct GitHubCommitIdentityApi {
-    name: Option<String>,
-    date: Option<String>,
+#[serde(rename_all = "camelCase")]
+struct GraphQlTimelineCommit {
+    oid: String,
+    message_headline: Option<String>,
+    author: Option<GraphQlCommitAuthor>,
 }
 
-impl GitHubTimelineEventApi {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlCommitAuthor {
+    name: Option<String>,
+    /// Author date, not committer date — a rebase re-stamps the latter, which
+    /// would re-announce every carried commit as new activity.
+    date: Option<String>,
+    /// The GitHub account the author email maps to, when it maps to one.
+    user: Option<GraphQlActor>,
+}
+
+/// A requested reviewer; a team carries no login, so unlike an actor every
+/// field is optional and login-less reviewers are dropped.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlRequestedReviewer {
+    #[serde(rename = "__typename")]
+    typename: Option<String>,
+    login: Option<String>,
+    avatar_url: Option<String>,
+    database_id: Option<i64>,
+    name: Option<String>,
+}
+
+impl GraphQlTimelineItem {
     fn into_event(self) -> Option<PullRequestTimelineEvent> {
-        match self.event.as_deref() {
-            Some("committed") => Some(PullRequestTimelineEvent {
-                kind: PullRequestTimelineEventKind::Committed,
-                actor: None,
-                requested_reviewer: None,
-                commit_sha: self.sha,
-                commit_summary: self
-                    .message
-                    .map(|message| message.lines().next().unwrap_or_default().to_owned()),
-                created_at: self.author.as_ref().and_then(|author| author.date.clone()),
-                commit_author_name: self.author.and_then(|author| author.name),
-            }),
-            Some("review_requested") => Some(PullRequestTimelineEvent {
+        match self.typename.as_str() {
+            "PullRequestCommit" => {
+                let commit = self.commit?;
+                let author = commit.author;
+                Some(PullRequestTimelineEvent {
+                    kind: PullRequestTimelineEventKind::Committed,
+                    actor: author
+                        .as_ref()
+                        .and_then(|author| author.user.clone())
+                        .map(Into::into),
+                    requested_reviewer: None,
+                    commit_sha: Some(commit.oid),
+                    commit_summary: commit.message_headline,
+                    created_at: author.as_ref().and_then(|author| author.date.clone()),
+                    commit_author_name: author.and_then(|author| author.name),
+                })
+            }
+            "ReviewRequestedEvent" => Some(PullRequestTimelineEvent {
                 kind: PullRequestTimelineEventKind::ReviewRequested,
                 actor: self.actor.map(Into::into),
-                requested_reviewer: self.requested_reviewer.map(Into::into),
+                requested_reviewer: self.requested_reviewer.and_then(|reviewer| {
+                    Some(GitHubUser {
+                        id: reviewer.database_id.unwrap_or_default(),
+                        login: reviewer.login?,
+                        name: reviewer.name,
+                        email: None,
+                        avatar_url: reviewer.avatar_url,
+                        is_bot: reviewer.typename.as_deref() == Some("Bot"),
+                    })
+                }),
                 commit_sha: None,
                 commit_summary: None,
                 commit_author_name: None,
@@ -1947,23 +2424,33 @@ impl From<GitHubPullRequest> for PullRequest {
     }
 }
 
+/// Marks credential lookups that came up empty, so consumers can tell "the
+/// user is not authenticated" apart from a failing forge and e.g. keep
+/// serving cached data instead of surfacing an error.
+pub(crate) const NOT_AUTHENTICATED: but_error::Context = but_error::Context::new_static(
+    but_error::Code::ForgeNotAuthenticated,
+    "Not authenticated with GitHub. Connect your account under Settings → Integrations.",
+);
+
 pub(crate) fn resolve_account(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     storage: &but_forge_storage::Controller,
 ) -> Result<crate::GithubAccountIdentifier, anyhow::Error> {
     let known_accounts = crate::token::list_known_github_accounts(storage)?;
     let Some(default_account) = known_accounts.first() else {
-        bail!(
+        return Err(anyhow::anyhow!(
             "No authenticated GitHub users found.\nRun 'but config forge auth' to authenticate with GitHub."
-        );
+        )
+        .context(NOT_AUTHENTICATED));
     };
     let account = if let Some(account) = preferred_account {
         if known_accounts.contains(account) {
             account
         } else {
-            bail!(
+            return Err(anyhow::anyhow!(
                 "Preferred GitHub account '{account}' has not authenticated yet.\nRun 'but config forge auth' to authenticate, or choose another account."
-            );
+            )
+            .context(NOT_AUTHENTICATED));
         }
     } else {
         default_account
@@ -1994,6 +2481,20 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_bot_author_is_marked_as_one() {
+        let user: GitHubApiUser = serde_json::from_value(json!({
+            "id": 2,
+            "login": "copilot-pull-request-reviewer[bot]",
+            "type": "Bot"
+        }))
+        .unwrap();
+        assert!(
+            GitHubUser::from(user).is_bot,
+            "the REST api reports the type as `Bot`, capitalized"
+        );
+    }
+
+    #[test]
     fn body_context_preserves_the_status_downcast() {
         let err = anyhow::Error::from(HttpStatusError {
             status: reqwest::StatusCode::UNAUTHORIZED,
@@ -2003,6 +2504,54 @@ mod tests {
             err.downcast_ref::<HttpStatusError>().is_some(),
             "token-expiry classification reads the status through the body context"
         );
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct AutoMergePayload {
+        #[serde(rename = "enablePullRequestAutoMerge")]
+        #[allow(dead_code)]
+        enable_pull_request_auto_merge: PullRequestRef,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct PullRequestRef {
+        id: String,
+    }
+
+    #[test]
+    fn graphql_refusal_reports_githubs_message_not_a_decoding_failure() {
+        // How GitHub refuses a mutation: the field it would have returned is
+        // null, and the reason is in `errors`.
+        let body = br#"{"data":{"enablePullRequestAutoMerge":null},"errors":[{"message":"Pull request Auto merge is not allowed for this repository"}]}"#;
+
+        let err = decode_graphql_response::<AutoMergePayload>(body)
+            .expect_err("a refused mutation is an error");
+
+        assert_eq!(
+            err.to_string(),
+            "GitHub GraphQL returned errors: Pull request Auto merge is not allowed for this repository",
+            "the reason reaches the caller instead of `invalid type: null, expected struct`"
+        );
+    }
+
+    #[test]
+    fn graphql_success_still_decodes_into_the_payload_type() {
+        let body = br#"{"data":{"enablePullRequestAutoMerge":{"pullRequest":{"id":"PR_1"}}}}"#;
+
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(rename = "enablePullRequestAutoMerge")]
+            inner: Inner,
+        }
+        #[derive(Deserialize)]
+        struct Inner {
+            #[serde(rename = "pullRequest")]
+            pull_request: PullRequestRef,
+        }
+
+        let decoded: Wrapper =
+            decode_graphql_response(body).expect("a successful mutation decodes");
+        assert_eq!(decoded.inner.pull_request.id, "PR_1");
     }
 
     #[test]

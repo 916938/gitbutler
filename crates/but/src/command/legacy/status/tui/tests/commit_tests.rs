@@ -17,10 +17,10 @@ fn commit_mode_enter_and_escape() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -40,13 +40,13 @@ fn commit_confirm_on_source_is_noop() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Enter)
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"])
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/commit_confirm_on_source_is_noop_final.svg"
         ]);
@@ -60,7 +60,7 @@ fn commiting_with_no_uncommitted_changes() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -83,7 +83,7 @@ fn commiting_with_no_uncommitted_changes() {
         ]);
 
     tui.input(KeyCode::Enter)
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"])
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/commiting_with_no_uncommitted_changes_003.svg"
         ]);
@@ -106,21 +106,21 @@ fn commit_from_unstaged_changes_creates_commit_visible_in_tui() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     with_var("GIT_EDITOR", Some(editor_command), || {
         tui.input(KeyCode::Enter)
-            .assert_current_line_eq(str!["┊●   1 commit from tui test"]);
+            .assert_current_line_eq(str!["┊●   oqn commit from tui test"]);
     });
 
     tui.reload()
-        .assert_current_line_eq(str!["┊●   1 commit from tui test"])
+        .assert_current_line_eq(str!["┊●   oqn commit from tui test"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/commit_from_unstaged_changes_creates_commit_visible_in_tui_final.svg"
         ]);
@@ -143,24 +143,61 @@ fn commit_from_unstaged_changes_to_new_branch_creates_branch_and_commit() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     with_var("GIT_EDITOR", Some(editor_command), || {
         tui.input('b')
-            .assert_current_line_eq(str!["┊●   1 commit from tui test"]);
+            .assert_current_line_eq(str!["┊●   oqn commit from tui test"]);
     });
 
     tui.reload()
-        .assert_current_line_eq(str!["┊●   1 commit from tui test"])
+        .assert_current_line_eq(str!["┊●   oqn commit from tui test"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/commit_from_unstaged_changes_to_new_branch_creates_branch_and_commit_final.svg"
         ]);
+}
+
+#[test]
+fn commit_from_unstaged_changes_to_new_branch_checks_out_branch_in_single_branch_mode() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.invoke_git("checkout A");
+
+    env.file(
+        "editor.sh",
+        format!("printf '{TEST_EDITOR_MESSAGE}\\n' > \"$1\"\n"),
+    );
+    let editor_path = env.projects_root().join("editor.sh");
+    let editor_command = format!("sh {}", editor_path.display());
+
+    let mut tui = test_status_tui(env);
+
+    tui.env().file("test.txt", "content");
+    tui.reload();
+    tui.input('c');
+
+    with_var("GIT_EDITOR", Some(editor_command), || {
+        tui.input('b').assert_rendered_term_svg_eq(file![
+            "snapshots/commit_from_unstaged_changes_to_new_branch_checks_out_branch_in_single_branch_mode_final.svg"
+        ]);
+    });
+
+    assert_eq!(
+        tui.env().invoke_git("symbolic-ref --short HEAD"),
+        "c-branch-1",
+        "creating a branch from the TUI should check it out in single-branch mode"
+    );
+    assert_eq!(
+        tui.env().invoke_git("log -1 --format=%s"),
+        TEST_EDITOR_MESSAGE,
+        "the checked-out branch should contain the TUI commit"
+    );
 }
 
 #[test]
@@ -186,17 +223,17 @@ fn commit_from_unstaged_changes_with_multiple_hunks_in_same_file_commits_all_cha
     tui.env().file("multi-hunk.txt", &base);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     with_var("GIT_EDITOR", Some(editor_command.clone()), || {
         tui.input(KeyCode::Enter)
-            .assert_current_line_eq(str!["┊●   1 commit from tui test"]);
+            .assert_current_line_eq(str!["┊●   kmy commit from tui test"]);
     });
 
     let changed = base
@@ -215,23 +252,23 @@ fn commit_from_unstaged_changes_with_multiple_hunks_in_same_file_commits_all_cha
     tui.reload();
     tui.input(std::array::repeat::<_, 20>(KeyCode::Up));
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     with_var("GIT_EDITOR", Some(editor_command), || {
         tui.input(KeyCode::Enter)
-            .assert_current_line_eq(str!["┊●   1#0 commit from tui test"]);
+            .assert_current_line_eq(str!["┊●   mwu commit from tui test"]);
     });
 
     let status = tui.env().invoke_git("status --porcelain");
     assert_eq!(
         status, "",
-        "expected all zz changes to be committed, but worktree still has:\n{status}"
+        "expected all @ changes to be committed, but worktree still has:\n{status}"
     );
 }
 
@@ -245,10 +282,10 @@ fn commit_mode_shows_commit_below_on_commit_rows() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input([KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┊●   tpm add A"])
@@ -274,10 +311,10 @@ fn commit_to_commit_above_creates_commit_visible_in_tui() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input([KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┊●   tpm add A"])
@@ -291,11 +328,11 @@ fn commit_to_commit_above_creates_commit_visible_in_tui() {
 
     with_var("GIT_EDITOR", Some(editor_command), || {
         tui.input(KeyCode::Enter)
-            .assert_current_line_eq(str!["┊●   1 commit from tui test"]);
+            .assert_current_line_eq(str!["┊●   oqn commit from tui test"]);
     });
 
     tui.reload()
-        .assert_current_line_eq(str!["┊●   1 commit from tui test"])
+        .assert_current_line_eq(str!["┊●   oqn commit from tui test"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/commit_to_commit_above_creates_commit_visible_in_tui_final_002.svg"
         ]);
@@ -318,10 +355,10 @@ fn commit_to_commit_below_creates_commit_visible_in_tui() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input([KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┊●   tpm add A"])
@@ -332,11 +369,11 @@ fn commit_to_commit_below_creates_commit_visible_in_tui() {
 
     with_var("GIT_EDITOR", Some(editor_command), || {
         tui.input(KeyCode::Enter)
-            .assert_current_line_eq(str!["┊●   1 commit from tui test"]);
+            .assert_current_line_eq(str!["┊●   zym commit from tui test"]);
     });
 
     tui.reload()
-        .assert_current_line_eq(str!["┊●   1 commit from tui test"])
+        .assert_current_line_eq(str!["┊●   zym commit from tui test"])
         .assert_rendered_term_svg_eq(file![
             "snapshots/commit_to_commit_below_creates_commit_visible_in_tui_final.svg"
         ]);
@@ -352,7 +389,7 @@ fn commit_mode_from_staged_changes_stays_within_current_stack() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊   vo A test.txt"]);
@@ -370,10 +407,10 @@ fn commit_mode_from_staged_changes_stays_within_current_stack() {
         .assert_current_line_eq(str!["┊●   tpm add A"]);
 
     tui.input([KeyCode::Up, KeyCode::Up])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input('c').assert_current_line_eq(str![
-        "╭┄ << source >> << noop >> zz [uncommitted] (no changes)"
+        "╭┄ << source >> << noop >> @ [uncommitted] (no changes)"
     ]);
 
     tui.input(KeyCode::Down)
@@ -402,10 +439,10 @@ fn commit_with_inline_reword() {
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input('c')
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -427,13 +464,13 @@ fn commit_with_inline_reword() {
         .assert_rendered_term_svg_eq(file!["snapshots/commit_with_inline_reword_004.svg"]);
 
     tui.input(KeyCode::Enter)
-        .assert_current_line_eq(str!["┊●   1"]);
+        .assert_current_line_eq(str!["┊●   nsl"]);
 
     tui.input("commit message here")
-        .assert_current_line_eq(str!["┊●   1 commit message here"]);
+        .assert_current_line_eq(str!["┊●   nsl commit message here"]);
 
     tui.input(KeyCode::Enter)
-        .assert_current_line_eq(str!["┊●   1 commit message here"]);
+        .assert_current_line_eq(str!["┊●   nsl commit message here"]);
 }
 
 #[test]
@@ -473,7 +510,7 @@ fn commit_moved_file_from_uncommitted_changes_line() {
 
     // there should be no more changes to commit
     tui.reload()
-        .assert_rendered_contains("zz [uncommitted] (no changes)");
+        .assert_rendered_contains("@ [uncommitted] (no changes)");
 }
 
 #[test]
@@ -515,7 +552,7 @@ fn commit_moved_file_from_file_line() {
 
     // there should be no more changes to commit
     tui.reload()
-        .assert_rendered_contains("zz [uncommitted] (no changes)");
+        .assert_rendered_contains("@ [uncommitted] (no changes)");
 }
 
 #[test]
@@ -560,7 +597,7 @@ fn commit_moved_and_modified_file() {
 
     // there should be no more changes to commit
     tui.reload()
-        .assert_rendered_contains("zz [uncommitted] (no changes)");
+        .assert_rendered_contains("@ [uncommitted] (no changes)");
 }
 
 #[test]

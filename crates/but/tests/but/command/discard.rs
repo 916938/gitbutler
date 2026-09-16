@@ -6,6 +6,24 @@ use crate::{
 };
 
 #[test]
+fn rejects_unnamed_segment_as_source() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+
+    env.but("discard g0")
+        .assert()
+        .failure()
+        .stdout_eq(snapbox::str![])
+        .stderr_eq(snapbox::str![[r#"
+Error: Cannot operate on anonymous branch 'g0'
+
+Hint: Name it with `but reword g0` first! Note that the short ID is likely to change when the branch is named.
+
+"#]]);
+}
+
+#[test]
 fn discard_removes_selected_change() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
@@ -18,7 +36,7 @@ fn discard_removes_selected_change() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A
@@ -54,7 +72,7 @@ fn discard_removes_path_prefix_mixed_with_file() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   nl A path/to-other.txt
 ┊
 ┊╭┄ g0 [A]
@@ -102,7 +120,7 @@ fn concurrent_discard_to_independent_files_succeeds() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A
@@ -187,12 +205,12 @@ fn discard_rename_does_not_discard_unrelated_changes() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   tz A src/keep-me.ts
 ┊
 ┊╭┄ g0 [A]
-┊●   1 seed rename source only
-┊│     1:l A src/rename-source-only.ts
+┊●   uwm seed rename source only
+┊│     uwm:l A src/rename-source-only.ts
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -231,7 +249,7 @@ fn discard_the_whole_uncommitted_changes() {
     .unwrap();
     env.file("src/keep-me.ts", "export const keep = true;\n");
 
-    env.but("discard zz").assert().success();
+    env.but("discard @").assert().success();
 
     assert!(
         env.projects_root()
@@ -250,11 +268,11 @@ fn discard_the_whole_uncommitted_changes() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
-┊●   1 seed rename source only
-┊│     1:l A src/rename-source-only.ts
+┊●   uwm seed rename source only
+┊│     uwm:l A src/rename-source-only.ts
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -286,7 +304,7 @@ fn discarding_multiple_hunks_in_a_file_works() {
         .success();
 
     env.file(file_path, "a\nb\nc\n1\n2\n3\n4\n5\n6\n7\nd\ne\nf");
-    env.but("discard zz").assert().success();
+    env.but("discard @").assert().success();
 
     assert!(
         env.projects_root().join("src/some_file.txt").exists(),
@@ -312,7 +330,7 @@ fn discard_multiple_uncommitted_files_outputs_json() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   rv A first-uncommitted.txt
 ┊   xs A second-uncommitted.txt
 ┊
@@ -346,7 +364,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A
@@ -358,6 +376,137 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
 Hint: run `but help` for all commands
 
 "#]]);
+}
+
+#[test]
+fn discard_resulting_in_workdir_ud_conflict() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.file("commit.txt", "text\n");
+    env.but("commit -b A -m 'discardable commit'")
+        .assert()
+        .success();
+    let commit_id = env.invoke_git("rev-parse refs/heads/A");
+
+    env.file("commit.txt", "would conflict if commit above was deleted\n");
+
+    env.but(format!("discard {commit_id}"))
+        .assert()
+        .success()
+        .stderr_eq("")
+        .stdout_eq(snapbox::str![[r#"
+Discarded commit tvn
+
+⚠ A conflict occurred during checkout. Run `but status` for more information.
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted]
+┊    commit.txt {conflicted}
+┊
+┊╭┄ g0 [A]
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+⚠ Uncommitted file conflicts: edit each file to the wanted contents (or delete it), then run `but resolve <path>...` to mark it resolved.
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_status(),
+        snapbox::str![[r#"
+UD commit.txt
+
+"#]]
+    );
+
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(env.projects_root().join("commit.txt")).unwrap(),
+        snapbox::str![[r#"
+would conflict if commit above was deleted
+
+"#]]
+    );
+}
+
+#[test]
+fn discard_resulting_in_workdir_uu_conflict() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.file("commit.txt", "first\n");
+    env.but("commit -b A -m 'commit'").assert().success();
+
+    env.file("commit.txt", "second\n");
+    env.but("commit -b A -m 'discardable commit'")
+        .assert()
+        .success();
+    let commit_id = env.invoke_git("rev-parse refs/heads/A");
+
+    env.file("commit.txt", "would conflict if commit above was deleted\n");
+
+    env.but(format!("discard {commit_id}"))
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Discarded commit syk
+
+⚠ A conflict occurred during checkout. Run `but status` for more information.
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted]
+┊    commit.txt {conflicted}
+┊
+┊╭┄ g0 [A]
+┊●   pmw commit
+┊│     pmw:t A commit.txt
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+⚠ Uncommitted file conflicts: edit each file to the wanted contents (or delete it), then run `but resolve <path>...` to mark it resolved.
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_status(),
+        snapbox::str![[r#"
+UU commit.txt
+
+"#]]
+    );
+
+    // The output depends on whether merge.conflictstyle=diff3 is configured in
+    // gitconfig, so add a wildcard to support both types of output.
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(env.projects_root().join("commit.txt")).unwrap(),
+        snapbox::str![[r#"
+<<<<<<< ours
+would conflict if commit above was deleted
+...
+=======
+first
+>>>>>>> theirs
+
+"#]]
+    );
 }
 
 #[test]
@@ -381,13 +530,13 @@ fn discard_multiple_commits_outputs_human() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
-┊●   1#0 second discardable commit
-┊│     1#0:r A second-commit.txt
-┊●   1#1 first discardable commit
-┊│     1#1:m A first-commit.txt
+┊●   yqn second discardable commit
+┊│     yqn:r A second-commit.txt
+┊●   lmp first discardable commit
+┊│     lmp:m A first-commit.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -402,7 +551,7 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-Discarded commits 1, 1
+Discarded commits lmp, yqn
 
 "#]]);
 
@@ -410,7 +559,7 @@ Discarded commits 1, 1
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A
@@ -449,12 +598,12 @@ fn discard_committed_files_outputs_new_commit_in_json() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
-┊●   1 files to selectively discard
-┊│     1:n A discarded-from-commit.txt
-┊│     1:x A retained-in-commit.txt
+┊●   toz files to selectively discard
+┊│     toz:n A discarded-from-commit.txt
+┊│     toz:x A retained-in-commit.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -471,14 +620,14 @@ Hint: run `but help` for all commands
         .success()
         .stdout_eq(snapbox::str![[r#"
 {
-  "type": "committedFiles",
-  "sourceCommitId": "c61e0f8eb6e54760c5a265d93044bf29b7a5716a",
-  "sourceChangeId": "1",
+  "type": "committedChanges",
+  "sourceCommitId": "7df37764a21d5510d4108ad82bfaf98bc926a1a8",
+  "sourceChangeId": "tozmluwlnkpxmqykupputuolovmvyprt",
   "paths": [
     "discarded-from-commit.txt"
   ],
-  "newCommitId": "372ab397ba61d3368a1a9e769f39af3997c4e1ad",
-  "newChangeId": "1"
+  "newCommitId": "ab57cd43e38112a1b44246daf6eb509f6097f5a4",
+  "newChangeId": "tozmluwlnkpxmqykupputuolovmvyprt"
 }
 
 "#]]);
@@ -487,11 +636,11 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
-┊●   1 files to selectively discard
-┊│     1:x A retained-in-commit.txt
+┊●   toz files to selectively discard
+┊│     toz:x A retained-in-commit.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -548,7 +697,7 @@ Cannot mix different types of sources
 Hint: Discard branches, commits, committed files, or uncommitted changes separately
 
 "#]]);
-    env.but("discard zz uncommitted.txt")
+    env.but("discard @ uncommitted.txt")
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
@@ -564,12 +713,12 @@ Hint: Discard branches, commits, committed files, or uncommitted changes separat
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   ln A uncommitted.txt
 ┊
 ┊╭┄ g0 [A]
-┊●   1 committed source
-┊│     1:z A committed.txt
+┊●   opq committed source
+┊│     opq:z A committed.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -582,7 +731,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
 }
 
 #[test]
-fn discard_rejects_committed_files_from_multiple_commits() {
+fn discard_rejects_committed_changes_from_multiple_commits() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
 
@@ -616,13 +765,13 @@ Hint: Discard committed files from each commit separately
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
-┊●   1#0 second committed source
-┊│     1#0:q A second-committed.txt
-┊●   1#1 first committed source
-┊│     1#1:t A first-committed.txt
+┊●   lqq second committed source
+┊│     lqq:q A second-committed.txt
+┊●   ssw first committed source
+┊│     ssw:t A first-committed.txt
 ┊●   tpm add A
 ┊│     tpm:t A A
 ├╯
@@ -635,6 +784,372 @@ Hint: run `but help` for all commands
 }
 
 #[test]
+fn discard_committed_hunk_in_modified_file() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+
+    let original_content = "one
+two
+three
+four
+five
+six
+seven
+";
+    env.file("file.txt", original_content);
+    env.but("commit -m 'Add file'").assert().success();
+
+    env.file("file.txt", format!("first\n{original_content}last\n"));
+    env.but("commit -m 'Modify file'").assert().success();
+    let modified_commit = env.invoke_git("rev-parse refs/heads/a-branch-1");
+
+    env.but(format!("diff {modified_commit}"))
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+────────────────╮
+ x:u:2 file.txt │
+────────────────╯
+
+@@ -1,3 +1,4 @@
+───────────────
+  ┊ 1 │ +first
+1 ┊ 2 │  one
+2 ┊ 3 │  two
+3 ┊ 4 │  three
+
+────────────────╮
+ x:u:e file.txt │
+────────────────╯
+
+@@ -5,3 +6,4 @@
+───────────────
+5 ┊  6 │  five
+6 ┊  7 │  six
+7 ┊  8 │  seven
+  ┊  9 │ +last
+
+"#]]);
+
+    env.but(format!("discard {modified_commit}:u:2"))
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Discarded changes from file.txt from xsw to create xsw
+
+"#]]);
+
+    let rewritten_commit = env.invoke_git("rev-parse refs/heads/a-branch-1");
+    env.but(format!("diff {rewritten_commit}"))
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+────────────────╮
+ x:u:e file.txt │
+────────────────╯
+
+@@ -5,3 +5,4 @@
+───────────────
+5 ┊ 5 │  five
+6 ┊ 6 │  six
+7 ┊ 7 │  seven
+  ┊ 8 │ +last
+
+"#]]);
+}
+
+#[test]
+fn discard_single_committed_hunk_in_deleted_file_discards_deletion() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.remove_file("A");
+    env.but("commit -m 'Delete file'").assert().success();
+    let delete_commit = env.invoke_git("rev-parse refs/heads/A");
+
+    env.but(format!("diff {delete_commit}"))
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+─────────╮
+ s:t:a A │
+─────────╯
+
+@@ -1,1 +1,0 @@
+───────────────
+1 ┊   │ -A
+
+"#]]);
+
+    env.but(format!("discard {delete_commit}:t:a"))
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Discarded changes from A from sum to create sum
+
+"#]]);
+
+    // commit now has no changes
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   sum Delete file (no changes)
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
+fn discard_single_committed_hunk_in_added_file_discards_addition() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+    env.but("diff tpm")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+─────────╮
+ t:t:6 A │
+─────────╯
+
+@@ -1,0 +1,1 @@
+───────────────
+  ┊ 1 │ +A
+
+"#]]);
+
+    env.but("discard tpm:t:6")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Discarded changes from A from tpm to create tpm
+
+"#]]);
+
+    // commit now has no changes
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   tpm add A (no changes)
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
+fn discard_final_content_hunk_in_renamed_file_does_not_discard_rename_itself() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&["A"]);
+
+    let original_content = "one\ntwo\nthree\n";
+    env.file("file.txt", original_content);
+    env.but("commit -m 'Add file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit xvz on new branch 'a-branch-1'
+
+"#]]);
+
+    env.remove_file("file.txt");
+    env.file("renamed_file.txt", format!("{original_content}\nnew"));
+    env.but("commit -m 'Rename and edit file'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit xlx on branch 'a-branch-1'
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ br [a-branch-1]
+┊●   xlx Rename and edit file
+┊│     xlx:q R renamed_file.txt
+┊●   xvz Add file
+┊│     xvz:u A file.txt
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    env.but("diff xlx")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+─────────────────────────╮
+ xl:q:7 renamed_file.txt │
+─────────────────────────╯
+
+@@ -1,3 +1,5 @@
+───────────────
+1 ┊ 1 │  one
+2 ┊ 2 │  two
+3 ┊ 3 │  three
+  ┊ 4 │ +
+  ┊ 5 │ +new
+
+"#]]);
+
+    env.but("discard xlx:q:7")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Discarded changes from renamed_file.txt from xlx to create xlx
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ br [a-branch-1]
+┊●   xlx Rename and edit file
+┊│     xlx:q R renamed_file.txt
+┊●   xvz Add file
+┊│     xvz:u A file.txt
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+    env.but("diff xlx")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+─────────────────────────╮
+ xl:q:e renamed_file.txt │
+─────────────────────────╯
+
+No diff available - file is either empty, binary, or too large
+
+"#]]);
+}
+
+/// This is here to document this strange corner case that we probably don't want to have. Pending a
+/// decision on what to do with "unihunks", for renamed files especially.
+#[test]
+fn discard_unihunk_in_renamed_file_without_content_discards_rename() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.rename_file("A", "B");
+    env.but("commit -m 'Rename file A -> B'")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Created commit ylp on branch 'A'
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   ylp Rename file A -> B
+┊│     ylp:p R B
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    env.but("diff ylp")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+─────────╮
+ y:p:e B │
+─────────╯
+
+No diff available - file is either empty, binary, or too large
+
+"#]]);
+
+    env.but("discard ylp:p:e")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Discarded changes from B from ylp to create ylp
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   ylp Rename file A -> B (no changes)
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+    env.but("diff ylp")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![""]);
+}
+
+#[test]
 fn discard_an_uncommitted_hunk() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
@@ -644,22 +1159,29 @@ fn discard_an_uncommitted_hunk() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-──────────────╮
-lw:2 hunks.txt│
-──────────────╯
-   1  │-first
-     1│+firsta
-   2 2│ line
-   3 3│ line
-   4 4│ line
-──────────────╮
-lw:e hunks.txt│
-──────────────╯
-    6  6│ line
-    7  7│ line
-    8  8│ line
-    9   │-last
-       9│+lasta
+────────────────╮
+ lw:2 hunks.txt │
+────────────────╯
+
+@@ -1,4 +1,4 @@
+───────────────
+1 ┊   │ -first
+  ┊ 1 │ +firsta
+2 ┊ 2 │  line
+3 ┊ 3 │  line
+4 ┊ 4 │  line
+
+────────────────╮
+ lw:e hunks.txt │
+────────────────╯
+
+@@ -6,4 +6,4 @@
+───────────────
+ 6 ┊  6 │  line
+ 7 ┊  7 │  line
+ 8 ┊  8 │  line
+ 9 ┊    │ -last
+   ┊  9 │ +lasta
 
 "#]]);
 
@@ -672,14 +1194,17 @@ lw:e hunks.txt│
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-──────────────╮
-lw:e hunks.txt│
-──────────────╯
-    6  6│ line
-    7  7│ line
-    8  8│ line
-    9   │-last
-       9│+lasta
+────────────────╮
+ lw:e hunks.txt │
+────────────────╯
+
+@@ -6,4 +6,4 @@
+───────────────
+ 6 ┊  6 │  line
+ 7 ┊  7 │  line
+ 8 ┊  8 │  line
+ 9 ┊    │ -last
+   ┊  9 │ +lasta
 
 "#]]);
 
@@ -730,7 +1255,7 @@ warning: this operation left 1 commit(s) conflicted: [..]. Resolve with `but res
 }
 
 #[test]
-fn discard_defaults_to_zz() {
+fn discard_defaults_to_uncommitted_area() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
 
@@ -748,7 +1273,7 @@ Discarded uncommitted changes from src/discard-me.ts
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A

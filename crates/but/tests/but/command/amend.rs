@@ -1,9 +1,31 @@
 use snapbox::str;
 
 use crate::{
-    command::util::{branch_commit_cli_ids, status_json_with_files as status_json},
+    command::util::{
+        add_dirty_worktree, branch_commit_cli_ids, enable_worktree_manipulation,
+        status_json_with_files as status_json,
+    },
     utils::Sandbox,
 };
+
+#[test]
+fn rejects_unnamed_segment_as_target() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+    env.file("new.txt", "content\n");
+
+    env.but("amend -t g0")
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: Cannot operate on anonymous branch 'g0'
+
+Hint: Name it with `but reword g0` first! Note that the short ID is likely to change when the branch is named.
+
+"#]]);
+}
 
 fn uncommitted_contains_file(status: &serde_json::Value, file_path: &str) -> bool {
     status["uncommittedChanges"]
@@ -52,7 +74,7 @@ fn amend_rejects_dependency_changes() {
         .stderr_eq(str![[r#"
 Error: Cannot amend: 1 change could not be applied:
   first
-    line 1 depends on foo (1)
+    line 1 depends on foo (xsz)
 
 Hint: to apply these changes, stack bar on top of foo and try again — commits already on the branch move with it:
   but move bar --above foo
@@ -93,7 +115,7 @@ fn amend_without_source_implies_uncommitted() {
         .assert()
         .success()
         .stdout_eq(str![[r#"
-╭┄ zz [uncommitted]
+╭┄ @ [uncommitted]
 ┊   qs A file
 ┊
 ┊╭┄ g0 [A]
@@ -117,7 +139,7 @@ Amended tpm
         .stderr_eq(str![""]);
 
     env.but("status -f").assert().success().stdout_eq(str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [A]
 ┊●   tpm add A
@@ -324,4 +346,223 @@ fn retired_flag_with_help_passes_through_without_hint() {
         .assert()
         .success()
         .stderr_eq(str![""]);
+}
+
+/// A worktree file's ID amends that change into a commit: it lands there and
+/// leaves the worktree's uncommitted area, whose checkout is updated so the
+/// change does not reappear.
+#[test]
+fn amend_a_file_from_a_linked_worktree() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    enable_worktree_manipulation(&env);
+    env.but("status").assert().success();
+    add_dirty_worktree(&env, "wt-feature", "A");
+
+    env.but("amend nl --target tpm")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Amended tpm
+
+"#]]);
+
+    // The change moved: amended into A's commit, gone from the worktree's area.
+    env.but("status -f")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊┊
+┊┊╭┄ wt:@ {worktree uncommitted} (no changes)
+┊┊├┄ wt {wt-feature}
+┊├╯
+┊●   tpm add A
+┊│     tpm:t A A
+┊│     tpm:u A note.txt
+├╯
+┊
+┊╭┄ h0 [B]
+┊●   lrm add B
+┊│     lrm:p A B
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+/// The worktree's own ID names its whole uncommitted area, and the amend target
+/// does not have to be on the worktree's branch.
+#[test]
+fn amend_a_worktrees_whole_uncommitted_area() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    enable_worktree_manipulation(&env);
+    env.but("status").assert().success();
+    add_dirty_worktree(&env, "wt-feature", "A");
+
+    env.but("amend wt:@ --target lrm")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Amended lrm
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊┊
+┊┊╭┄ wt:@ {worktree uncommitted} (no changes)
+┊┊├┄ wt {wt-feature}
+┊├╯
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┊╭┄ h0 [B]
+┊●   lrm add B
+┊│     lrm:p A B
+┊│     lrm:u A note.txt
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+/// Changes dirty in different checkouts cannot go into one amend: they are
+/// read from and cancelled out of different repositories.
+#[test]
+fn amend_refuses_changes_from_several_checkouts() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    enable_worktree_manipulation(&env);
+    env.but("status").assert().success();
+    add_dirty_worktree(&env, "wt-feature", "A");
+    env.file("main.txt", "dirty in the main worktree\n");
+
+    env.but("amend main.txt wt-feature:note.txt --target tpm")
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: Cannot use changes from the uncommitted area and worktree wt-feature together
+
+Hint: An operation can only take changes from one checkout at a time
+
+"#]]);
+}
+
+/// A clean worktree's ID expands to no changes, which is refused before the
+/// squash classification requires a source.
+#[test]
+fn amend_a_clean_worktree_has_nothing_to_amend() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    enable_worktree_manipulation(&env);
+    env.but("status").assert().success();
+    let wt = env.app_data_dir().join("worktrees");
+    but_testsupport::invoke_bash_at_dir(
+        &format!(
+            r#"git worktree add -q -b wt-clean "{wt}/wt-clean" A"#,
+            wt = wt.display()
+        ),
+        env.projects_root(),
+    );
+
+    env.but("status")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊┊
+┊┊╭┄ wt:@ {worktree uncommitted} (no changes)
+┊┊├┄ wt {wt-clean}
+┊├╯
+┊●   tpm add A
+├╯
+┊
+┊╭┄ h0 [B]
+┊●   lrm add B
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    env.but("amend wt:@ --target tpm")
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: No changes to amend
+
+Hint: Run `but status` to show applicable targets
+
+"#]]);
+}
+
+/// `@` expands to the main checkout's whole uncommitted area for amending, the way a
+/// worktree's ID expands to its area.
+#[test]
+fn amend_the_uncommitted_area_by_id() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    env.file("one.txt", "first\n");
+    env.file("two.txt", "second\n");
+
+    env.but("amend @ --target lrm")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Amended lrm
+
+"#]]);
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┊╭┄ h0 [B]
+┊●   lrm add B
+┊│     lrm:pl A B
+┊│     lrm:z  A one.txt
+┊│     lrm:pp A two.txt
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
 }

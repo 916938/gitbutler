@@ -550,3 +550,85 @@ fn squash_branch_into_uncommitted_ignores_use_target_message() {
         "snapshots/squash_branch_into_uncommitted_ignores_use_target_message_004.svg"
     ]);
 }
+
+#[test]
+fn squash_marked_commits_into_self() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui(env);
+
+    tui.input('j');
+    tui.input('j');
+    tui.input(' ');
+    tui.input(' ');
+    tui.input('r');
+    tui.input('u')
+        .assert_rendered_term_svg_eq(file!["snapshots/squash_marked_commits_into_self_001.svg"]);
+    tui.input(KeyCode::Enter)
+        .assert_rendered_term_svg_eq(file!["snapshots/squash_marked_commits_into_self_002.svg"]);
+}
+
+#[test]
+fn squash_one_commit_into_branch_tip() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui(env);
+
+    tui.input('j');
+    tui.input('j');
+    tui.input('r');
+    tui.input('u');
+    tui.input('k')
+        .assert_rendered_term_svg_eq(file!["snapshots/squash_one_commit_into_branch_tip_001.svg"]);
+    tui.input(KeyCode::Enter)
+        .assert_rendered_term_svg_eq(file!["snapshots/squash_one_commit_into_branch_tip_002.svg"]);
+}
+
+#[test]
+fn switch_from_squash_mode_to_branch_mode() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui(env);
+
+    tui.input('j');
+    tui.input('r').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_001.svg"
+    ]);
+    tui.input('b').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_002.svg"
+    ]);
+    tui.input(KeyCode::Esc);
+
+    tui.input('j').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_003.svg"
+    ]);
+    tui.input('r').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_004.svg"
+    ]);
+    tui.input('b').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_005.svg"
+    ]);
+
+    tui.input(KeyCode::Esc);
+    tui.input('k');
+    tui.input('r').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_006.svg"
+    ]);
+    tui.input('j').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_007.svg"
+    ]);
+    tui.input('b').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_008.svg"
+    ]);
+
+    tui.input(' ');
+    tui.input('r').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_009.svg"
+    ]);
+    tui.input('b').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_squash_mode_to_branch_mode_010.svg"
+    ]);
+}

@@ -17,6 +17,8 @@ type CommitIndex = {
 };
 
 export type HeadInfoIndex = {
+	/** Whether the workspace holds a branch at this ref — appliedness. */
+	isApplied: (ref: Array<number>) => boolean;
 	branchContextByRefBytes: (ref: Array<number>) => (StackIndex & SegmentIndex) | undefined;
 	commitContextByCommitId: (
 		commitId: string,
@@ -70,6 +72,7 @@ const buildHeadInfoIndex = (headInfo: RefInfo): HeadInfoIndex => {
 	}
 
 	return {
+		isApplied: (ref: Array<number>) => branchContextByRef.has(branchRefKey(ref)),
 		branchContextByRefBytes: (ref: Array<number>) => branchContextByRef.get(branchRefKey(ref)),
 		commitContextByCommitId: (commitId: string) => commitContextByCommitId.get(commitId),
 		commitContextsByChangeId: (changeId: string) => commitContextsByChangeId.get(changeId),
@@ -84,6 +87,16 @@ export const getHeadInfoIndex = (headInfo: RefInfo): HeadInfoIndex => {
 	headInfoIndexCache.set(headInfo, index);
 	return index;
 };
+
+/**
+ * The review number the projection recorded on the segment. The projection
+ * only ever associates display-worthy reviews — an open one, a merge still
+ * awaiting integration detection, or an integrated branch's landed identity —
+ * so this is safe to render as-is; callers needing the review's actual state
+ * must fetch it.
+ */
+export const recordedPullRequest = (segment: Segment): number | null =>
+	segment.metadata?.review.pullRequest ?? null;
 
 export const resolveRelativeTo = ({
 	headInfoIndex,

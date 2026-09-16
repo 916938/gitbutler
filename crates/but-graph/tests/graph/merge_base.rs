@@ -2,18 +2,20 @@ use anyhow::Context;
 use but_graph::{
     CommitFlags, FirstParent, Graph, Segment, SegmentIndex, SegmentRelation, init::Tip,
 };
-use but_testsupport::{graph_tree, visualize_commit_graph_all};
+use but_testsupport::visualize_commit_graph_all;
 use snapbox::IntoData;
 
 use crate::init::{read_only_in_memory_scenario, standard_options};
+use crate::support::graph_dag;
 
 #[test]
 fn find_git_merge_base_handles_duplicate_queue_entries_and_redundant_bases() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -35,29 +37,28 @@ fn find_git_merge_base_handles_duplicate_queue_entries_and_redundant_bases() -> 
     assert_eq!(graph.find_merge_base_octopus([a, c, merged]), Some(main));
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:1[1]:A
-        │   └── ·62b409a (⌂|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── ·592abec (⌂|1)
-        │       │       └── ►:7[3]:main
-        │       │           └── 🏁·965998b (⌂|1)
-        │       └── ►:4[2]:B
-        │           └── ·f16dddf (⌂|1)
-        │               └── →:7: (main)
-        └── ►:2[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:5[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:7: (main)
-                └── ►:6[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:7: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂)
+├───╮
+● │ │  ·592abec (⌂)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -66,11 +67,12 @@ fn find_git_merge_base_handles_duplicate_queue_entries_and_redundant_bases() -> 
 
 #[test]
 fn relation_between_matches_merge_base_in_redundant_ancestor_case() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -86,29 +88,28 @@ fn relation_between_matches_merge_base_in_redundant_ancestor_case() -> anyhow::R
     );
     assert_eq!(graph.relation_between(a, c), SegmentRelation::Diverged);
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:1[1]:A
-        │   └── ·62b409a (⌂|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── ·592abec (⌂|1)
-        │       │       └── ►:7[3]:main
-        │       │           └── 🏁·965998b (⌂|1)
-        │       └── ►:4[2]:B
-        │           └── ·f16dddf (⌂|1)
-        │               └── →:7: (main)
-        └── ►:2[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:5[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:7: (main)
-                └── ►:6[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:7: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂)
+├───╮
+● │ │  ·592abec (⌂)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -117,7 +118,7 @@ fn relation_between_matches_merge_base_in_redundant_ancestor_case() -> anyhow::R
 
 #[test]
 fn reachable_difference_returns_commits_in_traversal_order() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -144,6 +145,7 @@ fn reachable_difference_returns_commits_in_traversal_order() -> anyhow::Result<(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -186,7 +188,7 @@ fn reachable_difference_returns_commits_in_traversal_order() -> anyhow::Result<(
 
 #[test]
 fn explicit_traversal_tips_include_unnamed_revisions() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = repo.rev_parse_single("merged")?.detach();
     let a_id = repo.rev_parse_single("A")?.detach();
     let c_id = repo.rev_parse_single("C")?.detach();
@@ -201,34 +203,34 @@ fn explicit_traversal_tips_include_unnamed_revisions() -> anyhow::Result<()> {
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:2[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:0[1]:A
-        │   └── ·62b409a (⌂|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── ·592abec (⌂|1)
-        │       │       └── ►:7[3]:main
-        │       │           └── 🏁·965998b (⌂|1)
-        │       └── ►:4[2]:B
-        │           └── ·f16dddf (⌂|1)
-        │               └── →:7: (main)
-        └── ►:1[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:5[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:7: (main)
-                └── ►:6[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:7: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂)
+├───╮
+● │ │  ·592abec (⌂)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -247,7 +249,7 @@ fn explicit_traversal_tips_include_unnamed_revisions() -> anyhow::Result<()> {
 #[test]
 fn explicit_traversal_prioritizes_integrated_tips_independent_of_input_order() -> anyhow::Result<()>
 {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = repo.rev_parse_single("merged")?.detach();
     let a_id = repo.rev_parse_single("A")?.detach();
     let main_id = repo.rev_parse_single("main")?.detach();
@@ -261,34 +263,34 @@ fn explicit_traversal_prioritizes_integrated_tips_independent_of_input_order() -
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:2[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:1[1]:A
-        │   └── ·62b409a (⌂|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── ·592abec (⌂|1)
-        │       │       └── ►:0[3]:main
-        │       │           └── 🏁·965998b (⌂|✓|1)
-        │       └── ►:4[2]:B
-        │           └── ·f16dddf (⌂|1)
-        │               └── →:0: (main)
-        └── ►:5[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:6[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:0: (main)
-                └── ►:7[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:0: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂)
+├───╮
+● │ │  ·592abec (⌂)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂|✓)
 "#]]
     );
 
@@ -310,11 +312,12 @@ fn explicit_traversal_prioritizes_integrated_tips_independent_of_input_order() -
 
 #[test]
 fn relation_between_handles_identity_and_disjoint_segments() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let mut graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
@@ -342,11 +345,12 @@ fn relation_between_handles_identity_and_disjoint_segments() -> anyhow::Result<(
 
 #[test]
 fn merge_base_apis_can_resolve_segments_by_first_commit_id() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;

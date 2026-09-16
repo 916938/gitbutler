@@ -9,7 +9,7 @@ use but_core::{
     },
 };
 use but_meta::{
-    VirtualBranchesTomlMetadata,
+    BranchOrderMetadata, VirtualBranchesTomlMetadata,
     virtual_branches_legacy_types::{Stack as LegacyStack, StackBranch},
 };
 use but_testsupport::{
@@ -76,6 +76,76 @@ fn read_only_store_does_not_write_on_drop() -> anyhow::Result<()> {
         std::fs::read_to_string(&writable_toml_path)?,
         original,
         "read-only metadata is projection input and must not reconcile or persist on drop"
+    );
+    Ok(())
+}
+
+#[test]
+fn managed_workspace_order_is_available_to_ad_hoc_workspaces() -> anyhow::Result<()> {
+    let tmp = TempDir::new()?;
+    let mut store =
+        BranchOrderMetadata::from_paths(tmp.path().join("virtual-branches.toml"), tmp.path())?;
+    let workspace_name: gix::refs::FullName = "refs/heads/gitbutler/workspace".try_into()?;
+    let mut workspace = store.workspace(workspace_name.as_ref())?;
+    let refs = ["C", "A", "D", "B"]
+        .map(|name| format!("refs/heads/{name}").try_into())
+        .into_iter()
+        .collect::<Result<Vec<gix::refs::FullName>, _>>()?;
+    workspace.stacks = vec![
+        WorkspaceStack {
+            id: StackId::from_number_for_testing(1),
+            workspacecommit_relation: Merged,
+            branches: refs[..3]
+                .iter()
+                .cloned()
+                .map(|ref_name| WorkspaceStackBranch {
+                    ref_name,
+                    archived: false,
+                })
+                .collect(),
+        },
+        WorkspaceStack {
+            id: StackId::from_number_for_testing(2),
+            workspacecommit_relation: Merged,
+            branches: vec![WorkspaceStackBranch {
+                ref_name: refs[3].clone(),
+                archived: false,
+            }],
+        },
+    ];
+
+    store.set_workspace(&workspace)?;
+
+    assert_eq!(
+        store.branch_stack_order(refs[1].as_ref())?,
+        Some(refs[..3].to_vec()),
+        "managed stack order should be reusable after checking out its middle branch"
+    );
+    assert_eq!(
+        store.branch_stack_order(refs[3].as_ref())?,
+        Some(vec![refs[3].clone()]),
+        "independent stacks should remain independent"
+    );
+    Ok(())
+}
+
+#[test]
+fn writable_store_does_not_reconcile_on_drop() -> anyhow::Result<()> {
+    let (repo, _tmp) = but_testsupport::writable_scenario("dlib-standin");
+    let path = repo.path().join("virtual_branches.toml");
+    std::fs::copy(vb_fixture("non-unique-branches"), &path)?;
+
+    let mut store = VirtualBranchesTomlMetadata::from_path(&path)?;
+    store.set_changed_to_necessitate_write();
+    store.write_unreconciled()?;
+    let unreconciled = std::fs::read_to_string(&path)?;
+    store.set_changed_to_necessitate_write();
+    drop(store);
+
+    assert_eq!(
+        std::fs::read_to_string(path)?,
+        unreconciled,
+        "dropping writable metadata must persist without reconciling it against the workspace"
     );
     Ok(())
 }
@@ -1267,169 +1337,6 @@ Workspace {
     Ok(())
 }
 
-#[test]
-fn dlib_rs_auto_fix() -> anyhow::Result<()> {
-    let (store, _tmp) = vb_store_rw("non-unique-branches")?;
-    let ws_ref_name = "refs/heads/gitbutler/workspace".try_into()?;
-    let ws = store.workspace(ws_ref_name)?;
-    let (actual, _uuids) = sanitize_uuids_and_timestamps_with_mapping(debug_str(&ws.stacks));
-    // The iteration order is fixed by sorting by order, and then by name as the order can't be trusted either.
-    // Also: `main` as target somehow made it into the workspace officially.
-    snapbox::assert_data_eq!(
-        actual,
-        snapbox::str![[r#"
-[
-    WorkspaceStack {
-        id: 1,
-        branches: [
-            WorkspaceStackBranch {
-                ref_name: "refs/heads/main",
-                archived: true,
-            },
-            WorkspaceStackBranch {
-                ref_name: "refs/heads/confidence",
-                archived: false,
-            },
-        ],
-        workspacecommit_relation: Merged,
-    },
-    WorkspaceStack {
-        id: 2,
-        branches: [
-            WorkspaceStackBranch {
-                ref_name: "refs/heads/main",
-                archived: false,
-            },
-            WorkspaceStackBranch {
-                ref_name: "refs/heads/confidence",
-                archived: false,
-            },
-        ],
-        workspacecommit_relation: Outside,
-    },
-]
-"#]]
-    );
-
-    // The above being stable already fixes `dlib`.
-    let (repo, _repo_tmp) = but_testsupport::writable_scenario("dlib-standin");
-    let project_meta = but_core::ref_metadata::ProjectMeta {
-        target_ref: Some("refs/remotes/origin/main".try_into()?),
-        target_commit_id: Some(gix::ObjectId::from_hex(
-            b"39b41821d90a6445815f32777ec5dbebb716897f",
-        )?),
-        push_remote: Some("origin".into()),
-    };
-    project_meta.clone().persist(&repo)?;
-    let graph = but_graph::Graph::from_commit_traversal(
-        repo.find_reference(ws_ref_name)?.peel_to_id()?,
-        Some(ws_ref_name.to_owned()),
-        &store,
-        project_meta.clone(),
-        but_graph::init::Options::limited(),
-    )?;
-    // It looks very empty without reconciliation, as if it had not found any metadata (even though it's there).
-    // The problem is that StackId {1} refers to stack that is also marked as outside the workspace, so it's not really
-    // picked up. But… it also listed as stack (which shouldn't happen), which gets it the stack-id association.
-    // Finally, we end up with nothing as that one segment is also marked archived, which leads to it being truncated
-    // and fully empty stacks are removed. OMG.
-    // AND: all of the above was before the `name` field was removed which served to help with ordering, so maybe the whole
-    // test was tuned for a certain outcome and now this becomes more obvious. But whatever, it's legacy and
-    // it doesn't fail anymore.
-    snapbox::assert_data_eq!(
-        but_testsupport::graph_workspace_determinisitcally(&graph.into_workspace()?).to_string(),
-        snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on bce0c5e
-
-"#]]
-    );
-
-    let path = store.path().to_owned();
-    store.write_reconciled(&repo)?;
-
-    let mut store = VirtualBranchesTomlMetadata::from_path(&path)?;
-
-    let ws = store.workspace(ws_ref_name)?;
-    let graph = but_graph::Graph::from_commit_traversal(
-        repo.find_reference(ws_ref_name)?.peel_to_id()?,
-        Some(ws_ref_name.to_owned()),
-        &store,
-        project_meta,
-        but_graph::init::Options::limited(),
-    )?;
-    snapbox::assert_data_eq!(
-        but_testsupport::graph_workspace_determinisitcally(&graph.into_workspace()?).to_string(),
-        snapbox::str![[r#"
-📕🏘️:0:gitbutler/workspace <> ✓refs/remotes/origin/main on bce0c5e
-
-"#]]
-    );
-
-    let (actual, _uuids) = sanitize_uuids_and_timestamps_with_mapping(debug_str(&ws.stacks));
-    // Reconciliation now preserves the explicitly-written stack layout instead of allowing the
-    // drop-time write path to collapse it again.
-    snapbox::assert_data_eq!(
-        actual,
-        snapbox::str![[r#"
-[
-    WorkspaceStack {
-        id: 1,
-        branches: [
-            WorkspaceStackBranch {
-                ref_name: "refs/heads/main",
-                archived: true,
-            },
-            WorkspaceStackBranch {
-                ref_name: "refs/heads/confidence",
-                archived: false,
-            },
-        ],
-        workspacecommit_relation: Outside,
-    },
-]
-"#]]
-    );
-
-    // Mutate one concrete stack and verify that persisted key/id mismatches are normalized on reload.
-    store
-        .data_mut()
-        .branches
-        .values_mut()
-        .find(|stack| stack.heads.iter().any(|head| head.name == "main"))
-        .expect("a reconciled stack with 'main' exists")
-        .id = StackId::from_number_for_testing(8);
-    // Now the ID and the ID used for storage are out of sync.
-    let mismatched_stack = store
-        .data()
-        .branches
-        .iter()
-        .find(|(stack_id, stack)| {
-            **stack_id != stack.id && stack.id == StackId::from_number_for_testing(8)
-        })
-        .map(|(stack_id, stack)| (*stack_id, stack.id));
-    assert!(
-        mismatched_stack.is_some(),
-        "a persisted stack should be writable even if its stored key and inner id diverge temporarily",
-    );
-    store.write_reconciled(&repo)?;
-
-    let store = VirtualBranchesTomlMetadata::from_path(path)?;
-
-    // now the ID is in sync again
-    let mismatched_ids: Vec<_> = store
-        .data()
-        .branches
-        .iter()
-        .filter_map(|(stack_id, stack)| (*stack_id != stack.id).then_some((*stack_id, stack.id)))
-        .collect();
-    assert_eq!(
-        mismatched_ids,
-        Vec::<(StackId, StackId)>::new(),
-        "reloading should restore key/id consistency in persisted legacy metadata",
-    );
-    Ok(())
-}
-
 fn vb_fixture(name: &str) -> PathBuf {
     format!("tests/fixtures/legacy/{name}.toml").into()
 }
@@ -1729,7 +1636,8 @@ fn garbage_collect_removes_outside_workspace_stack_with_broken_ref() -> anyhow::
 #[test]
 fn preserves_duplicate_heads_if_they_map_to_the_same_workspace_segment() -> anyhow::Result<()> {
     let (repo, _repo_tmp) = but_testsupport::writable_scenario("ws/multi-lane-with-shared-segment");
-    let (mut store, _tmp) = empty_vb_store_rw()?;
+    let path = repo.path().join("virtual_branches.toml");
+    let mut store = VirtualBranchesTomlMetadata::from_path(&path)?;
     but_core::ref_metadata::ProjectMeta {
         target_ref: Some("refs/remotes/origin/main".try_into()?),
         target_commit_id: None,
@@ -1767,8 +1675,7 @@ fn preserves_duplicate_heads_if_they_map_to_the_same_workspace_segment() -> anyh
     store.data_mut().branches.insert(stack_d.id, stack_d);
     store.set_changed_to_necessitate_write();
 
-    let path = store.path().to_owned();
-    store.write_reconciled(&repo)?;
+    store.write_unreconciled()?;
 
     let store = VirtualBranchesTomlMetadata::from_path(path)?;
     let shared_heads = store
@@ -1790,7 +1697,8 @@ fn preserves_duplicate_heads_if_they_map_to_the_same_workspace_segment() -> anyh
 fn removes_within_stack_duplicate_heads_even_when_mapped_to_a_segment_13345() -> anyhow::Result<()>
 {
     let (repo, _repo_tmp) = but_testsupport::writable_scenario("ws/multi-lane-with-shared-segment");
-    let (mut store, _tmp) = empty_vb_store_rw()?;
+    let path = repo.path().join("virtual_branches.toml");
+    let mut store = VirtualBranchesTomlMetadata::from_path(&path)?;
     but_core::ref_metadata::ProjectMeta {
         target_ref: Some("refs/remotes/origin/main".try_into()?),
         target_commit_id: None,
@@ -1813,8 +1721,7 @@ fn removes_within_stack_duplicate_heads_even_when_mapped_to_a_segment_13345() ->
     store.data_mut().branches.insert(stack_id, stack);
     store.set_changed_to_necessitate_write();
 
-    let path = store.path().to_owned();
-    store.write_reconciled(&repo)?;
+    store.write_unreconciled()?;
 
     let store = VirtualBranchesTomlMetadata::from_path(path)?;
     let shared_in_stack = store.data().branches.get(&stack_id).map(|stack| {
@@ -1830,6 +1737,139 @@ fn removes_within_stack_duplicate_heads_even_when_mapped_to_a_segment_13345() ->
         "the stack must not keep the same branch twice, even when it maps to a projected segment",
     );
 
+    Ok(())
+}
+
+/// A stale unapplied stack may still list a branch that meanwhile lives in an applied
+/// stack - `reconcile_projected_stacks` tolerates such duplicates as stale hints.
+/// Writing the workspace back must not move the applied stack's copy into the stale
+/// stack; that regrouping made snapshots record every branch below the tip as
+/// unapplied, so restoring them stranded those branches (#15573).
+#[test]
+fn duplicate_names_in_unapplied_stacks_do_not_steal_applied_branches() -> anyhow::Result<()> {
+    let (mut store, _tmp) = empty_vb_store_rw()?;
+    let lower_head = gix::ObjectId::from_str("1111111111111111111111111111111111111111")?;
+    let tip_head = gix::ObjectId::from_str("2222222222222222222222222222222222222222")?;
+    let stale_head = gix::ObjectId::from_str("3333333333333333333333333333333333333333")?;
+
+    let applied = LegacyStack::new_with_just_heads(
+        vec![
+            StackBranch {
+                head: lower_head,
+                name: "lower".into(),
+                pr_number: None,
+                archived: false,
+                review_id: None,
+            },
+            StackBranch {
+                head: tip_head,
+                name: "tip".into(),
+                pr_number: None,
+                archived: false,
+                review_id: None,
+            },
+        ],
+        0,
+        true,
+    );
+    let stale = LegacyStack::new_with_just_heads(
+        vec![StackBranch {
+            head: stale_head,
+            name: "lower".into(),
+            pr_number: None,
+            archived: false,
+            review_id: None,
+        }],
+        1,
+        false,
+    );
+    let applied_id = applied.id;
+    let stale_id = stale.id;
+    store.data_mut().branches.insert(applied_id, applied);
+    store.data_mut().branches.insert(stale_id, stale);
+
+    // Reading the workspace and writing it back unchanged must not regroup branches.
+    let workspace_name: gix::refs::FullName = "refs/heads/gitbutler/workspace".try_into()?;
+    let ws = store.workspace(workspace_name.as_ref())?;
+    store.set_workspace(&ws)?;
+
+    let names = |stack_id: StackId| {
+        store.data().branches.get(&stack_id).map(|stack| {
+            stack
+                .heads
+                .iter()
+                .map(|head| head.name.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        names(applied_id),
+        Some(vec!["lower".to_string(), "tip".to_string()]),
+        "the applied stack keeps all its branches",
+    );
+    assert_eq!(
+        names(stale_id),
+        Some(vec!["lower".to_string()]),
+        "the stale stack keeps only its own copy",
+    );
+    assert_eq!(
+        store.data().branches[&stale_id].heads[0].head,
+        stale_head,
+        "the stale copy is untouched",
+    );
+    Ok(())
+}
+
+/// Two applied stacks may share a segment, so both legitimately list the same
+/// branch name. A workspace roundtrip must leave each stack's own copy in place
+/// instead of moving the lower-ordered one into whichever stack is written last.
+#[test]
+fn shared_segment_names_stay_in_their_own_applied_stacks() -> anyhow::Result<()> {
+    let (mut store, _tmp) = empty_vb_store_rw()?;
+    let shared_head = gix::ObjectId::from_str("1111111111111111111111111111111111111111")?;
+
+    let names = |heads: &[&str]| {
+        heads
+            .iter()
+            .map(|name| StackBranch {
+                head: shared_head,
+                name: (*name).into(),
+                pr_number: None,
+                archived: false,
+                review_id: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let stack_a = LegacyStack::new_with_just_heads(names(&["shared", "A"]), 0, true);
+    let stack_b = LegacyStack::new_with_just_heads(names(&["shared", "B"]), 1, true);
+    let stack_a_id = stack_a.id;
+    let stack_b_id = stack_b.id;
+    store.data_mut().branches.insert(stack_a_id, stack_a);
+    store.data_mut().branches.insert(stack_b_id, stack_b);
+
+    let workspace_name: gix::refs::FullName = "refs/heads/gitbutler/workspace".try_into()?;
+    let ws = store.workspace(workspace_name.as_ref())?;
+    store.set_workspace(&ws)?;
+
+    let head_names = |stack_id: StackId| {
+        store.data().branches.get(&stack_id).map(|stack| {
+            stack
+                .heads
+                .iter()
+                .map(|head| head.name.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        head_names(stack_a_id),
+        Some(vec!["shared".to_string(), "A".to_string()]),
+        "the first applied stack keeps its copy of the shared segment",
+    );
+    assert_eq!(
+        head_names(stack_b_id),
+        Some(vec!["shared".to_string(), "B".to_string()]),
+        "the second applied stack keeps its copy of the shared segment",
+    );
     Ok(())
 }
 

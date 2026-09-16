@@ -19,6 +19,7 @@ use crate::{
     divergence::{
         BranchMergeBaseCommits, classify_selectors_against_target_ref, commit_ids_from_selectors,
         find_local_commit_until_merge_base, get_commits_until_merge_base,
+        traverse_pick_ancestor_ids,
     },
 };
 use crate::{graph_manipulation::determine_parent_selector, resolve_tracking_branch_ref_name};
@@ -117,13 +118,14 @@ pub fn integrate_branch_with_steps<'ws, 'meta, M: RefMetadata>(
     workspace: &'ws mut but_graph::Workspace,
     meta: &'meta mut M,
     repo: &gix::Repository,
+    db: &'meta mut but_db::DbHandle,
 ) -> Result<SuccessfulRebase<'ws, 'meta, M>> {
     if integration.steps.is_empty() {
         bail!("Integration steps cannot be empty")
     }
     // The editor maps every segment in the graph, including the remote
     // reference of the branch we're integrating.
-    let mut editor = Editor::create(workspace, meta, repo)?;
+    let mut editor = Editor::create(workspace, meta, repo, db)?;
     // Step 1: We prepare the steps before building.
     // At this point, we construct the commits for the squash steps in memory.
     let prepared_steps = prepare_integration_steps_for_editor(&editor, &integration.steps)?;
@@ -248,6 +250,7 @@ pub fn get_initial_integration_steps_for_branch<M: RefMetadata>(
     workspace: &mut but_graph::Workspace,
     meta: &mut M,
     repo: &gix::Repository,
+    db: &mut but_db::DbHandle,
 ) -> Result<InitialBranchIntegration> {
     // Step 1: We create the editor, which maps every segment in the graph -
     // including the remote branch to integrate and the project's target ref.
@@ -256,9 +259,9 @@ pub fn get_initial_integration_steps_for_branch<M: RefMetadata>(
         .target_ref
         .as_ref()
         .map(|target| target.ref_name.clone())
-        .filter(|target_ref_name| target_ref_name.as_ref() != upstream_ref_name.as_ref());
+        .filter(|target_ref_name| *target_ref_name != *upstream_ref_name);
 
-    let editor = Editor::create(workspace, meta, repo)?;
+    let editor = Editor::create(workspace, meta, repo, db)?;
 
     // Step 2: We traverse the editor graph and determine the divergence between the local and remote branch.
     let BranchMergeBaseCommits {
@@ -293,6 +296,28 @@ pub fn get_initial_integration_steps_for_branch<M: RefMetadata>(
         })
         .transpose()?
         .unwrap_or_default();
+
+    let first_local_not_integrated =
+        editable_local_commits(&local_commits, &target_relations).next();
+    let retained_base_selector = match first_local_not_integrated {
+        Some(commit_id) => local_commits
+            .iter()
+            .position(|candidate| *candidate == commit_id)
+            .and_then(|index| local_commit_selectors.get(index + 1).copied())
+            .unwrap_or(merge_base_selector),
+        None => local_commit_selectors
+            .first()
+            .copied()
+            .unwrap_or(merge_base_selector),
+    };
+    let retained_ancestor_ids = traverse_pick_ancestor_ids(&editor, retained_base_selector)?;
+    // Replaying an upstream commit already present below the rebuilt segment would make reconnecting
+    // a retained local merge cyclic. Commits reachable only through the segment being replaced must
+    // remain in the plan, notably when PickRemote discards that local merge.
+    let upstream_commits = upstream_commits
+        .into_iter()
+        .filter(|id| !retained_ancestor_ids.contains(id))
+        .collect::<Vec<_>>();
 
     // Step 4: Build the initial set of integration steps.
     let change_ids = if matches!(strategy, BranchIntegrationStrategy::SmartSquash) {
@@ -334,8 +359,7 @@ pub fn get_initial_integration_steps_for_branch<M: RefMetadata>(
     let integration = InteractiveIntegration {
         steps: initial_steps,
         merge_base,
-        first_local_not_integrated: editable_local_commits(&local_commits, &target_relations)
-            .next(),
+        first_local_not_integrated,
     };
     let mut divergence = IntegrationDivergenceDisplay {
         branch_ref_name: ref_name.to_owned(),

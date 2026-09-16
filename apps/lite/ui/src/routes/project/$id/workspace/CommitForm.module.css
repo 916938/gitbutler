@@ -8,11 +8,6 @@
 	min-width: 0;
 }
 
-.startCommitButton {
-	flex: 1;
-	min-width: 0;
-}
-
 .collapsedTargetTrigger {
 	display: flex;
 	flex-shrink: 0;
@@ -23,9 +18,7 @@
 .form {
 	container-type: inline-size;
 	display: flex;
-	row-gap: 10px;
 	flex-direction: column;
-	padding: 8px;
 	border-radius: var(--radius-lg);
 	outline: 1px solid var(--border-2);
 	outline-offset: -1px;
@@ -42,11 +35,16 @@
 }
 
 .textarea {
-	padding: 4px;
+	/* The message box is the card's own surface, so the scrollbar rides on it
+	   rather than in the app's gutter. */
+	--scrollbar-track-bg: transparent;
+	--scrollbar-track-border: transparent;
+	padding: 12px;
 	resize: none;
 	field-sizing: content;
 	box-sizing: content-box;
-	min-height: calc(1lh);
+	/* Sized so the empty message row is 50px tall, as designed. */
+	min-height: 26px;
 	max-height: calc(10lh);
 
 	&:focus {
@@ -58,10 +56,40 @@
 	}
 }
 
+/* The rule above the controls is inset from the card edge, so it is drawn
+   inside the footer's padding rather than as a border on the card itself. */
 .footer {
 	display: flex;
-	column-gap: 6px;
+	row-gap: 10px;
+	flex-direction: column;
+	padding: 0 10px 10px;
+
+	&::before {
+		height: 1px;
+		background-color: var(--border-3);
+		content: "";
+	}
+}
+
+.footerRow {
+	display: flex;
+	column-gap: 10px;
+	align-items: center;
 	justify-content: space-between;
+}
+
+.footerStart {
+	display: flex;
+	column-gap: 6px;
+	align-items: center;
+	min-width: 0;
+}
+
+.footerSeparator {
+	flex-shrink: 0;
+	width: 1px;
+	height: 19px;
+	background-color: var(--border-3);
 }
 
 .commitActions {
@@ -76,42 +104,10 @@
 	}
 }
 
-.dropdownButton {
-	display: flex;
-
-	& > * {
-		overflow: hidden;
-	}
-
-	& > :first-child {
-		border-right: 0;
-		border-start-end-radius: 0;
-		border-end-end-radius: 0;
-	}
-
-	& > :last-child {
-		border-start-start-radius: 0;
-		border-end-start-radius: 0;
-	}
-}
-
-.dropdownButtonSeparator {
-	display: grid;
-	width: 1px;
-	background-color: color-mix(in srgb, var(--scale-pop-40) 20%, var(--scale-pop-70));
-}
-
 .targetTrigger {
-	display: flex;
-	column-gap: 6px;
-	align-items: center;
-	min-width: 0;
-	padding-inline: 8px;
-	border-radius: var(--radius-button);
-	color: color-mix(in srgb, var(--text-1) 60%, transparent);
-	white-space: nowrap;
+	flex-shrink: 0;
+	padding-inline: 6px;
 
-	&:not([data-disabled]):hover,
 	&:not([data-disabled])[aria-expanded="true"] {
 		background-color: color-mix(in srgb, var(--fill-gray-bg) var(--opacity-bg-hover), transparent);
 	}
@@ -141,52 +137,33 @@
 	white-space: nowrap;
 }
 
-.targetTriggerLabel {
-	overflow: hidden;
-	text-overflow: ellipsis;
+/* Icon-only, so it keeps the same tight inline padding as the target trigger
+   beside it rather than the button default. */
+.generateButton {
+	flex-shrink: 0;
+	width: auto;
+	padding-inline: 6px;
 }
 
 .targetPopup {
-	display: flex;
-	flex-direction: column;
 	width: max(var(--anchor-width), 200px);
 }
 
-.targetInput {
-	padding-inline: 10px;
-	padding-block: 4px;
-	border-bottom: 1px solid var(--border-2);
-
-	&:focus {
-		outline: none;
-	}
-}
-
+/* The list is the scroller, so its inset sits inside the scrolled area and the scrollbar keeps
+   the container's own edge. */
 .targetList {
-	--approx-input-height: 50px;
-	max-height: min(300px, calc(var(--available-height) - var(--approx-input-height)));
+	--search-row-height: 32px;
+
+	max-height: min(300px, calc(var(--available-height) - var(--search-row-height)));
 	overflow: auto;
 
 	&:not(:empty) {
-		padding-block: 4px;
-	}
-}
-
-.targetItem {
-	padding-inline: 10px;
-	padding-block: 4px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	cursor: default;
-
-	&[data-highlighted] {
-		background-color: var(--bg-2);
+		padding: 4px;
 	}
 }
 
 .targetEmpty {
 	padding-inline: 10px;
-	padding-block: 4px;
-	color: var(--color-text-secondary);
+	padding-block: 8px;
+	color: var(--text-2);
 }

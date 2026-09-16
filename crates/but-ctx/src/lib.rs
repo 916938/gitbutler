@@ -17,6 +17,7 @@ use but_core::{
 use but_path::AppChannel;
 use but_settings::AppSettings;
 use but_utils::OnDemandCache;
+use gix::config::tree::Key as _;
 use tracing::instrument;
 
 /// Legacy types that shouldn't be used.
@@ -351,7 +352,7 @@ impl Context {
         repo_open_mode: RepoOpenMode,
     ) -> anyhow::Result<Context> {
         let directory = directory.as_ref();
-        let gitdir = gix::discover(directory)?.git_dir().to_owned();
+        let gitdir = discover_main_repo(directory)?.git_dir().to_owned();
         let repo = open_repo(&gitdir, repo_open_mode)?;
         Self::from_repo_with_legacy_support(repo, repo_open_mode)
     }
@@ -364,7 +365,7 @@ impl Context {
         repo_open_mode: RepoOpenMode,
     ) -> anyhow::Result<Context> {
         let directory = directory.as_ref();
-        let gitdir = gix::discover(directory)?.git_dir().to_owned();
+        let gitdir = discover_main_repo(directory)?.git_dir().to_owned();
         let repo = open_repo(&gitdir, repo_open_mode)?;
         Self::from_repo_with_legacy_support_and_channel(repo, repo_open_mode, channel)
     }
@@ -773,14 +774,70 @@ impl Context {
         Ok((self.repo.get()?, ws, self.db.get_cache()?))
     }
 
+    /// Must not be called while a database handle is borrowed: graph construction takes
+    /// one unconditionally, whether or not worktree discovery is enabled.
     fn workspace_from_head(&self) -> anyhow::Result<but_graph::Workspace> {
-        let options = self.graph_options(but_graph::init::Options::limited())?;
         let repo = self.repo.get()?;
         let meta = but_meta::BranchOrderMetadata::from_paths_read_only(
             self.project_data_dir().join("virtual_branches.toml"),
             self.project_data_dir(),
         )?;
-        let graph = but_graph::Graph::from_head(&repo, &meta, self.project_meta()?, options)?;
+        let mut db = self.db.get_cache_mut()?;
+        let graph = but_graph::Graph::from_head(
+            &repo,
+            &meta,
+            self.project_meta()?,
+            &mut db,
+            but_graph::init::Options {
+                worktrees: self.settings.feature_flags.worktree_manipulation,
+                ..but_graph::init::Options::limited()
+            },
+        )?;
+        graph.into_workspace()
+    }
+
+    /// Project the current workspace without reading from or updating the workspace cache.
+    pub fn workspace_from_head_uncached(
+        &self,
+        _perm: &RepoShared,
+    ) -> anyhow::Result<but_graph::Workspace> {
+        self.workspace_from_head()
+    }
+
+    /// Legacy escape hatch for projecting the workspace at an arbitrary `ref_name` without
+    /// reading from or updating the shared workspace cache.
+    ///
+    /// Prefer the cached `workspace_*_and_db*` helpers. In particular, mutators must eventually
+    /// re-project the current repository state and update the cache so subsequent callers see the
+    /// mutation. Use this only when legacy code needs a one-off view of a non-HEAD workspace ref
+    /// and deliberately must not replace the cached current workspace.
+    ///
+    /// Must not be called while a database handle is borrowed: graph construction takes
+    /// one unconditionally, whether or not worktree discovery is enabled.
+    pub fn workspace_from_ref_uncached(
+        &self,
+        ref_name: &gix::refs::FullNameRef,
+        _perm: &RepoShared,
+    ) -> anyhow::Result<but_graph::Workspace> {
+        let repo = self.repo.get()?;
+        let meta = but_meta::BranchOrderMetadata::from_paths_read_only(
+            self.project_data_dir().join("virtual_branches.toml"),
+            self.project_data_dir(),
+        )?;
+        let mut reference = repo.find_reference(ref_name)?;
+        let tip = reference.peel_to_id()?;
+        let mut db = self.db.get_cache_mut()?;
+        let graph = but_graph::Graph::from_commit_traversal(
+            tip,
+            reference.name().to_owned(),
+            &meta,
+            self.project_meta()?,
+            &mut db,
+            but_graph::init::Options {
+                worktrees: self.settings.feature_flags.worktree_manipulation,
+                ..but_graph::init::Options::limited()
+            },
+        )?;
         graph.into_workspace()
     }
 }
@@ -1000,11 +1057,28 @@ fn new_ondemand_repo(gitdir: PathBuf, repo_open_mode: RepoOpenMode) -> OnDemand<
     })
 }
 
-fn open_repo(gitdir: &Path, repo_open_mode: RepoOpenMode) -> anyhow::Result<gix::Repository> {
-    match repo_open_mode {
-        RepoOpenMode::Standard => Ok(gix::open(gitdir)?),
-        RepoOpenMode::Isolated => Ok(gix::open_opts(gitdir, gix::open::Options::isolated())?),
+/// Discover the Git repository containing `directory`, resolving a linked worktree to the repository
+/// of its main worktree so that callers see the same workspace no matter which checkout they run in.
+pub fn discover_main_repo(directory: impl AsRef<Path>) -> anyhow::Result<gix::Repository> {
+    let repo = gix::discover(directory)?;
+    if repo.git_dir() == repo.common_dir() {
+        return Ok(repo);
     }
+    Ok(repo.main_repo()?)
+}
+
+fn open_repo(gitdir: &Path, repo_open_mode: RepoOpenMode) -> anyhow::Result<gix::Repository> {
+    let options = match repo_open_mode {
+        RepoOpenMode::Standard => gix::open::Options::default(),
+        RepoOpenMode::Isolated => gix::open::Options::isolated(),
+    }
+    .config_overrides([
+        gix::config::tree::gitoxide::Committer::NAME_FALLBACK
+            .validated_assignment("GitButler".into())?,
+        gix::config::tree::gitoxide::Committer::EMAIL_FALLBACK
+            .validated_assignment("gitbutler@gitbutler.com".into())?,
+    ]);
+    Ok(gix::open_opts(gitdir, options)?)
 }
 
 #[instrument(level = "trace")]
@@ -1042,11 +1116,6 @@ fn app_settings(config_dir: impl AsRef<Path>) -> anyhow::Result<AppSettings> {
 
 #[cfg(feature = "legacy")]
 fn default_legacy_project_at_repo(repo: &gix::Repository) -> LegacyProject {
-    LegacyProject::default_with_id(ProjectHandleOrLegacyProjectId::LegacyProjectId(
-        LegacyProjectId::from_number_for_testing(1),
-    ))
-    .with_paths_for_testing(
-        repo.git_dir().to_owned(),
-        repo.workdir().map(ToOwned::to_owned),
-    )
+    LegacyProject::from_path(repo.workdir().unwrap_or_else(|| repo.git_dir()))
+        .expect("test repositories are valid projects")
 }

@@ -19,10 +19,21 @@ const isFromInteractiveDescendant = (event: MouseEvent<HTMLDivElement>): boolean
 	return interactiveElement !== null && event.currentTarget.contains(interactiveElement);
 };
 
+const isFromNonRowBody = (event: MouseEvent<HTMLDivElement>): boolean => {
+	if (!(event.target instanceof Element)) return false;
+	const interactiveElement = event.target.closest(
+		"a, button, input, select, textarea, [contenteditable]",
+	);
+	return interactiveElement !== null && event.currentTarget.contains(interactiveElement);
+};
+
 export const Row: FC<
 	{
 		isSelected?: boolean;
 		onSelect?: () => void;
+		onShiftSelect?: () => void;
+		/** @default true */
+		scrollSelectedIntoView?: boolean;
 		/** @default false */
 		isHighlighted?: boolean;
 		/**
@@ -37,6 +48,8 @@ export const Row: FC<
 > = ({
 	isSelected,
 	onSelect,
+	onShiftSelect,
+	scrollSelectedIntoView = true,
 	isHighlighted,
 	isChecked,
 	interactive = true,
@@ -46,13 +59,24 @@ export const Row: FC<
 	const rowRef = useRef<HTMLDivElement | null>(null);
 	const mergedRef = useMergedRefs(rowRef, refProp);
 
+	// Activity reconnects layout effects on reveal without changing `isSelected`. Only scroll for a
+	// new selection so revealing a tab preserves manual scroll.
+	const selectionWasRevealedRef = useRef(false);
+
 	useLayoutEffect(() => {
-		if (!isSelected) return;
+		if (!isSelected) {
+			selectionWasRevealedRef.current = false;
+			return;
+		}
+		if (!scrollSelectedIntoView || selectionWasRevealedRef.current) return;
+
 		rowRef.current?.scrollIntoView({
 			block: "nearest",
 			inline: "nearest",
 		});
-	}, [isSelected]);
+
+		selectionWasRevealedRef.current = true;
+	}, [isSelected, scrollSelectedIntoView]);
 
 	return (
 		// This is safe because the tree is focusable.
@@ -81,12 +105,13 @@ export const Row: FC<
 			onClick={(event) => {
 				props.onClick?.(event);
 
-				if (
-					!event.defaultPrevented &&
-					// Prevent clicks on interactive descendants from stealing selection.
-					!isFromInteractiveDescendant(event)
-				)
-					onSelect?.();
+				if (event.defaultPrevented || isFromInteractiveDescendant(event)) return;
+
+				if (event.shiftKey && onShiftSelect && !isFromNonRowBody(event)) onShiftSelect();
+				else onSelect?.();
+			}}
+			onDoubleClick={(event) => {
+				if (!isFromNonRowBody(event)) props.onDoubleClick?.(event);
 			}}
 		/>
 	);
@@ -159,6 +184,13 @@ export const RowMeta: FC<ComponentProps<"div">> = (props) => (
 	<RowLabelFooter {...props} className={classes(props.className, "text-13", styles.meta)} />
 );
 
+/** The dot drawn between {@link RowMeta} items. */
+export const RowMetaSeparator: FC = () => (
+	<span aria-hidden className={classes(styles.metaSeparator, "text-12")}>
+		•
+	</span>
+);
+
 export const RowLabel: FC<
 	{ heading?: boolean; singleLine?: boolean } & useRender.ComponentProps<"div">
 > = ({ heading, singleLine, render, ...props }) =>
@@ -181,14 +213,24 @@ export const RowLabel: FC<
  * while `actions` are rendered outside of it (e.g. a toolbar).
  */
 export const SectionHeaderRow: FC<
-	{ label: ReactNode; actions?: ReactNode } & Omit<
-		ComponentProps<typeof Row>,
-		"interactive" | "onSelect" | "isSelected"
-	>
-> = ({ label, actions, children, ...props }) => (
+	{
+		label: ReactNode;
+		/**
+		 * Sits before the label, where a row's graph rail would. For a disclosure
+		 * control, which reads as one only on the leading edge — `actions` is the
+		 * trailing cluster of things the section can *do*.
+		 */
+		leading?: ReactNode;
+		actions?: ReactNode;
+	} & Omit<ComponentProps<typeof Row>, "interactive" | "onSelect" | "isSelected">
+> = ({ label, leading, actions, children, ...props }) => (
 	<Row {...props} className={classes(props.className, styles.sectionHeader)} interactive={false}>
+		{leading}
+
 		<RowLabelContainer>
-			<RowLabel heading>{label}</RowLabel>
+			<RowLabel heading singleLine>
+				{label}
+			</RowLabel>
 
 			{children}
 		</RowLabelContainer>

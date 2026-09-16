@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use but_ctx::Context;
 use but_rebase::graph_rebase::mutate::InsertSide;
-use gix::refs::Category;
+use gix::refs::{Category, FullName};
 use nonempty::NonEmpty;
 use ratatui::prelude::Span;
 
@@ -10,7 +8,7 @@ use crate::{
     CliId,
     command::legacy::{
         r#move::{
-            self, MoveCommitsRelativeToOperation, MoveOperation,
+            self, MoveCommitsRelativeToOperation, MoveCommitsToNewBranchOperation, MoveOperation,
             MoveOutcome as MoveOperationOutcome, StackBranchOnOperation, UnstackBranchOperation,
         },
         status::{
@@ -33,12 +31,12 @@ use super::{MoveCursorDiration, SquashMarks, SquashSource, mark::MarksRef};
 
 #[derive(Debug, Clone)]
 pub struct MoveMode {
-    pub source: Arc<MoveSource>,
+    pub source: MoveSource,
     pub insert_side: InsertSide,
 }
 
 /// A subset of [`CliId`] that supports being moved
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MoveSource {
     Marks(NonEmpty<CommitId>),
     Commit(CommitId),
@@ -46,8 +44,12 @@ pub enum MoveSource {
 }
 
 enum MoveTarget<'a> {
-    Branch { name: &'a str },
+    Branch {
+        name: &'a str,
+    },
     Commit(CommitId),
+    /// The branch checked out in a linked worktree, targeted through its lane heading.
+    WorktreeTip(FullName),
     MergeBase,
 }
 
@@ -63,7 +65,7 @@ impl ModeRender for MoveMode {
         } else if let StatusOutputLineData::Branch { cli_id: target, .. } = data
             && !self.source.contains(target)
         {
-            let source_is_commit = match &*self.source {
+            let source_is_commit = match &self.source {
                 MoveSource::Marks(..) | MoveSource::Commit { .. } => true,
                 MoveSource::Branch(..) => false,
             };
@@ -75,6 +77,16 @@ impl ModeRender for MoveMode {
                     ExtensionDirection::Above
                 },
             })
+        } else if matches!(data, StatusOutputLineData::Worktree { .. }) {
+            // Below the heading is the top of the worktree's lane, which is where the moved
+            // commit goes. A branch source has no place there.
+            match &self.source {
+                MoveSource::Marks(..) | MoveSource::Commit(..) => Some(OperationExtension::Move {
+                    mode: self,
+                    direction: ExtensionDirection::Below,
+                }),
+                MoveSource::Branch(..) => None,
+            }
         } else if let StatusOutputLineData::MergeBase = data {
             Some(OperationExtension::Move {
                 mode: self,
@@ -136,10 +148,14 @@ impl MoveSource {
         match id {
             CliId::Branch(branch) => Some(Self::Branch(branch.clone())),
             CliId::Commit { commit, .. } => Some(Self::Commit(commit.clone())),
-            CliId::UncommittedHunkOrFile(..)
+            CliId::AnonymousSegment(..)
+            | CliId::UncommittedHunkOrFile(..)
             | CliId::PathPrefix { .. }
             | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
             | CliId::Uncommitted { .. }
+            | CliId::Worktree { .. }
+            | CliId::WorktreeUncommitted { .. }
             | CliId::Stack { .. } => None,
         }
     }
@@ -189,7 +205,7 @@ impl App {
             Mode::Normal(normal_mode) => {
                 if let Some(commits) = normal_mode.marks.as_commits().cloned() {
                     MoveMode {
-                        source: Arc::new(MoveSource::Marks(commits)),
+                        source: MoveSource::Marks(commits),
                         insert_side: InsertSide::Above,
                     }
                 } else {
@@ -197,7 +213,7 @@ impl App {
                         return;
                     };
                     MoveMode {
-                        source: Arc::new(source),
+                        source,
                         insert_side: InsertSide::Above,
                     }
                 }
@@ -205,7 +221,7 @@ impl App {
             Mode::Squash(squash_mode) => match &squash_mode.source {
                 SquashSource::Marks(squash_marks) => match squash_marks {
                     SquashMarks::Commits(commits) => MoveMode {
-                        source: Arc::new(MoveSource::Marks(commits.clone())),
+                        source: MoveSource::Marks(commits.clone()),
                         insert_side: InsertSide::Above,
                     },
                     SquashMarks::Hunks(..)
@@ -213,17 +229,37 @@ impl App {
                     | SquashMarks::CommittedFiles(..) => return,
                 },
                 SquashSource::Commit(commit) => MoveMode {
-                    source: Arc::new(MoveSource::Commit(commit.clone())),
+                    source: MoveSource::Commit(commit.clone()),
                     insert_side: InsertSide::Above,
                 },
                 SquashSource::Branch(branch) => MoveMode {
-                    source: Arc::new(MoveSource::Branch(branch.clone())),
+                    source: MoveSource::Branch(branch.clone()),
                     insert_side: InsertSide::Above,
                 },
 
                 SquashSource::UncommittedHunk(..)
                 | SquashSource::CommittedFile(..)
                 | SquashSource::Uncommitted => return,
+            },
+            Mode::Branch(branch_mode) => match branch_mode.marks.as_ref() {
+                MarksRef::Empty => {
+                    let Some(CliId::Branch(branch)) = self
+                        .cursor
+                        .selected_line(&self.status_lines)
+                        .and_then(|line| line.data.cli_id())
+                        .map(|id| &**id)
+                    else {
+                        return;
+                    };
+                    MoveMode {
+                        source: MoveSource::Branch(branch.clone()),
+                        insert_side: InsertSide::Above,
+                    }
+                }
+                MarksRef::Branches { .. }
+                | MarksRef::Hunks { .. }
+                | MarksRef::Commits { .. }
+                | MarksRef::CommittedFiles { .. } => return,
             },
             _ => return,
         };
@@ -290,13 +326,25 @@ impl App {
                     return Ok(());
                 }
             }
+            StatusOutputLineData::WorktreeUncommitted { .. } => return Ok(()),
+            StatusOutputLineData::Worktree { cli_id } => {
+                if let CliId::Worktree { name, .. } = &**cli_id {
+                    let repo = ctx.repo.get()?;
+                    MoveTarget::WorktreeTip(crate::utils::worktrees::worktree_branch(
+                        &repo,
+                        name.as_ref(),
+                    )?)
+                } else {
+                    return Ok(());
+                }
+            }
             StatusOutputLineData::MergeBase => MoveTarget::MergeBase,
             StatusOutputLineData::UpdateNotice
+            | StatusOutputLineData::UncommittedChanges { .. }
             | StatusOutputLineData::Connector
             | StatusOutputLineData::BetweenStacks
             | StatusOutputLineData::StagedChanges { .. }
             | StatusOutputLineData::StagedFile { .. }
-            | StatusOutputLineData::UncommittedChanges { .. }
             | StatusOutputLineData::UncommittedFile { .. }
             | StatusOutputLineData::CommitMessage
             | StatusOutputLineData::EmptyCommitMessage
@@ -309,18 +357,12 @@ impl App {
             }
         };
 
-        let move_op = match &**source {
+        let move_op = match source {
             MoveSource::Commit(commit) => {
-                MoveOperation::CommitsRelativeTo(MoveCommitsRelativeToOperation {
-                    sources: NonEmpty::new(commit.clone()),
-                    target: move_target(target, *insert_side)?,
-                })
+                move_commits_operation(NonEmpty::new(commit.clone()), target, *insert_side)?
             }
             MoveSource::Marks(commits) => {
-                MoveOperation::CommitsRelativeTo(MoveCommitsRelativeToOperation {
-                    sources: commits.clone(),
-                    target: move_target(target, *insert_side)?,
-                })
+                move_commits_operation(commits.clone(), target, *insert_side)?
             }
             MoveSource::Branch(source) => {
                 let source_branch = Category::LocalBranch.to_full_name(source.name.as_str())?;
@@ -334,7 +376,7 @@ impl App {
                     MoveTarget::MergeBase => {
                         MoveOperation::UnstackBranch(UnstackBranchOperation { source_branch })
                     }
-                    MoveTarget::Commit { .. } => return Ok(()),
+                    MoveTarget::Commit { .. } | MoveTarget::WorktreeTip(..) => return Ok(()),
                 }
             }
         };
@@ -350,11 +392,12 @@ impl App {
     }
 }
 
-fn move_target(
+fn move_commits_operation(
+    sources: NonEmpty<CommitId>,
     target: MoveTarget<'_>,
     insert_side: InsertSide,
-) -> anyhow::Result<r#move::MoveTarget> {
-    Ok(match target {
+) -> anyhow::Result<MoveOperation> {
+    let target = match target {
         MoveTarget::Branch { name } => r#move::MoveTarget::BranchTip {
             name: Category::LocalBranch.to_full_name(name)?,
         },
@@ -362,8 +405,20 @@ fn move_target(
             commit,
             side: targeting::Side::from(insert_side),
         },
-        MoveTarget::MergeBase => anyhow::bail!("commits cannot be moved to the merge base"),
-    })
+        MoveTarget::WorktreeTip(name) => r#move::MoveTarget::BranchTip { name },
+        MoveTarget::MergeBase => {
+            return Ok(MoveOperation::CommitsToNewBranch(
+                MoveCommitsToNewBranchOperation {
+                    sources,
+                    branch_name: None,
+                },
+            ));
+        }
+    };
+
+    Ok(MoveOperation::CommitsRelativeTo(
+        MoveCommitsRelativeToOperation { sources, target },
+    ))
 }
 
 fn move_with(

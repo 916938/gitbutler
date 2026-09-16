@@ -29,7 +29,7 @@ use gitbutler_reference::{Refname, normalize_branch_name as normalize_name};
 use gix::reference::Category;
 use tracing::instrument;
 
-use crate::legacy::workspace::canned_branch_name;
+use crate::branch::branch_canned_name;
 // Parameter structs for all functions
 
 #[but_api]
@@ -47,7 +47,7 @@ pub fn create_virtual_branch(
     let stack_entry = {
         let branch_name = match branch.name {
             Some(name) => normalize_name(&name)?,
-            None => canned_branch_name(ctx)?,
+            None => branch_canned_name(ctx)?,
         };
         let new_ref = Category::LocalBranch
             .to_full_name(branch_name.as_str())
@@ -193,7 +193,6 @@ pub fn switch_back_to_workspace_with_perm(
         .context("Invalid branch name")?;
 
     gitbutler_branch_actions::set_base_branch(ctx, &branch_name, perm)?;
-    crate::legacy::meta::reconcile_in_workspace_state_of_vb_toml(ctx, perm).ok();
 
     Ok(base_branch)
 }
@@ -252,10 +251,6 @@ pub fn set_base_branch_with_perm(
         }
         ctx.invalidate_workspace_cache()?;
     }
-    {
-        crate::legacy::meta::reconcile_in_workspace_state_of_vb_toml(ctx, perm).ok();
-    }
-
     Ok(base_branch)
 }
 
@@ -521,9 +516,10 @@ fn assigned_diffspec_for_stack(
 
 /// Unapply a stack through the newer workspace metadata implementation.
 ///
-/// This deliberately keeps the workspace reference and workspace merge commit in
-/// place for compatibility with the legacy API surface while using the workspace
-/// metadata unapply implementation.
+/// Outside single branch mode this deliberately keeps the workspace reference and
+/// workspace merge commit in place for compatibility with the legacy API surface.
+/// In single branch mode the workspace reference is dropped once it is no longer
+/// needed, so unapplying the second-to-last stack checks out the remaining branch.
 /// We implement plumbing here, particularly relative to assignment handling,
 /// to facilitate the eventual removal of `gitbutler-branch-actions`.
 ///
@@ -567,7 +563,7 @@ fn unapply_stack_v3_with_perm(
 
     let mut meta = ctx.legacy_meta_mut(perm)?;
     let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
-    let workspace_disposition = if ctx.settings.feature_flags.unapply_v3_pgm {
+    let workspace_disposition = if ctx.settings.feature_flags.single_branch {
         WorkspaceDisposition::PreventUnnecessaryWorkspaceReferencesKeepWorkspaceCommit
     } else {
         WorkspaceDisposition::KeepWorkspaceCommit
@@ -656,16 +652,17 @@ fn commit_assigned_diffspec(
         return Ok(());
     }
 
+    let context_lines = ctx.settings.context_lines;
     let mut meta = ctx.meta()?;
-    let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
-    let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+    let (repo, mut ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
     let outcome = but_workspace::commit::commit_create(
         editor,
         assigned_diffspec,
         RelativeToRef::Reference(branch),
         InsertSide::Below,
         "WIP Assignments",
-        ctx.settings.context_lines,
+        context_lines,
         but_workspace::commit::ChangeSource::Head,
     )?;
     if !outcome.rejected_specs.is_empty() {
@@ -676,7 +673,7 @@ fn commit_assigned_diffspec(
     }
     if outcome.commit_selector.is_some() {
         outcome.rebase.materialize(Default::default())?;
-        drop((repo, ws));
+        drop((repo, ws, db));
         ctx.reload_repo_and_invalidate_workspace(perm)?;
     }
     Ok(())
@@ -707,6 +704,9 @@ pub fn get_branch_listing_details(
 /// target is configured to judge by). An unreachable unrelated remote (an old fork, a deleted
 /// mirror) must not block operations that only need the target refreshed, like `pull` or a
 /// dry-run push. Every remote's error is still recorded on the project's fetch status.
+///
+/// The modern equivalent with the same policy (which additionally treats the push remote as
+/// depended-on) is [`crate::workspace::workspace_fetch_from_remotes()`]; keep them aligned.
 #[but_api]
 #[instrument(err(Debug))]
 pub fn fetch_from_remotes(ctx: &Context, action: Option<String>) -> Result<BaseBranch> {

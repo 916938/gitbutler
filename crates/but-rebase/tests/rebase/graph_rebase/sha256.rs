@@ -15,7 +15,7 @@ const FIXTURE: &str = "sha256-merge-in-the-middle";
 
 #[test]
 fn inserting_a_step_rewrites_sha256_commits() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable(FIXTURE)?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable(FIXTURE)?;
     snapbox::assert_data_eq!(
         repo.object_hash().to_debug(),
         snapbox::str![[r#"
@@ -42,11 +42,12 @@ Sha256
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let merge_id = editor.repo().rev_parse_single("HEAD~")?.detach();
     let (selector, mut merge_obj) = editor.find_selectable_commit(merge_id)?;
@@ -63,16 +64,16 @@ Sha256
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    ├── ·d165592 (⌂|1)
-    └── ·526ed5b (⌂|1)
+    ├── ·d165592 (⌂)
+    └── ·526ed5b (⌂)
         └── ►:1[1]:anon:
-            └── ·d261f8f (⌂|1)
+            └── ·d261f8f (⌂)
                 ├── ►:2[2]:A
-                │   └── ·2ff29ff (⌂|1)
+                │   └── ·2ff29ff (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8dcf66f (⌂|1) ►tags/base
+                │           └── 🏁·8dcf66f (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·8f04e4a (⌂|1)
+                    └── ·8f04e4a (⌂)
                         └── →:4: (main)
 
 "#]]
@@ -113,7 +114,7 @@ Sha256
 
 #[test]
 fn replacing_a_step_rewrites_sha256_descendants() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable(FIXTURE)?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable(FIXTURE)?;
     snapbox::assert_data_eq!(
         repo.object_hash().to_debug(),
         snapbox::str![[r#"
@@ -140,11 +141,12 @@ Sha256
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let a = editor.repo().rev_parse_single("A")?.detach();
     let (a_selector, mut a_obj) = editor
@@ -162,15 +164,15 @@ Sha256
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    └── ·d050214 (⌂|1)
+    └── ·d050214 (⌂)
         └── ►:1[1]:anon:
-            └── ·8b1722f (⌂|1)
+            └── ·8b1722f (⌂)
                 ├── ►:2[2]:A
-                │   └── ·546b14b (⌂|1)
+                │   └── ·546b14b (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8dcf66f (⌂|1) ►tags/base
+                │           └── 🏁·8dcf66f (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·8f04e4a (⌂|1)
+                    └── ·8f04e4a (⌂)
                         └── →:4: (main)
 
 "#]]
@@ -210,7 +212,7 @@ Sha256
 
 #[test]
 fn changing_edges_rewrites_sha256_parentage() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable(FIXTURE)?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable(FIXTURE)?;
     snapbox::assert_data_eq!(
         repo.object_hash().to_debug(),
         snapbox::str![[r#"
@@ -237,11 +239,12 @@ Sha256
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     let inner_merge = editor.repo().rev_parse_single("HEAD~")?.detach();
     let a = editor.repo().rev_parse_single("A")?.detach();
@@ -271,14 +274,14 @@ Sha256
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    ├── ·636f2bd (⌂|1)
-    └── ·93b14a1 (⌂|1)
+    ├── ·636f2bd (⌂)
+    └── ·93b14a1 (⌂)
         └── ►:1[1]:A
-            └── ·9d083f9 (⌂|1)
+            └── ·9d083f9 (⌂)
                 ├── ►:2[3]:main
-                │   └── 🏁·8dcf66f (⌂|1) ►tags/base
+                │   └── 🏁·8dcf66f (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·8f04e4a (⌂|1)
+                    └── ·8f04e4a (⌂)
                         └── →:2: (main)
 
 "#]]

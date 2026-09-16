@@ -1,20 +1,24 @@
-import { type Operand, operandEquals } from "#ui/operands.ts";
-import { getOperationSources, pointerTransferMode } from "#ui/outline/mode.ts";
+import { type Address, addressIdentityKey } from "#ui/addresses.ts";
+import { cancelPendingOperation } from "#ui/use-cursor.ts";
+import { getOperationSources, pointerTransfer } from "#ui/operations/pending-operation.ts";
 import styles from "./OperationSourceC.module.css";
-import { operandsLabel } from "./operandLabel.ts";
+import { addressesLabel } from "./addressLabel.ts";
 import { headInfoQueryOptions } from "#ui/api/queries.ts";
 import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
 import { classes } from "#ui/components/classes.ts";
 import { projectSlice } from "#ui/projects/state.ts";
-import { useAppDispatch, useAppSelector } from "#ui/store.ts";
-import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
+import {
+	draggable,
+	dropTargetForElements,
+} from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { centerUnderPointer } from "@atlaskit/pragmatic-drag-and-drop/element/center-under-pointer";
 import { setCustomNativeDragPreview } from "@atlaskit/pragmatic-drag-and-drop/element/set-custom-native-drag-preview";
 import { mergeProps, useRender } from "@base-ui/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FC, type ReactNode, useEffect, useEffectEvent, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import type { DragData } from "./DragData.ts";
+import { NO_DRAG_ATTRIBUTE, type DragData } from "./DragData.ts";
 import { Match } from "effect";
 
 export const DragPreview: FC<{ children: ReactNode }> = ({ children }) => (
@@ -26,30 +30,51 @@ type OperationSourceOutline = "inside" | "outside";
 export const OperationSourceC: FC<
 	{
 		projectId: string;
-		source: Operand;
+		sources: Array<Address>;
+		/** Whether any checked source expands the transfer to the complete checked set. */
+		respectChecked: boolean;
 		outline: OperationSourceOutline;
+		/**
+		 * Accept dropping a drag back on its exact source element when it has no organic operation
+		 * target. Do not enable this when the element already mounts an `OperationTarget`, as Pragmatic
+		 * DnD only supports one element drop-target registration per element.
+		 */
+		acceptOriginDrop?: boolean;
 	} & Omit<useRender.ComponentProps<"div">, "onDragStart">
-> = ({ projectId, source, outline, render, ...props }) => {
+> = ({
+	projectId,
+	sources,
+	respectChecked,
+	outline,
+	acceptOriginDrop = false,
+	render,
+	...props
+}) => {
 	const { data: headInfoIndex } = useQuery({
 		...headInfoQueryOptions(projectId),
 		select: getHeadInfoIndex,
 	});
-	const outlineMode = useAppSelector((state) =>
-		projectSlice.selectors.selectOutlineModeState(state, projectId),
+	const pendingOperation = useAppSelector((state) =>
+		projectSlice.selectors.selectPendingOperation(state, projectId),
 	);
-	// We don't necessarily wrap in an array here in order to preserve reference identity.
-	const dragSource = useAppSelector((state) => {
-		if (source._tag !== "Commit" && source._tag !== "File") return source;
+	const store = useAppStore();
 
-		const isChecked = projectSlice.selectors.selectOperandChecked(state, projectId, source);
-		return isChecked ? projectSlice.selectors.selectCheckedOperands(state, projectId) : source;
-	});
-	const dragSources = Array.isArray(dragSource) ? dragSource : [dragSource];
+	const resolveDragSources = (): Array<Address> => {
+		if (!respectChecked) return sources;
+
+		const state = store.getState();
+		const checkedAddressKeys = projectSlice.selectors.selectCheckedAddressKeys(state, projectId);
+		return sources.some((source) => checkedAddressKeys.has(addressIdentityKey(source)))
+			? projectSlice.selectors.selectCheckedAddresses(state, projectId)
+			: sources;
+	};
 
 	const dispatch = useAppDispatch();
 	const dragRef = useRef<HTMLElement>(null);
 	const onGenerateDragPreview: Parameters<typeof draggable>[0]["onGenerateDragPreview"] =
 		useEffectEvent(({ nativeSetDragImage }) => {
+			const dragSources = resolveDragSources();
+
 			setCustomNativeDragPreview({
 				nativeSetDragImage,
 				getOffset: centerUnderPointer,
@@ -57,7 +82,7 @@ export const OperationSourceC: FC<
 					if (!headInfoIndex) return;
 					const root = createRoot(container);
 					root.render(
-						<DragPreview>{operandsLabel({ operands: dragSources, headInfoIndex })}</DragPreview>,
+						<DragPreview>{addressesLabel({ addresses: dragSources, headInfoIndex })}</DragPreview>,
 					);
 					return () => {
 						root.unmount();
@@ -65,14 +90,21 @@ export const OperationSourceC: FC<
 				},
 			});
 		});
-	const canDrag = useEffectEvent(
-		() => outlineMode._tag !== "RenameBranch" && outlineMode._tag !== "RewordCommit",
-	);
+	const canDrag: Parameters<typeof draggable>[0]["canDrag"] = useEffectEvent(({ input }) => {
+		if (pendingOperation._tag === "InlineEdit") return false;
+
+		// Regions like the commit box own their pointer gestures (text selection, mostly), so a drag
+		// starting inside one must not become an operation drag.
+		const over = document.elementFromPoint(input.clientX, input.clientY);
+		return over?.closest(`[${NO_DRAG_ATTRIBUTE}]`) == null;
+	});
 	const onDragStart = useEffectEvent(() => {
+		const dragSources = resolveDragSources();
+
 		dispatch(
-			projectSlice.actions.enterTransferMode({
+			projectSlice.actions.startTransfer({
 				projectId,
-				mode: pointerTransferMode({
+				transfer: pointerTransfer({
 					sources: dragSources,
 					target: null,
 					placement: null,
@@ -80,13 +112,14 @@ export const OperationSourceC: FC<
 			}),
 		);
 	});
-	const getInitialData = useEffectEvent((): DragData => ({ sources: dragSources }));
+
+	const getInitialData = useEffectEvent((): DragData => ({ sources: resolveDragSources() }));
 
 	useEffect(() => {
 		const element = dragRef.current;
 		if (!element) return;
 
-		return draggable({
+		const cleanupDraggable = draggable({
 			element,
 			// Prevent false positives when users drag to select text in the input field.
 			canDrag,
@@ -96,14 +129,27 @@ export const OperationSourceC: FC<
 			onDrop: ({ location }) => {
 				if (location.current.dropTargets.length > 0) return;
 
-				dispatch(projectSlice.actions.cancelMode({ projectId }));
+				cancelPendingOperation();
 			},
 		});
-	}, [dispatch, projectId]);
+		const cleanupOriginDropTarget = acceptOriginDrop
+			? dropTargetForElements({
+					element,
+					canDrop: ({ source }) => source.element === element,
+					onDrop: cancelPendingOperation,
+				})
+			: undefined;
 
-	const operationSources = getOperationSources(outlineMode);
-	const isActiveSource = operationSources
-		? operationSources.some((operationSource) => operandEquals(operationSource, source))
+		return () => {
+			cleanupDraggable();
+			cleanupOriginDropTarget?.();
+		};
+	}, [acceptOriginDrop, dispatch, projectId]);
+
+	const operationSources = getOperationSources(pendingOperation);
+	const operationSourceKeys = operationSources && new Set(operationSources.map(addressIdentityKey));
+	const isActiveSource = operationSourceKeys
+		? sources.every((source) => operationSourceKeys.has(addressIdentityKey(source)))
 		: false;
 
 	return useRender({

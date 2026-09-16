@@ -14,17 +14,21 @@ pub use client::{
     AutoMergeEnableParams, AutoMergeState, CheckRun, CommentReactions, CreatePullRequestParams,
     GitHubClient, GitHubPrLabel, GitHubRepoPermissions, GitHubRepository, GitHubUser, MergeMethod,
     MergePullRequestParams, PullRequest, PullRequestComment, PullRequestMergeStatus,
-    PullRequestReview, PullRequestTimelineEvent, PullRequestTimelineEventKind, Reaction,
+    PullRequestReview, PullRequestReviewThread, PullRequestReviewThreadComment,
+    PullRequestTimelineEvent, PullRequestTimelineEventKind, Reaction,
     SetPullRequestAutoMergeParams, SetPullRequestDraftStateParams, UpdatePullRequestParams,
 };
 mod token;
 pub use token::GithubAccountIdentifier;
 
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Verification {
     pub user_code: String,
     pub device_code: String,
 }
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(Verification);
 
 /// Detect GitHub's OAuth error shape (e.g. `device_flow_disabled`, `authorization_pending`) before falling back to the expected payload, so the real cause surfaces instead of a generic "missing field" serde error.
 fn parse_github_oauth_response<T: serde::de::DeserializeOwned>(body: &str) -> Result<T> {
@@ -34,13 +38,39 @@ fn parse_github_oauth_response<T: serde::de::DeserializeOwned>(body: &str) -> Re
         let description = value
             .get("error_description")
             .and_then(serde_json::Value::as_str);
-        anyhow::bail!(
+        let err = anyhow::anyhow!(
             "GitHub returned an error: {} ({})",
             error,
             description.unwrap_or("no description"),
         );
+        return Err(match device_flow_context(error) {
+            Some(context) => err.context(context),
+            None => err,
+        });
     }
     serde_json::from_value(value).context("Response body did not match expected schema")
+}
+
+/// A static, code-bearing context for terminal device-flow statuses, so the API serializes
+/// guidance instead of GitHub's description. Pending statuses stay as they are: callers poll
+/// through them, and the provider text remains the inner error for the CLI and Lite.
+fn device_flow_context(status: &str) -> Option<but_error::Context> {
+    use but_error::{Code, Context};
+    match status {
+        "authorization_pending" | "slow_down" => None,
+        "expired_token" => Some(Context::new_static(
+            Code::GitHubDeviceCodeExpired,
+            "The GitHub device code has expired",
+        )),
+        "access_denied" => Some(Context::new_static(
+            Code::GitHubDeviceAccessDenied,
+            "Authorization was denied on GitHub",
+        )),
+        _ => Some(Context::new_static(
+            Code::GitHubDeviceFlowRejected,
+            "GitHub rejected the device authorization request",
+        )),
+    }
 }
 
 pub async fn init_github_device_oauth() -> Result<Verification> {
@@ -315,9 +345,26 @@ pub async fn get_gh_user(
 
 /// Check if an error is a network connectivity error.
 ///
-/// This includes DNS resolution failures, connection timeouts, connection refused, etc.
+/// This includes DNS resolution failures, connection timeouts, connection
+/// refused, and connections dropped while the response body was being read.
+/// reqwest wraps both body I/O failures and malformed payloads as the same
+/// decode kind, so the source chain decides: a serde cause means the payload
+/// was malformed, anything else means the transport failed mid-response.
 pub(crate) fn is_network_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
+    if err.is_timeout() || err.is_connect() || err.is_request() {
+        return true;
+    }
+    if !err.is_decode() {
+        return false;
+    }
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        if cause.downcast_ref::<serde_json::Error>().is_some() {
+            return false;
+        }
+        source = cause.source();
+    }
+    true
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -364,42 +411,32 @@ pub mod json {
 
     use crate::{AuthStatusResponse, AuthenticatedUser};
 
-    /// Serializable version of [`AuthStatusResponse`] with exposed access token.
+    /// Serializable version of [`AuthStatusResponse`], without the access token.
     ///
-    /// This struct is used for API responses where the access token needs to be
-    /// sent as a plain string. Field names are converted to camelCase for JSON.
+    /// The credential is stored by the backend as part of the call, so the caller is told
+    /// who authenticated and nothing more. Field names are camelCase for JSON.
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(rename = "GithubAuthStatusResponseSensitive")
-    )]
     #[serde(rename_all = "camelCase")]
-    pub struct AuthStatusResponseSensitive {
-        /// The GitHub access token as a plain string (sensitive data).
-        pub access_token: String,
-        /// The GitHub username/login.
+    pub struct GithubAuthStatusResponse {
         pub login: String,
-        /// The user's display name, if available.
         pub name: Option<String>,
-        /// The user's email address, if available.
         pub email: Option<String>,
-        /// The GitHub Enterprise host, if this is an enterprise account.
+        /// The enterprise or self-hosted host, when there is one.
         pub host: Option<String>,
     }
 
-    impl From<AuthStatusResponse> for AuthStatusResponseSensitive {
+    impl From<AuthStatusResponse> for GithubAuthStatusResponse {
         fn from(
             AuthStatusResponse {
-                access_token,
                 login,
                 name,
                 email,
                 host,
+                ..
             }: AuthStatusResponse,
         ) -> Self {
-            AuthStatusResponseSensitive {
-                access_token: access_token.0,
+            GithubAuthStatusResponse {
                 login,
                 name,
                 email,
@@ -409,7 +446,7 @@ pub mod json {
     }
 
     #[cfg(feature = "export-schema")]
-    but_schemars::register_sdk_type!(AuthStatusResponseSensitive);
+    but_schemars::register_sdk_type!(GithubAuthStatusResponse);
 
     /// Serializable version of [`AuthenticatedUser`] with exposed access token.
     ///
@@ -417,12 +454,8 @@ pub mod json {
     /// exposed as plain strings for API responses. Field names are converted to camelCase for JSON.
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(rename = "GithubAuthenticatedUserSensitive")
-    )]
     #[serde(rename_all = "camelCase")]
-    pub struct AuthenticatedUserSensitive {
+    pub struct GithubAuthenticatedUserSensitive {
         /// The GitHub access token as a plain string (sensitive data).
         pub access_token: String,
         /// The GitHub username/login.
@@ -435,7 +468,7 @@ pub mod json {
         pub email: Option<String>,
     }
 
-    impl From<AuthenticatedUser> for AuthenticatedUserSensitive {
+    impl From<AuthenticatedUser> for GithubAuthenticatedUserSensitive {
         fn from(
             AuthenticatedUser {
                 access_token,
@@ -445,7 +478,7 @@ pub mod json {
                 email,
             }: AuthenticatedUser,
         ) -> Self {
-            AuthenticatedUserSensitive {
+            GithubAuthenticatedUserSensitive {
                 access_token: access_token.0,
                 login,
                 avatar_url,
@@ -456,7 +489,7 @@ pub mod json {
     }
 
     #[cfg(feature = "export-schema")]
-    but_schemars::register_sdk_type!(AuthenticatedUserSensitive);
+    but_schemars::register_sdk_type!(GithubAuthenticatedUserSensitive);
 }
 
 #[cfg(test)]
@@ -501,6 +534,83 @@ mod tests {
             );
         } else {
             panic!("Expected a network error but request succeeded");
+        }
+    }
+
+    #[test]
+    fn device_flow_statuses_carry_static_context_but_keep_provider_text() {
+        use but_error::{AnyhowContextExt as _, Code};
+        let secret = "device_code=3584d274 user_code=WDJB-MJHT https://github.com/login/device";
+        let rejected = Some((
+            Code::GitHubDeviceFlowRejected,
+            "GitHub rejected the device authorization request",
+        ));
+        let cases: [(&str, Option<(Code, &str)>); 9] = [
+            ("authorization_pending", None),
+            ("slow_down", None),
+            (
+                "expired_token",
+                Some((
+                    Code::GitHubDeviceCodeExpired,
+                    "The GitHub device code has expired",
+                )),
+            ),
+            (
+                "access_denied",
+                Some((
+                    Code::GitHubDeviceAccessDenied,
+                    "Authorization was denied on GitHub",
+                )),
+            ),
+            ("incorrect_client_credentials", rejected),
+            ("incorrect_device_code", rejected),
+            ("unsupported_grant_type", rejected),
+            ("device_flow_disabled", rejected),
+            ("brand_new_status", rejected),
+        ];
+        for (status, expected) in cases {
+            let body = format!(r#"{{"error":"{status}","error_description":"{secret}"}}"#);
+            let err = parse_github_oauth_response::<serde_json::Value>(&body)
+                .expect_err("an OAuth error status is a failure");
+            match (err.custom_context(), expected) {
+                (None, None) => {}
+                (Some(ctx), Some((code, message))) => {
+                    assert_eq!(ctx.code, code, "{status}");
+                    assert_eq!(ctx.message.as_deref(), Some(message), "{status}");
+                }
+                (ctx, expected) => panic!("{status}: got {ctx:?}, expected {expected:?}"),
+            }
+            // `but_api::json::Error` serializes the context message when present, else the chain.
+            let api_message = err
+                .custom_context_or_error_chain()
+                .message
+                .expect("always a message");
+            if expected.is_some() {
+                assert!(
+                    !api_message.contains(secret) && !api_message.contains(status),
+                    "{status}: provider detail must not reach the API: {api_message}"
+                );
+            } else {
+                assert!(
+                    api_message.contains(status),
+                    "{status}: pending statuses keep today's message"
+                );
+            }
+            // Alternate display (Lite, CLI) keeps the provider status as the inner error.
+            let display = format!("{err:#}");
+            assert!(
+                display.contains(&format!("GitHub returned an error: {status} (")),
+                "{status}: {display}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_provider_parse_failures_are_not_contextualized() {
+        use but_error::AnyhowContextExt as _;
+        for body in ["not json", r#"{"unexpected":"shape"}"#] {
+            let err = parse_github_oauth_response::<Verification>(body).expect_err("bad body");
+            assert!(err.custom_context().is_none(), "{body:?}: {err:#}");
         }
     }
 }

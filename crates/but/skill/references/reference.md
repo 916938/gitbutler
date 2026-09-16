@@ -4,13 +4,13 @@ Agent-focused reference for useful `but` commands.
 
 ## Contents
 
-- [Inspection](#inspection-understanding-state) - `status`, `show`, `diff`
+- [Inspection](#inspection-understanding-state) - `status`, `show`, `diff`, `open`
 - [Branching](#branching) - `branch new`, `apply`, `unapply`, `branch delete`, `pick`
 - [Committing](#committing) - `commit`
 - [Editing History](#editing-history) - `squash`, `amend`, `move`, `uncommit`, `reword`, `discard`
 - [Conflict Resolution](#conflict-resolution) - `resolve`
 - [Remote Operations](#remote-operations) - `push`, `pull`, `pr`, `land`
-- [Workspace Maintenance](#workspace-maintenance) - `clean`
+- [Workspace Maintenance](#workspace-maintenance) - `clean`, `worktree`
 - [History & Undo](#history--undo) - `undo`, `oplog`
 - [Setup & Configuration](#setup--configuration) - `setup`, `teardown`, `config`, `update`, `skill`
 - [Selected Options](#selected-options)
@@ -35,7 +35,7 @@ Shows:
 - Commits on each stack
 - CLI IDs to use in other commands
 
-The first token on each line is that line's ID. Commit lines lead with the commit's change ID (stable across history edits); commits without a change ID lead with a sha prefix, which goes stale after history edits. Verbose output appends an informational `(sha …)` after the timestamp — do not pass the sha to commands.
+The first token on each line is that line's ID. A `<branch-selector>` is a full branch name or short ID from the current workspace snapshot. Short IDs may be reassigned as that context changes; branch names remain stable across unrelated workspace mutations. Agents should use full branch names for branch-targeting mutations. Commit lines lead with the commit's change ID (stable across history edits); commits without a change ID lead with a sha prefix, which goes stale after history edits. Verbose output appends an informational `(sha …)` after the timestamp — do not pass the sha to commands.
 
 ### `but show <id>`
 
@@ -61,9 +61,25 @@ but diff <commit-id>    # Diff for specific commit
 inspect committed files or other entities one target at a time. Unlike `commit`,
 `amend`, and `discard`, it does not accept several positional IDs.
 
-**Hunk IDs:** For uncommitted changes, `but diff` shows each hunk with an ID (e.g., `qs:5`, `uo:d`). Pass these IDs to `but commit` for fine-grained, hunk-level commits.
+**Hunk IDs:** For uncommitted changes, bare `but diff` shows each hunk with an ID (e.g., `qs:5`, `uo:d`). Pass these IDs to `but commit` for fine-grained, hunk-level commits.
+
+`but diff <commit-id>` also shows committed hunk IDs in the form `<commit-id>:<file-id>:<hunk-id>`. A committed file ID uses the shorter `<commit-id>:<file-id>` form. When passing several committed changes to an operation, select them from the same commit.
 
 For the full CLI ID model, `but help cli-ids` documents every ID kind and its stability.
+
+### `but open [target]`
+
+Open the GitButler app at a branch or commit, or print the link with `--print`.
+
+```bash
+but open                    # The workspace
+but open <branch-id>        # With that branch selected
+but open <commit-id>        # With that commit selected
+but open --print <id>       # Print the link instead of opening it
+```
+
+Commits are addressed by change ID where they have one, so the link keeps
+working after the commit is amended or rebased.
 
 ## Branching
 
@@ -82,6 +98,8 @@ but branch list -a      # Show all branches (not just active + 20 most recent)
 but branch list --empty  # Include empty branches
 but branch list --review  # Fetch and display review information
 ```
+
+To rename an applied branch, use `but reword <branch> -m "new-name"` (unapplied branches cannot be renamed).
 
 ### `but branch new [name]`
 
@@ -109,23 +127,23 @@ but apply feature-branch  # Activate branch in workspace
 
 Default human output reports whether the branch was applied, was already active, or conflicted. Conflicts are reported as non-zero CLI errors.
 
-### `but unapply <id>`
+### `but unapply <selector>`
 
 Deactivate a branch from the workspace.
 
 ```bash
-but unapply <id>         # Deactivate branch from workspace
+but unapply <selector> # Deactivate branch from workspace
 ```
 
-The identifier can be a CLI ID pointing to a stack or branch, or a branch name. If a branch is specified, the entire stack containing that branch will be unapplied.
+The command also accepts a current CLI ID pointing to a stack or branch, but agents should use the full branch name. The entire stack containing that branch will be unapplied.
 
-### `but branch delete <id>`
+### `but branch delete <branch-selector>`
 
 Delete a branch.
 
 ```bash
-but branch delete <id>
-but branch -d <id>      # Short form
+but branch delete <branch-selector>
+but branch -d <branch-selector>      # Short form
 ```
 
 ### `but branch show <id>`
@@ -171,13 +189,13 @@ but commit --empty -b <branch> -m "message"  # Insert an empty commit
 
 **Where the commit goes:** `-b`/`--branch`, `-A`/`--above`, and `-B`/`--below` are mutually exclusive.
 
-- `-b <branch>` places the commit at the tip of `<branch>`, creating it as an unstacked branch if it does not exist. `-b` with no value creates a branch with a generated name. Targeting a branch that exists but is not applied is an error.
-- `--above <commit>` / `--below <commit>` insert relative to a commit on that commit's branch. Against a branch, they create a new branch above/below it.
+- `-b <branch>` places the commit at the tip of `<branch>`, creating it as an unstacked branch if it does not exist. `-b` with no value creates a branch with a generated name. Targeting a branch that exists but is not applied is an error — except a branch checked out in a worktree (experimental worktree flag), which is targeted at its tip, as is a worktree named directly.
+- `--above <commit>` / `--below <commit>` insert relative to a commit on that commit's branch. Against a branch, they create a new branch above/below it. Against a worktree (experimental worktree flag), `--below` targets the tip of its checked-out branch and `--above` is refused.
 - With no branches applied, a new branch is created. With one applied stack, the commit goes to its top branch's tip. With more than one stack, a targeting flag is **required** — otherwise the command fails with "Unclear where to commit. Found more than one stack". The gate is stacks, not branches: several branches stacked together take an untargeted commit on the stack's top branch.
 
 **Important:** `but commit -b <branch> -m "msg"` with no IDs commits ALL uncommitted changes. Pass IDs to commit only specific files or hunks.
 
-`but commit` is not supported from linked worktrees. Use Git directly for the worktree-local commit, and do not run `but setup` there.
+Running `but commit` from inside a worktree acts on the main workspace, exactly as from the main worktree: bare `but commit` takes the main worktree's changes, and `but commit <worktree>:@` takes that worktree's own changes. Worktrees require the experimental worktree flag. `but setup` refuses to run from a worktree.
 
 **Committing specific files or hunks:** Start with `but diff` for selective dirty commits, then pass CLI IDs as positional arguments:
 - **File IDs** from `but diff` or `but status -fv`: commits entire files
@@ -210,19 +228,23 @@ but squash <branch> -m "msg"                       # Squash all commits on a bra
 but squash <branch> -t <commit> -m "msg"           # Squash a branch into a commit, removing the branch
 but squash <commit> -t <branch> -m "msg"           # Target a branch: squashes into its newest commit
 but squash <file-or-hunk-id> -t <commit>           # Amend an uncommitted change (`but amend` does this)
-but squash zz -t <commit>                          # Amend all uncommitted changes into a commit
-but squash <commit> -t zz                          # Uncommit a commit
-but squash <branch> -t zz                          # Uncommit all commits and remove the branch
+but squash @ -t <commit>                           # Amend all uncommitted changes into a commit
+but squash <commit> -t @                           # Uncommit a commit
+but squash <commit> -t <worktree-id>:@             # Uncommit a worktree's commit into its area
+but squash <branch> -t @                           # Uncommit all commits and remove the branch
 but squash <commit-id>:<file-id> -t <commit>       # Move a committed file into another commit
+but squash <commit-id>:<file-id>:<hunk-id> -t <commit> # Move a committed hunk into another commit
+but squash <commit-id>:<file-id> -t @               # Move a committed file to uncommitted
+but squash <commit-id>:<file-id>:<hunk-id> -t @     # Move a committed hunk to uncommitted
 ```
 
-All sources must be the same kind (all commits, all branches, all uncommitted changes, `zz`, or all
-committed files) and committed-file sources must come from one commit. If `-t` is omitted, `<SOURCES>`
+All sources must be the same category (all commits, all branches, all uncommitted changes, `@`, or
+committed changes). Committed files and hunks may be mixed, but must come from one commit. If `-t` is omitted, `<SOURCES>`
 must be exactly one branch, which squashes that branch's commits together.
 
 Message flags (mutually exclusive). Commit and branch sources compose a new message unless the
-target is `zz`, so without a flag they open an editor and block — always pass one. Uncommitted and
-committed-file sources reuse the target's message and need no flag:
+target is `@`, so without a flag they open an editor and block — always pass one. Uncommitted and
+committed-change sources reuse the target's message and need no flag:
 
 ```bash
 -m "msg"                # New message; repeat -m to append paragraphs
@@ -231,7 +253,7 @@ committed-file sources reuse the target's message and need no flag:
 --use-source-message      # Keep the sources' message, drop the target's
 ```
 
-None of the message flags may be used when the target is `zz`.
+None of the message flags may be used when the target is `@`.
 
 For multiple independent squash groups, prefer newer/top groups first; change-ID refs from
 one status read stay valid across squashes (the target keeps its ref), so the
@@ -240,7 +262,7 @@ when a ref is sha-based or `#N`-suffixed.
 
 ### `but amend -t <commit-or-branch> <SOURCES>...`
 
-Amend uncommitted files/hunks into a specific commit. Use when you know exactly which commit the change belongs to — prefer it over the equivalent `squash` form. Sources must be uncommitted; `amend` rejects commits and committed files, so use `squash` or `move` for those. A branch target resolves to that branch's newest commit, so name the commit explicitly when the change belongs further down.
+Amend uncommitted changes into a specific commit. Use when you know exactly which commit the change belongs to — prefer it over the equivalent `squash` form. A branch target resolves to that branch's newest commit, so name the commit explicitly when the change belongs further down.
 
 ```bash
 but amend -t <commit-id> <file-id> <hunk-id>
@@ -251,7 +273,7 @@ Decide the target commit yourself: check `but status -fv`, find the commit the c
 
 ### `but move <SOURCES>... <--above|--below|--branch|--unstack>`
 
-Move commits, committed files, or a branch to a different location. Sources are positional and
+Move commits, committed changes, or a branch to a different location. Sources are positional and
 space-separated; a target flag is required.
 
 ```bash
@@ -263,27 +285,31 @@ but move <commit> -b <branch>                      # Move commit to the tip of a
 but move <commit> --unstack                        # Move commit onto a new unstacked branch
 but move <branch> --above <target-branch>          # Stack branch on top of target branch
 but move <branch> --unstack                        # Tear off (unstack) a branch
-but move <commit-id>:<file-id> --above <commit>    # Move a committed file into a new commit above another
+but move <commit-id>:<file-id> --above <commit>    # Move a committed file into a new commit
+but move <commit-id>:<file-id>:<hunk-id> --above <commit> # Move a committed hunk into a new commit
 ```
 
-Sources may not mix kinds, all committed files must come from the same commit, and only one branch
-may be moved at a time. Source order does not matter. For a branch source only `--above` and
-`--unstack` apply; `--below` and `-b <name>` require commit or committed-file sources. `--branch`
-with no value is equivalent to `--unstack`.
+Sources may not mix categories, all committed changes must come from the same commit, and only one
+branch may be moved at a time. Source order does not matter. For a branch source only `--above` and
+`--unstack` apply; `--below` and `-b <name>` require commit or committed-change sources. `--branch`
+with no value is equivalent to `--unstack`. With the experimental worktree flag on, `-b` also
+accepts a worktree or the branch checked out in it, moving commit or committed-change
+sources onto that branch's tip (nothing is created); a branch source is refused there.
 
 ### `but uncommit <SOURCES>...`
 
-Move commits, branches, or committed files back to the uncommitted area.
+Move commits, branches, or committed changes back to the uncommitted area.
 
 ```bash
-but uncommit <commit-id>                 # Uncommit an entire commit
-but uncommit <branch>                    # Uncommit all commits and remove the branch
-but uncommit <commit-id>:<file-id>       # Uncommit one file from its commit
+but uncommit <commit-id>                          # Uncommit an entire commit
+but uncommit <branch>                             # Uncommit all commits and remove the branch
+but uncommit <commit-id>:<file-id>                # Uncommit one file from its commit
+but uncommit <commit-id>:<file-id>:<hunk-id>      # Uncommit one hunk from its commit
 ```
 
-Multiple whole commits or multiple branches may be passed together, but source kinds cannot be
-mixed. Uncommitting a branch also removes an empty branch. Multiple committed-file sources must all
-come from the same commit; uncommit files from different commits in separate commands.
+Multiple whole commits or multiple branches may be passed together, but source categories cannot be
+mixed. Uncommitting a branch also removes an empty branch. Committed files and hunks may be mixed,
+but all must come from the same commit; uncommit changes from different commits in separate commands.
 
 When you need file and hunk IDs to recommit selectively, use
 `but uncommit <id> && but diff` in one shell call.
@@ -294,6 +320,7 @@ Reword commit message or rename branch.
 
 ```bash
 but reword <id> -m "new"          # Always pass -m; without it an editor opens and blocks
+but reword <branch> -m "new-name" # Rename a branch (applied branches only)
 but reword <id> --fix-formatting  # Format to 72-char wrapping
 ```
 
@@ -304,13 +331,13 @@ Permanently drop branches, commits, or changes. Undo with `but undo`.
 ```bash
 but discard <file-id>              # Discard an uncommitted file's changes
 but discard <hunk-id>              # Discard a single hunk
-but discard zz                     # Discard all uncommitted changes
+but discard @                      # Discard all uncommitted changes
 but discard <commit-id>            # Drop a commit
 but discard <commit-id>:<file-id>  # Drop one file's changes from its commit
 but discard <branch>               # Drop a branch and its commits
 ```
 
-All provided IDs must be the same kind, and committed files must come from the same commit.
+All provided IDs must be from the same category, and committed changes must come from the same commit.
 
 ## Conflict Resolution
 
@@ -322,6 +349,14 @@ Enter resolution mode for a conflicted commit.
 
 ```bash
 but resolve <commit-id>
+```
+
+### `but resolve <path>...`
+
+Mark uncommitted files that `but status` lists as `{conflicted}` resolved with their current worktree content (or as deleted). They then show as ordinary uncommitted changes.
+
+```bash
+but resolve src/lib.rs
 ```
 
 ### `but resolve status`
@@ -402,12 +437,12 @@ Do not use raw `git pull` or `git rebase`.
 Create and manage pull requests.
 
 ```bash
-but pr new <branch-id> -m "Title..."        # Push branch and create PR (recommended); first message line is title, rest is description
-but pr new <branch-id> -F pr_message.txt    # Use file: first line is title, rest is description
-but pr new <branch-id> -t     # Use default content (commit message), skip prompts
-but pr new <branch-id> --draft  # Create as draft
-but pr new <branch-id> --no-hooks  # Bypass pre-push hooks (--no-verify also works)
-but pr new <branch-id> -s     # Skip force-push protection checks
+but pr new <branch-selector> -m "Title..."        # Push branch and create PR (recommended); first message line is title, rest is description
+but pr new <branch-selector> -F pr_message.txt    # Use file: first line is title, rest is description
+but pr new <branch-selector> -t     # Use default content (commit message), skip prompts
+but pr new <branch-selector> --draft  # Create as draft
+but pr new <branch-selector> --no-hooks  # Bypass pre-push hooks (--no-verify also works)
+but pr new <branch-selector> -s     # Skip force-push protection checks
 but pr --draft                # Top-level draft flag
 but pr auto-merge <selector>  # Enable auto-merge
 but pr set-draft <selector>   # Mark review as draft
@@ -423,7 +458,7 @@ Selectors for `auto-merge`, `set-draft`, and `set-ready` can be branch names, br
 
 Agents must use `--message (-m)`, `--file (-F)`, or `--default (-t)` to avoid editor prompts. The `-t` flag uses the commit message as title/description for single-commit branches; for multi-commit branches it falls back to the branch name as the title.
 
-**Stacked branches:** Use `but pr` for stacked PRs. It creates reviews against the right bases and updates GitButler stack footers in PR descriptions. Creating stacked PRs with `gh pr create` or another forge tool loses that stack-aware behavior. To publish a whole stack, run `but pr new <top-branch-id> -t`; custom messages (`-m` or `-F`) only apply to the selected branch, while dependent branches use default messages (commit title/description).
+**Stacked branches:** Use `but pr` for stacked PRs. It creates reviews against the right bases and updates GitButler stack footers in PR descriptions. Creating stacked PRs with `gh pr create` or another forge tool loses that stack-aware behavior. To publish a whole stack, run `but pr new <top-branch-name> -t`; custom messages (`-m` or `-F`) only apply to the selected branch, while dependent branches use default messages (commit title/description).
 
 When the selected branch sits on dependencies that already have PRs, the summary lists those as "PR already exists for ..." and ends with the newly created review. The already-exists lines are normal stack reporting, not a failure to create the selected branch's PR.
 
@@ -443,8 +478,8 @@ copy on the push remote (only when fully contained in the landed target), report
 `Deleted <remote>/<branch> (landed)`.
 
 ```bash
-but land <branch-id> --yes                  # Land onto the target (--yes required non-interactively)
-but land <branch-id> --no-ff --yes          # Force a merge commit instead of fast-forwarding
+but land <branch-selector> --yes                  # Land onto the target (--yes required non-interactively)
+but land <branch-selector> --no-ff --yes          # Force a merge commit instead of fast-forwarding
 but land <top-branch> --whole-stack --yes   # Land an entire stack by naming its top segment
 ```
 
@@ -468,6 +503,20 @@ but clean --include-upstream # Also remove branches with upstream-only commits
 A branch is considered empty if it has no local commits and no assigned changes. Branches with upstream-only commits are preserved by default unless `--include-upstream` is used.
 
 The entire operation is a single oplog entry — use `but undo` to restore all deleted branches.
+
+### `but worktree`
+
+Manage linked git worktrees (experimental worktree flag). `but wt` is a default alias.
+
+```bash
+but worktree list                 # Active worktrees with IDs, plus the 3 most recent archived ones
+but worktree list --archived      # All archived worktrees (`--active` for all active ones)
+but worktree archive <id|name>    # Hide a worktree from the workspace
+but worktree unarchive <name>     # Show it again; archived worktrees have no ID
+but worktree remove [-f] <id|name> # Like `git worktree remove`; `-f` for uncommitted changes
+```
+
+Worktrees are listed most recently updated first, as `id name (refs/heads/branch) - path`, with the branch shown only when it differs from the worktree name. Archiving is a GitButler-only state; none of these take part in `but undo`.
 
 ## History & Undo
 

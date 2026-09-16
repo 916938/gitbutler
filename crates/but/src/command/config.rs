@@ -14,11 +14,10 @@ use but_core::{
 };
 use but_ctx::Context;
 use but_llm::{
-    AI_ANTHROPIC_KEY_OPTION_KEY, AI_ANTHROPIC_MODEL_NAME_KEY, AI_ANTHROPIC_SECRET_HANDLE,
-    AI_LMSTUDIO_ENDPOINT_KEY, AI_LMSTUDIO_MODEL_NAME_KEY, AI_MODEL_PROVIDER_KEY,
-    AI_OLLAMA_ENDPOINT_KEY, AI_OLLAMA_MODEL_NAME_KEY, AI_OPENAI_CUSTOM_ENDPOINT_KEY,
-    AI_OPENAI_KEY_OPTION_KEY, AI_OPENAI_MODEL_NAME_KEY, AI_OPENAI_SECRET_HANDLE,
-    AI_OPENROUTER_MODEL_NAME_KEY, AI_OPENROUTER_SECRET_HANDLE, LLMProviderKind,
+    AI_ANTHROPIC_SECRET_HANDLE, AI_OPENAI_SECRET_HANDLE, AI_OPENROUTER_SECRET_HANDLE,
+    AiConfigurationSnapshot, LLMProviderKind, apply_anthropic_configuration,
+    apply_lmstudio_configuration, apply_ollama_configuration, apply_openai_configuration,
+    apply_openrouter_configuration,
 };
 use but_secret::{Sensitive, secret};
 use but_settings::{
@@ -26,7 +25,6 @@ use but_settings::{
     api::{FeatureFlagsUpdate, TelemetryUpdate},
 };
 use cfg_if::cfg_if;
-use gix::bstr::ByteSlice as _;
 use serde::Serialize;
 
 use super::git_config::edit_git_config;
@@ -35,7 +33,7 @@ use crate::args::config::GitHubStacksStatus;
 use crate::{
     args::config::{
         AiKeyOption, AiSubcommand, FeatureFlag, FeatureStatus, ForgeSubcommand, MetricsStatus,
-        Subcommands, UiSubcommand, UserSubcommand,
+        Subcommands, UserSubcommand,
     },
     theme::{self, Paint},
     tui,
@@ -77,19 +75,7 @@ impl AiScope {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct AiConfigInfo {
-    provider: Option<String>,
-    openai_key_option: Option<String>,
-    openai_model: Option<String>,
-    openai_endpoint: Option<String>,
-    anthropic_key_option: Option<String>,
-    anthropic_model: Option<String>,
-    ollama_endpoint: Option<String>,
-    ollama_model: Option<String>,
-    lmstudio_endpoint: Option<String>,
-    lmstudio_model: Option<String>,
-}
+type AiConfigInfo = AiConfigurationSnapshot;
 
 /// Main entry point for config command
 pub async fn exec(
@@ -114,7 +100,6 @@ pub async fn exec(
         Some(Subcommands::Ai { local, global, cmd }) => {
             ai_config_with_repo(ctx, out, cmd, local, global)
         }
-        Some(Subcommands::Ui { cmd }) => ui_config(ctx, out, cmd),
         None => show_overview(ctx, out).await,
     }
 }
@@ -218,25 +203,6 @@ async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()>
         }
         writeln!(out)?;
 
-        // UI section
-        {
-            let repo = ctx.repo.get()?;
-            let config = repo.config_snapshot();
-            let tui_enabled = get_tui_enabled(&config);
-            writeln!(out, "{}:", t.important.paint("UI"))?;
-            writeln!(
-                out,
-                "  {}: {}",
-                t.hint.paint("TUI mode"),
-                if tui_enabled {
-                    t.success.paint("enabled")
-                } else {
-                    t.hint.paint("disabled")
-                }
-            )?;
-            writeln!(out)?;
-        }
-
         // Hints
         writeln!(out, "{}", t.hint.paint("Available subcommands:"))?;
         writeln!(
@@ -268,11 +234,6 @@ async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()>
             out,
             "  {}      - AI provider settings",
             t.command_suggestion.paint("but config ai")
-        )?;
-        writeln!(
-            out,
-            "  {}      - UI preferences (TUI mode)",
-            t.command_suggestion.paint("but config ui")
         )?;
     } else if let Some(out) = out.for_json() {
         out.write_value(serde_json::json!(ConfigOverview {
@@ -422,16 +383,10 @@ pub(crate) fn feature_config(
         return Ok(());
     }
 
-    let flags = [
-        (
-            FeatureFlag::UnapplyV3Pgm,
-            settings.feature_flags.unapply_v3_pgm,
-        ),
-        (
-            FeatureFlag::SingleBranch,
-            settings.feature_flags.single_branch,
-        ),
-    ];
+    let flags = [(
+        FeatureFlag::SingleBranch,
+        settings.feature_flags.single_branch,
+    )];
     if let Some(out) = out.for_human() {
         writeln!(out, "\n{}:", t.important.paint("Feature Flags"))?;
         writeln!(out)?;
@@ -449,7 +404,6 @@ pub(crate) fn feature_config(
         }
     } else if let Some(out) = out.for_json() {
         out.write_value(serde_json::json!({
-            "unapply_v3_pgm": settings.feature_flags.unapply_v3_pgm,
             "single_branch": settings.feature_flags.single_branch,
         }))?;
     }
@@ -459,19 +413,16 @@ pub(crate) fn feature_config(
 
 fn feature_flag_value(flags: &but_settings::app_settings::FeatureFlags, flag: FeatureFlag) -> bool {
     match flag {
-        FeatureFlag::UnapplyV3Pgm => flags.unapply_v3_pgm,
         FeatureFlag::SingleBranch => flags.single_branch,
     }
 }
 
 fn feature_flag_update(flag: FeatureFlag, enabled: bool) -> FeatureFlagsUpdate {
     let mut update = FeatureFlagsUpdate {
-        unapply_v3_pgm: None,
         single_branch: None,
         worktree_manipulation: None,
     };
     match flag {
-        FeatureFlag::UnapplyV3Pgm => update.unapply_v3_pgm = Some(enabled),
         FeatureFlag::SingleBranch => update.single_branch = Some(enabled),
     }
     update
@@ -1758,17 +1709,6 @@ fn edit_ai_git_config(
     }
 }
 
-fn set_optional_config_value(
-    config: &mut gix::config::File,
-    key: &str,
-    value: Option<String>,
-) -> Result<()> {
-    match value {
-        Some(value) if !value.trim().is_empty() => set_config_value(config, key, &value),
-        _ => remove_config_value(config, key),
-    }
-}
-
 fn apply_openai_config(
     repo: Option<&gix::Repository>,
     scope: AiScope,
@@ -1778,15 +1718,12 @@ fn apply_openai_config(
     api_key: Option<Sensitive<String>>,
 ) -> Result<()> {
     edit_ai_git_config(repo, scope, |config| {
-        set_config_value(
+        apply_openai_configuration(
             config,
-            AI_MODEL_PROVIDER_KEY,
-            LLMProviderKind::OpenAi.as_git_config_value(),
-        )?;
-        set_config_value(config, AI_OPENAI_KEY_OPTION_KEY, key_option.as_git_value())?;
-        set_optional_config_value(config, AI_OPENAI_MODEL_NAME_KEY, model)?;
-        set_optional_config_value(config, AI_OPENAI_CUSTOM_ENDPOINT_KEY, endpoint)?;
-        Ok(())
+            key_option.into(),
+            model.as_deref(),
+            endpoint.as_deref(),
+        )
     })?;
 
     if matches!(key_option, AiKeyOption::BringYourOwn) {
@@ -1803,18 +1740,7 @@ fn apply_anthropic_config(
     api_key: Option<Sensitive<String>>,
 ) -> Result<()> {
     edit_ai_git_config(repo, scope, |config| {
-        set_config_value(
-            config,
-            AI_MODEL_PROVIDER_KEY,
-            LLMProviderKind::Anthropic.as_git_config_value(),
-        )?;
-        set_config_value(
-            config,
-            AI_ANTHROPIC_KEY_OPTION_KEY,
-            key_option.as_git_value(),
-        )?;
-        set_optional_config_value(config, AI_ANTHROPIC_MODEL_NAME_KEY, model)?;
-        Ok(())
+        apply_anthropic_configuration(config, key_option.into(), model.as_deref())
     })?;
 
     if matches!(key_option, AiKeyOption::BringYourOwn) {
@@ -1830,14 +1756,7 @@ fn apply_ollama_config(
     model: Option<String>,
 ) -> Result<()> {
     edit_ai_git_config(repo, scope, |config| {
-        set_config_value(
-            config,
-            AI_MODEL_PROVIDER_KEY,
-            LLMProviderKind::Ollama.as_git_config_value(),
-        )?;
-        set_optional_config_value(config, AI_OLLAMA_ENDPOINT_KEY, endpoint)?;
-        set_optional_config_value(config, AI_OLLAMA_MODEL_NAME_KEY, model)?;
-        Ok(())
+        apply_ollama_configuration(config, endpoint.as_deref(), model.as_deref())
     })
 }
 
@@ -1848,14 +1767,7 @@ fn apply_lmstudio_config(
     model: Option<String>,
 ) -> Result<()> {
     edit_ai_git_config(repo, scope, |config| {
-        set_config_value(
-            config,
-            AI_MODEL_PROVIDER_KEY,
-            LLMProviderKind::LMStudio.as_git_config_value(),
-        )?;
-        set_optional_config_value(config, AI_LMSTUDIO_ENDPOINT_KEY, endpoint)?;
-        set_optional_config_value(config, AI_LMSTUDIO_MODEL_NAME_KEY, model)?;
-        Ok(())
+        apply_lmstudio_configuration(config, endpoint.as_deref(), model.as_deref())
     })
 }
 
@@ -1866,13 +1778,7 @@ fn apply_openrouter_config(
     secret: Option<Sensitive<String>>,
 ) -> Result<()> {
     edit_ai_git_config(repo, scope, |config| {
-        set_config_value(
-            config,
-            AI_MODEL_PROVIDER_KEY,
-            LLMProviderKind::OpenRouter.as_git_config_value(),
-        )?;
-        set_optional_config_value(config, AI_OPENROUTER_MODEL_NAME_KEY, model)?;
-        Ok(())
+        apply_openrouter_configuration(config, model.as_deref())
     })?;
     if let Some(key) = secret {
         secret::persist(AI_OPENROUTER_SECRET_HANDLE, &key, secret::Namespace::Global)?;
@@ -1884,58 +1790,12 @@ fn get_ai_config_info(repo: Option<&gix::Repository>, scope: AiScope) -> Result<
     match scope {
         AiScope::Global => {
             let file = gix::config::File::from_globals()?;
-            Ok(AiConfigInfo {
-                provider: file.string(AI_MODEL_PROVIDER_KEY).map(|v| v.to_string()),
-                openai_key_option: file.string(AI_OPENAI_KEY_OPTION_KEY).map(|v| v.to_string()),
-                openai_model: file.string(AI_OPENAI_MODEL_NAME_KEY).map(|v| v.to_string()),
-                openai_endpoint: file
-                    .string(AI_OPENAI_CUSTOM_ENDPOINT_KEY)
-                    .map(|v| v.to_string()),
-                anthropic_key_option: file
-                    .string(AI_ANTHROPIC_KEY_OPTION_KEY)
-                    .map(|v| v.to_string()),
-                anthropic_model: file
-                    .string(AI_ANTHROPIC_MODEL_NAME_KEY)
-                    .map(|v| v.to_string()),
-                ollama_endpoint: file.string(AI_OLLAMA_ENDPOINT_KEY).map(|v| v.to_string()),
-                ollama_model: file.string(AI_OLLAMA_MODEL_NAME_KEY).map(|v| v.to_string()),
-                lmstudio_endpoint: file.string(AI_LMSTUDIO_ENDPOINT_KEY).map(|v| v.to_string()),
-                lmstudio_model: file
-                    .string(AI_LMSTUDIO_MODEL_NAME_KEY)
-                    .map(|v| v.to_string()),
-            })
+            Ok(AiConfigInfo::from_git_config(&file))
         }
         AiScope::Local => {
             let repo = repo.context("Local AI configuration requires a git repository")?;
             let config = repo.config_snapshot();
-            Ok(AiConfigInfo {
-                provider: config.string(AI_MODEL_PROVIDER_KEY).map(|v| v.to_string()),
-                openai_key_option: config
-                    .string(AI_OPENAI_KEY_OPTION_KEY)
-                    .map(|v| v.to_string()),
-                openai_model: config
-                    .string(AI_OPENAI_MODEL_NAME_KEY)
-                    .map(|v| v.to_string()),
-                openai_endpoint: config
-                    .string(AI_OPENAI_CUSTOM_ENDPOINT_KEY)
-                    .map(|v| v.to_string()),
-                anthropic_key_option: config
-                    .string(AI_ANTHROPIC_KEY_OPTION_KEY)
-                    .map(|v| v.to_string()),
-                anthropic_model: config
-                    .string(AI_ANTHROPIC_MODEL_NAME_KEY)
-                    .map(|v| v.to_string()),
-                ollama_endpoint: config.string(AI_OLLAMA_ENDPOINT_KEY).map(|v| v.to_string()),
-                ollama_model: config
-                    .string(AI_OLLAMA_MODEL_NAME_KEY)
-                    .map(|v| v.to_string()),
-                lmstudio_endpoint: config
-                    .string(AI_LMSTUDIO_ENDPOINT_KEY)
-                    .map(|v| v.to_string()),
-                lmstudio_model: config
-                    .string(AI_LMSTUDIO_MODEL_NAME_KEY)
-                    .map(|v| v.to_string()),
-            })
+            Ok(AiConfigInfo::from_git_config(&config))
         }
     }
 }
@@ -2127,124 +1987,6 @@ fn push_remote_config(
         }
     }
     Ok(())
-}
-
-/// Handle UI config subcommand
-fn ui_config(ctx: &mut Context, out: &mut OutputChannel, cmd: Option<UiSubcommand>) -> Result<()> {
-    let t = theme::get();
-    let repo = ctx.repo.get()?;
-
-    match cmd {
-        None => {
-            let config = repo.config_snapshot();
-            let tui_enabled = get_tui_enabled(&config);
-            let tui_scope = get_config_scope(&config, "but.ui.tui");
-
-            if let Some(out) = out.for_human() {
-                writeln!(out, "{}:", t.important.paint("\nUI Configuration"))?;
-                writeln!(out)?;
-                writeln!(
-                    out,
-                    "  {}: {} {}",
-                    t.hint.paint("Prefer TUI mode"),
-                    if tui_enabled {
-                        t.success.paint("enabled")
-                    } else {
-                        t.error.paint("disabled")
-                    },
-                    format_scope(tui_scope)
-                )?;
-                writeln!(out)?;
-                writeln!(out, "{}:", t.hint.paint("To change"))?;
-                writeln!(
-                    out,
-                    "  {}",
-                    t.command_suggestion.paint("but config ui set tui true")
-                )?;
-                writeln!(
-                    out,
-                    "  {}",
-                    t.command_suggestion.paint("but config ui set tui false")
-                )?;
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({ "tui": tui_enabled }))?;
-            }
-        }
-        Some(UiSubcommand::Set { key, value, global }) => {
-            let git_key = key.to_git_key();
-            let bool_value = gix::config::Boolean::try_from(value.as_bytes().as_bstr())
-                .with_context(|| {
-                    anyhow::anyhow!("Invalid value '{value}'. Use true/false or 1/0.")
-                })?
-                .0;
-            let serialized = if bool_value { "true" } else { "false" };
-            edit_git_config(&repo, global.into(), |config| {
-                set_config_value(config, git_key, serialized)?;
-                Ok(())
-            })?;
-
-            if let Some(out) = out.for_human() {
-                writeln!(
-                    out,
-                    "{} Set {} {} {}",
-                    t.sym().success,
-                    t.config_key.paint(git_key),
-                    t.hint.paint("→"),
-                    if bool_value {
-                        t.config_value.paint("true")
-                    } else {
-                        t.config_value.paint("false")
-                    }
-                )?;
-                if global {
-                    writeln!(out, "  (configured globally)")?;
-                }
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({
-                    "key": git_key,
-                    "value": bool_value,
-                    "scope": if global { "global" } else { "local" }
-                }))?;
-            }
-        }
-        Some(UiSubcommand::Unset { key, global }) => {
-            let git_key = key.to_git_key();
-            edit_git_config(&repo, global.into(), |config| {
-                remove_config_value(config, git_key)?;
-                Ok(())
-            })?;
-
-            if let Some(out) = out.for_human() {
-                writeln!(
-                    out,
-                    "{} Removed {}",
-                    t.sym().success,
-                    t.config_key.paint(git_key)
-                )?;
-                if global {
-                    writeln!(out, "  (removed from global config)")?;
-                }
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({
-                    "key": git_key,
-                    "action": "unset",
-                    "scope": if global { "global" } else { "local" }
-                }))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Check if TUI mode is enabled in git config. Defaults to false.
-pub(crate) fn get_tui_enabled(config: &gix::config::Snapshot<'_>) -> bool {
-    config.boolean("but.ui.tui").unwrap_or(false)
-}
-
-/// Get the scope (local/global) where a config key is set
-fn get_config_scope(config: &gix::config::Snapshot<'_>, key: &str) -> Option<gix::config::Source> {
-    get_config_string_and_scope(config, key).1
 }
 
 fn get_config_string_and_scope(

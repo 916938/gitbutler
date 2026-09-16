@@ -1,32 +1,73 @@
+import { assert } from "#ui/assert.ts";
 import { hash } from "#ui/hash.ts";
 import {
 	contiguousSelectionsFromHunk,
-	firstContiguousSelectionFromHunk,
 	rangeFromLineGroups,
 	synthesizeFilePatch,
 } from "#ui/hunk.ts";
+import { isRasterImageFile, isSvgFile } from "#ui/file.ts";
 import {
-	hunkOperand,
-	operandIdentityKey,
-	type FileOperand,
+	hunkAddress,
+	addressIdentityKey,
+	type FileAddress,
 	type FileParent,
-	type HunkOperand,
+	type HunkAddress,
 	weakFileIdentityKey,
-} from "#ui/operands.ts";
-import type { NavigationIndex } from "#ui/workspace/navigation-index.ts";
+} from "#ui/addresses.ts";
+import { buildIndexByKey, type AddressSpace } from "#ui/workspace/address-space.ts";
+import type { DiffLineSelection } from "#ui/cursors.ts";
 import type { TreeChange, UnifiedPatch } from "@gitbutler/but-sdk";
-import { processFile, type CodeViewDiffItem, type CodeViewLineSelection } from "@pierre/diffs";
+import {
+	processFile,
+	type CodeViewDiffItem,
+	type CodeViewFileItem,
+	type CodeViewItem,
+	type CodeViewLayout,
+	type CodeViewLineSelection,
+	type VirtualFileMetrics,
+} from "@pierre/diffs";
 
-export type Annotation = { _tag: "local"; id: string };
+export type Annotation =
+	/** Local review comments. */
+	| { _tag: "local"; id: string }
+	/** A diff comment thread on the branch's forge review. */
+	| { _tag: "forge"; threadId: string }
+	/** Workaround to render images w/o native library support. */
+	| { _tag: "image" };
 
-type DiffViewDeps = {
+/**
+ * Layout and metrics handed to CodeView. Shared because the minimap models item
+ * positions from the same numbers, and would drift silently if they diverged.
+ */
+export const codeViewLayout: CodeViewLayout = {
+	paddingTop: 0,
+	// Match --panel-padding-block.
+	paddingBottom: 12,
+	gap: 10,
+};
+
+export const codeViewItemMetrics = {
+	diffHeaderHeight: 38,
+	paddingBottom: 9,
+} satisfies Partial<VirtualFileMetrics>;
+
+type PrepareDiffFilesDeps = {
 	fileParent: FileParent;
 	changes: Array<TreeChange>;
-	treeChangeDiffs: Array<UnifiedPatch | null>;
+	treeChangeDiffs: Array<UnifiedPatch | null | undefined>;
+};
+
+export type PreparedDiffFile = {
+	file: FileAddress;
+	fileId: string;
+	change: TreeChange;
+	treeChangeDiff: UnifiedPatch | null;
+	patch: string;
+	version: number;
 };
 
 export type DiffViewFile = {
-	operand: FileOperand;
+	address: FileAddress;
 	item: CodeViewDiffItem<Annotation>;
 	change: TreeChange;
 	patch: UnifiedPatch | null;
@@ -34,21 +75,21 @@ export type DiffViewFile = {
 };
 
 type DiffViewHunk = {
-	operand: HunkOperand;
+	address: HunkAddress;
 	selectedLines: CodeViewLineSelection;
 	file: DiffViewFile;
 };
 
 export type DiffView = {
-	navigationIndex: NavigationIndex<HunkOperand>;
-	items: Array<CodeViewDiffItem<Annotation>>;
+	addressSpace: AddressSpace<HunkAddress>;
+	items: Array<CodeViewItem<Annotation>>;
 	fileByItemId: Map<string, DiffViewFile>;
 	fileByPath: Map<string, DiffViewFile>;
 	hunkByKey: Map<string, DiffViewHunk>;
 };
 
-export const hunkOperandIdentityKey = (operand: HunkOperand): string =>
-	operandIdentityKey(hunkOperand(operand));
+export const hunkAddressIdentityKey = (address: HunkAddress): string =>
+	addressIdentityKey(hunkAddress(address));
 
 const parseFileDiff = (
 	patch: string,
@@ -60,9 +101,44 @@ const parseFileDiff = (
 	return parsed;
 };
 
+/**
+ * Prepare stable file IDs and patch versions once for both review state and
+ * the rendered diff. Parsing remains separate so single-file mode only builds
+ * Pierre's diff shape for the selected file.
+ */
+export const prepareDiffFiles = ({
+	fileParent,
+	changes,
+	treeChangeDiffs,
+}: PrepareDiffFilesDeps): Array<PreparedDiffFile> =>
+	treeChangeDiffs.flatMap((treeChangeDiff, index) => {
+		const change = changes[index];
+		if (change === undefined || treeChangeDiff === undefined) return [];
+		const file: FileAddress = { parent: fileParent, path: change.path };
+		const patch = synthesizeFilePatch(
+			change,
+			treeChangeDiff?.type === "Patch" ? treeChangeDiff.subject.hunks : [],
+		);
+
+		return [
+			{
+				file,
+				fileId: weakFileIdentityKey(file),
+				change,
+				treeChangeDiff,
+				patch,
+				version: hash(patch),
+			},
+		];
+	});
+
+export const parsePreparedDiffFile = (
+	file: PreparedDiffFile,
+): CodeViewDiffItem<Annotation>["fileDiff"] => parseFileDiff(file.patch, String(file.version));
+
 type DiffFileNavigation = {
 	itemId: string;
-	firstHunk: HunkOperand | null;
+	firstSelection: DiffLineSelection | null;
 };
 
 export const getDiffFileNavigation = ({
@@ -74,7 +150,7 @@ export const getDiffFileNavigation = ({
 	change: TreeChange;
 	treeChangeDiff: UnifiedPatch | null;
 }): DiffFileNavigation => {
-	const file: FileOperand = {
+	const file: FileAddress = {
 		parent: fileParent,
 		path: change.path,
 	};
@@ -85,65 +161,74 @@ export const getDiffFileNavigation = ({
 		if (fstDiffHunk) {
 			const fstHunk = parseFileDiff(synthesizeFilePatch(change, [fstDiffHunk]), itemId).hunks[0];
 			if (fstHunk) {
-				const fstSelection = firstContiguousSelectionFromHunk(fstHunk);
+				const fstSelection = contiguousSelectionsFromHunk(fstHunk).next().value;
 				if (fstSelection) {
+					const range = rangeFromLineGroups(fstSelection.lineGroups);
+					if (!range) return { itemId, firstSelection: null };
 					return {
 						itemId,
-						firstHunk: {
-							parent: file,
-							...fstSelection,
-							isResultOfBinaryToTextConversion:
-								treeChangeDiff.subject.isResultOfBinaryToTextConversion,
-						},
+						firstSelection: { file, range },
 					};
 				}
 			}
 		}
 	}
 
-	return { itemId, firstHunk: null };
+	return { itemId, firstSelection: null };
 };
 
 /** Build relationships between our SDK data and Pierre's view. */
-export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDeps): DiffView => {
-	const navigationIndex: NavigationIndex<HunkOperand> = {
+export const getDiffView = (files: Array<PreparedDiffFile>): DiffView => {
+	const addressSpace: AddressSpace<HunkAddress> = {
 		items: [],
 		indexByKey: new Map(),
 	};
 
-	const items: Array<CodeViewDiffItem<Annotation>> = [];
+	const items: Array<CodeViewItem<Annotation>> = [];
 
 	const fileByItemId = new Map<string, DiffViewFile>();
 	const fileByPath = new Map<string, DiffViewFile>();
 	const hunkByKey = new Map<string, DiffViewHunk>();
 
-	for (const [ci, change] of changes.entries()) {
-		const mdiff = treeChangeDiffs[ci];
-
-		const file: FileOperand = {
-			parent: fileParent,
-			path: change.path,
-		};
-
-		const combinedFilePatch = synthesizeFilePatch(
-			change,
-			mdiff?.type === "Patch" ? mdiff.subject.hunks : [],
-		);
-		const version = hash(combinedFilePatch);
+	for (const prepared of files) {
+		const { file, fileId, change, treeChangeDiff: mdiff, version } = prepared;
 		const item: CodeViewDiffItem<Annotation> = {
 			type: "diff",
-			id: weakFileIdentityKey(file),
+			id: fileId,
 			version,
-			fileDiff: parseFileDiff(combinedFilePatch, String(version)),
+			fileDiff: parsePreparedDiffFile(prepared),
+			...(mdiff?.type === "Patch" && isSvgFile(change.path)
+				? {
+						annotations: [
+							{
+								lineNumber: 0,
+								side: change.status.type === "Deletion" ? "deletions" : "additions",
+								metadata: { _tag: "image" as const },
+							},
+						],
+					}
+				: {}),
 		};
 
-		items.push(item);
+		const renderItem: CodeViewDiffItem<Annotation> | CodeViewFileItem<Annotation> =
+			// Construct a synthetic diff using annotations as a workaround for rendering images.
+			mdiff?.type === "Binary" && isRasterImageFile(change.path)
+				? {
+						type: "file",
+						id: fileId,
+						version,
+						file: { name: change.path, contents: "" },
+						annotations: [{ lineNumber: 0, metadata: { _tag: "image" } }],
+					}
+				: item;
+
+		items.push(renderItem);
 
 		const diffViewFile: DiffViewFile = {
-			operand: file,
+			address: file,
 			item,
 			change,
-			patch: mdiff ?? null,
+			patch: mdiff,
 			hunks: [],
 		};
 
@@ -156,18 +241,18 @@ export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDe
 					const range = rangeFromLineGroups(selection.lineGroups);
 					if (!range) continue;
 
-					const hunkOperand: HunkOperand = {
+					const hunkAddress: HunkAddress = {
 						parent: file,
 						...selection,
 						isResultOfBinaryToTextConversion: mdiff.subject.isResultOfBinaryToTextConversion,
 					};
-					const hunkKey = hunkOperandIdentityKey(hunkOperand);
+					const hunkKey = hunkAddressIdentityKey(hunkAddress);
 
-					const len = navigationIndex.items.push(hunkOperand);
-					navigationIndex.indexByKey.set(hunkKey, len - 1);
+					const len = addressSpace.items.push(hunkAddress);
+					addressSpace.indexByKey.set(hunkKey, len - 1);
 
 					const diffViewHunk: DiffViewHunk = {
-						operand: hunkOperand,
+						address: hunkAddress,
 						selectedLines: {
 							id: item.id,
 							range,
@@ -186,6 +271,31 @@ export const getDiffView = ({ fileParent, changes, treeChangeDiffs }: DiffViewDe
 		fileByItemId,
 		fileByPath,
 		hunkByKey,
-		navigationIndex,
+		addressSpace,
 	};
+};
+
+/**
+ * The address space with folded files' hunks removed — except each folded
+ * file's first hunk, which stands in for the file the way a folded branch
+ * keeps its branch row. j/k then stop once per folded file instead of walking
+ * its hidden hunks, and z can unfold from the keyboard.
+ */
+export const withoutFoldedHunks = (
+	addressSpace: AddressSpace<HunkAddress>,
+	hunkByKey: DiffView["hunkByKey"],
+	collapsedItems: Set<string>,
+): AddressSpace<HunkAddress> => {
+	if (collapsedItems.size === 0) return addressSpace;
+
+	const items = addressSpace.items.filter((hunk) => {
+		const key = hunkAddressIdentityKey(hunk);
+		const file = hunkByKey.get(key)?.file;
+		return (
+			file === undefined ||
+			!collapsedItems.has(file.item.id) ||
+			hunkAddressIdentityKey(assert(file.hunks[0]).address) === key
+		);
+	});
+	return { items, indexByKey: buildIndexByKey(items, hunkAddressIdentityKey) };
 };

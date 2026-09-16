@@ -14,11 +14,43 @@ pub fn update_project(
     Ok(gitbutler_project::update(project)?.into())
 }
 
+/// The stored project fields a settings UI can change. An absent field is left alone.
+///
+/// A transport DTO rather than [`gitbutler_project::UpdateRequest`], which reaches into
+/// `ApiProject`, `FetchResult` and `ForgeUser` and carries fetch bookkeeping no settings
+/// screen should be able to write.
+#[derive(Debug, Clone, Default, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProjectSettingsUpdate {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub force_push_protection: Option<bool>,
+    pub omit_certificate_check: Option<bool>,
+}
+but_schemars::register_sdk_type!(ProjectSettingsUpdate);
+
+/// Change the stored settings of a project, leaving absent fields as they were.
+#[but_api(napi, invalidates = [Projects])]
+#[instrument(err(Debug))]
+pub fn update_project_settings(
+    project_id: ProjectHandleOrLegacyProjectId,
+    settings: ProjectSettingsUpdate,
+) -> Result<()> {
+    gitbutler_project::update(gitbutler_project::UpdateRequest {
+        title: settings.title,
+        description: settings.description,
+        force_push_protection: settings.force_push_protection,
+        omit_certificate_check: settings.omit_certificate_check,
+        ..gitbutler_project::UpdateRequest::default_with_id(project_id)
+    })?;
+    Ok(())
+}
+
 /// Adds an existing git repository as a GitButler project.
 /// `path` is the Git repository to remember as project.
-#[but_api]
+#[but_api(napi, json::AddProjectOutcome, invalidates = [Projects])]
 #[instrument(err(Debug))]
-pub fn add_project(path: PathBuf) -> Result<gitbutler_project::AddProjectOutcome> {
+pub fn add_project(path: String) -> Result<gitbutler_project::AddProjectOutcome> {
     gitbutler_project::add(&path)
 }
 
@@ -129,7 +161,7 @@ pub fn list_projects(
     })
 }
 
-#[but_api]
+#[but_api(napi, invalidates = [Projects])]
 #[instrument(err(Debug))]
 pub fn delete_project(project_id: ProjectHandleOrLegacyProjectId) -> Result<()> {
     delete_project_at_app_data_dir(but_path::app_data_dir()?, project_id)
@@ -144,14 +176,11 @@ fn delete_project_at_app_data_dir(
 
 /// Prepare an already-known project for activation in the UI or server.
 ///
-/// This repairs missing target metadata in freshly selected storage locations and then reconciles
-/// the legacy metadata view with the workspace currently present in Git. It is safe for activation
-/// paths because it avoids rewriting `gitbutler/workspace`.
+/// This repairs missing target metadata in freshly selected storage locations.
 pub fn prepare_project_for_activation(ctx: &mut Context) -> Result<()> {
     assure_repo_ownership(&*ctx.repo.get()?)?;
-    let mut guard = ctx.exclusive_worktree_access();
+    let _guard = ctx.exclusive_worktree_access();
     gitbutler_branch_actions::base::bootstrap_default_target_if_missing(ctx)?;
-    super::meta::reconcile_in_workspace_state_of_vb_toml(ctx, guard.write_permission()).ok();
     Ok(())
 }
 
@@ -192,23 +221,84 @@ pub struct ProjectForFrontend {
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(ProjectForFrontend);
 
+/// JSON transport types for project APIs.
+pub mod json {
+    use super::ProjectForFrontend;
+
+    /// Result of adding a local repository as a project.
+    #[derive(serde::Serialize)]
+    #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+    #[serde(rename_all = "camelCase", tag = "type", content = "subject")]
+    pub enum AddProjectOutcome {
+        /// The repository was added.
+        Added(ProjectForFrontend),
+        /// The repository was already configured.
+        AlreadyExists(ProjectForFrontend),
+        /// The selected path does not exist.
+        PathNotFound,
+        /// The selected path is not a directory.
+        NotADirectory,
+        /// Bare repositories are not supported.
+        BareRepository,
+        /// Only main worktrees are supported.
+        NonMainWorktree,
+        /// The repository has no worktree.
+        NoWorkdir,
+        /// The repository has no `.git` directory.
+        NoDotGitDirectory,
+        /// Reftable reference storage is not supported.
+        ReftableRefFormatUnsupported,
+        /// The selected directory is not a Git repository.
+        NotAGitRepository(String),
+    }
+    #[cfg(feature = "export-schema")]
+    but_schemars::register_sdk_type!(AddProjectOutcome);
+
+    impl From<gitbutler_project::AddProjectOutcome> for AddProjectOutcome {
+        fn from(value: gitbutler_project::AddProjectOutcome) -> Self {
+            use gitbutler_project::AddProjectOutcome as Domain;
+
+            match value {
+                Domain::Added(project) => Self::Added(ProjectForFrontend {
+                    inner: project.into(),
+                    is_open: false,
+                }),
+                Domain::AlreadyExists(project) => Self::AlreadyExists(ProjectForFrontend {
+                    inner: project.into(),
+                    is_open: false,
+                }),
+                Domain::PathNotFound => Self::PathNotFound,
+                Domain::NotADirectory => Self::NotADirectory,
+                Domain::BareRepository => Self::BareRepository,
+                Domain::NonMainWorktree => Self::NonMainWorktree,
+                Domain::NoWorkdir => Self::NoWorkdir,
+                Domain::NoDotGitDirectory => Self::NoDotGitDirectory,
+                Domain::ReftableRefFormatUnsupported => Self::ReftableRefFormatUnsupported,
+                Domain::NotAGitRepository(error) => Self::NotAGitRepository(error),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn delete_project_is_idempotent() -> Result<()> {
-        let app_data_dir = tempfile::tempdir()?;
-        let repo_dir = tempfile::tempdir()?;
-        gix::init(repo_dir.path())?;
-        let project = gitbutler_project::add_at_app_data_dir(app_data_dir.path(), repo_dir.path())?
-            .unwrap_project();
-        let project_id = project.id.clone();
+        but_testsupport::isolated_app_data_dir(|| -> Result<()> {
+            let app_data_dir = but_path::app_data_dir()?;
+            let repo_dir = tempfile::tempdir()?;
+            gix::init(repo_dir.path())?;
+            let project = gitbutler_project::add_at_app_data_dir(&app_data_dir, repo_dir.path())?
+                .unwrap_project();
+            let project_id = project.id.clone();
 
-        delete_project_at_app_data_dir(app_data_dir.path(), project_id.clone())?;
-        delete_project_at_app_data_dir(app_data_dir.path(), project_id.clone())?;
+            delete_project_at_app_data_dir(&app_data_dir, project_id.clone())?;
+            delete_project_at_app_data_dir(&app_data_dir, project_id.clone())?;
 
-        assert!(gitbutler_project::get_with_path(app_data_dir.path(), project_id).is_err());
-        Ok(())
+            assert!(gitbutler_project::get(project_id).is_err());
+            Ok(())
+        })
     }
 }

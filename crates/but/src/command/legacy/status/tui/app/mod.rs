@@ -20,10 +20,6 @@ use crate::{
     args::atoms::ResolvedCliIdArg,
     command::{
         legacy::{
-            branch::{
-                self,
-                new::{NewOperation, NewStackedBranchTarget},
-            },
             commit::{
                 self, CommitAtOperation, CommitOperation, CommitRelativeToTarget, CommitSelection,
             },
@@ -46,7 +42,7 @@ use crate::{
     id::{CommitId, CommittedFileId},
     theme::Theme,
     tui::{Clipboard, TerminalGuard, event_polling::EventPolling},
-    utils::targeting::Side,
+    utils::{in_single_branch_mode, targeting::Side},
 };
 
 use super::{
@@ -106,6 +102,9 @@ pub use stack_mode::*;
 mod squash_mode;
 pub use squash_mode::*;
 
+mod branch_mode;
+pub use branch_mode::*;
+
 #[derive(Debug)]
 pub struct App {
     pub status_lines: Vec<StatusOutputLine>,
@@ -136,6 +135,7 @@ pub struct App {
     pub head_sha: String,
     pub clipboard: Clipboard,
     pub operating_mode: OperatingMode,
+    pub in_single_branch_mode: bool,
 }
 
 pub(super) fn changed_paths_affect_uncommitted_details<'a>(
@@ -308,7 +308,7 @@ impl Tui for App {
             let _span = tracing::trace_span!("render").entered();
             terminal_guard.terminal_mut().draw(|frame| {
                 self.renders += 1;
-                count_allocations("render", || render_app(self, frame))
+                count_allocations("render", || render_app(self, frame));
             })?;
         }
 
@@ -334,12 +334,16 @@ impl App {
             ResolvedCliIdArg::UncommittedHunkOrFile(hunk) if !hunk.is_entire_file => {
                 Some(CliId::UncommittedHunkOrFile((**hunk).clone()))
             }
-            ResolvedCliIdArg::Commit(..)
+            ResolvedCliIdArg::AnonymousSegment(..)
+            | ResolvedCliIdArg::Commit(..)
             | ResolvedCliIdArg::Branch(..)
             | ResolvedCliIdArg::UncommittedHunkOrFile(..)
             | ResolvedCliIdArg::CommittedFile(..)
+            | ResolvedCliIdArg::CommittedHunk(..)
             | ResolvedCliIdArg::Uncommitted
             | ResolvedCliIdArg::PathPrefix { .. }
+            | ResolvedCliIdArg::Worktree(..)
+            | ResolvedCliIdArg::WorktreeUncommitted(..)
             | ResolvedCliIdArg::Stack { .. } => None,
         });
         let initial_committed_file = matches!(
@@ -370,7 +374,7 @@ impl App {
         let is_details_visible = launch_options.show_diff || initial_hunk.is_some();
 
         let app_key_binds = AppKeyBinds {
-            key_binds: default_key_binds(),
+            key_binds: default_key_binds(&ctx.settings.feature_flags),
             normal_with_marks_key_binds: normal_with_marks_key_binds(),
             confirm_key_binds: confirm_key_binds(),
         };
@@ -401,7 +405,7 @@ impl App {
 
         let file_browser = show_file_browser.then(FileBrowser::default);
 
-        Ok(Self {
+        let mut app = Self {
             status_lines,
             flags,
             cursor,
@@ -430,7 +434,12 @@ impl App {
             head_sha,
             clipboard,
             operating_mode,
-        })
+            in_single_branch_mode: false,
+        };
+
+        app.reload_in_single_branch_mode(ctx)?;
+
+        Ok(app)
     }
 
     pub fn active_key_binds(&self) -> &KeyBinds {
@@ -438,6 +447,7 @@ impl App {
             Some(Modal::Confirm { .. }) => &self.app_key_binds.confirm_key_binds,
             Some(Modal::GotoBranchPicker { key_binds, .. })
             | Some(Modal::ApplyStackPicker { key_binds, .. })
+            | Some(Modal::SwitchBranchPicker { key_binds, .. })
             | Some(Modal::CopySelectionPicker { key_binds, .. })
             | Some(Modal::ProgramPicker { key_binds, .. })
             | Some(Modal::Help { key_binds, .. }) => key_binds,
@@ -492,6 +502,9 @@ impl App {
             }
             Message::ConfirmAndQuit => {
                 self.handle_confirm_and_quit();
+            }
+            Message::Crash => {
+                panic!("Intentional crash caused by Message::Crash");
             }
             Message::JustRender => {}
             Message::DebugScrollUp(count) => self.debug_scroll.up(count),
@@ -625,9 +638,7 @@ impl App {
             Message::CherryPick(cherry_pick_message) => {
                 self.handle_cherry_pick(cherry_pick_message, ctx, messages)?
             }
-            Message::NewBranch => {
-                self.handle_new_branch(ctx, messages)?;
-            }
+            Message::Branch(branch_message) => self.handle_branch(branch_message, ctx, messages)?,
             Message::CopySelection => {
                 self.handle_copy_selection()?;
             }
@@ -670,6 +681,14 @@ impl App {
                             self.modal = picker
                                 .handle_message(fuzzy_picker_message, ctx, messages)?
                                 .map(|picker| Modal::ApplyStackPicker {
+                                    picker: Box::new(picker),
+                                    key_binds,
+                                });
+                        }
+                        Modal::SwitchBranchPicker { picker, key_binds } => {
+                            self.modal = picker
+                                .handle_message(fuzzy_picker_message, ctx, messages)?
+                                .map(|picker| Modal::SwitchBranchPicker {
                                     picker: Box::new(picker),
                                     key_binds,
                                 });
@@ -809,6 +828,7 @@ impl App {
                 | Mode::Move(..)
                 | Mode::Stack(..)
                 | Mode::Jump(..)
+                | Mode::Branch(..)
                 | Mode::CherryPick(..)
                 | Mode::MoveStack(..) => return,
                 Mode::Details(details_mode) => match &details_mode.return_mode {
@@ -911,6 +931,9 @@ impl App {
                 }
                 Mode::Details(details_mode) => {
                     details_mode.return_mode.marks_mut().clear();
+                }
+                Mode::Branch(branch_mode) => {
+                    branch_mode.marks.clear();
                 }
                 Mode::InlineReword(..)
                 | Mode::Squash(..)
@@ -1138,11 +1161,15 @@ impl App {
                                             CliId::UncommittedHunkOrFile(uncommitted) => {
                                                 Some(&uncommitted.hunks)
                                             }
-                                            CliId::PathPrefix { .. }
+                                            CliId::AnonymousSegment(..)
+                                            | CliId::PathPrefix { .. }
                                             | CliId::CommittedFile { .. }
+                                            | CliId::CommittedHunk { .. }
                                             | CliId::Branch(..)
                                             | CliId::Commit { .. }
                                             | CliId::Stack { .. }
+                                            | CliId::Worktree { .. }
+                                            | CliId::WorktreeUncommitted { .. }
                                             | CliId::Uncommitted { .. } => None,
                                         }
                                     }
@@ -1152,6 +1179,8 @@ impl App {
                                     | StatusOutputLineData::StagedChanges { .. }
                                     | StatusOutputLineData::StagedFile { .. }
                                     | StatusOutputLineData::UncommittedChanges { .. }
+                                    | StatusOutputLineData::Worktree { .. }
+                                    | StatusOutputLineData::WorktreeUncommitted { .. }
                                     | StatusOutputLineData::Branch { .. }
                                     | StatusOutputLineData::Commit { .. }
                                     | StatusOutputLineData::CommitMessage
@@ -1183,10 +1212,14 @@ impl App {
                                 },
                             ));
                         }
-                        CliId::PathPrefix { .. }
+                        CliId::AnonymousSegment(..)
+                        | CliId::PathPrefix { .. }
                         | CliId::CommittedFile { .. }
+                        | CliId::CommittedHunk { .. }
                         | CliId::Branch(..)
                         | CliId::Commit { .. }
+                        | CliId::Worktree { .. }
+                        | CliId::WorktreeUncommitted { .. }
                         | CliId::Stack { .. } => {
                             messages.push(Message::Reload(
                                 None,
@@ -1391,6 +1424,13 @@ impl App {
             }
         }
 
+        self.reload_in_single_branch_mode(ctx)?;
+
+        Ok(())
+    }
+
+    fn reload_in_single_branch_mode(&mut self, ctx: &Context) -> anyhow::Result<()> {
+        self.in_single_branch_mode = in_single_branch_mode(ctx)?;
         Ok(())
     }
 
@@ -1442,6 +1482,7 @@ impl App {
                             name: Category::LocalBranch.to_full_name(&*branch.name)?,
                         },
                     }),
+                    false,
                     CommitSelection::Nothing,
                     CommitMessageSource::Empty,
                 )?;
@@ -1469,6 +1510,40 @@ impl App {
                             side: Side::Above,
                         },
                     }),
+                    false,
+                    CommitSelection::Nothing,
+                    CommitMessageSource::Empty,
+                )?;
+
+                messages.push(Message::Reload(
+                    Some(SelectAfterReload::Commit(outcome.new_commit.commit_id)),
+                    ReloadCause::Mutation,
+                ));
+            }
+            StatusOutputLineData::WorktreeUncommitted { .. } => return Ok(()),
+            StatusOutputLineData::Worktree { cli_id } => {
+                // The reference row is the top of its lane, so the empty commit goes to the tip
+                // of the branch checked out there. The uncommitted areas name no branch, so they
+                // stay no-ops.
+                let CliId::Worktree { name, .. } = &**cli_id else {
+                    return Ok(());
+                };
+                let branch = {
+                    let repo = ctx.repo.get()?;
+                    crate::utils::worktrees::worktree_branch(&repo, name.as_ref())?
+                };
+
+                let mut guard = ctx.exclusive_worktree_access();
+                let mut meta = ctx.meta()?;
+
+                let (outcome, _ws) = commit::run(
+                    ctx,
+                    &mut meta,
+                    guard.write_permission(),
+                    CommitOperation::CommitAt(CommitAtOperation {
+                        target: CommitRelativeToTarget::BranchTip { name: branch },
+                    }),
+                    false,
                     CommitSelection::Nothing,
                     CommitMessageSource::Empty,
                 )?;
@@ -1479,11 +1554,11 @@ impl App {
                 ));
             }
             StatusOutputLineData::UpdateNotice
+            | StatusOutputLineData::UncommittedChanges { .. }
             | StatusOutputLineData::Connector
             | StatusOutputLineData::BetweenStacks
             | StatusOutputLineData::StagedChanges { .. }
             | StatusOutputLineData::StagedFile { .. }
-            | StatusOutputLineData::UncommittedChanges { .. }
             | StatusOutputLineData::UncommittedFile { .. }
             | StatusOutputLineData::CommitMessage
             | StatusOutputLineData::EmptyCommitMessage
@@ -1494,77 +1569,6 @@ impl App {
             | StatusOutputLineData::Hint
             | StatusOutputLineData::NoAssignmentsUnstaged => {}
         }
-
-        Ok(())
-    }
-
-    fn handle_new_branch(
-        &mut self,
-        ctx: &mut Context,
-        messages: &mut Vec<Message>,
-    ) -> anyhow::Result<()> {
-        let Some(selection) = self.cursor.selected_line(&self.status_lines) else {
-            return Ok(());
-        };
-
-        let new_name = match &selection.data {
-            StatusOutputLineData::Branch { cli_id, .. } => {
-                let CliId::Branch(branch) = &**cli_id else {
-                    return Ok(());
-                };
-
-                let mut guard = ctx.exclusive_worktree_access();
-                let mut meta = ctx.meta()?;
-
-                let outcome = branch::new::run(
-                    ctx,
-                    &mut meta,
-                    guard.write_permission(),
-                    NewOperation::NewStackedBranch {
-                        name: None,
-                        target: NewStackedBranchTarget::Branch(
-                            Category::LocalBranch.to_full_name(&*branch.name)?,
-                        ),
-                        side: Side::Above,
-                    },
-                )?;
-
-                outcome.name.shorten().to_string()
-            }
-            StatusOutputLineData::UncommittedChanges { .. }
-            | StatusOutputLineData::MergeBase
-            | StatusOutputLineData::UncommittedFile { .. } => {
-                let mut guard = ctx.exclusive_worktree_access();
-                let mut meta = ctx.meta()?;
-
-                let outcome = branch::new::run(
-                    ctx,
-                    &mut meta,
-                    guard.write_permission(),
-                    NewOperation::NewUnstackedBranch { name: None },
-                )?;
-
-                outcome.name.shorten().to_string()
-            }
-            StatusOutputLineData::UpdateNotice
-            | StatusOutputLineData::Connector
-            | StatusOutputLineData::BetweenStacks
-            | StatusOutputLineData::StagedChanges { .. }
-            | StatusOutputLineData::StagedFile { .. }
-            | StatusOutputLineData::Commit { .. }
-            | StatusOutputLineData::CommitMessage
-            | StatusOutputLineData::EmptyCommitMessage
-            | StatusOutputLineData::File { .. }
-            | StatusOutputLineData::UpstreamChanges
-            | StatusOutputLineData::Warning
-            | StatusOutputLineData::Hint
-            | StatusOutputLineData::NoAssignmentsUnstaged => return Ok(()),
-        };
-
-        messages.push(Message::Reload(
-            Some(SelectAfterReload::Branch(new_name)),
-            ReloadCause::Mutation,
-        ));
 
         Ok(())
     }
@@ -1595,9 +1599,13 @@ impl App {
             CliId::UncommittedHunkOrFile(uncommitted) => {
                 uncommitted.hunks.first().hunk.path.to_str_lossy()
             }
-            CliId::PathPrefix { .. } | CliId::Uncommitted { .. } | CliId::Stack { .. } => {
-                return Ok(());
-            }
+            CliId::Worktree { name, .. } => name.to_str_lossy(),
+            CliId::AnonymousSegment(..)
+            | CliId::CommittedHunk(..)
+            | CliId::PathPrefix { .. }
+            | CliId::Uncommitted { .. }
+            | CliId::WorktreeUncommitted { .. }
+            | CliId::Stack { .. } => return Ok(()),
         };
 
         self.clipboard.set_text(what_to_copy)?;
@@ -1645,9 +1653,15 @@ impl App {
                 id.to_owned(),
                 self.theme,
             ),
-            CliId::PathPrefix { .. } | CliId::Uncommitted { .. } | CliId::Stack { .. } => {
-                return Ok(());
+            CliId::Worktree { id, name } => {
+                copy_selection_picker::worktree_picker(name.to_owned(), id.to_owned(), self.theme)
             }
+            CliId::AnonymousSegment(..)
+            | CliId::CommittedHunk(..)
+            | CliId::PathPrefix { .. }
+            | CliId::Uncommitted { .. }
+            | CliId::WorktreeUncommitted { .. }
+            | CliId::Stack { .. } => return Ok(()),
         };
         self.modal = Some(Modal::CopySelectionPicker {
             picker: Box::new(picker),
@@ -1680,10 +1694,14 @@ impl App {
                         committed_file: CommittedFileId { path, .. },
                         id: _,
                     } => Openable::try_from_relpath(&*ctx.repo.get()?, path.as_bstr()).map(Some),
-                    CliId::Commit { .. }
+                    CliId::AnonymousSegment(..)
+                    | CliId::CommittedHunk(..)
+                    | CliId::Commit { .. }
                     | CliId::Branch(_)
                     | CliId::PathPrefix { .. }
                     | CliId::Uncommitted { .. }
+                    | CliId::Worktree { .. }
+                    | CliId::WorktreeUncommitted { .. }
                     | CliId::Stack { .. } => Ok(None),
                 }
             }
@@ -1797,14 +1815,18 @@ impl App {
         }
 
         let head_info = {
-            let traversal = ctx.graph_options(Default::default())?;
             let meta = ctx.meta()?;
+            let mut db = ctx.db.get_cache_mut()?;
             but_workspace::head_info(
                 &*ctx.repo.get()?,
                 &meta,
+                &mut db,
                 but_workspace::ref_info::Options {
                     project_meta: ctx.project_meta()?,
-                    traversal,
+                    traversal: but_graph::init::Options {
+                        worktrees: ctx.settings.feature_flags.worktree_manipulation,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )?
@@ -1988,6 +2010,10 @@ pub enum Modal {
         picker: Box<FuzzyPicker<ApplyBranchItem>>,
         key_binds: KeyBinds,
     },
+    SwitchBranchPicker {
+        picker: Box<FuzzyPicker<SwitchBranchItem>>,
+        key_binds: KeyBinds,
+    },
     ProgramPicker {
         picker: Box<FuzzyPicker<ProgramSpec>>,
         key_binds: KeyBinds,
@@ -2004,6 +2030,7 @@ impl Modal {
             Modal::CopySelectionPicker { .. }
             | Modal::GotoBranchPicker { .. }
             | Modal::ApplyStackPicker { .. }
+            | Modal::SwitchBranchPicker { .. }
             | Modal::ProgramPicker { .. } => {
                 Some(Message::FuzzyPicker(FuzzyPickerMessage::Input(event)))
             }

@@ -20,9 +20,9 @@ use crate::{
             StatusFlags, StatusOutputLine, TuiLaunchOptions, TuiOutcome, TuiRunOptions,
             tui::{
                 app::{
-                    CherryPickMessage, CommandMessage, CommandModeKind, CommitMessage, JumpMessage,
-                    MoveMessage, NormalMode, PickChangesMode, RewordMessage, SquashMessage,
-                    StackMessage, UpdateContext,
+                    BranchMessage, CherryPickMessage, CommandMessage, CommandModeKind,
+                    CommitMessage, JumpMessage, MoveMessage, NormalMode, PickChangesMode,
+                    RewordMessage, SquashMessage, StackMessage, UpdateContext,
                 },
                 backstack::{Backstack, BackstackEntry},
                 confirm::ConfirmMessage,
@@ -264,6 +264,7 @@ fn event_to_messages(ev: Event, app: &App, terminal_area: Rect, messages: &mut V
                         | Mode::PickChanges(..)
                         | Mode::MoveStack(..)
                         | Mode::CherryPick(..)
+                        | Mode::Branch(..)
                         | Mode::Move(..) => {}
                     }
                 }
@@ -300,6 +301,7 @@ fn event_to_messages(ev: Event, app: &App, terminal_area: Rect, messages: &mut V
                 | Mode::PickChanges(..)
                 | Mode::MoveStack(..)
                 | Mode::CherryPick(..)
+                | Mode::Branch(..)
                 | Mode::Move(..) => {
                     messages.push(Message::JustRender);
                 }
@@ -313,7 +315,9 @@ fn event_to_messages(ev: Event, app: &App, terminal_area: Rect, messages: &mut V
         }
         Event::Mouse(event) => match event.kind {
             MouseEventKind::ScrollDown => {
-                if app.modal.is_none() {
+                if mouse_is_over_help(app, terminal_area, event.column, event.row) {
+                    messages.push(Message::Help(HelpMessage::ScrollDown(3)));
+                } else if app.modal.is_none() {
                     if mouse_is_over_debug(app, terminal_area, event.column, event.row) {
                         messages.push(Message::DebugScrollDown(3));
                     } else if mouse_is_over_details(app, terminal_area, event.column, event.row) {
@@ -322,7 +326,9 @@ fn event_to_messages(ev: Event, app: &App, terminal_area: Rect, messages: &mut V
                 }
             }
             MouseEventKind::ScrollUp => {
-                if app.modal.is_none() {
+                if mouse_is_over_help(app, terminal_area, event.column, event.row) {
+                    messages.push(Message::Help(HelpMessage::ScrollUp(3)));
+                } else if app.modal.is_none() {
                     if mouse_is_over_debug(app, terminal_area, event.column, event.row) {
                         messages.push(Message::DebugScrollUp(3));
                     } else if mouse_is_over_details(app, terminal_area, event.column, event.row) {
@@ -338,6 +344,14 @@ fn event_to_messages(ev: Event, app: &App, terminal_area: Rect, messages: &mut V
             | MouseEventKind::ScrollRight => {}
         },
     }
+}
+
+fn mouse_is_over_help(app: &App, terminal_area: Rect, column: u16, row: u16) -> bool {
+    let Some(Modal::Help { help, .. }) = &app.modal else {
+        return false;
+    };
+    help.popup_area(terminal_area)
+        .contains(Position { x: column, y: row })
 }
 
 fn mouse_is_over_debug(app: &App, terminal_area: Rect, column: u16, row: u16) -> bool {
@@ -438,7 +452,7 @@ pub enum Message {
     Help(HelpMessage),
     Jump(JumpMessage),
     CherryPick(CherryPickMessage),
-    NewBranch,
+    Branch(BranchMessage),
     ToggleHelp,
     Mark,
     ClearMarks,
@@ -461,6 +475,9 @@ pub enum Message {
     OpenInProgram(ProgramSpec, Openable),
     OpenInDefaultProgram,
     PickProgramThenOpen,
+    // this message is useful to find tests that use a specific key bind
+    #[allow(dead_code)]
+    Crash,
 }
 
 #[test]
@@ -629,6 +646,12 @@ fn dedup_mutation_messages(messages: &mut Vec<Message>, other_messages: &mut Vec
                 CherryPickMessage::Confirm | CherryPickMessage::CherryPickToNewBranch => true,
                 CherryPickMessage::Start | CherryPickMessage::ToggleInsertSide => false,
             },
+            Message::Branch(message) => match message {
+                BranchMessage::Switch
+                | BranchMessage::PickAndSwitch
+                | BranchMessage::New { .. } => true,
+                BranchMessage::ToggleInsertSide | BranchMessage::Start => false,
+            },
             Message::Stack(message) => match message {
                 StackMessage::Unapply | StackMessage::MoveConfirm => true,
                 StackMessage::Enter | StackMessage::ShowApplyPicker | StackMessage::MoveStart => {
@@ -684,11 +707,13 @@ fn dedup_mutation_messages(messages: &mut Vec<Message>, other_messages: &mut Vec
                 | Modal::GotoBranchPicker { .. }
                 | Modal::ApplyStackPicker { .. }
                 | Modal::ProgramPicker { .. }
+                | Modal::SwitchBranchPicker { .. }
                 | Modal::Help { .. } => false,
             },
-            Message::Undo | Message::Redo | Message::Discard | Message::NewBranch => true,
+            Message::Undo | Message::Redo | Message::Discard => true,
             Message::JustRender
             | Message::Quit
+            | Message::Crash
             | Message::ConfirmAndQuit
             | Message::EnterNormalModeAfterConfirmingOperation
             | Message::ShowError(..)

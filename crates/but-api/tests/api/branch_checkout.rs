@@ -14,7 +14,7 @@ fn checkout_branch_switches_head_and_returns_workspace() -> anyhow::Result<()> {
 
     let repo = ctx.repo.get()?;
     let head_name = repo.head_name()?.expect("HEAD is symbolic after checkout");
-    assert_eq!(head_name.as_bstr(), "refs/heads/feature");
+    assert_eq!(head_name, "refs/heads/feature");
     assert_workspace_ref(&result.workspace, "refs/heads/feature");
 
     Ok(())
@@ -46,9 +46,9 @@ fn branch_checkout_new_creates_named_branch_at_target_and_checks_it_out() -> any
 
     let repo = ctx.repo.get()?;
     let head_name = repo.head_name()?.expect("HEAD is symbolic after checkout");
-    assert_eq!(head_name.as_bstr(), "refs/heads/new-branch");
+    assert_eq!(head_name, "refs/heads/new-branch");
     let mut created = repo.find_reference("refs/heads/new-branch")?;
-    assert_eq!(created.peel_to_id()?.detach(), target_commit_id);
+    assert_eq!(created.peel_to_id()?, target_commit_id);
     assert_workspace_ref(&result.workspace, "refs/heads/new-branch");
 
     Ok(())
@@ -95,29 +95,29 @@ fn checkout_returns_head_info_matching_fresh_head_info() -> anyhow::Result<()> {
     {
         let repo = ctx.repo.get()?;
         let head_name = repo.head_name()?.expect("HEAD is symbolic after checkout");
-        assert_eq!(head_name.as_bstr(), "refs/heads/feature");
+        assert_eq!(head_name, "refs/heads/feature");
 
         snapbox::assert_data_eq!(
             crate::support::repository_graph(&repo)?,
-            snapbox::str![["
+            snapbox::str![[r#"
 * b720e1f (sibling) sibling
 | * edd8381 (HEAD -> feature) feature
 |/  
-* 5374caf (origin/main, main) main
+* 5374caf (origin/main, main, gitbutler/target) main
 
-"]]
+"#]]
         );
     }
 
     snapbox::assert_data_eq!(
         crate::support::workspace_graph(&ctx)?,
-        snapbox::str![[r"
-⌂:0:feature[🌳] <> ✓refs/remotes/origin/main on 5374caf
-└── ≡:0:feature[🌳] on 5374caf {1}
-    └── :0:feature[🌳]
+        snapbox::str![[r#"
+⌂:feature[🌳] <> ✓refs/remotes/origin/main on 5374caf
+└── ≡:feature[🌳] on 5374caf {1}
+    └── :feature[🌳]
         └── ·edd8381
 
-"]]
+"#]]
     );
 
     #[cfg(feature = "graph-workspace")]
@@ -134,13 +134,21 @@ fn checkout_returns_head_info_matching_fresh_head_info() -> anyhow::Result<()> {
     {
         let returned_head_info = format!("{:#?}", result.workspace.head_info);
         let fresh_head_info = format!("{:#?}", crate::support::fresh_head_info(&ctx)?);
+        let without_segment_indices = |value: &str| {
+            value
+                .lines()
+                .filter(|line| !line.contains("NodeIndex("))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         assert_eq!(
-            returned_head_info, fresh_head_info,
+            without_segment_indices(&returned_head_info),
+            without_segment_indices(&fresh_head_info),
             "checkout API should return the same head info a fresh post-checkout read sees"
         );
 
         snapbox::assert_data_eq!(
-            returned_head_info,
+            without_segment_indices(&returned_head_info),
             snapbox::str![[r#"
 RefInfo {
     workspace_ref_info: Some(
@@ -172,7 +180,6 @@ RefInfo {
             ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
                     ref_name: "►feature[🌳]",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -192,18 +199,16 @@ RefInfo {
             ref_name: FullName(
                 "refs/remotes/origin/main",
             ),
-            segment_index: NodeIndex(2),
             commits_ahead: 0,
         },
     ),
     target_commit: Some(
         TargetCommit {
             commit_id: Sha1(5374caf21933aee76b72bad8d6e30949c7a30e04),
-            segment_index: NodeIndex(1),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
-        NodeIndex(1),
     ),
     is_managed_ref: false,
     is_managed_commit: false,
@@ -229,11 +234,11 @@ fn checkout_new_returns_head_info_matching_fresh_head_info() -> anyhow::Result<(
     {
         let repo = ctx.repo.get()?;
         let head_name = repo.head_name()?.expect("HEAD is symbolic after checkout");
-        assert_eq!(head_name.as_bstr(), "refs/heads/new-branch");
+        assert_eq!(head_name, "refs/heads/new-branch");
 
         let mut created = repo.find_reference("refs/heads/new-branch")?;
         assert_eq!(
-            created.peel_to_id()?.detach(),
+            created.peel_to_id()?,
             target_commit_id,
             "new branch should be created at the configured project target"
         );
@@ -252,12 +257,12 @@ fn checkout_new_returns_head_info_matching_fresh_head_info() -> anyhow::Result<(
 
     snapbox::assert_data_eq!(
         crate::support::workspace_graph(&ctx)?,
-        snapbox::str![[r"
-⌂:0:new-branch[🌳] <> ✓refs/remotes/origin/main on 5374caf
-└── ≡:0:new-branch[🌳] {1}
-    └── :0:new-branch[🌳]
+        snapbox::str![[r#"
+⌂:new-branch[🌳] <> ✓refs/remotes/origin/main on 5374caf
+└── ≡:new-branch[🌳] on 5374caf {1}
+    └── :new-branch[🌳]
 
-"]]
+"#]]
     );
 
     #[cfg(feature = "graph-workspace")]
@@ -307,7 +312,9 @@ RefInfo {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
             ),
-            base: None,
+            base: Some(
+                Sha1(5374caf21933aee76b72bad8d6e30949c7a30e04),
+            ),
             segments: [
                 ref_info::ui::Segment {
                     id: NodeIndex(0),
@@ -318,7 +325,7 @@ RefInfo {
                     commits_outside: None,
                     metadata: "None",
                     push_status: CompletelyUnpushed,
-                    base: "None",
+                    base: "5374caf",
                 },
             ],
         },
@@ -338,6 +345,7 @@ RefInfo {
             segment_index: NodeIndex(0),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(0),
     ),

@@ -35,10 +35,38 @@ fn jumping_around() {
     tui.input(KeyCode::Enter)
         .assert_rendered_term_svg_eq(file!["snapshots/jumping_around_006.svg"]);
 
-    // jumping to zz
+    // jumping to @
     tui.input('/');
-    tui.input('z')
+    tui.input('@')
         .assert_rendered_term_svg_eq(file!["snapshots/jumping_around_008.svg"]);
+}
+
+#[test]
+fn jump_to_merge_base_by_commit_id() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings(
+        "two-stacks-one-single-and-ready-to-mingle-one-double",
+    );
+    env.setup_metadata(&["A", "B"]);
+
+    let merge_base_id = env
+        .open_repo()
+        .rev_parse_single("origin/main")
+        .unwrap()
+        .detach()
+        .to_string();
+    let mut tui = test_status_tui(env);
+
+    tui.input('/');
+    for _ in 0..6 {
+        tui.input((KeyModifiers::CONTROL, 'n'));
+    }
+    tui.input((KeyModifiers::CONTROL, 'n'))
+        .assert_current_line_eq(str!["[..] (common base) [..]"]);
+    tui.input(KeyCode::Esc);
+
+    tui.input('/');
+    tui.input(&merge_base_id[..12])
+        .assert_current_line_eq(str!["[..] (common base) [..]"]);
 }
 
 #[test]

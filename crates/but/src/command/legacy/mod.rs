@@ -14,12 +14,11 @@ pub mod commit;
 pub mod commit_message_prep;
 pub(crate) mod conflict_notice;
 pub mod diff;
-#[cfg(feature = "legacy")]
-pub mod diff2;
 pub mod discard;
 pub mod forge;
 pub mod land;
 pub mod r#move;
+pub mod open;
 pub mod oplog;
 pub mod pick;
 pub mod pull;
@@ -30,15 +29,16 @@ pub mod reword;
 pub mod reword2;
 pub mod setup;
 pub mod show;
+pub mod split;
 pub mod squash;
 pub mod status;
+pub mod r#switch;
 pub mod teardown;
 pub mod unapply;
 pub mod uncommit;
 pub mod undo_redo;
 pub(crate) mod upstream;
 pub(crate) mod workspace_target;
-pub mod worktree;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum ShowDiffInEditor {

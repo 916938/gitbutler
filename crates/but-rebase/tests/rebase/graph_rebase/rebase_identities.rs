@@ -11,7 +11,7 @@ use crate::utils::{fixture_writable, standard_options};
 
 #[test]
 fn four_commits() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("four-commits")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
 
     let before = visualize_commit_graph_all(&repo)?;
     snapbox::assert_data_eq!(
@@ -29,12 +29,13 @@ fn four_commits() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.clone().into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
     snapbox::assert_data_eq!(
@@ -42,10 +43,10 @@ fn four_commits() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    ├── ·120e3a9 (⌂|1)
-    ├── ·a96434e (⌂|1)
-    ├── ·d591dfe (⌂|1)
-    └── 🏁·35b8235 (⌂|1)
+    ├── ·120e3a9 (⌂)
+    ├── ·a96434e (⌂)
+    ├── ·d591dfe (⌂)
+    └── 🏁·35b8235 (⌂)
 
 "#]]
     );
@@ -66,7 +67,7 @@ fn four_commits() -> Result<()> {
 
 #[test]
 fn four_commits_with_short_traversal() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("four-commits")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
 
     let before = visualize_commit_graph_all(&repo)?;
     snapbox::assert_data_eq!(
@@ -85,6 +86,7 @@ fn four_commits_with_short_traversal() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         options,
     )?
     .validated()?;
@@ -93,9 +95,9 @@ fn four_commits_with_short_traversal() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓!
-└── ≡:0:main[🌳] {1}
-    └── :0:main[🌳]
+⌂:main[🌳] <> ✓!
+└── ≡:main[🌳] {1}
+    └── :main[🌳]
         ├── ·120e3a9
         ├── ·a96434e
         ├── ·d591dfe
@@ -103,8 +105,7 @@ fn four_commits_with_short_traversal() -> Result<()> {
 
 "#]]
     );
-
-    let editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
     snapbox::assert_data_eq!(
@@ -112,10 +113,10 @@ fn four_commits_with_short_traversal() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    ├── ·120e3a9 (⌂|1)
-    ├── ·a96434e (⌂|1)
-    ├── ·d591dfe (⌂|1)
-    └── 🏁·35b8235 (⌂|1)
+    ├── ·120e3a9 (⌂)
+    ├── ·a96434e (⌂)
+    ├── ·d591dfe (⌂)
+    └── 🏁·35b8235 (⌂)
 
 "#]]
     );
@@ -136,7 +137,7 @@ fn four_commits_with_short_traversal() -> Result<()> {
 
 #[test]
 fn merge_in_the_middle() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("merge-in-the-middle")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("merge-in-the-middle")?;
 
     let before = visualize_commit_graph_all(&repo)?;
     snapbox::assert_data_eq!(
@@ -158,12 +159,13 @@ fn merge_in_the_middle() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.clone().into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
     snapbox::assert_data_eq!(
@@ -171,15 +173,15 @@ fn merge_in_the_middle() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    └── ·e8ee978 (⌂|1)
+    └── ·e8ee978 (⌂)
         └── ►:1[1]:anon:
-            └── ·2fc288c (⌂|1)
+            └── ·2fc288c (⌂)
                 ├── ►:2[2]:A
-                │   └── ·add59d2 (⌂|1)
+                │   └── ·add59d2 (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+                │           └── 🏁·8f0d338 (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·984fd1c (⌂|1)
+                    └── ·984fd1c (⌂)
                         └── →:4: (main)
 
 "#]]
@@ -201,7 +203,7 @@ fn merge_in_the_middle() -> Result<()> {
 
 #[test]
 fn three_branches_merged() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("three-branches-merged")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("three-branches-merged")?;
 
     let before = visualize_commit_graph_all(&repo)?;
     snapbox::assert_data_eq!(
@@ -227,12 +229,13 @@ fn three_branches_merged() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.clone().into_workspace()?;
-    let editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
     snapbox::assert_data_eq!(
@@ -240,19 +243,19 @@ fn three_branches_merged() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:main[🌳]
-    └── ·1348870 (⌂|1)
+    └── ·1348870 (⌂)
         ├── ►:1[1]:A
-        │   └── ·add59d2 (⌂|1)
+        │   └── ·add59d2 (⌂)
         │       └── ►:4[2]:anon:
-        │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+        │           └── 🏁·8f0d338 (⌂) ►tags/base
         ├── ►:2[1]:B
-        │   ├── ·a748762 (⌂|1)
-        │   └── ·62e05ba (⌂|1)
+        │   ├── ·a748762 (⌂)
+        │   └── ·62e05ba (⌂)
         │       └── →:4:
         └── ►:3[1]:C
-            ├── ·930563a (⌂|1)
-            ├── ·68a2fc3 (⌂|1)
-            └── ·984fd1c (⌂|1)
+            ├── ·930563a (⌂)
+            ├── ·68a2fc3 (⌂)
+            └── ·984fd1c (⌂)
                 └── →:4:
 
 "#]]

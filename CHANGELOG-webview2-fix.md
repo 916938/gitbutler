@@ -41,6 +41,7 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 **修改函数**: `create()` (非 macOS 分支)
 
 **改动内容**:
+
 - 将 `WebviewWindowBuilder::new(...).build()` 拆分为 builder 构建和 build 两步
 - 在 Windows 平台 (`#[cfg(target_os = "windows")]`) 通过 `data_directory()`
   设置独立的数据目录
@@ -52,6 +53,7 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 #### 2. `apps/desktop/src/lib/ai/openAIClient.ts` (类型修复)
 
 **改动内容**:
+
 - 将 `DeepSeekModelName` 添加到 `OpenAIClient` 构造函数 `modelName` 参数的类型中
 - 原类型: `OpenAIModelName | OpenRouterModelName`
 - 新类型: `OpenAIModelName | OpenRouterModelName | DeepSeekModelName`
@@ -63,12 +65,14 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 #### 3. `package.json` + `pnpm-lock.yaml` (开发依赖)
 
 **改动内容**:
+
 - 添加 `@vitest/coverage-v8@3.2.6` 到 workspace root devDependencies
 - 用于生成单元测试覆盖率报告
 
 #### 4. `apps/desktop/src/lib/ai/openAIClient.test.ts` (新增单元测试)
 
 **改动内容**:
+
 - 新增 8 个测试用例，覆盖 DeepSeek 类型兼容性修复
 - 测试分组: DeepSeek 构造 (3 个)、OpenAI 构造 (2 个)、OpenRouter 构造 (1 个)、evaluate 方法 (2 个)
 - Mock OpenAI SDK，验证 baseURL 传递和 model 名称传递
@@ -76,6 +80,7 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 #### 5. `packages/ui/src/lib/utils/testIds.test.ts` (新增单元测试)
 
 **改动内容**:
+
 - 新增 4 个测试用例，验证上游合并后 TestId 枚举完整性
 - 测试 `BranchHeaderContextMenu_CreatePR` 和 `BranchHeaderContextMenu_Land` 存在且值正确
 - 验证所有枚举值唯一且非空
@@ -83,16 +88,17 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 #### 6. `@gitbutler/ui` 包重建 (类型同步)
 
 **改动内容**:
+
 - 上游合并后 `packages/ui/dist/` 中的类型定义过时，缺少 `BranchHeaderContextMenu_CreatePR`、`BranchHeaderContextMenu_Land` 和 `SelectItem.hoverIcon` 属性
 - 通过 `pnpm --filter @gitbutler/ui run package` 重建 dist 目录解决
 - 无源码改动，仅重新生成编译产物
 
 ## 单元测试覆盖率
 
-| 文件 | Statements | Branches | Functions | Lines |
-|------|-----------|----------|-----------|-------|
+| 文件              | Statements     | Branches  | Functions  | Lines  |
+| ----------------- | -------------- | --------- | ---------- | ------ |
 | `openAIClient.ts` | 88.57% (31/35) | 60% (3/5) | 100% (3/3) | 88.57% |
-| `testIds.ts` | 100% | 100% | 100% | 100% |
+| `testIds.ts`      | 100%           | 100%      | 100%       | 100%   |
 
 > `openAIClient.ts` 未覆盖的 4 条语句是 `evaluate` 方法中 `for await` 异步迭代循环体 (mock 返回空数组不产生 chunk)。
 
@@ -100,49 +106,49 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 
 ### Debug 构建验证
 
-| 验证项 | 修复前 | 修复后 |
-|--------|--------|--------|
-| WebView2 创建 | 失败 (0x800700AA) | 成功 |
-| 进程内存 | 43 MB (仅 Rust 后端) | 68 MB (含 WebView2) |
-| 子进程数 | 0 (无 WebView2) | 2 (WebView2 渲染进程) |
-| 环境变量 | 需手动设置 `WEBVIEW2_USER_DATA_FOLDER` | 无需任何配置 |
-| `cargo check` | - | 通过 (0 错误) |
-| `cargo build` | - | 通过 (5 分钟) |
-| `svelte-check` | - | 通过 (0 错误, 0 警告) |
-| `pnpm build:desktop` | - | 通过 |
+| 验证项               | 修复前                                 | 修复后                |
+| -------------------- | -------------------------------------- | --------------------- |
+| WebView2 创建        | 失败 (0x800700AA)                      | 成功                  |
+| 进程内存             | 43 MB (仅 Rust 后端)                   | 68 MB (含 WebView2)   |
+| 子进程数             | 0 (无 WebView2)                        | 2 (WebView2 渲染进程) |
+| 环境变量             | 需手动设置 `WEBVIEW2_USER_DATA_FOLDER` | 无需任何配置          |
+| `cargo check`        | -                                      | 通过 (0 错误)         |
+| `cargo build`        | -                                      | 通过 (5 分钟)         |
+| `svelte-check`       | -                                      | 通过 (0 错误, 0 警告) |
+| `pnpm build:desktop` | -                                      | 通过                  |
 
 ### Release 构建验证
 
-| 验证项 | 结果 |
-|--------|------|
-| `cargo build --release` | 通过 (7m16s) |
-| exe 大小 | 71.2 MB (debug: 92.8 MB, 减少 23%) |
-| WebView2 数据目录 | 已创建 (`webview2-data/`, 54.2 MB, 392 文件) |
-| WebView2 进程数 | 6 个 (msedgewebview2), 总内存 ~267 MB |
-| ERROR_BUSY (0x800700AA) | 未出现 |
-| 应用窗口 | 正常创建, 响应正常 |
-| `webview2-data` 字符串验证 | exe 中包含 (修复已编译) |
-| `but.exe` release 构建 | 通过 (5m53s), `but --version` / `--help` 正常 |
-| `gitbutler-git-askpass.exe` release 构建 | 通过 |
+| 验证项                                   | 结果                                          |
+| ---------------------------------------- | --------------------------------------------- |
+| `cargo build --release`                  | 通过 (7m16s)                                  |
+| exe 大小                                 | 71.2 MB (debug: 92.8 MB, 减少 23%)            |
+| WebView2 数据目录                        | 已创建 (`webview2-data/`, 54.2 MB, 392 文件)  |
+| WebView2 进程数                          | 6 个 (msedgewebview2), 总内存 ~267 MB         |
+| ERROR_BUSY (0x800700AA)                  | 未出现                                        |
+| 应用窗口                                 | 正常创建, 响应正常                            |
+| `webview2-data` 字符串验证               | exe 中包含 (修复已编译)                       |
+| `but.exe` release 构建                   | 通过 (5m53s), `but --version` / `--help` 正常 |
+| `gitbutler-git-askpass.exe` release 构建 | 通过                                          |
 
 ## 副作用评估
 
-| 方面 | 影响 |
-|------|------|
-| 其他 WebView2 应用 | 无影响 (仅修改 GitButler 自身) |
-| macOS / Linux | 无影响 (`#[cfg(target_os = "windows")]` 条件编译) |
-| 用户配置 | 无需任何手动配置 |
-| 磁盘空间 | 新增 `webview2-data` 目录 (~80MB, WebView2 缓存) |
-| 已有用户数据 | 旧 `EBWebView` 目录中的数据不会被迁移,但应用数据存储在 Rust 端 SQLite 中,不受影响 |
+| 方面               | 影响                                                                              |
+| ------------------ | --------------------------------------------------------------------------------- |
+| 其他 WebView2 应用 | 无影响 (仅修改 GitButler 自身)                                                    |
+| macOS / Linux      | 无影响 (`#[cfg(target_os = "windows")]` 条件编译)                                 |
+| 用户配置           | 无需任何手动配置                                                                  |
+| 磁盘空间           | 新增 `webview2-data` 目录 (~80MB, WebView2 缓存)                                  |
+| 已有用户数据       | 旧 `EBWebView` 目录中的数据不会被迁移,但应用数据存储在 Rust 端 SQLite 中,不受影响 |
 
 ## 相关提交
 
-| 提交 | 描述 |
-|------|------|
+| 提交         | 描述                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------ |
 | `6f756f2422` | 本次修复 (amend): WebView2 数据目录 + DeepSeek 类型 + coverage 依赖 + 单元测试 + CHANGELOG |
-| `b958762f3c` | 原始提交 (已被 amend 替换) |
-| `f60862b99c` | PR #1: Windows PowerShell LOCALAPPDATA 运行时解析 |
-| `42ad444a97` | PR #2: DeepSeek AI provider 支持 |
+| `b958762f3c` | 原始提交 (已被 amend 替换)                                                                 |
+| `f60862b99c` | PR #1: Windows PowerShell LOCALAPPDATA 运行时解析                                          |
+| `42ad444a97` | PR #2: DeepSeek AI provider 支持                                                           |
 
 ---
 
@@ -156,12 +162,12 @@ Tauri 默认使用 `%LOCALAPPDATA%\com.gitbutler.app.dev` 作为 WebView2 数据
 
 ### 包含文件
 
-| 文件 | 大小 | 构建类型 | 说明 |
-|------|------|---------|------|
-| `gitbutler-tauri.exe` | 67.9 MB | Release | 主程序 (含 WebView2 修复) |
-| `but.exe` | 53.5 MB | Release | CLI 工具 |
-| `gitbutler-git-askpass.exe` | 147 KB | Release | Git askpass 工具 |
-| `CHANGELOG-webview2-fix.md` | 7 KB | - | 变更日志 |
+| 文件                        | 大小    | 构建类型 | 说明                      |
+| --------------------------- | ------- | -------- | ------------------------- |
+| `gitbutler-tauri.exe`       | 67.9 MB | Release  | 主程序 (含 WebView2 修复) |
+| `but.exe`                   | 53.5 MB | Release  | CLI 工具                  |
+| `gitbutler-git-askpass.exe` | 147 KB  | Release  | Git askpass 工具          |
+| `CHANGELOG-webview2-fix.md` | 7 KB    | -        | 变更日志                  |
 
 > 全部三个可执行文件均为 Release (optimized) 构建，由 `build-release.ps1` 生成。
 > 版本号来源为 `crates/gitbutler-tauri/Cargo.toml`，需升版本时请手动编辑该文件。

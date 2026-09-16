@@ -1,19 +1,8 @@
 .container {
 	display: inline-flex;
 	column-gap: 6px;
+	/* The stats are short and fixed-width: when the header runs out of room the
+	   heading next to them truncates instead. */
+	flex-shrink: 0;
 	align-items: center;
-}
-
-.lineStats {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-}
-
-.linesAdded {
-	color: var(--text-safe);
-}
-
-.linesRemoved {
-	color: var(--text-danger);
 }

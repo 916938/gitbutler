@@ -12,7 +12,7 @@ use crate::ref_info::{
 
 #[test]
 fn two_commits_rebased_onto_target() -> anyhow::Result<()> {
-    let (repo, meta, description) = scenario("01-one-rewritten-one-local-after-push")?;
+    let (repo, meta, description, mut db) = scenario("01-one-rewritten-one-local-after-push")?;
     snapbox::assert_data_eq!(
         description,
         snapbox::str![[r#"
@@ -39,7 +39,7 @@ The branch should then be considered integrated
 "#]]
     );
 
-    let info = head_info(&repo, &meta, standard_options());
+    let info = head_info(&repo, &meta, &mut db, standard_options());
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -103,6 +103,7 @@ Ok(
                 segment_index: NodeIndex(2),
             },
         ),
+        is_target_current: true,
         lower_bound: Some(
             NodeIndex(5),
         ),
@@ -121,7 +122,7 @@ Ok(
 
 #[test]
 fn two_commits_rebased_onto_target_one_amended_afterwards() -> anyhow::Result<()> {
-    let (repo, meta, description) = scenario("01-with-local-amended-after-integration")?;
+    let (repo, meta, description, mut db) = scenario("01-with-local-amended-after-integration")?;
     snapbox::assert_data_eq!(
         description,
         snapbox::str![[r#"
@@ -148,7 +149,7 @@ The branch should then *not* be considered integrated anymore as A2 has changed
 "#]]
     );
 
-    let info = head_info(&repo, &meta, standard_options());
+    let info = head_info(&repo, &meta, &mut db, standard_options());
     // TODO: A2 shouldn't be integrated.
     snapbox::assert_data_eq!(
         info.to_debug(),
@@ -213,6 +214,7 @@ Ok(
                 segment_index: NodeIndex(2),
             },
         ),
+        is_target_current: true,
         lower_bound: Some(
             NodeIndex(5),
         ),
@@ -231,7 +233,8 @@ Ok(
 
 #[test]
 fn two_rewritten_commits_track_as_local_and_remote() -> anyhow::Result<()> {
-    let (repo, meta, description) = scenario("01-rewritten-local-commit-is-paired-with-remote")?;
+    let (repo, meta, description, mut db) =
+        scenario("01-rewritten-local-commit-is-paired-with-remote")?;
     snapbox::assert_data_eq!(
         description,
         snapbox::str![[r#"
@@ -256,7 +259,7 @@ as the content is too different.
 "#]]
     );
 
-    let info = head_info(&repo, &meta, standard_options());
+    let info = head_info(&repo, &meta, &mut db, standard_options());
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -320,6 +323,7 @@ Ok(
                 segment_index: NodeIndex(2),
             },
         ),
+        is_target_current: true,
         lower_bound: Some(
             NodeIndex(2),
         ),
@@ -338,7 +342,7 @@ Ok(
 
 #[test]
 fn two_commits_rebased_onto_target_with_changeset_check() -> anyhow::Result<()> {
-    let (repo, meta, description) =
+    let (repo, meta, description, mut db) =
         scenario("01-one-rewritten-one-local-after-push-author-date-change")?;
     snapbox::assert_data_eq!(
         description,
@@ -366,7 +370,7 @@ This prevents quick-checks to work.
 "#]]
     );
 
-    let info = head_info(&repo, &meta, standard_options());
+    let info = head_info(&repo, &meta, &mut db, standard_options());
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -430,6 +434,7 @@ Ok(
                 segment_index: NodeIndex(2),
             },
         ),
+        is_target_current: true,
         lower_bound: Some(
             NodeIndex(5),
         ),
@@ -452,6 +457,7 @@ pub fn scenario(
     gix::Repository,
     std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
     String,
+    but_db::DbHandle,
 )> {
     named_read_only_in_memory_scenario_with_description("journey03", name)
 }

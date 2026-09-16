@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
 use but_secret::Sensitive;
 
+pub mod checks;
 mod client;
 pub mod mr;
 mod project;
@@ -106,12 +107,31 @@ async fn fetch_and_persist_selfhosted_user_data(
     let user = gl
         .get_authenticated()
         .await
+        .map_err(classify_pat_validation_error)
         .context("Failed to get authenticated user")?;
     let account_id = token::GitlabAccountIdentifier::selfhosted(&user.username, host);
     token::persist_gl_access_token(&account_id, access_token, storage)
         .context("Failed to persist access token")?;
     cache_user_profile(&account_id, &user, storage);
     Ok(user)
+}
+
+fn classify_pat_validation_error(err: anyhow::Error) -> anyhow::Error {
+    let Some(http_err) = err.downcast_ref::<client::HttpStatusError>() else {
+        return err;
+    };
+    let context = match http_err.status {
+        reqwest::StatusCode::UNAUTHORIZED => but_error::Context::new_static(
+            but_error::Code::GitLabUnauthorized,
+            "GitLab did not accept the token.",
+        ),
+        reqwest::StatusCode::FORBIDDEN => but_error::Context::new_static(
+            but_error::Code::GitLabForbidden,
+            "GitLab refused access for the token.",
+        ),
+        _ => return err,
+    };
+    err.context(context)
 }
 
 pub fn forget_gl_access_token(
@@ -186,9 +206,26 @@ pub async fn get_gl_user(
 
 /// Check if an error is a network connectivity error.
 ///
-/// This includes DNS resolution failures, connection timeouts, connection refused, etc.
+/// This includes DNS resolution failures, connection timeouts, connection
+/// refused, and connections dropped while the response body was being read.
+/// reqwest wraps both body I/O failures and malformed payloads as the same
+/// decode kind, so the source chain decides: a serde cause means the payload
+/// was malformed, anything else means the transport failed mid-response.
 fn is_network_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
+    if err.is_timeout() || err.is_connect() || err.is_request() {
+        return true;
+    }
+    if !err.is_decode() {
+        return false;
+    }
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        if cause.downcast_ref::<serde_json::Error>().is_some() {
+            return false;
+        }
+        source = cause.source();
+    }
+    true
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -244,42 +281,32 @@ pub mod json {
 
     use crate::{AuthStatusResponse, AuthenticatedUser};
 
-    /// Serializable version of [`AuthStatusResponse`] with exposed access token.
+    /// Serializable version of [`AuthStatusResponse`], without the access token.
     ///
-    /// This struct is used for API responses where the access token needs to be
-    /// sent as a plain string. Field names are converted to camelCase for JSON.
+    /// The credential is stored by the backend as part of the call, so the caller is told
+    /// who authenticated and nothing more. Field names are camelCase for JSON.
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(rename = "GitlabAuthStatusResponseSensitive")
-    )]
     #[serde(rename_all = "camelCase")]
-    pub struct AuthStatusResponseSensitive {
-        /// The GitLab access token as a plain string (sensitive data).
-        pub access_token: String,
-        /// The GitLab username.
+    pub struct GitlabAuthStatusResponse {
         pub username: String,
-        /// The user's display name, if available.
         pub name: Option<String>,
-        /// The user's email address, if available.
         pub email: Option<String>,
-        /// The self-hosted GitLab host, if this is a self-hosted instance.
+        /// The enterprise or self-hosted host, when there is one.
         pub host: Option<String>,
     }
 
-    impl From<AuthStatusResponse> for AuthStatusResponseSensitive {
+    impl From<AuthStatusResponse> for GitlabAuthStatusResponse {
         fn from(
             AuthStatusResponse {
-                access_token,
                 username,
                 name,
                 email,
                 host,
+                ..
             }: AuthStatusResponse,
         ) -> Self {
-            AuthStatusResponseSensitive {
-                access_token: access_token.0,
+            GitlabAuthStatusResponse {
                 username,
                 name,
                 email,
@@ -289,7 +316,7 @@ pub mod json {
     }
 
     #[cfg(feature = "export-schema")]
-    but_schemars::register_sdk_type!(AuthStatusResponseSensitive);
+    but_schemars::register_sdk_type!(GitlabAuthStatusResponse);
 
     /// Serializable version of [`AuthenticatedUser`] with exposed access token.
     ///
@@ -297,12 +324,8 @@ pub mod json {
     /// exposed as plain strings for API responses. Field names are converted to camelCase for JSON.
     #[derive(Debug, Serialize)]
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(rename = "GitlabAuthenticatedUserSensitive")
-    )]
     #[serde(rename_all = "camelCase")]
-    pub struct AuthenticatedUserSensitive {
+    pub struct GitlabAuthenticatedUserSensitive {
         /// The GitLab access token as a plain string (sensitive data).
         pub access_token: String,
         /// The GitLab username.
@@ -315,7 +338,7 @@ pub mod json {
         pub email: Option<String>,
     }
 
-    impl From<AuthenticatedUser> for AuthenticatedUserSensitive {
+    impl From<AuthenticatedUser> for GitlabAuthenticatedUserSensitive {
         fn from(
             AuthenticatedUser {
                 access_token,
@@ -325,7 +348,7 @@ pub mod json {
                 email,
             }: AuthenticatedUser,
         ) -> Self {
-            AuthenticatedUserSensitive {
+            GitlabAuthenticatedUserSensitive {
                 access_token: access_token.0,
                 username,
                 avatar_url,
@@ -336,7 +359,7 @@ pub mod json {
     }
 
     #[cfg(feature = "export-schema")]
-    but_schemars::register_sdk_type!(AuthenticatedUserSensitive);
+    but_schemars::register_sdk_type!(GitlabAuthenticatedUserSensitive);
 }
 
 #[cfg(test)]

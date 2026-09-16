@@ -93,7 +93,7 @@ fn open_linked_checkout_repos(
             let worktree_repo = proxy.clone().into_repo()?;
             let actual_ref = worktree_repo.head_name()?;
             let actual_head = worktree_repo.head_id()?.detach();
-            if actual_ref.as_ref() != spec.ref_name.as_ref() || actual_head != spec.initial_head {
+            if actual_ref != spec.ref_name || actual_head != spec.initial_head {
                 bail!(
                     "Visible worktree {} changed since the editor was created: \
                      expected {} at {}, got {} at {}",
@@ -147,7 +147,7 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
             let (target, actual_ref) = self
                 .checkout_target(*selector)?
                 .with_context(|| format!("Visible worktree {worktree_name} HEAD was removed"))?;
-            if actual_ref.as_ref() != expected_ref.as_ref() {
+            if actual_ref != *expected_ref {
                 bail!(
                     "Visible worktree {worktree_name} HEAD changed shape during the edit: \
                      expected {}, got {}",
@@ -199,6 +199,17 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
         mut self,
         materialize_options: MaterializeOptions,
     ) -> Result<MaterializeOutcome<'ws, 'graph, M>> {
+        if !self.references_updated()? {
+            return Ok(MaterializeOutcome {
+                graph: self.graph,
+                history: self.history,
+                workspace: self.workspace,
+                meta: self.meta,
+                db: self.db,
+                checkout_conflict_occurred: false,
+            });
+        }
+
         let repo = self.repo.clone();
         if let Some(memory) = self.repo.objects.take_object_memory() {
             memory.persist(&self.repo)?;
@@ -207,7 +218,7 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
         let specs = self.linked_checkout_specs()?;
         let detached_head_edits = detached_worktree_head_edits(&specs)?;
 
-        let head = if !materialize_options.without_checkout {
+        let (head, checkout_conflict_occurred) = if !materialize_options.without_checkout {
             let linked_repos = open_linked_checkout_repos(&repo, specs)?;
             for linked_repo in linked_repos {
                 safe_checkout_from_head(
@@ -217,25 +228,32 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
                         skip_head_update: true,
                         merge_base_override: linked_repo.merge_base_override,
                         allow_conflicted_commit_checkout: false,
+                        // Don't allow for linked worktrees.
+                        allow_uncommitted_changes_to_conflict_with_new_head: false,
                     },
                 )?;
             }
 
             let head = self.head_checkout()?;
-            if let Some(head) = &head {
-                safe_checkout_from_head(
+            let checkout_conflict_occurred = if let Some(head) = &head {
+                let outcome = safe_checkout_from_head(
                     head.target,
                     &repo,
                     Options {
                         skip_head_update: true,
                         merge_base_override: head.merge_base_override,
                         allow_conflicted_commit_checkout: true,
+                        // Allow for our worktree.
+                        allow_uncommitted_changes_to_conflict_with_new_head: true,
                     },
                 )?;
-            }
-            head
+                outcome.conflict_occurred
+            } else {
+                false
+            };
+            (head, checkout_conflict_occurred)
         } else {
-            None
+            (None, false)
         };
 
         let mut ref_edits = self.ref_edits.clone();
@@ -269,13 +287,15 @@ impl<'ws, 'graph, M: RefMetadata> SuccessfulRebase<'ws, 'graph, M> {
 
         let project_meta = self.workspace.graph.project_meta.clone();
         self.workspace
-            .refresh_from_head(&repo, &*self.meta, project_meta)?;
+            .refresh_from_head(&repo, &*self.meta, project_meta, &mut *self.db)?;
 
         Ok(MaterializeOutcome {
             graph: self.graph,
             history: self.history,
             workspace: self.workspace,
             meta: self.meta,
+            db: self.db,
+            checkout_conflict_occurred,
         })
     }
 

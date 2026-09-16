@@ -1,7 +1,9 @@
 use but_testsupport::Sandbox;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::command::legacy::status::tui::tests::utils::test_status_tui;
+use crate::command::legacy::status::tui::tests::utils::{
+    TestTuiOptions, test_status_tui, test_status_tui_with_options,
+};
 
 const COPY_MORE: (KeyModifiers, char) = (KeyModifiers::SHIFT, 'Y');
 
@@ -10,9 +12,16 @@ fn copying_change_id_doesnt_include_disambiguation() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
 
-    let mut tui = test_status_tui(env);
+    let mut tui = test_status_tui_with_options(
+        env,
+        TestTuiOptions {
+            testing_change_id: Some("1"),
+            ..Default::default()
+        },
+    );
 
     tui.input('b');
+    tui.input('n');
     tui.input('n');
     tui.input('n');
 
@@ -66,6 +75,7 @@ fn copies_every_commit_value() {
     let mut tui = test_status_tui(env);
     tui.input('b');
     tui.input('n');
+    tui.input('n');
     tui.input(KeyCode::Enter);
     tui.input("Copy title");
     tui.input(KeyCode::Enter);
@@ -93,7 +103,8 @@ fn copies_every_commit_value() {
 
     tui.input(COPY_MORE);
     tui.input([KeyCode::Down; 2]);
-    tui.input(KeyCode::Enter).assert_copied_text_eq("1");
+    tui.input(KeyCode::Enter)
+        .assert_copied_text_eq("omyuzposspozzzlpxqkzstlkmxpvxzqs");
 
     tui.input(COPY_MORE);
     tui.input([KeyCode::Down; 3]);

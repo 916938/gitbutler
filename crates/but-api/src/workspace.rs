@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::WorkspaceState;
-use bstr::ByteSlice;
+use bstr::{BString, ByteSlice};
 use but_api_macros::but_api;
 use but_core::{
     DryRun, RefMetadata, extract_remote_name_and_short_name, is_workspace_ref_name,
@@ -30,8 +30,10 @@ pub struct WorkspaceFetchStatus {
     /// When the most recent fetch attempt finished, in milliseconds since the Unix epoch.
     pub last_attempted_ms: Option<u64>,
     /// When the most recent successful fetch finished, in milliseconds since the Unix epoch.
+    /// Partial successes count; see [`workspace_fetch_from_remotes()`].
     pub last_successful_ms: Option<u64>,
-    /// The error produced by the most recent attempt, or `None` if it succeeded.
+    /// The per-remote errors produced by the most recent attempt, or `None` if every remote
+    /// fetched successfully.
     pub last_error: Option<String>,
 }
 
@@ -56,29 +58,63 @@ impl TryFrom<but_db::FetchStatus> for WorkspaceFetchStatus {
 /// Fetch all configured remotes and persist the outcome for [`workspace_fetch_status()`].
 ///
 /// Fetching continues after an individual remote fails so every configured remote gets an attempt.
-/// If any fetch fails, all errors are persisted and returned together. Credential prompts are
-/// associated with `action`, which defaults to `"unknown"`.
+/// Failures of remotes the workspace does not depend on are tolerated: the call fails only when
+/// the target branch's remote or the configured push remote failed (or when no target is
+/// configured to judge by), so an unreachable unrelated remote (an old fork, a deleted mirror)
+/// does not block syncing. Every remote's error is still persisted on the fetch status.
+/// Credential prompts are associated with `action`, which defaults to `"unknown"`.
 ///
 /// The network fetch runs without any repository lock so other operations stay responsive while
 /// remotes are contacted; exclusive access is only acquired afterwards for the bookkeeping that
 /// reacts to updated remote refs. Within this process, overlapping fetch calls for the same
 /// repository serialize among themselves so concurrent `git fetch` runs cannot trip over Git's
 /// per-ref locks; fetches from other processes are not affected.
-#[but_api(napi)]
+#[but_api(napi, provides = [])]
 #[instrument(skip_all, err(Debug))]
 pub fn workspace_fetch_from_remotes(
     ctx: &mut but_ctx::Context,
     action: Option<String>,
 ) -> anyhow::Result<()> {
     let askpass_action = Some(action.unwrap_or_else(|| "unknown".to_owned()));
-    let fetch_result = (|| {
+    // `Ok(Some(errors))` is a partial success: the remotes the workspace depends on fetched
+    // fine while unrelated ones failed, so the operation succeeds but the errors are kept for
+    // the status.
+    let fetch_result: anyhow::Result<Option<String>> = (|| {
         let repo_path = ctx.workdir_or_gitdir()?;
-        let remotes = {
+        let (remotes, depended_remotes) = {
             let repo = ctx.repo.get()?;
-            repo.remote_names()
+            let remote_names = repo.remote_names();
+            let remotes = remote_names
                 .iter()
                 .map(|name| name.to_str().map(str::to_owned))
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Result<Vec<_>, _>>()?;
+            // The remotes the workspace depends on: the target branch's remote plus, when it
+            // differs, the configured push remote (its remote-tracking refs drive push status).
+            // A remote that isn't configured (stale metadata) is treated like no target at all:
+            // it was never fetched and cannot vouch for anything.
+            // The same policy lives in `legacy::virtual_branches::fetch_from_remotes` (which
+            // does not consider the push remote); keep them aligned until the legacy path dies.
+            let depended_remotes = but_core::ref_metadata::ProjectMeta::resolve(&repo)
+                .ok()
+                .and_then(|meta| {
+                    let target = meta
+                        .target_ref
+                        .as_ref()
+                        .and_then(|target_ref| {
+                            extract_remote_name_and_short_name(target_ref.as_ref(), &remote_names)
+                        })
+                        .map(|(remote, _branch)| remote)
+                        .filter(|target| remotes.contains(target))?;
+                    let mut depended = vec![target];
+                    if let Some(push) = meta
+                        .push_remote
+                        .filter(|push| remotes.contains(push) && !depended.contains(push))
+                    {
+                        depended.push(push);
+                    }
+                    Some(depended)
+                });
+            (remotes, depended_remotes)
         };
         // Overlapping `git fetch` runs of the same repository can fail on Git's per-ref locks,
         // so fetches wait for each other while other operations stay unblocked.
@@ -95,31 +131,47 @@ pub fn workspace_fetch_from_remotes(
             })
             .collect::<Vec<_>>();
 
+        if failures.is_empty() {
+            return Ok(None);
+        }
+        // Without a target to judge by, every failure fails the operation.
+        let depended_failed = match &depended_remotes {
+            Some(depended) => failures
+                .iter()
+                .any(|(remote, _)| depended.contains(*remote)),
+            None => true,
+        };
+        if !depended_failed {
+            let ignored = failures
+                .iter()
+                .map(|(remote, err)| format!("{remote}: {err:#}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            warn!("fetch succeeded for all depended-on remotes, ignoring failures: {ignored}");
+            return Ok(Some(ignored));
+        }
+
         // Keep the failure's own error context (e.g. the `ProjectGitAuth` code and its
         // user-facing message) intact whenever possible: return a single failure as-is, and
         // reapply the first failure's code when several failures collapse into one message.
-        match failures.len() {
-            0 => Ok(()),
-            1 => {
-                let (remote, err) = failures.into_iter().next().expect("length checked above");
-                Err(err.context(format!("fetching remote `{remote}` failed")))
+        Err(if failures.len() == 1 {
+            let (remote, err) = failures.into_iter().next().expect("length checked above");
+            err.context(format!("fetching remote `{remote}` failed"))
+        } else {
+            let code = failures
+                .iter()
+                .find_map(|(_, err)| err.custom_context().map(|ctx| ctx.code));
+            let joined = failures
+                .iter()
+                .map(|(remote, err)| format!("{remote}: {err}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let err = anyhow::anyhow!(joined);
+            match code {
+                Some(code) => err.context(code),
+                None => err,
             }
-            _ => {
-                let code = failures
-                    .iter()
-                    .find_map(|(_, err)| err.custom_context().map(|ctx| ctx.code));
-                let joined = failures
-                    .iter()
-                    .map(|(remote, err)| format!("{remote}: {err}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let err = anyhow::anyhow!(joined);
-                Err(match code {
-                    Some(code) => err.context(code),
-                    None => err,
-                })
-            }
-        }
+        })
     })();
 
     let attempted_ms = SystemTime::now()
@@ -130,11 +182,11 @@ pub fn workspace_fetch_from_remotes(
         .map_err(|err| anyhow::anyhow!("fetch timestamp does not fit in the database: {err}"))?;
     let _guard = ctx.exclusive_worktree_access();
     match &fetch_result {
-        Ok(()) => ctx
+        Ok(ignored_errors) => ctx
             .db
             .get_cache_mut()?
             .fetch_status_mut()
-            .record_success(attempted_ms)?,
+            .record_success(attempted_ms, ignored_errors.as_deref())?,
         Err(err) => ctx
             .db
             .get_cache_mut()?
@@ -145,7 +197,7 @@ pub fn workspace_fetch_from_remotes(
     // A partial failure may still have updated some remote refs.
     ctx.invalidate_workspace_cache()?;
     prune_missing_branch_stack_order(ctx)?;
-    fetch_result
+    fetch_result.map(|_| ())
 }
 
 /// Return the in-process lock that serializes network fetches for the repository at `gitdir`,
@@ -180,7 +232,7 @@ pub(crate) fn prune_missing_branch_stack_order(ctx: &but_ctx::Context) -> anyhow
 ///
 /// A project that hasn't used the workspace fetch API returns an empty status. Legacy fetch state
 /// is intentionally not imported.
-#[but_api(napi)]
+#[but_api(napi, provides = [FetchStatus])]
 #[instrument(skip_all, err(Debug))]
 pub fn workspace_fetch_status(ctx: &but_ctx::Context) -> anyhow::Result<WorkspaceFetchStatus> {
     ctx.db
@@ -204,9 +256,9 @@ pub fn get_workspace(
     perm: &RepoShared,
 ) -> anyhow::Result<but_workspace::ui::workspace::DetailedGraphWorkspace> {
     let mut meta = ctx.meta()?;
-    let (repo, workspace, _) = ctx.workspace_and_db_with_perm(perm)?;
+    let (repo, workspace, mut db) = ctx.workspace_and_db_mut_with_perm(perm)?;
     let mut workspace = workspace.clone();
-    but_workspace::workspace::detailed_graph_workspace(&mut workspace, &mut meta, &repo)
+    but_workspace::workspace::detailed_graph_workspace(&mut workspace, &mut meta, &repo, &mut db)
         .map(Into::into)
 }
 
@@ -214,10 +266,10 @@ pub fn get_workspace(
 /// managed workspace mode.
 ///
 /// This acquires exclusive worktree access from `ctx` before updating project metadata.
-/// See [`but_workspace::init::set_target_ref_and_init_project()`] for details; notably the
-/// target commit id is only computed when it wasn't set before, and an omitted
-/// `push_remote` keeps the currently configured one. It deliberately records no oplog
-/// snapshot - only project metadata changes, no repository state.
+/// See [`but_workspace::init::set_target_ref_and_init_project()`] for details. The target is always
+/// validated against `HEAD`; an unreachable stored target commit is replaced by their merge-base.
+/// An omitted `push_remote` preserves its current value. It deliberately records no oplog snapshot
+/// because only project metadata changes, not repository state.
 #[but_api(napi)]
 #[instrument(err(Debug))]
 pub fn set_target_ref_and_init_project(
@@ -231,13 +283,6 @@ pub fn set_target_ref_and_init_project(
         but_workspace::init::set_target_ref_and_init_project(&repo, target_ref, push_remote)?;
     }
     ctx.invalidate_workspace_cache()?;
-    #[cfg(feature = "legacy")]
-    {
-        let mut guard = guard;
-        crate::legacy::meta::reconcile_in_workspace_state_of_vb_toml(ctx, guard.write_permission())
-            .ok();
-    }
-    #[cfg(not(feature = "legacy"))]
     drop(guard);
     Ok(())
 }
@@ -255,14 +300,35 @@ pub fn set_push_remote(ctx: &mut but_ctx::Context, push_remote: String) -> anyho
         but_workspace::init::set_push_remote(&repo, push_remote)?;
     }
     ctx.invalidate_workspace_cache()?;
-    #[cfg(feature = "legacy")]
-    {
-        let mut guard = guard;
-        crate::legacy::meta::reconcile_in_workspace_state_of_vb_toml(ctx, guard.write_permission())
-            .ok();
-    }
-    #[cfg(not(feature = "legacy"))]
     drop(guard);
+    Ok(())
+}
+
+/// Mark the conflicted uncommitted files at the worktree-relative `paths` as resolved,
+/// taking the current worktree content (or the file's absence) as the resolution.
+///
+/// For lower-level details, see [`but_workspace::resolve_worktree_conflicts()`].
+#[but_api(napi)]
+#[instrument(err(Debug))]
+pub fn resolve_worktree_conflicts(
+    ctx: &mut but_ctx::Context,
+    paths: Vec<BString>,
+) -> anyhow::Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut guard = ctx.exclusive_worktree_access();
+    let perm = guard.write_permission();
+    let maybe_oplog_entry = but_oplog::UnmaterializedOplogSnapshot::from_details_with_perm(
+        ctx,
+        SnapshotDetails::new(OperationKind::ResolveConflicts),
+        perm.read_permission(),
+        DryRun::No,
+    );
+    but_workspace::resolve_worktree_conflicts(&*ctx.repo.get()?, paths)?;
+    if let Some(snapshot) = maybe_oplog_entry {
+        snapshot.commit(ctx, perm).ok();
+    }
     Ok(())
 }
 
@@ -408,11 +474,19 @@ fn review_integration_hints_from_reviews(
                     .iter()
                     .any(|sha| incoming_commit_ids.contains(sha))
         })
-        .filter_map(|review| gix::ObjectId::from_hex(review.sha.as_bytes()).ok())
-        .filter(|head_commit_at_merge| seen.insert(*head_commit_at_merge))
-        .map(|head_commit_at_merge| ReviewIntegrationHint {
-            head_commit_at_merge,
+        .filter_map(|review| {
+            Some((
+                gix::ObjectId::from_hex(review.sha.as_bytes()).ok()?,
+                review.source_branch,
+            ))
         })
+        .filter(|hint| seen.insert(hint.clone()))
+        .map(
+            |(head_commit_at_merge, source_branch)| ReviewIntegrationHint {
+                head_commit_at_merge,
+                source_branch,
+            },
+        )
         .collect()
 }
 
@@ -508,9 +582,35 @@ pub fn workspace_integrate_upstream_with_perm(
     dry_run: DryRun,
     perm: &mut RepoExclusive,
 ) -> anyhow::Result<WorkspaceIntegrateUpstreamOutcome> {
-    let maybe_oplog_entry = but_oplog::UnmaterializedOplogSnapshot::from_details_with_perm(
+    let local_target_ref = (|| -> anyhow::Result<Option<gix::refs::FullName>> {
+        let project_meta = ctx.project_meta()?;
+        let Some(target_ref) = project_meta.target_ref.as_ref() else {
+            return Ok(None);
+        };
+        let repo = ctx.repo.get()?;
+        let Some(target_reference) = repo.try_find_reference(target_ref)? else {
+            return Ok(None);
+        };
+        but_workspace::local_tracking_branch_to_fast_forward(
+            &repo,
+            target_reference.name(),
+            target_reference.id().detach(),
+        )
+    })();
+    let local_target_ref = match local_target_ref {
+        Ok(local_target_ref) => local_target_ref,
+        Err(err) => {
+            warn!(
+                ?err,
+                "failed to identify local target branch for undo snapshot"
+            );
+            None
+        }
+    };
+    let maybe_oplog_entry = but_oplog::UnmaterializedOplogSnapshot::from_details_with_ref_and_perm(
         ctx,
         SnapshotDetails::new(OperationKind::MergeUpstream),
+        local_target_ref.as_ref().map(|name| name.as_ref()),
         perm.read_permission(),
         dry_run,
     );
@@ -538,9 +638,10 @@ pub fn workspace_integrate_upstream_only_with_perm(
     perm: &mut RepoExclusive,
 ) -> anyhow::Result<WorkspaceIntegrateUpstreamOutcome> {
     let mut meta = ctx.meta()?;
+    let single_branch_mode = ctx.settings.feature_flags.single_branch;
     let (workspace_state, worktree_conflicts) = {
-        let (repo, mut ws, db) = ctx.workspace_mut_and_db_with_perm(perm)?;
         let project_meta = ctx.project_meta()?;
+        let (repo, mut ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
         let review_hints = match forge_review_integration_hints(&ws, &project_meta, &db) {
             Ok(review_hints) => review_hints,
             Err(err) => {
@@ -560,15 +661,17 @@ pub fn workspace_integrate_upstream_only_with_perm(
             &mut meta,
             project_meta,
             &repo,
+            &mut db,
             updates,
             &review_hints,
+            single_branch_mode,
         )?;
         let worktree_conflicts = but_workspace::worktree_conflicts_for_rebase(&rebase)?;
 
         if dry_run.into() {
             let replaced_commits = rebase.history.commit_mappings();
             let workspace_state =
-                WorkspaceState::from_rebase_preview_with_db(&mut rebase, replaced_commits, &db)?;
+                WorkspaceState::from_rebase_preview(&mut rebase, replaced_commits)?;
             return Ok(WorkspaceIntegrateUpstreamOutcome {
                 workspace_state,
                 worktree_conflicts,
@@ -577,6 +680,13 @@ pub fn workspace_integrate_upstream_only_with_perm(
 
         let materialized = rebase.materialize(Default::default())?;
         project_meta.persist(&repo)?;
+        if let Err(err) = but_workspace::fast_forward_local_tracking_branch(
+            &repo,
+            project_meta.target_ref_or_err()?.as_ref(),
+            project_meta.target_commit_id_or_err()?,
+        ) {
+            warn!(?err, "failed to fast-forward local target branch");
+        }
 
         if let Some(ref_name) = materialized.workspace.ref_name()
             && let Some(ws_meta) = ws_meta
@@ -587,13 +697,7 @@ pub fn workspace_integrate_upstream_only_with_perm(
             materialized.meta.set_workspace(&md)?;
         }
 
-        let workspace_state = WorkspaceState::from_workspace_with_db(
-            materialized.workspace,
-            materialized.meta,
-            &repo,
-            materialized.history.commit_mappings(),
-            &db,
-        )?;
+        let workspace_state = WorkspaceState::from_materialized(materialized, &repo)?;
         (workspace_state, worktree_conflicts)
     };
     ctx.invalidate_workspace_cache()?;
@@ -644,9 +748,137 @@ mod tests {
         Ok(())
     }
 
+    /// [`but_askpass::disable()`] must be called at most once per process, but several tests
+    /// in this binary fetch.
+    fn disable_askpass() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(but_askpass::disable);
+    }
+
+    /// A worktree repository with a real local bare `origin` plus a `broken` remote whose
+    /// repository does not exist, so fetching `origin` succeeds while `broken` fails.
+    fn repo_with_healthy_and_broken_remotes() -> anyhow::Result<(gix::Repository, tempfile::TempDir)>
+    {
+        let tmp = tempfile::tempdir()?;
+        let work = tmp.path().join("repo");
+        std::fs::create_dir(&work)?;
+        git_at_dir(&work)
+            .args(["-c", "init.defaultBranch=main", "init"])
+            .run();
+        git_at_dir(&work)
+            .args(["config", "user.name", "GitButler"])
+            .run();
+        git_at_dir(&work)
+            .args(["config", "user.email", "gitbutler@example.com"])
+            .run();
+        write_file(&work, "file.txt", "one\n")?;
+        git_at_dir(&work).args(["add", "file.txt"]).run();
+        git_at_dir(&work).args(["commit", "-m", "one"]).run();
+        git_at_dir(tmp.path())
+            .args(["clone", "--bare", "repo", "origin.git"])
+            .run();
+        git_at_dir(&work)
+            .args(["remote", "add", "origin", "../origin.git"])
+            .run();
+        git_at_dir(&work)
+            .args(["update-ref", "refs/remotes/origin/main", "HEAD"])
+            .run();
+        git_at_dir(&work)
+            .args(["remote", "add", "broken", "/nonexistent/path/broken.git"])
+            .run();
+        Ok((open_repo(&work)?, tmp))
+    }
+
+    #[test]
+    fn fetch_tolerates_failing_remote_unrelated_to_the_target() -> anyhow::Result<()> {
+        disable_askpass();
+        let (repo, _tmp) = repo_with_healthy_and_broken_remotes()?;
+        let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
+        let target_ref = gix::refs::FullName::try_from("refs/remotes/origin/main")?;
+        super::set_target_ref_and_init_project(&mut ctx, target_ref.as_ref(), None)?;
+
+        workspace_fetch_from_remotes(&mut ctx, None)
+            .expect("the target's remote is healthy, so the broken unrelated remote is tolerated");
+
+        let status = super::workspace_fetch_status(&ctx)?;
+        assert!(
+            status.last_successful_ms.is_some(),
+            "a partial success advances the success timestamp"
+        );
+        let error = status
+            .last_error
+            .expect("the unrelated remote's failure is kept for diagnostics");
+        assert!(
+            error.contains("broken"),
+            "the kept error names the failing remote: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fetch_without_a_configured_target_fails_on_any_remote_failure() -> anyhow::Result<()> {
+        disable_askpass();
+        let (repo, _tmp) = repo_with_healthy_and_broken_remotes()?;
+        let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
+
+        workspace_fetch_from_remotes(&mut ctx, None)
+            .expect_err("without a target to judge by, every failure fails the operation");
+
+        let status = super::workspace_fetch_status(&ctx)?;
+        assert!(
+            status.last_successful_ms.is_none(),
+            "a targetless failure must not advance the success timestamp"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fetch_fails_when_the_targets_own_remote_fails() -> anyhow::Result<()> {
+        disable_askpass();
+        let (repo, tmp) = repo_with_healthy_and_broken_remotes()?;
+        git_at_dir(tmp.path().join("repo"))
+            .args(["update-ref", "refs/remotes/broken/main", "HEAD"])
+            .run();
+        let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
+        let target_ref = gix::refs::FullName::try_from("refs/remotes/broken/main")?;
+        super::set_target_ref_and_init_project(&mut ctx, target_ref.as_ref(), None)?;
+
+        workspace_fetch_from_remotes(&mut ctx, None)
+            .expect_err("the target's own remote failed, so the whole fetch fails");
+
+        let status = super::workspace_fetch_status(&ctx)?;
+        assert!(
+            status.last_successful_ms.is_none(),
+            "a target failure must not advance the success timestamp"
+        );
+        assert!(
+            status.last_error.is_some(),
+            "the target remote's failure is recorded on the status"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fetch_fails_when_the_push_remote_fails() -> anyhow::Result<()> {
+        disable_askpass();
+        let (repo, _tmp) = repo_with_healthy_and_broken_remotes()?;
+        let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
+        let target_ref = gix::refs::FullName::try_from("refs/remotes/origin/main")?;
+        super::set_target_ref_and_init_project(
+            &mut ctx,
+            target_ref.as_ref(),
+            Some("broken".into()),
+        )?;
+
+        workspace_fetch_from_remotes(&mut ctx, None).expect_err(
+            "the push remote's remote-tracking refs drive push status, so its failure counts",
+        );
+        Ok(())
+    }
+
     #[test]
     fn failed_fetch_prunes_missing_branch_stack_order() -> anyhow::Result<()> {
-        but_askpass::disable();
+        disable_askpass();
         let (repo, tmp) = repo_with_feature_branch()?;
         let feature: gix::refs::FullName = "refs/heads/feature".try_into()?;
         let main = repo.head_name()?.expect("HEAD is symbolic").to_owned();
@@ -851,6 +1083,10 @@ mod tests {
             hints[0].head_commit_at_merge.to_hex().to_string(),
             "1234567890abcdef1234567890abcdef12345678",
             "the hint should use the review head SHA reported by the forge"
+        );
+        assert_eq!(
+            hints[0].source_branch, "feature",
+            "the hint should retain the review's source-branch association"
         );
     }
 

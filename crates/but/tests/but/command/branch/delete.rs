@@ -36,7 +36,7 @@ Discarded branch 'A'
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [B]
 ┊●   lrm add B
@@ -47,6 +47,16 @@ Discarded branch 'A'
 Hint: run `but help` for all commands
 
 "#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* 082c0c2 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* d3e2ba3 (B) add B
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
 }
 
 #[test]
@@ -69,7 +79,7 @@ Discarded branch 'A'
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [C]
 ┊●   wlx add C
@@ -83,6 +93,17 @@ Discarded branch 'A'
 Hint: run `but help` for all commands
 
 "#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* c4a9f43 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* ec33a86 (C) add C
+* 05d3df1 (B) add B
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
 }
 
 #[test]
@@ -105,7 +126,7 @@ Discarded branch 'B'
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [C]
 ┊●   wlx add C
@@ -119,6 +140,17 @@ Discarded branch 'B'
 Hint: run `but help` for all commands
 
 "#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* ea6cfac (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 983f317 (C) add C
+* 9477ae7 (A) add A
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
 }
 
 #[test]
@@ -141,7 +173,7 @@ Discarded branch 'C'
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [B]
 ┊●   wwm add B
@@ -155,6 +187,17 @@ Discarded branch 'C'
 Hint: run `but help` for all commands
 
 "#]]);
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* 5299ad0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 582f37b (B) add B
+* 9477ae7 (A) add A
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
 }
 
 #[test]
@@ -177,7 +220,7 @@ Discarded branch 'C'
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-╭┄ zz [uncommitted] (no changes)
+╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ g0 [B]
 ┊●   wwm add B

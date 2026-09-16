@@ -98,6 +98,10 @@ pub struct Target {
     pub remote_tracking_ref: RemoteTrackingReference,
     /// The amount of commits that aren't reachable by any segment in the workspace, they are in its future.
     pub commits_ahead: usize,
+    /// Whether the stored target commit is where the target ref points right now.
+    ///
+    /// Only a workspace update advances the stored target, so `false` means an update has work to do.
+    pub is_current: bool,
 }
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(Target);
@@ -110,16 +114,101 @@ impl Target {
             commits_ahead,
         }: but_graph::workspace::TargetRef,
         remote_names: &gix::remote::Names,
+        is_current: bool,
     ) -> anyhow::Result<Self> {
         Ok(Target {
             remote_tracking_ref: RemoteTrackingReference::for_ui(ref_name, remote_names)?,
             commits_ahead,
+            is_current,
         })
     }
 }
 
+/// What a linked worktree's own commits are resting on.
+#[derive(serde::Serialize, Debug, Clone)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", content = "subject")]
+pub enum WorktreeBase {
+    /// The base commit is owned by one of the workspace stacks (or by another worktree),
+    /// so the worktree branches off the workspace and belongs *inside* it when presented.
+    InWorkspace(
+        #[serde(with = "but_serde::object_id")]
+        #[cfg_attr(
+            feature = "export-schema",
+            schemars(schema_with = "but_schemars::object_id")
+        )]
+        gix::ObjectId,
+    ),
+    /// The base commit is outside the workspace, i.e. it is the target commit or below it,
+    /// so the worktree stands on its own.
+    Outside(
+        #[serde(with = "but_serde::object_id")]
+        #[cfg_attr(
+            feature = "export-schema",
+            schemars(schema_with = "but_schemars::object_id")
+        )]
+        gix::ObjectId,
+    ),
+}
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(WorktreeBase);
+
+/// A non-archived linked worktree along with the commits it owns exclusively.
+#[derive(serde::Serialize, Debug, Clone)]
+#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    /// The stable worktree name, i.e. the directory name under `$GIT_COMMON_DIR/worktrees/`.
+    #[serde(with = "but_serde::bstring_lossy")]
+    #[cfg_attr(
+        feature = "export-schema",
+        schemars(schema_with = "but_schemars::bstring_lossy")
+    )]
+    pub name: BString,
+    /// The branch the worktree has checked out, or `None` for a detached `HEAD`.
+    pub ref_name: Option<BranchReference>,
+    /// The commit the worktree `HEAD` peels to.
+    #[serde(with = "but_serde::object_id")]
+    #[cfg_attr(
+        feature = "export-schema",
+        schemars(schema_with = "but_schemars::object_id")
+    )]
+    pub head: gix::ObjectId,
+    /// What [`Self::commits`] are resting on, or `None` if the traversal ran out of graph
+    /// before reaching the workspace or the target (unrelated history, or a limit was hit).
+    pub base: Option<WorktreeBase>,
+    /// The commits owned by this worktree alone, from its `HEAD` down to (excluding) its base,
+    /// along the first parent.
+    pub commits: Vec<ui::Commit>,
+}
+#[cfg(feature = "export-schema")]
+but_schemars::register_sdk_type!(Worktree);
+
+impl Worktree {
+    fn for_ui(
+        crate::worktrees::WorktreeInfo {
+            name,
+            ref_name,
+            head,
+            base,
+            commits,
+        }: crate::worktrees::WorktreeInfo,
+    ) -> Self {
+        Worktree {
+            name,
+            ref_name: ref_name.map(Into::into),
+            head,
+            base: base.map(|base| match base {
+                crate::worktrees::WorktreeBase::InWorkspace(id) => WorktreeBase::InWorkspace(id),
+                crate::worktrees::WorktreeBase::Outside(id) => WorktreeBase::Outside(id),
+            }),
+            commits: commits.iter().map(Into::into).collect(),
+        }
+    }
+}
+
 pub(crate) mod inner {
-    use crate::ui::ref_info::{BranchReference, Stack, Target};
+    use crate::ui::ref_info::{BranchReference, Stack, Target, Worktree};
 
     /// The UI-clone of [`crate::RefInfo`].
     /// TODO: should also include base-branch data, see `get_base_branch_data()`.
@@ -152,6 +241,9 @@ pub(crate) mod inner {
         pub is_managed_commit: bool,
         /// The workspace represents what `HEAD` is pointing to.
         pub is_entrypoint: bool,
+        /// The active linked worktrees along with the commits they own, or empty if the
+        /// traversal wasn't seeded with worktree tips (the `worktreeManipulation` flag is off).
+        pub worktrees: Vec<Worktree>,
     }
     #[cfg(feature = "export-schema")]
     but_schemars::register_sdk_type!(RefInfo);
@@ -184,11 +276,13 @@ impl inner::RefInfo {
             stacks,
             target_ref,
             target_commit: _,
+            is_target_current,
             lower_bound: _,
             is_managed_ref,
             is_managed_commit,
             ancestor_workspace_commit: _,
             is_entrypoint,
+            worktrees,
         }: crate::RefInfo,
     ) -> anyhow::Result<Self> {
         let stacks: Vec<_> = stacks
@@ -199,11 +293,12 @@ impl inner::RefInfo {
             workspace_ref: workspace_ref_info.map(|ri| ri.ref_name.into()),
             stacks,
             target: target_ref
-                .map(|t| Target::for_ui(t, &symbolic_remote_names))
+                .map(|t| Target::for_ui(t, &symbolic_remote_names, is_target_current))
                 .transpose()?,
             is_managed_ref,
             is_managed_commit,
             is_entrypoint,
+            worktrees: worktrees.into_iter().map(Worktree::for_ui).collect(),
         })
     }
 }

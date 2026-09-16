@@ -1,5 +1,16 @@
-import { expectCurrentBranchChip, openSingleBranchWorkspace } from "./helpers.ts";
-import { assertBranch, assertCleanWorktree, assertCommitSubjects } from "../../src/branch.ts";
+import {
+	createDependentBranch,
+	expectCurrentBranchChip,
+	openSingleBranchWorkspace,
+} from "./helpers.ts";
+import {
+	assertBranch,
+	assertCleanWorktree,
+	assertCommitSubjects,
+	assertRefDoesNotExist,
+} from "../../src/branch.ts";
+import { expect } from "../../src/expect.ts";
+import { applyUpstream } from "../../src/setup.ts";
 import { test } from "../../src/test.ts";
 import {
 	clickByTestId,
@@ -9,10 +20,14 @@ import {
 	waitForTestId,
 	waitForTestIdToNotExist,
 } from "../../src/util.ts";
-import { expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 
 const FULLY_INTEGRATED_BRANCH = "fully-integrated-branch";
+const EMPTY_INTEGRATED_BRANCH = "empty-integrated-branch";
+const EMPTY_TOP_BRANCH = "empty-top-branch";
+const INTEGRATED_BRANCH_UNDER_EMPTY_TOP = "integrated-branch-under-empty-top";
+const LOCAL_ONLY_EMPTY_BRANCH = "local-only-empty-branch";
 const PARTIAL_STACK_BASE = "partial-stack-base";
 const PARTIAL_STACK_TOP = "partial-stack-top";
 const REBASED_SINGLE_BRANCH = "rebased-single-branch";
@@ -69,6 +84,15 @@ async function expectLocalBranchNotToExist(pathToRepo: string, branchName: strin
 			intervals: [100, 200, 500, 1000],
 		})
 		.toBe(false);
+}
+
+async function expectBranchTipToBeOriginMaster(pathToRepo: string, branchName: string) {
+	await expect
+		.poll(() => git(pathToRepo, ["rev-parse", branchName]), {
+			message: `Expected ${branchName} to point to origin/master`,
+			intervals: [100, 200, 500, 1000],
+		})
+		.toBe(git(pathToRepo, ["rev-parse", TARGET_REMOTE_BRANCH]));
 }
 
 async function replacementBranchAtTarget(pathToRepo: string): Promise<string> {
@@ -140,6 +164,122 @@ test("creates a new branch on top of the advanced target after branch is fully i
 	expect(git(localClone, ["rev-parse", replacementBranch])).toBe(
 		git(localClone, ["rev-parse", TARGET_REMOTE_BRANCH]),
 	);
+	await assertCleanWorktree(localClone);
+	await expectNoErrorToast(page);
+});
+
+test("checks out a new branch after all managed stacks are integrated", async ({
+	page,
+	gitbutler,
+}) => {
+	await gitbutler.runScript("project-with-stacks.sh");
+	await applyUpstream(gitbutler, "branch1", "branch2");
+	await openSingleBranchWorkspace(page);
+
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+	await assertBranch("gitbutler/workspace", localClone);
+	await expect(stack(page)).toHaveCount(2);
+
+	await gitbutler.runScript("merge-upstream-branch-to-base.sh", ["branch1"]);
+	await gitbutler.runScript("merge-upstream-branch-to-base.sh", ["branch2"]);
+	await syncAndIntegrateWorkspace(page);
+
+	await expectLocalBranchNotToExist(localClone, "branch1");
+	await expectLocalBranchNotToExist(localClone, "branch2");
+	await assertRefDoesNotExist("refs/heads/gitbutler/workspace", localClone);
+	const replacementBranch = await replacementBranchAtTarget(localClone);
+	await assertBranch(replacementBranch, localClone);
+	await expectCurrentBranchChip(page, replacementBranch);
+	await expect(stack(page)).toHaveCount(1);
+	await expect(getByTestId(page, "branch-card")).toContainText(replacementBranch);
+	await assertCleanWorktree(localClone);
+	await expectNoErrorToast(page);
+});
+
+test("replaces an empty checked-out branch when its tracking tip is integrated", async ({
+	page,
+	gitbutler,
+}) => {
+	await gitbutler.runScript("project-in-single-branch-upstream-integration.sh", [
+		"empty-integrated",
+	]);
+	await openSingleBranchWorkspace(page);
+
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+	await assertBranch(EMPTY_INTEGRATED_BRANCH, localClone);
+	await expectCurrentBranchChip(page, EMPTY_INTEGRATED_BRANCH);
+	await expect(commitRow(page, "empty-integrated: branch commit")).toHaveCount(0);
+
+	await gitbutler.runScript("project-with-remote-branches__add-commit-to-base.sh");
+	await syncAndIntegrateWorkspace(page);
+
+	await expectLocalBranchNotToExist(localClone, EMPTY_INTEGRATED_BRANCH);
+	const replacementBranch = await replacementBranchAtTarget(localClone);
+	await expectCurrentBranchChip(page, replacementBranch);
+	await expectBranchTipToBeOriginMaster(localClone, replacementBranch);
+	await assertCleanWorktree(localClone);
+	await expectNoErrorToast(page);
+});
+
+test("preserves an empty local-only checked-out branch while advancing it", async ({
+	page,
+	gitbutler,
+}) => {
+	await gitbutler.runScript("project-in-single-branch-upstream-integration.sh", [
+		"local-only-empty",
+	]);
+	await openSingleBranchWorkspace(page);
+
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+	await assertBranch(LOCAL_ONLY_EMPTY_BRANCH, localClone);
+	await expectCurrentBranchChip(page, LOCAL_ONLY_EMPTY_BRANCH);
+	await expect(commitRow(page, "local-only-empty: branch commit")).toHaveCount(0);
+
+	await gitbutler.runScript("project-with-remote-branches__add-commit-to-base.sh");
+	await syncAndIntegrateWorkspace(page);
+
+	await assertBranch(LOCAL_ONLY_EMPTY_BRANCH, localClone);
+	await expectCurrentBranchChip(page, LOCAL_ONLY_EMPTY_BRANCH);
+	await expectBranchTipToBeOriginMaster(localClone, LOCAL_ONLY_EMPTY_BRANCH);
+	await assertCleanWorktree(localClone);
+	await expectNoErrorToast(page);
+});
+
+test("keeps an empty top branch checked out when its bottom branch is integrated", async ({
+	page,
+	gitbutler,
+}) => {
+	await gitbutler.runScript("project-in-single-branch-upstream-integration.sh", [
+		"empty-top-over-integrated",
+	]);
+	await openSingleBranchWorkspace(page);
+
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+	await assertBranch(INTEGRATED_BRANCH_UNDER_EMPTY_TOP, localClone);
+	await expectCurrentBranchChip(page, INTEGRATED_BRANCH_UNDER_EMPTY_TOP);
+	await expect(commitRow(page, "integrated-under-empty-top: second commit")).toBeVisible();
+
+	await createDependentBranch(page, EMPTY_TOP_BRANCH);
+	await assertBranch(EMPTY_TOP_BRANCH, localClone);
+	await expectCurrentBranchChip(page, EMPTY_TOP_BRANCH);
+	await expect(getByTestId(page, "branch-card")).toHaveCount(2);
+	expect(git(localClone, ["rev-parse", EMPTY_TOP_BRANCH])).toBe(
+		git(localClone, ["rev-parse", INTEGRATED_BRANCH_UNDER_EMPTY_TOP]),
+	);
+
+	await gitbutler.runScript("merge-upstream-branch-to-base.sh", [
+		INTEGRATED_BRANCH_UNDER_EMPTY_TOP,
+	]);
+	await syncAndIntegrateWorkspace(page);
+
+	await expectLocalBranchNotToExist(localClone, INTEGRATED_BRANCH_UNDER_EMPTY_TOP);
+	await assertBranch(EMPTY_TOP_BRANCH, localClone);
+	await expectCurrentBranchChip(page, EMPTY_TOP_BRANCH);
+	await expect(getByTestId(page, "branch-card")).toHaveCount(1);
+	await expect(getByTestId(page, "branch-card")).toContainText(EMPTY_TOP_BRANCH);
+	await expectBranchTipToBeOriginMaster(localClone, EMPTY_TOP_BRANCH);
+	await expect(commitRow(page, "integrated-under-empty-top: first commit")).toHaveCount(0);
+	await expect(commitRow(page, "integrated-under-empty-top: second commit")).toHaveCount(0);
 	await assertCleanWorktree(localClone);
 	await expectNoErrorToast(page);
 });

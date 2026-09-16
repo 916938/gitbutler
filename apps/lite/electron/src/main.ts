@@ -1,177 +1,31 @@
-import { checkForUpdates, registerUpdater } from "./updater.js";
+import { checkForUpdates, registerUpdater, setAutoUpdateEnabled } from "./updater.js";
 import WatcherManager from "./watcher.js";
+import * as sdk from "@gitbutler/but-sdk";
 import {
-	liteIpcChannels,
-	type AbsorbParams,
-	type AbsorptionPlanParams,
-	type ApplyBranchIntegrationParams,
-	type AssignHunkParams,
-	type BranchCheckoutParams,
-	type BranchCheckoutNewParams,
-	type BranchCreateParams,
-	type BranchDetailsParams,
-	type BranchDiffParams,
-	type CommentArchiveParams,
-	type CommentCreateParams,
-	type CommentUpdateParams,
-	type CommitAmendParams,
-	type CommitCreateParams,
-	type CommitDiscardChangesParams,
-	type CommitDiscardParams,
-	type CommitDetailsWithLineStatsParams,
-	type DiscardWorktreeChangesParams,
-	type CommitInsertBlankParams,
-	type CommitMoveParams,
-	type CommitSquashParams,
-	type CommitRewordParams,
-	type CommitMoveChangesBetweenParams,
-	type CommitUncommitChangesParams,
-	type ForgeCompareBranchUrlParams,
-	type GetInitialBranchIntegrationParams,
-	type GetReviewBaseRepoUrlParams,
-	type CreateReviewCommentParams,
-	type DeleteReviewCommentParams,
-	type GetReviewParams,
-	type UpdateReviewCommentParams,
-	type CommentReactionsParams,
-	type AddReviewReactionParams,
-	type RemoveReviewReactionParams,
-	type AddCommentReactionParams,
-	type RemoveCommentReactionParams,
-	type RemoveReviewLabelParams,
-	type AddReviewLabelsParams,
-	type ReviewRequestParams,
-	type ListCiChecksParams,
-	type ListReviewsParams,
-	type MoveBranchParams,
-	type MergeReviewParams,
-	type ListReviewsForBranchParams,
-	type OpenInProgramParams,
-	type PublishReviewParams,
-	type WorkspaceBranchAndAncestorsPushParams,
-	type BranchRemoveParams,
-	type TearOffBranchParams,
-	type TreeChangeDiffParams,
-	type BranchRenameParams,
-	type UpdateReviewParams,
-	type ApplyParams,
-	type AskpassSubmitPromptResponseParams,
-	type ShowNativeMenuParams,
-	type UnapplyStackParams,
-	type WatcherSubscribeParams,
-	type WatcherUnsubscribeParams,
-	type NativeMenuPopupItem,
-	type CommitUncommitParams,
-	type RestoreSnapshotWithKindParams,
-	type SetReviewAutoMergeParams,
-	type SetReviewDraftinessParams,
-	type SetReviewTemplateParams,
-	type SetTargetRefAndInitProjectParams,
-	type PeelRestoreSnapshotParams,
-	type WorkspaceFetchFromRemotesParams,
-	type WorkspaceIntegrateUpstreamParams,
-	type WorkspaceTargetCommitsParams,
-	type UpdateReviewFootersParams,
+	createEndpointTable,
+	type Handler,
+	type HandlerOverrides,
+	type HostOnlyKey,
+} from "./endpoint-table.js";
+import type {
+	ShowNativeMenuParams,
+	StreamAiResponseParams,
+	WatcherSubscribeParams,
+	WatcherUnsubscribeParams,
+	NativeMenuPopupItem,
 } from "./ipc.js";
 import {
-	absorb,
-	absorptionPlan,
-	apply,
-	applyBranchIntegration,
-	assignHunk,
-	branchCheckout,
-	branchCheckoutNew,
-	branchCreate,
-	branchDetails,
-	branchDiff,
-	branchList,
-	branchRemove,
-	branchRename,
-	changesInWorktree,
-	commentArchive,
-	commentCreate,
-	commentUpdate,
-	commentsList,
-	commitAmend,
-	commitCreate,
-	commitDiscard,
-	commitDiscardChanges,
-	discardWorktreeChanges,
-	commitInsertBlank,
-	commitSquash,
-	commitReword,
-	commitUncommitChanges,
-	headInfo,
-	commitMove,
-	addReviewLabels,
-	commitDetailsWithLineStats,
-	commitMoveChangesBetween,
-	createReviewComment,
-	currentForgeLogin,
-	deleteReviewComment,
-	forgeCompareBranchUrl,
-	forgeInfo,
-	forgeProvider,
-	getInitialBranchIntegration,
-	getRepoInfo,
-	getReview,
-	getReviewBaseRepoUrl,
-	getReviewMergeStatus,
-	listAvailableReviewTemplates,
-	listCiChecks,
-	listEditors,
-	listPrograms,
-	listProjectsStateless,
-	listRepoLabels,
-	addCommentReaction,
-	addReviewReaction,
-	listCommentReactions,
-	listReviewComments,
-	listReviewReactions,
-	removeCommentReaction,
-	removeReviewReaction,
-	listReviewSubmissions,
-	listReviewTimelineEvents,
-	listReviewerCandidates,
-	listReviews,
-	updateReviewComment,
-	removeReviewLabel,
-	requestReview,
-	withdrawReviewRequest,
-	listReviewsForBranch,
-	mergeReview,
-	moveBranch,
-	openInProgram,
-	publishReview,
-	tearOffBranch,
-	treeChangeDiffs,
-	unapplyStack,
-	updateReview,
-	workspaceBranchAndAncestorsPush,
-	commitUncommit,
-	reviewTemplate,
-	restoreSnapshotWithKind,
-	setReviewAutoMerge,
-	setReviewDraftiness,
-	setReviewTemplate,
-	setTargetRefAndInitProject,
-	getUndoTargetSnapshot,
-	getRedoTargetSnapshot,
-	peelRestoreSnapshot,
-	updateReviewFooters,
-	warmCiChecksCache,
-	workspaceFetchFromRemotes,
-	workspaceFetchStatus,
-	workspaceTargetCommits,
-	workspaceIntegrateUpstream,
 	askpassInit,
 	askpassSubmitPromptResponse,
 	initApplicationNamespace,
+	interactiveLoginShellEnvironment,
 } from "@gitbutler/but-sdk";
 import {
 	app,
+	autoUpdater,
 	BrowserWindow,
 	clipboard,
+	dialog,
 	ipcMain,
 	Menu,
 	nativeTheme,
@@ -190,7 +44,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { initLogging } from "./logging.js";
 import { type GUISettings, readSettings, writeSettings } from "./settings.js";
+import { initMetrics, metricsOnLogin, shutdownMetrics, withApiCommandCapture } from "./metrics.js";
+import { apiParamNames } from "@gitbutler/but-sdk/api-param-names";
+
+Object.assign(process.env, interactiveLoginShellEnvironment());
+
+const isHeadless = process.env.GITBUTLER_LITE_HEADLESS === "true";
+if (isHeadless && process.platform === "darwin") app.setActivationPolicy("accessory");
 
 // Do this early before any APIs that depend upon it are called. Likewise take care in imported
 // modules.
@@ -202,6 +64,7 @@ const currentDirPath = path.dirname(currentFilePath);
 // [ref:lite_default_settings]
 const applyGUISettings = (settings: GUISettings): void => {
 	nativeTheme.themeSource = settings.theme ?? "system";
+	setAutoUpdateEnabled(settings.autoUpdate ?? true);
 };
 
 // Permissions in this array are allowed by default for trusted origins, without prompting the user for input.
@@ -228,7 +91,25 @@ const trustedOriginDefaultPermissions: Array<
 	| "fileSystem"
 > = ["clipboard-sanitized-write"] as const;
 
-const liteProtocolScheme = "lite";
+/**
+ * Hosts allowed to supply images, shared by both policies.
+ *
+ * Both GitHub attachments and GitButler avatars are served by a host that 302s to a
+ * bucket, and CSP checks every hop — hence the bucket names alongside the app ones.
+ */
+const imgSrc = [
+	"'self'",
+	"data:",
+	"https://*.gravatar.com",
+	"https://*.githubusercontent.com",
+	"https://github.com",
+	"https://github-production-user-asset-6210df.s3.amazonaws.com",
+	"https://app.gitbutler.com",
+	"https://app.staging.gitbutler.com",
+	"https://gitbutler-public.s3.amazonaws.com",
+].join(" ");
+
+const liteProtocolScheme = "but";
 const liteProtocolHost = "app";
 const contentRootURL = pathToFileURL(path.join(currentDirPath, "../ui"));
 const askpassExecutableName =
@@ -303,7 +184,7 @@ const configureAskpass = (): void => {
 			// TODO: Probably not what we want if we have multiple windows. We should
 			// figure out how to send it to the right one.
 			for (const window of BrowserWindow.getAllWindows())
-				window.webContents.send(liteIpcChannels.askpassPrompt, event);
+				window.webContents.send("askpassPrompt", event);
 		});
 	} catch (err) {
 		// oxlint-disable-next-line no-console
@@ -363,6 +244,40 @@ const buildNativeMenuTemplate = (
 		};
 	});
 
+/**
+ * The editing menu every native app offers: the full set in a field you can
+ * type in, and just the copy of a selection anywhere else — read-only text
+ * like a diff is there to be copied out of, and had no menu at all.
+ */
+const registerEditingContextMenu = (window: BrowserWindow): void => {
+	window.webContents.on("context-menu", (_event, params) => {
+		const { editFlags, isEditable, selectionText } = params;
+		if (!isEditable && selectionText.trim() === "") return;
+
+		const template: Array<Electron.MenuItemConstructorOptions> = isEditable
+			? [
+					{ role: "undo", enabled: editFlags.canUndo },
+					{ role: "redo", enabled: editFlags.canRedo },
+					{ type: "separator" },
+					{ role: "cut", enabled: editFlags.canCut },
+					{ role: "copy", enabled: editFlags.canCopy },
+					{ role: "paste", enabled: editFlags.canPaste },
+					{ type: "separator" },
+					{ role: "selectAll", enabled: editFlags.canSelectAll },
+				]
+			: [{ role: "copy", enabled: editFlags.canCopy }];
+		const menu = Menu.buildFromTemplate(template);
+
+		menu.popup({
+			window,
+			frame: params.frame ?? undefined,
+			x: params.x,
+			y: params.y,
+			sourceType: params.menuSourceType,
+		});
+	});
+};
+
 // Returns true if the `url` is from an origin we trust to perform privileged actions such as executing IPC commands.
 const isTrustedLocalOrigin = (url: URL | null) =>
 	url !== null &&
@@ -377,6 +292,47 @@ const newUrlOrNull = (url: string): URL | null => {
 		return null;
 	}
 };
+
+/**
+ * Members only electron main can answer: its own capabilities, injected into
+ * the endpoint table. `HostOnlyKey` makes forgetting one a compile error.
+ */
+const electronHandlerOverrides = {
+	askpassSubmitPromptResponse: ({ id, response }) => askpassSubmitPromptResponse(id, response),
+	clipboardWriteText: (text) => clipboard.writeText(text),
+	getVersion: () => app.getVersion(),
+	openInWebBrowser: (url) => {
+		// shell.openExternal() is powerful and dangerous. For example, on macOS you can launch a
+		// program with shell.openExternal("file:///Applications/Numbers.app"). Similarly bad
+		// things are possible on Windows and Linux.
+		//
+		// We need to be able to open relatively arbitrary URLs so we can't lock this down too much,
+		// but we can at least make sure the URL is a reasonable protocol so we don't allow e.g.
+		// "file:///Applications/Numbers.app" to pass through.
+		//
+		// https://www.electronjs.org/docs/latest/tutorial/security#15-do-not-use-shellopenexternal-with-untrusted-content
+		const protocol = newUrlOrNull(url)?.protocol ?? "";
+		if (!["https:", "http:"].includes(protocol))
+			throw new Error(`URL ${url} with unsupported protocol ${protocol}`);
+
+		return shell.openExternal(url);
+	},
+	showItemInFolder: (itemPath) => {
+		// Unlike shell.openExternal, this only selects the item in the file
+		// manager; it never launches it, so a path is all it takes.
+		shell.showItemInFolder(itemPath);
+	},
+	pickDirectory: async () => {
+		const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+		return canceled ? null : (filePaths[0] ?? null);
+	},
+	watcherStopAll: () => WatcherManager.getInstance().stopAllWatchersForShutdown(),
+	readGUISettings: () => readSettings(),
+	writeGUISettings: async (settings) => {
+		applyGUISettings(settings);
+		await writeSettings(settings);
+	},
+} satisfies HandlerOverrides & { [K in HostOnlyKey]: Handler<K> };
 
 const registerIpcHandlers = (): void => {
 	const senderValidatingHandle: typeof ipcMain.handle = (channel, listener) => {
@@ -399,428 +355,26 @@ const registerIpcHandlers = (): void => {
 		ipcMain.handle(channel, senderValidatingListener);
 	};
 
-	senderValidatingHandle(
-		liteIpcChannels.absorptionPlan,
-		(_e, { projectId, target }: AbsorptionPlanParams) => absorptionPlan(projectId, target),
+	for (const [name, handler] of createEndpointTable(electronHandlerOverrides)) {
+		// Only but-api endpoints record `api_command`; the host's own members
+		// (clipboard, settings, dialogs) do not.
+		const captureWrapped = Object.hasOwn(apiParamNames, name)
+			? withApiCommandCapture(name, handler)
+			: handler;
+		senderValidatingHandle(name, (_e, params: unknown) => captureWrapped(params));
+	}
+	senderValidatingHandle("watcherUnsubscribe", (_e, { subscriptionId }: WatcherUnsubscribeParams) =>
+		WatcherManager.getInstance().removeSubscription(subscriptionId),
 	);
-	senderValidatingHandle(
-		liteIpcChannels.absorb,
-		(_e, { projectId, absorptionPlan }: AbsorbParams) => absorb(projectId, absorptionPlan),
-	);
-	senderValidatingHandle(liteIpcChannels.apply, (_e, { projectId, existingBranch }: ApplyParams) =>
-		apply(projectId, existingBranch),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.applyBranchIntegration,
-		(_e, { projectId, branch, integration, dryRun }: ApplyBranchIntegrationParams) =>
-			applyBranchIntegration(projectId, branch, integration, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.askpassSubmitPromptResponse,
-		(_e, { id, response }: AskpassSubmitPromptResponseParams) =>
-			askpassSubmitPromptResponse(id, response),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.assignHunk,
-		(_e, { projectId, assignments }: AssignHunkParams) => assignHunk(projectId, assignments),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchCheckout,
-		(_e, { projectId, branch }: BranchCheckoutParams) => branchCheckout(projectId, branch),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchCheckoutNew,
-		(_e, { projectId, name }: BranchCheckoutNewParams) => branchCheckoutNew(projectId, name),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchCreate,
-		(_e, { projectId, newRef, placement }: BranchCreateParams) =>
-			branchCreate(projectId, newRef, placement),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchDetails,
-		(_e, { projectId, branchName, remote }: BranchDetailsParams) =>
-			branchDetails(projectId, branchName, remote),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchDiff,
-		(_e, { projectId, branch }: BranchDiffParams) => branchDiff(projectId, branch),
-	);
-	senderValidatingHandle(liteIpcChannels.branchList, (_e, projectId: string) =>
-		branchList(projectId),
-	);
-	senderValidatingHandle(liteIpcChannels.changesInWorktree, (_e, projectId: string) =>
-		changesInWorktree(projectId, { type: "head" }, true),
-	);
-	senderValidatingHandle(liteIpcChannels.clipboardWriteText, (_e, text: string) => {
-		clipboard.writeText(text, "clipboard");
-	});
-	senderValidatingHandle(
-		liteIpcChannels.commentArchive,
-		(_e, { projectId, id }: CommentArchiveParams) => commentArchive(projectId, id),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commentCreate,
-		(_e, { projectId, comment }: CommentCreateParams) => commentCreate(projectId, comment),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commentUpdate,
-		(_e, { projectId, id, payload }: CommentUpdateParams) => commentUpdate(projectId, id, payload),
-	);
-	senderValidatingHandle(liteIpcChannels.commentsList, (_e, projectId: string) =>
-		commentsList(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitAmend,
-		(_e, { projectId, commitId, changes, changesSource, dryRun }: CommitAmendParams) =>
-			commitAmend(projectId, commitId, changes, changesSource, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitCreate,
-		(
-			_e,
-			{ projectId, relativeTo, side, changes, changesSource, message, dryRun }: CommitCreateParams,
-		) => commitCreate(projectId, relativeTo, side, changes, changesSource, message, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitDiscard,
-		(_e, { projectId, subjectCommitId, dryRun }: CommitDiscardParams) =>
-			commitDiscard(projectId, subjectCommitId, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitDiscardChanges,
-		(_e, { projectId, commitId, changes, dryRun }: CommitDiscardChangesParams) =>
-			commitDiscardChanges(projectId, commitId, changes, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitDetailsWithLineStats,
-		(_e, { projectId, commitId }: CommitDetailsWithLineStatsParams) =>
-			commitDetailsWithLineStats(projectId, commitId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.discardWorktreeChanges,
-		(_e, { projectId, changes }: DiscardWorktreeChangesParams) =>
-			discardWorktreeChanges(projectId, changes),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitInsertBlank,
-		(_e, { projectId, relativeTo, side, dryRun }: CommitInsertBlankParams) =>
-			commitInsertBlank(projectId, relativeTo, side, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitMove,
-		(_e, { projectId, subjectCommitIds, relativeTo, side, dryRun }: CommitMoveParams) =>
-			commitMove(projectId, subjectCommitIds, relativeTo, side, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitSquash,
-		(
-			_e,
-			{
-				projectId,
-				sourceCommitIds,
-				destinationCommitId,
-				howToCombineMessages,
-				dryRun,
-			}: CommitSquashParams,
-		) =>
-			commitSquash(
-				projectId,
-				sourceCommitIds,
-				destinationCommitId,
-				howToCombineMessages ?? "KeepBoth",
-				dryRun,
-			),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitReword,
-		(_e, { projectId, commitId, message, dryRun }: CommitRewordParams) =>
-			commitReword(projectId, commitId, message, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitMoveChangesBetween,
-		(
-			_e,
-			{
-				projectId,
-				sourceCommitId,
-				destinationCommitId,
-				changes,
-				dryRun,
-			}: CommitMoveChangesBetweenParams,
-		) => commitMoveChangesBetween(projectId, sourceCommitId, destinationCommitId, changes, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitUncommit,
-		(_e, { projectId, subjectCommitIds: commitIds, assignTo, dryRun }: CommitUncommitParams) =>
-			commitUncommit(projectId, commitIds, assignTo, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.commitUncommitChanges,
-		(_e, { projectId, commitId, changes, assignTo, dryRun }: CommitUncommitChangesParams) =>
-			commitUncommitChanges(projectId, commitId, changes, assignTo, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.forgeCompareBranchUrl,
-		(_e, { projectId, base, branch, fork }: ForgeCompareBranchUrlParams) =>
-			forgeCompareBranchUrl(projectId, base, branch, fork),
-	);
-	senderValidatingHandle(liteIpcChannels.forgeInfo, (_e, projectId: string) =>
-		forgeInfo(projectId),
-	);
-	senderValidatingHandle(liteIpcChannels.forgeProvider, (_e, projectId: string) =>
-		forgeProvider(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.getInitialBranchIntegration,
-		(_e, { projectId, branch, strategy }: GetInitialBranchIntegrationParams) =>
-			getInitialBranchIntegration(projectId, branch, strategy),
-	);
-	senderValidatingHandle(liteIpcChannels.getRepoInfo, (_e, projectId: string) =>
-		getRepoInfo(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.getReviewBaseRepoUrl,
-		(_e, { projectId, reviewId }: GetReviewBaseRepoUrlParams) =>
-			getReviewBaseRepoUrl(projectId, reviewId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.getReviewMergeStatus,
-		(_e, { projectId, reviewId }: GetReviewParams) => getReviewMergeStatus(projectId, reviewId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listReviewComments,
-		(_e, { projectId, reviewId }: GetReviewParams) => listReviewComments(projectId, reviewId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listReviewSubmissions,
-		(_e, { projectId, reviewId }: GetReviewParams) => listReviewSubmissions(projectId, reviewId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listReviewTimelineEvents,
-		(_e, { projectId, reviewId }: GetReviewParams) => listReviewTimelineEvents(projectId, reviewId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listReviewReactions,
-		(_e, { projectId, reviewId }: GetReviewParams) => listReviewReactions(projectId, reviewId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listCommentReactions,
-		(_e, { projectId, commentId }: CommentReactionsParams) =>
-			listCommentReactions(projectId, commentId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.addReviewReaction,
-		(_e, { projectId, reviewId, kind }: AddReviewReactionParams) =>
-			addReviewReaction(projectId, reviewId, kind),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.removeReviewReaction,
-		(_e, { projectId, reviewId, reactionId }: RemoveReviewReactionParams) =>
-			removeReviewReaction(projectId, reviewId, reactionId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.addCommentReaction,
-		(_e, { projectId, commentId, kind }: AddCommentReactionParams) =>
-			addCommentReaction(projectId, commentId, kind),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.removeCommentReaction,
-		(_e, { projectId, commentId, reactionId }: RemoveCommentReactionParams) =>
-			removeCommentReaction(projectId, commentId, reactionId),
-	);
-	senderValidatingHandle(liteIpcChannels.listRepoLabels, (_e, projectId: string) =>
-		listRepoLabels(projectId),
-	);
-	senderValidatingHandle(liteIpcChannels.listReviewerCandidates, (_e, projectId: string) =>
-		listReviewerCandidates(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.addReviewLabels,
-		(_e, { projectId, reviewId, labels }: AddReviewLabelsParams) =>
-			addReviewLabels(projectId, reviewId, labels),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.removeReviewLabel,
-		(_e, { projectId, reviewId, label }: RemoveReviewLabelParams) =>
-			removeReviewLabel(projectId, reviewId, label),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.requestReview,
-		(_e, { projectId, reviewId, logins }: ReviewRequestParams) =>
-			requestReview(projectId, reviewId, logins),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.withdrawReviewRequest,
-		(_e, { projectId, reviewId, logins }: ReviewRequestParams) =>
-			withdrawReviewRequest(projectId, reviewId, logins),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.createReviewComment,
-		(_e, { projectId, reviewId, body }: CreateReviewCommentParams) =>
-			createReviewComment(projectId, reviewId, body),
-	);
-	senderValidatingHandle(liteIpcChannels.currentForgeLogin, (_e, projectId: string) =>
-		currentForgeLogin(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.updateReviewComment,
-		(_e, { projectId, commentId, body }: UpdateReviewCommentParams) =>
-			updateReviewComment(projectId, commentId, body),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.deleteReviewComment,
-		(_e, { projectId, commentId }: DeleteReviewCommentParams) =>
-			deleteReviewComment(projectId, commentId),
-	);
-	senderValidatingHandle(liteIpcChannels.getVersion, () => Promise.resolve(app.getVersion()));
-	senderValidatingHandle(liteIpcChannels.getRedoTargetSnapshot, async (_e, projectId: string) =>
-		getRedoTargetSnapshot(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.getReview,
-		(_e, { projectId, reviewId }: GetReviewParams) => getReview(projectId, reviewId),
-	);
-	senderValidatingHandle(liteIpcChannels.getUndoTargetSnapshot, async (_e, projectId: string) =>
-		getUndoTargetSnapshot(projectId),
-	);
-	senderValidatingHandle(liteIpcChannels.headInfo, (_e, projectId: string) => headInfo(projectId));
-	senderValidatingHandle(liteIpcChannels.isFullScreen, (event) =>
+
+	senderValidatingHandle("isFullScreen", (event) =>
 		Promise.resolve(BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false),
 	);
-	senderValidatingHandle(liteIpcChannels.listAvailableReviewTemplates, (_e, projectId: string) =>
-		listAvailableReviewTemplates(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listCiChecks,
-		(_e, { projectId, reference, cacheConfig }: ListCiChecksParams) =>
-			listCiChecks(projectId, reference, cacheConfig),
-	);
-	senderValidatingHandle(liteIpcChannels.listEditors, () => listEditors());
-	senderValidatingHandle(liteIpcChannels.listPrograms, () => listPrograms());
-	senderValidatingHandle(liteIpcChannels.listProjectsStateless, () => listProjectsStateless());
-	senderValidatingHandle(
-		liteIpcChannels.listReviews,
-		(_e, { projectId, cacheConfig }: ListReviewsParams) => listReviews(projectId, cacheConfig),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.listReviewsForBranch,
-		(_e, { projectId, branch, filter }: ListReviewsForBranchParams) =>
-			listReviewsForBranch(projectId, branch, filter),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.mergeReview,
-		(_e, { projectId, reviewId, mergeMethod }: MergeReviewParams) =>
-			mergeReview(projectId, reviewId, mergeMethod),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.moveBranch,
-		(_e, { projectId, subjectBranch, targetBranch, dryRun }: MoveBranchParams) =>
-			moveBranch(projectId, subjectBranch, targetBranch, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.openInProgram,
-		(_e, { projectId, programId, path, lineNr }: OpenInProgramParams) =>
-			openInProgram(projectId, programId, path, lineNr),
-	);
-	senderValidatingHandle(liteIpcChannels.openInWebBrowser, (_e, url: string) => {
-		// shell.openExternal() is powerful and dangerous. For example, on macOS you can launch a
-		// program with shell.openExternal("file:///Applications/Numbers.app"). Similarly bad
-		// things are possible on Windows and Linux.
-		//
-		// We need to be able to open relatively arbitrary URLs so we can't lock this down too much,
-		// but we can at least make sure the URL is a reasonable protocol so we don't allow e.g.
-		// "file:///Applications/Numbers.app" to pass through.
-		//
-		// https://www.electronjs.org/docs/latest/tutorial/security#15-do-not-use-shellopenexternal-with-untrusted-content
-		const protocol = newUrlOrNull(url)?.protocol ?? "";
-		if (!["https:", "http:"].includes(protocol))
-			throw new Error(`URL ${url} with unsupported protocol ${protocol}`);
 
-		return shell.openExternal(url);
-	});
-	senderValidatingHandle(liteIpcChannels.pathJoin, (_e, ...paths: Array<string>) =>
-		path.join(...paths),
-	);
+	senderValidatingHandle("pathJoin", (_e, ...paths: Array<string>) => path.join(...paths));
+
 	senderValidatingHandle(
-		liteIpcChannels.publishReview,
-		(_e, { projectId, params }: PublishReviewParams) => publishReview(projectId, params),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchRename,
-		(_e, { projectId, refName, newName }: BranchRenameParams) =>
-			branchRename(projectId, refName, newName),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.updateReview,
-		(_e, { projectId, reviewId, title, body, state, targetBase }: UpdateReviewParams) =>
-			updateReview(projectId, reviewId, title, body, state, targetBase),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.tearOffBranch,
-		(_e, { projectId, subjectBranch, dryRun }: TearOffBranchParams) =>
-			tearOffBranch(projectId, subjectBranch, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.peelRestoreSnapshot,
-		(_e, { projectId, sha }: PeelRestoreSnapshotParams) => peelRestoreSnapshot(projectId, sha),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.workspaceBranchAndAncestorsPush,
-		(
-			_e,
-			{
-				projectId,
-				branch,
-				withForce,
-				skipForcePushProtection,
-				runHooks,
-				pushOpts,
-			}: WorkspaceBranchAndAncestorsPushParams,
-		) =>
-			workspaceBranchAndAncestorsPush(
-				projectId,
-				withForce,
-				skipForcePushProtection,
-				branch,
-				runHooks,
-				pushOpts,
-			),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.branchRemove,
-		(_e, { projectId, refName }: BranchRemoveParams) => branchRemove(projectId, refName),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.restoreSnapshotWithKind,
-		(_e, { projectId, restoreKind, sha }: RestoreSnapshotWithKindParams) =>
-			restoreSnapshotWithKind(projectId, restoreKind, sha),
-	);
-	senderValidatingHandle(liteIpcChannels.reviewTemplate, (_e, projectId: string) =>
-		reviewTemplate(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.setReviewAutoMerge,
-		(_e, { projectId, reviewId, enable }: SetReviewAutoMergeParams) =>
-			setReviewAutoMerge(projectId, reviewId, enable),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.setReviewDraftiness,
-		(_e, { projectId, reviewId, draft }: SetReviewDraftinessParams) =>
-			setReviewDraftiness(projectId, reviewId, draft),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.setReviewTemplate,
-		(_e, { projectId, templatePath }: SetReviewTemplateParams) =>
-			setReviewTemplate(projectId, templatePath),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.setTargetRefAndInitProject,
-		(_e, { projectId, targetRef, pushRemote }: SetTargetRefAndInitProjectParams) =>
-			setTargetRefAndInitProject(projectId, targetRef, pushRemote ?? null),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.showNativeMenu,
+		"showNativeMenu",
 		async (event, { items, position }: ShowNativeMenuParams) => {
 			const window = BrowserWindow.fromWebContents(event.sender);
 			if (!window) return null;
@@ -844,65 +398,127 @@ const registerIpcHandlers = (): void => {
 			return selectedItemId;
 		},
 	);
+
 	senderValidatingHandle(
-		liteIpcChannels.treeChangeDiffs,
-		(_e, { projectId, change }: TreeChangeDiffParams) => treeChangeDiffs(projectId, change),
+		"streamAiResponse",
+		async (event, { requestId, systemMessage, prompt }: StreamAiResponseParams) =>
+			sdk.streamAiResponse(systemMessage, prompt, (error, token) => {
+				if (error) return;
+				if (!event.sender.isDestroyed())
+					event.sender.send("streamAiResponseToken", { requestId, token });
+			}),
 	);
-	senderValidatingHandle(
-		liteIpcChannels.unapplyStack,
-		(_e, { projectId, stackId }: UnapplyStackParams) => unapplyStack(projectId, stackId),
+
+	senderValidatingHandle("watcherSubscribe", async (event, { projectId }: WatcherSubscribeParams) =>
+		WatcherManager.getInstance().subscribeToProject(projectId, event),
 	);
-	senderValidatingHandle(
-		liteIpcChannels.workspaceFetchFromRemotes,
-		(_e, { projectId, action }: WorkspaceFetchFromRemotesParams) =>
-			workspaceFetchFromRemotes(projectId, action),
-	);
-	senderValidatingHandle(liteIpcChannels.workspaceFetchStatus, (_e, projectId: string) =>
-		workspaceFetchStatus(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.workspaceTargetCommits,
-		(_e, { projectId, from, limit }: WorkspaceTargetCommitsParams) =>
-			workspaceTargetCommits(projectId, from, limit),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.workspaceIntegrateUpstream,
-		(_e, { projectId, updates, dryRun }: WorkspaceIntegrateUpstreamParams) =>
-			workspaceIntegrateUpstream(projectId, updates, dryRun),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.updateReviewFooters,
-		(_e, { projectId, reviews }: UpdateReviewFootersParams) =>
-			updateReviewFooters(projectId, reviews),
-	);
-	senderValidatingHandle(liteIpcChannels.warmCiChecksCache, (_e, projectId: string) =>
-		warmCiChecksCache(projectId),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.watcherSubscribe,
-		async (event, { projectId }: WatcherSubscribeParams) =>
-			WatcherManager.getInstance().subscribeToProject(projectId, event),
-	);
-	senderValidatingHandle(
-		liteIpcChannels.watcherUnsubscribe,
-		(_e, { subscriptionId }: WatcherUnsubscribeParams) =>
-			WatcherManager.getInstance().removeSubscription(subscriptionId),
-	);
-	senderValidatingHandle(liteIpcChannels.watcherStopAll, () =>
-		WatcherManager.getInstance().stopAllWatchersForShutdown(),
-	);
-	senderValidatingHandle(liteIpcChannels.readGUISettings, (_e) => readSettings());
-	senderValidatingHandle(liteIpcChannels.writeGUISettings, async (_e, settings: GUISettings) => {
-		applyGUISettings(settings);
-		await writeSettings(settings);
-	});
 };
 
-const createMainWindow = async (): Promise<void> => {
+/**
+ * Where a `but://app/...` link points, in both forms a window can take it:
+ * `url` for one that has to load the page (the dev server in development, our
+ * own scheme when packaged), `path` for one whose router can just navigate
+ * there. Null for anything that is not one of our links.
+ */
+const deepLinkTarget = (link: string): { url: string; path: string } | null => {
+	const url = newUrlOrNull(link);
+	if (
+		url === null ||
+		url.protocol !== `${liteProtocolScheme}:` ||
+		url.host !== liteProtocolHost ||
+		url.pathname.includes("..")
+	)
+		return null;
+
+	const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+	const base = new URL(devServerUrl ?? `${liteProtocolScheme}://${liteProtocolHost}/`);
+	const target = new URL(`${url.pathname}${url.search}`, base);
+
+	// The path decides the host when it starts with `//`, so the link's own host
+	// having checked out says nothing about where this one points.
+	if (target.protocol !== base.protocol || target.host !== base.host) return null;
+
+	return { url: target.href, path: `${target.pathname}${target.search}` };
+};
+
+/**
+ * Sign in from a `but://login?access_token=…` link, which is how the login page
+ * hands the account back once it knows which client asked.
+ */
+const completeLogin = async (url: URL): Promise<boolean> => {
+	if (url.host !== "login") return false;
+
+	const accessToken = url.searchParams.get("access_token");
+	if (accessToken === null) return true;
+
+	try {
+		const profile = await sdk.loginAndPersist(accessToken);
+		void metricsOnLogin(profile);
+	} catch (error) {
+		// oxlint-disable-next-line no-console
+		console.error("Failed to sign in from a login link", error);
+	}
+	return true;
+};
+
+const showAndFocusWindow = (window: BrowserWindow): void => {
+	if (window.isMinimized()) window.restore();
+	window.show();
+	window.focus();
+};
+
+/**
+ * Open a deep link in the window we already have, or start one if the app was
+ * launched by the link. A running window navigates to the link rather than
+ * reloading the page, so the app keeps its state and its history. The project
+ * the link names is checked by the route itself, which covers every other way
+ * a URL arrives too.
+ */
+const openDeepLink = async (link: string): Promise<void> => {
+	const url = newUrlOrNull(link);
+	if (url !== null && url.protocol === `${liteProtocolScheme}:` && (await completeLogin(url))) {
+		const [existing] = BrowserWindow.getAllWindows();
+		if (existing) showAndFocusWindow(existing);
+		return;
+	}
+
+	const target = deepLinkTarget(link);
+	if (target === null) {
+		// oxlint-disable-next-line no-console
+		console.error(`Ignored deep link ${link}`);
+		return;
+	}
+
+	const [existing] = BrowserWindow.getAllWindows();
+	if (!existing) {
+		await createMainWindow(target.url);
+		return;
+	}
+
+	showAndFocusWindow(existing);
+
+	// A page still loading has no listener yet, so it has to be given the link
+	// as the page to load.
+	if (existing.webContents.isLoading()) {
+		await existing.loadURL(target.url);
+		return;
+	}
+
+	existing.webContents.send("deepLink", target.path);
+};
+
+/** The `but://` link in a launch argv, if the OS started us with one. */
+const deepLinkFromArgv = (argv: Array<string>): string | undefined =>
+	argv.find((arg) => arg.startsWith(`${liteProtocolScheme}://`));
+
+const createMainWindow = async (initialUrl?: string): Promise<void> => {
 	const icon = getWindowIcon();
 	const mainWindow = new BrowserWindow({
+		name: "main",
+		windowStatePersistence: true,
 		width: 1024,
 		height: 768,
+		show: !isHeadless,
 		minWidth: 545,
 		minHeight: 400,
 		icon,
@@ -914,32 +530,75 @@ const createMainWindow = async (): Promise<void> => {
 			preload: path.join(currentDirPath, "preload.cjs"),
 		},
 	});
+	registerEditingContextMenu(mainWindow);
 
 	const notifyFullScreenChange = () => {
-		mainWindow.webContents.send(liteIpcChannels.fullScreenChange, mainWindow.isFullScreen());
+		mainWindow.webContents.send("fullScreenChange", mainWindow.isFullScreen());
 	};
 	mainWindow.on("enter-full-screen", notifyFullScreenChange);
 	mainWindow.on("leave-full-screen", notifyFullScreenChange);
 
+	if (process.platform === "darwin") {
+		const hideWindowInsteadOfClosing = (event: Electron.Event) => {
+			event.preventDefault();
+			mainWindow.hide();
+		};
+		const allowWindowToClose = () => {
+			mainWindow.removeListener("close", hideWindowInsteadOfClosing);
+		};
+
+		mainWindow.on("close", hideWindowInsteadOfClosing);
+		app.once("before-quit", allowWindowToClose);
+		autoUpdater.once("before-quit-for-update", allowWindowToClose);
+		mainWindow.once("closed", () => {
+			app.removeListener("before-quit", allowWindowToClose);
+			autoUpdater.removeListener("before-quit-for-update", allowWindowToClose);
+		});
+	}
+
 	const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 	if (devServerUrl !== undefined) {
-		await mainWindow.loadURL(devServerUrl);
+		await mainWindow.loadURL(initialUrl ?? devServerUrl);
 		return;
 	}
 
 	const rootUrl = `${liteProtocolScheme}://${liteProtocolHost}/`;
-	await mainWindow.loadURL(rootUrl);
+	await mainWindow.loadURL(initialUrl ?? rootUrl);
 	registerUpdater(mainWindow);
 	checkForUpdates();
 };
 
 app.enableSandbox(); // forces sandboxing for all renderers, even if they try to launch without
+
+// One instance owns the protocol: a second launch (how Windows and Linux
+// deliver a link) hands its argv to the first and exits.
+if (!app.requestSingleInstanceLock()) {
+	app.quit();
+} else {
+	app.on("second-instance", (_event, argv) => {
+		const link = deepLinkFromArgv(argv);
+		if (link !== undefined) void openDeepLink(link);
+	});
+
+	// macOS delivers links here instead, both to a running app and to one the
+	// link just launched.
+	app.on("open-url", (event, url) => {
+		event.preventDefault();
+		void openDeepLink(url);
+	});
+}
+
 void app.whenReady().then(async () => {
+	initLogging();
 	applyGUISettings(await readSettings());
 	await initApplicationNamespace(null);
 	configureAskpass();
 
 	if (app.isPackaged) {
+		// Packaged-only so dev builds send nothing, and awaited so the client
+		// exists before the IPC handlers and the launch-link login below run.
+		await initMetrics(app.getVersion());
+
 		registerLiteProtocolHandler();
 
 		// Basic non-Strict CSP based on https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html#basic-non-strict-csp-policy
@@ -955,7 +614,7 @@ void app.whenReady().then(async () => {
 			"form-action 'none';" +
 			// user-attachments assets on github.com 302 to GitHub's signed S3 bucket,
 			// and CSP checks every redirect hop — hence the explicit bucket host.
-			"img-src 'self' data: https://*.gravatar.com https://*.githubusercontent.com https://github.com https://github-production-user-asset-6210df.s3.amazonaws.com;" +
+			`img-src ${imgSrc};` +
 			"worker-src 'self';";
 
 		session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -967,11 +626,11 @@ void app.whenReady().then(async () => {
 			});
 		});
 	} else {
-		await installExtension([REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS]);
+		if (!isHeadless) {
+			await installExtension([REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS]);
 
-		if (process.platform === "darwin") {
 			const dockIcon = getMacDockIcon();
-			if (dockIcon !== undefined && app.dock) app.dock.setIcon(dockIcon);
+			if (dockIcon !== undefined) app.dock?.setIcon(dockIcon);
 		}
 
 		// Loose dev CSP to allow for hot reload and development tools. This could be tightened with
@@ -991,7 +650,7 @@ void app.whenReady().then(async () => {
 			"form-action 'none';" +
 			// user-attachments assets on github.com 302 to GitHub's signed S3 bucket,
 			// and CSP checks every redirect hop — hence the explicit bucket host.
-			"img-src 'self' data: https://*.gravatar.com https://*.githubusercontent.com https://github.com https://github-production-user-asset-6210df.s3.amazonaws.com;" +
+			`img-src ${imgSrc};` +
 			"worker-src 'self';";
 
 		session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -1021,29 +680,57 @@ void app.whenReady().then(async () => {
 	});
 
 	registerIpcHandlers();
-	await createMainWindow();
+
+	// Dev runs from the electron binary, which needs to be told which program
+	// and arguments to relaunch for a link.
+	if (app.isPackaged) {
+		app.setAsDefaultProtocolClient(liteProtocolScheme);
+	} else {
+		app.setAsDefaultProtocolClient(liteProtocolScheme, process.execPath, [
+			path.resolve(process.argv[1] ?? ""),
+		]);
+	}
+
+	const launchLink = deepLinkFromArgv(process.argv);
+	// Windows and Linux deliver a cold-launch link only through argv, never as
+	// `open-url`, so a login link arriving that way has to be handled here too.
+	const launchUrl = launchLink === undefined ? null : newUrlOrNull(launchLink);
+	if (launchUrl?.protocol === `${liteProtocolScheme}:`) await completeLogin(launchUrl);
+
+	await createMainWindow(
+		launchLink === undefined ? undefined : (deepLinkTarget(launchLink)?.url ?? undefined),
+	);
 
 	app.on("activate", () => {
-		if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
+		const [existing] = BrowserWindow.getAllWindows();
+		if (existing) showAndFocusWindow(existing);
+		else void createMainWindow();
 	});
 });
 
-app.on("before-quit", () => {
-	WatcherManager.getInstance().destroy();
+app.on("before-quit", (event) => {
+	WatcherManager.destroyInstance();
+
+	// The metrics queue lives in memory, so hold the quit until it has
+	// flushed; the re-issued quit finds nothing to flush and goes through.
+	const flushing = shutdownMetrics();
+	if (flushing !== null) {
+		event.preventDefault();
+		void flushing.then(() => app.quit());
+	}
 });
 
 app.on("window-all-closed", () => {
-	WatcherManager.getInstance().destroy();
+	WatcherManager.destroyInstance();
 	if (process.platform !== "darwin") app.quit();
 });
 
 app.on("web-contents-created", (_, contents) => {
 	contents.on("will-navigate", (event, navigationUrl) => {
-		const currentUrl = newUrlOrNull(contents.getURL());
 		const targetUrl = newUrlOrNull(navigationUrl);
-		// Allow HMR page reloads.
-		if (!app.isPackaged && currentUrl?.href === targetUrl?.href && isTrustedLocalOrigin(targetUrl))
-			return;
+		// Where the user is lives in the URL, so opening a link to a branch or a
+		// commit is an ordinary navigation. Anything off our origin stays blocked.
+		if (isTrustedLocalOrigin(targetUrl)) return;
 
 		// oxlint-disable-next-line no-console
 		console.error(`Blocked navigation to ${navigationUrl}`);

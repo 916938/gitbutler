@@ -5,7 +5,8 @@ use but_core::ChangeId;
 use but_graph::workspace::Stack;
 
 use crate::id::{
-    RemoteCommitWithId, SegmentWithId, ShortId, StackWithId, UNCOMMITTED, WorkspaceCommitWithId,
+    OLD_UNCOMMITTED, RemoteCommitWithId, SegmentWithId, ShortId, StackWithId,
+    WorkspaceCommitWithId,
     id_usage::{IdUsage, UintId},
 };
 
@@ -55,40 +56,75 @@ fn stacks_info_without_short_ids(
     stacks_info
 }
 
+fn mark_name_short_id_used(
+    candidate: &[u8],
+    id_usage: &mut IdUsage,
+    non_hex_used_short_ids: &mut HashSet<ShortId>,
+) -> Option<ShortId> {
+    let short_id = UintId::from_name(candidate)
+        .map(|uint_id| {
+            id_usage.mark_used(uint_id);
+            uint_id.to_short_id()
+        })
+        .or_else(|| {
+            // If it's not a valid UintId, it's still acceptable if it
+            // cannot be confused for a commit ID (and is valid UTF-8).
+            if candidate.iter().all(|c| c.is_ascii_alphanumeric())
+                && !candidate.iter().all(|c| c.is_ascii_hexdigit())
+            {
+                String::from_utf8(candidate.to_vec()).ok()
+            } else {
+                None
+            }
+        })?;
+
+    non_hex_used_short_ids
+        .insert(short_id.clone())
+        .then_some(short_id)
+}
+
+fn allocate_generated_short_id(
+    id_usage: &mut IdUsage,
+    non_hex_used_short_ids: &mut HashSet<ShortId>,
+) -> anyhow::Result<ShortId> {
+    // `IdUsage` advances past generated IDs, so also retain their textual form for later
+    // name-derived allocations, which detect collisions through this shared set.
+    loop {
+        let short_id = id_usage.next_available()?.to_short_id();
+        if non_hex_used_short_ids.insert(short_id.clone()) {
+            return Ok(short_id);
+        }
+    }
+}
+
+pub(crate) fn allocate_name_short_id(
+    name: &[u8],
+    id_usage: &mut IdUsage,
+    non_hex_used_short_ids: &mut HashSet<ShortId>,
+) -> anyhow::Result<ShortId> {
+    // Find the first non-conflicting pair or triple and use it.
+    for candidate in name.windows(2).chain(name.windows(3)) {
+        if let Some(short_id) = mark_name_short_id_used(candidate, id_usage, non_hex_used_short_ids)
+        {
+            return Ok(short_id);
+        }
+    }
+    // If none are available, use the next generated ID.
+    allocate_generated_short_id(id_usage, non_hex_used_short_ids)
+}
+
 fn populate_branch_short_ids(
     stacks: &mut [StackWithId],
     id_usage: &mut IdUsage,
     non_hex_used_short_ids: &mut HashSet<ShortId>,
     uncommitted_short_filenames: &HashSet<BString>,
 ) -> anyhow::Result<()> {
-    // Fill the `non_hex_used_short_ids` and `id_usage` data structures.
-    //
-    // Returns None if the candidate was bad, Some(false) if it was already taken and Some(true) if
-    // it was successfully "acquired".
-    let mut maybe_mark_used = |candidate: &[u8], id_usage: &mut IdUsage| {
-        let short_id = UintId::from_name(candidate)
-            .map(|uint_id| {
-                id_usage.mark_used(uint_id);
-                uint_id.to_short_id()
-            })
-            .or_else(|| {
-                // If it's not a valid UintId, it's still acceptable if it
-                // cannot be confused for a commit ID (and is valid UTF-8).
-                if candidate.iter().all(|c| c.is_ascii_alphanumeric())
-                    && !candidate.iter().all(|c| c.is_ascii_hexdigit())
-                {
-                    String::from_utf8(candidate.to_vec()).ok()
-                } else {
-                    None
-                }
-            })?;
-
-        Some(non_hex_used_short_ids.insert(short_id))
-    };
-
-    maybe_mark_used(UNCOMMITTED.as_bytes(), id_usage);
-    for uncommitted_short_filename in uncommitted_short_filenames.iter() {
-        maybe_mark_used(uncommitted_short_filename, id_usage);
+    // Keep the old uncommitted-area ID out of both generated and reverse-hex short-ID namespaces
+    // so upgrading cannot silently reassign it to another resource.
+    let _ = mark_name_short_id_used(OLD_UNCOMMITTED.as_bytes(), id_usage, non_hex_used_short_ids);
+    for uncommitted_short_filename in uncommitted_short_filenames {
+        let _ =
+            mark_name_short_id_used(uncommitted_short_filename, id_usage, non_hex_used_short_ids);
     }
 
     // Populate branch short IDs in `stacks`.
@@ -97,23 +133,12 @@ fn populate_branch_short_ids(
         .flat_map(|stack| stack.segments.iter_mut())
     {
         if let Some(branch_name) = segment.branch_name() {
-            segment.short_id = 'short_id: {
-                // Find first non-conflicting pair or triple (i.e. used in
-                // exactly one branch) and use it.
-                for candidate in branch_name.windows(2).chain(branch_name.windows(3)) {
-                    if let Ok(short_id) = str::from_utf8(candidate)
-                        && let Some(true) = maybe_mark_used(candidate, id_usage)
-                    {
-                        break 'short_id short_id.to_owned();
-                    }
-                }
-                // If none available, use next available ID.
-                id_usage.next_available()?.to_short_id()
-            };
+            segment.short_id =
+                allocate_name_short_id(branch_name, id_usage, non_hex_used_short_ids)?;
         } else {
-            // This sgement is anonymous, so we have no name to base the ID on. We just assign it a
+            // This segment is anonymous, so we have no name to base the ID on. We just assign it a
             // generic ID, which allows some rudimentary stuff to work (e.g. `but status`).
-            segment.short_id = id_usage.next_available()?.to_short_id();
+            segment.short_id = allocate_generated_short_id(id_usage, non_hex_used_short_ids)?;
         }
     }
 
@@ -135,28 +160,18 @@ fn common_nybble_len(a: &[u8], b: &[u8]) -> usize {
     byte_len * 2 + extra_nybble
 }
 
-fn populate_commit_short_ids(stacks: &mut [StackWithId]) {
+/// Append the shortest unambiguous hash prefix to every short ID in `commits`.
+///
+/// All commits sharing a CLI ID namespace must come in one call - the prefix length is derived
+/// from each commit's neighbours in hash order, so one left out could later print a prefix that
+/// is no longer unique.
+pub(crate) fn populate_commit_short_ids(commits: Vec<(gix::ObjectId, &mut ShortId)>) {
     let mut commit_id_to_short_ids = BTreeMap::<gix::ObjectId, Vec<&mut ShortId>>::new();
-    for stack in stacks.iter_mut() {
-        for segment in stack.segments.iter_mut() {
-            let SegmentWithId {
-                workspace_commits,
-                remote_commits,
-                ..
-            } = segment;
-            for workspace_commit in workspace_commits.iter_mut() {
-                commit_id_to_short_ids
-                    .entry(workspace_commit.commit_id())
-                    .or_default()
-                    .push(&mut workspace_commit.short_id);
-            }
-            for remote_commit in remote_commits.iter_mut() {
-                commit_id_to_short_ids
-                    .entry(remote_commit.commit_id())
-                    .or_default()
-                    .push(&mut remote_commit.short_id);
-            }
-        }
+    for (commit_id, short_id) in commits {
+        commit_id_to_short_ids
+            .entry(commit_id)
+            .or_default()
+            .push(short_id);
     }
     // Ideally we would use BTreeMap cursors, but those are still experimental,
     // so convert to a Vec for now.
@@ -204,7 +219,8 @@ impl StacksInfo {
             &mut stacks_info.non_hex_used_short_ids,
             uncommitted_short_filenames,
         )?;
-        populate_commit_short_ids(&mut stacks_info.stacks);
+        // Commit short IDs are assigned by the caller, which also knows the linked worktrees'
+        // commits that share the same namespace.
         Ok(stacks_info)
     }
 }

@@ -472,6 +472,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             but_post(but_api::branch::branch_rename_cmd),
         )
         .route(
+            "/branch_canned_name",
+            but_post(but_api::branch::branch_canned_name_cmd),
+        )
+        .route(
+            "/workspace_target_commits",
+            but_post(but_api::target_commits::workspace_target_commits_cmd),
+        )
+        .route(
             "/get_initial_branch_integration",
             but_post(but_api::branch::get_initial_branch_integration_cmd),
         )
@@ -488,7 +496,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             but_post(diff::changes_in_worktree_cmd),
         )
         .route("/assign_hunk", but_post(diff::assign_hunk_cmd))
-        .route("/stacks", but_post(legacy::workspace::stacks_cmd))
         .route("/head_info", but_post(legacy::workspace::head_info_cmd));
 
     #[cfg(unix)]
@@ -498,10 +505,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     );
 
     let app = app
-        .route(
-            "/stack_details",
-            but_post(legacy::workspace::stack_details_cmd),
-        )
         .route(
             "/branch_details",
             but_post(legacy::workspace::branch_details_cmd),
@@ -513,14 +516,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .route(
             "/stash_into_branch",
             but_post(legacy::workspace::stash_into_branch_cmd),
-        )
-        .route(
-            "/canned_branch_name",
-            but_post(legacy::workspace::canned_branch_name_cmd),
-        )
-        .route(
-            "/target_commits",
-            but_post(legacy::workspace::target_commits_cmd),
         )
         .route(
             "/workspace_branch_and_ancestors_push",
@@ -675,15 +670,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         )
         .route("/message_hook", but_post(legacy::repo::message_hook_cmd))
         .route("/create_branch", but_post(legacy::stack::create_branch_cmd))
-        .route(
-            "/create_reference",
-            but_post(legacy::stack::create_reference_cmd),
-        )
         .route("/remove_branch", but_post(legacy::stack::remove_branch_cmd))
-        .route(
-            "/update_branch_name",
-            but_post(legacy::stack::update_branch_name_cmd),
-        )
         // Undo/Snapshot commands
         .route(
             "/list_snapshots",

@@ -29,9 +29,11 @@ mod marking_tests;
 mod move_tests;
 mod open_tests;
 mod pick_tests;
+mod single_branch_mode;
 mod squash_tests;
 mod stack_tests;
 mod utils;
+mod worktree_tests;
 
 #[test]
 fn directory_watcher_paths_affect_nested_uncommitted_details() {
@@ -255,8 +257,32 @@ fn help_popup_scrolls() {
     tui.input((KeyModifiers::CONTROL, 'u'))
         .assert_rendered_term_svg_eq(file!["snapshots/help_popup_scrolls_003.svg"]);
 
+    tui.input(Some(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 50,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    })))
+    .assert_rendered_term_svg_eq(file!["snapshots/help_popup_scrolls_003.svg"]);
+
+    tui.input(Some(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 50,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    })))
+    .assert_rendered_term_svg_eq(file!["snapshots/help_popup_scrolls_004.svg"]);
+
+    tui.input(Some(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 50,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    })))
+    .assert_rendered_term_svg_eq(file!["snapshots/help_popup_scrolls_003.svg"]);
+
     tui.input(KeyCode::Esc)
-        .assert_rendered_term_svg_eq(file!["snapshots/help_popup_scrolls_004.svg"]);
+        .assert_rendered_term_svg_eq(file!["snapshots/help_popup_scrolls_005.svg"]);
 }
 
 #[test]
@@ -312,7 +338,7 @@ fn basic_cursor_movement() {
 
     tui.reload()
         .assert_rendered_term_svg_eq(file!["snapshots/basic_cursor_movement_001.svg"])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -341,7 +367,7 @@ fn basic_cursor_movement() {
         KeyCode::Up,
         KeyCode::Up,
     ])
-    .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+    .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 }
 
 #[test]
@@ -352,7 +378,7 @@ fn movement_aliases_j_k() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input('j').assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
@@ -362,7 +388,7 @@ fn movement_aliases_j_k() {
     tui.input('k').assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('k')
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 }
 
 #[test]
@@ -373,7 +399,7 @@ fn section_jumps_shift_j_k() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input((KeyModifiers::SHIFT, 'J'))
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -385,7 +411,7 @@ fn section_jumps_shift_j_k() {
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input((KeyModifiers::SHIFT, 'K'))
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 }
 
 #[test]
@@ -396,7 +422,7 @@ fn shift_k_from_commit_moves_to_current_section_header_first() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input([KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┊●   tpm add A"]);
@@ -405,7 +431,7 @@ fn shift_k_from_commit_moves_to_current_section_header_first() {
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input((KeyModifiers::SHIFT, 'K'))
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 }
 
 #[test]
@@ -416,7 +442,7 @@ fn shift_k_from_second_stack_commit_moves_to_its_header() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input((KeyModifiers::SHIFT, 'J'))
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -449,7 +475,7 @@ fn cursor_movement_scrolls_viewport_down() {
         .assert_rendered_term_svg_eq(file![
             "snapshots/cursor_movement_scrolls_viewport_down_001.svg"
         ])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input([KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Down])
         .assert_rendered_term_svg_eq(file![
@@ -482,7 +508,7 @@ fn cursor_movement_scrolls_viewport_up() {
         .assert_rendered_term_svg_eq(file![
             "snapshots/cursor_movement_scrolls_viewport_up_002.svg"
         ])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 }
 
 #[test]
@@ -604,18 +630,18 @@ fn creating_empty_commits() {
 
     tui.reload()
         .assert_rendered_term_svg_eq(file!["snapshots/creating_empty_commits_001.svg"])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('n')
         .assert_rendered_term_svg_eq(file!["snapshots/creating_empty_commits_002.svg"])
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input('n')
         .assert_rendered_term_svg_eq(file!["snapshots/creating_empty_commits_003.svg"])
-        .assert_current_line_eq(str!["┊●   1#0 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   mul (no commit message) (no changes)"]);
 }
 
 #[test]
@@ -627,14 +653,14 @@ fn inline_reword() {
 
     tui.reload()
         .assert_rendered_term_svg_eq(file!["snapshots/inline_reword_001.svg"])
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('n')
         .assert_rendered_term_svg_eq(file!["snapshots/inline_reword_002.svg"])
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input(KeyCode::Enter)
         .assert_rendered_term_svg_eq(file!["snapshots/inline_reword_003.svg"]);
@@ -644,7 +670,7 @@ fn inline_reword() {
 
     tui.input(KeyCode::Enter)
         .assert_rendered_term_svg_eq(file!["snapshots/inline_reword_005.svg"])
-        .assert_current_line_eq(str!["┊●   1 foo (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun foo (no changes)"]);
 }
 
 #[test]
@@ -679,12 +705,12 @@ fn esc_leaves_squash_mode() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.env().file("test.txt", "content");
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊   vo A test.txt"]);
@@ -711,10 +737,10 @@ fn mode_key_c_enters_and_escape_leaves_commit_mode() {
         .assert_rendered_term_svg_eq(file![
             "snapshots/mode_toggle_key_c_enters_and_leaves_commit_mode_001.svg"
         ])
-        .assert_current_line_eq(str!["╭┄ << source >> << noop >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> << noop >> @ [uncommitted]"]);
 
     tui.input(KeyCode::Esc)
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted]"]);
 }
 
 #[test]
@@ -747,7 +773,8 @@ fn key_b_creates_new_branch_from_selected_branch() {
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
-    tui.input('b')
+    tui.input('b');
+    tui.input('n')
         .assert_current_line_eq(str!["┊╭┄ br [c-branch-1] (no commits)"]);
 }
 
@@ -817,12 +844,12 @@ fn commit_file_toggle_on_commit_without_files_is_noop() {
     with_var("GIT_AUTHOR_DATE", Some("2000-01-01T00:00:00Z"), || {
         with_var("GIT_COMMITTER_DATE", Some("2000-01-01T00:00:00Z"), || {
             tui.input('n')
-                .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+                .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
         });
     });
 
     tui.input('f')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input([KeyCode::Down, KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┴ 0dc3733 (common base) 2000-01-02 add M"])
@@ -1068,8 +1095,9 @@ fn consistent_commit_shas_in_tests() {
     let mut tui = test_status_tui(env);
 
     tui.input('b');
+    tui.input('n');
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   omy (no commit message) (no changes)"]);
 }
 
 #[test]
@@ -1088,12 +1116,12 @@ fn jumping_up_down() {
     }
 
     tui.reload()
-        .assert_current_line_eq("┊●   1#0 commit #12 (no changes)");
+        .assert_current_line_eq("┊●   xnv commit #12 (no changes)");
 
     tui.input((KeyModifiers::CONTROL, 'd'))
-        .assert_current_line_eq("┊●   1#10 commit #2 (no changes)");
+        .assert_current_line_eq("┊●   xyn commit #2 (no changes)");
     tui.input((KeyModifiers::CONTROL, 'u'))
-        .assert_current_line_eq("┊●   1#0 commit #12 (no changes)");
+        .assert_current_line_eq("┊●   xnv commit #12 (no changes)");
 }
 
 #[test]
@@ -1118,9 +1146,9 @@ fn jumping_up_down_non_normal_mode() {
     tui.input('r');
 
     tui.input((KeyModifiers::CONTROL, 'd'))
-        .assert_current_line_eq(str!["┊●   << amend >> 1#8 commit #4 (no changes)"]);
+        .assert_current_line_eq(str!["┊●   << amend >> ryo commit #4 (no changes)"]);
     tui.input((KeyModifiers::CONTROL, 'u'))
-        .assert_current_line_eq(str!["╭┄ << source >> zz [uncommitted]"]);
+        .assert_current_line_eq(str!["╭┄ << source >> @ [uncommitted]"]);
 }
 
 #[test]
@@ -1152,16 +1180,17 @@ fn maintains_selection_using_change_id() {
     // create a new branch with a commit
     tui.input('b');
     tui.input('n');
+    tui.input('n');
 
     // reword the commit
     tui.input(KeyCode::Enter);
     tui.input("target");
     tui.input(KeyCode::Enter)
-        .assert_current_line_eq(str!["┊●   1 target (no changes)"]);
+        .assert_current_line_eq(str!["┊●   omy target (no changes)"]);
 
     // undo the reword, this shouldn't change the selection
     tui.input('u')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   omy (no commit message) (no changes)"]);
 }
 
 #[test]
@@ -1267,9 +1296,9 @@ fn opening_on_different_targets() {
         .reload()
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
-    open_tui_at("zz")
+    open_tui_at("@")
         .reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 }
 
 #[test]
@@ -1323,12 +1352,16 @@ fn open_tui_on_uncommitted_hunk(show_diff: bool) -> TestTui<App> {
             .into_iter()
             .find_map(|cli_id| match cli_id {
                 CliId::UncommittedHunkOrFile(file) if file.is_entire_file => Some(file),
-                CliId::UncommittedHunkOrFile(..)
+                CliId::AnonymousSegment(..)
+                | CliId::UncommittedHunkOrFile(..)
                 | CliId::PathPrefix { .. }
                 | CliId::CommittedFile { .. }
+                | CliId::CommittedHunk { .. }
                 | CliId::Branch(..)
                 | CliId::Commit { .. }
                 | CliId::Uncommitted { .. }
+                | CliId::Worktree { .. }
+                | CliId::WorktreeUncommitted { .. }
                 | CliId::Stack { .. } => None,
             })
             .expect("target file should have a CLI ID");

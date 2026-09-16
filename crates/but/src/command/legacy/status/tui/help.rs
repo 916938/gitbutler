@@ -59,8 +59,9 @@ impl Help {
                 for key_bind in
                     key_binds.iter_key_binds_available_in_mode_regardless_of_conditions(mode)
                 {
-                    if key_bind.show_only_in_normal_mode_help_section()
-                        && mode != ModeDiscriminant::Normal
+                    if (key_bind.show_only_in_normal_mode_help_section()
+                        && mode != ModeDiscriminant::Normal)
+                        || key_bind.hide_from_help()
                     {
                         continue;
                     }
@@ -99,16 +100,7 @@ impl Help {
     }
 
     pub fn render(&self, area: Rect, frame: &mut Frame) {
-        let padding = Padding {
-            left: 1,
-            right: 1,
-            top: 0,
-            bottom: 0,
-        };
-
-        let popup = Popup::new(self.theme, 100, self.height(area))
-            .padding(padding)
-            .render(area, frame);
+        let popup = self.popup(area).render(area, frame);
         let content_layout =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(popup.inner);
         let input_area = content_layout[0];
@@ -318,6 +310,19 @@ impl Help {
                 section_entry.chain(item_entries).chain(separator)
             },
         )
+    }
+
+    pub(crate) fn popup_area(&self, area: Rect) -> Rect {
+        self.popup(area).outer_area(area)
+    }
+
+    fn popup(&self, area: Rect) -> Popup {
+        Popup::new(self.theme, 100, self.height(area)).padding(Padding {
+            left: 1,
+            right: 1,
+            top: 0,
+            bottom: 0,
+        })
     }
 
     /// Returns the popup height for the given available area.

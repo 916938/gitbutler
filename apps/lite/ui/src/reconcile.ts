@@ -4,61 +4,54 @@
  */
 
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { branchParamRef } from "#ui/cursor-url.ts";
 import {
 	branchDiffQueryOptions,
 	changesInWorktreeQueryOptions,
 	commitDetailsWithLineStatsQueryOptions,
 	headInfoQueryOptions,
+	treeChangesDiffsQueryOptions,
 } from "./api/queries.ts";
-import { useParams } from "@tanstack/react-router";
+import { currentParams, remapSearchBranch } from "#ui/use-cursor.ts";
 import { getHeadInfoIndex, type HeadInfoIndex } from "./api/ref-info.ts";
-import { useEffectEvent, useLayoutEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef } from "react";
 import { useAppDispatch, useAppSelector } from "./store.ts";
 import { projectSlice } from "./projects/state.ts";
-import { branchOperand, commitOperand } from "./operands.ts";
-import { decodeBytes } from "./api/bytes.ts";
-import type { RefInfo } from "@gitbutler/but-sdk";
+import {
+	fileAddress,
+	addressIdentityKey,
+	type FileParent,
+	type Address,
+	uncommittedChangesFileParent,
+	weakFileParentIdentityKey,
+} from "./addresses.ts";
+import { decodeBytes, encodeBytes } from "./api/bytes.ts";
+import { hunkContainsHunk } from "./hunk.ts";
+import type { RefInfo, TreeChange } from "@gitbutler/but-sdk";
+import { reviewedFilesQueryOptions, usePruneReviewedFiles } from "./reviewed-files.ts";
 
 /**
- * Reconcile state between Redux and React Query. This hook should be called very high up in the
- * tree so that synchronous dispatches in layout effects don't waste too much work. This hook
- * remains subscribed to any queries that are relevant to the current state.
+ * Reconcile in-memory and persisted client state against current repository data, most notably
+ * between Redux and React Query.
+ *
+ * This hook should be called very high up in the tree so that synchronous dispatches in layout
+ * effects don't waste too much work. This hook remains subscribed to queries relevant to state that
+ * may need reconciliation.
  */
-export const useStateReconciler = (): void => {
-	const { id: projectId } = useParams({ from: "/project/$id/workspace" });
-
+export const useStateReconciler = (projectId: string): void => {
 	const dispatch = useAppDispatch();
 
-	const outlineSelection = useAppSelector((state) =>
-		projectSlice.selectors.selectPrimaryOutlineSelection(state, projectId),
-	);
-	const reconcileSelectedCommit = useEffectEvent((headInfoIndex: HeadInfoIndex) => {
-		if (outlineSelection?._tag !== "Commit") return;
-
-		const curr = headInfoIndex.commitContextByCommitId(outlineSelection.commitId);
-		if (curr) return;
-
-		// Change IDs are not necessarily globally unique, but typically will be. In any case this
-		// is a best-effort fallback.
-		const commit = headInfoIndex.commitContextsByChangeId(outlineSelection.changeId)?.[0].commit;
-
-		dispatch(
-			projectSlice.actions.selectOutline({
-				projectId,
-				selection: commit
-					? commitOperand({ commitId: commit.id, changeId: commit.changeId })
-					: null,
-			}),
-		);
-	});
+	// Commit cursors need no repair here: `change:` params re-resolve by change
+	// id (encode-match), and a `commit:` param names an identity nothing survives.
 	const reconcileSelectedBranch = useEffectEvent(
 		(headInfo: RefInfo, headInfoIndex: HeadInfoIndex, prevHeadInfoIndex: HeadInfoIndex) => {
-			if (outlineSelection?._tag !== "Branch") return;
+			const refName = branchParamRef(currentParams().applied);
+			if (refName === null) return;
 
-			const curr = headInfoIndex.branchContextByRefBytes(outlineSelection.branchRef);
-			if (curr) return;
+			const refBytes = encodeBytes(refName);
+			if (headInfoIndex.isApplied(refBytes)) return;
 
-			const prev = prevHeadInfoIndex.branchContextByRefBytes(outlineSelection.branchRef);
+			const prev = prevHeadInfoIndex.branchContextByRefBytes(refBytes);
 			if (!prev) return;
 
 			// We've no stable identifier for branches, so assume a rename retains its stack and segment
@@ -71,20 +64,15 @@ export const useStateReconciler = (): void => {
 			)
 				return;
 
-			dispatch(
-				projectSlice.actions.selectOutline({
-					projectId,
-					selection: branchOperand({ branchRef: sameSegmentBranch.fullNameBytes }),
-				}),
-			);
+			remapSearchBranch(refName, decodeBytes(sameSegmentBranch.fullNameBytes));
 		},
 	);
 
-	const checkedOperands = useAppSelector((state) =>
-		projectSlice.selectors.selectCheckedOperands(state, projectId),
+	const checkedAddresses = useAppSelector((state) =>
+		projectSlice.selectors.selectCheckedAddresses(state, projectId),
 	);
 
-	const checkedCommits = checkedOperands.filter((operand) => operand._tag === "Commit");
+	const checkedCommits = checkedAddresses.filter((address) => address._tag === "Commit");
 	const reconcileCheckedCommits = useEffectEvent((headInfoIndex: HeadInfoIndex) => {
 		const invalidated = checkedCommits.filter(
 			(commit) => !headInfoIndex.commitContextByCommitId(commit.commitId),
@@ -92,62 +80,118 @@ export const useStateReconciler = (): void => {
 
 		if (invalidated.length > 0) {
 			dispatch(
-				projectSlice.actions.checkOperands({ projectId, operands: invalidated, checked: false }),
+				projectSlice.actions.checkAddresses({ projectId, addresses: invalidated, checked: false }),
 			);
 		}
 	});
 
-	const checkedFiles = checkedOperands.filter((operand) => operand._tag === "File");
+	type FileScopedCheckedAddress = {
+		address: Extract<Address, { _tag: "File" | "Hunk" }>;
+		parent: FileParent;
+		path: string;
+	};
+	const checkedFiles = checkedAddresses
+		.values()
+		.map((address): FileScopedCheckedAddress | null => {
+			switch (address._tag) {
+				case "File":
+					return { address, parent: address.parent, path: address.path };
+				case "Hunk":
+					return { address, parent: address.parent.parent, path: address.parent.path };
+				default:
+					return null;
+			}
+		})
+		.filter((x) => x != null)
+		.toArray();
 
-	const checkedUncommittedFiles = checkedFiles.flatMap(({ parent, ...file }) =>
-		parent._tag === "UncommittedChanges" ? [{ ...file, parent }] : [],
+	const checkedUncommittedFiles = checkedFiles.filter(
+		(file) => file.parent._tag === "UncommittedChanges",
 	);
-	const reconcileCheckedUncommittedFiles = useEffectEvent((worktreeChangePaths: Set<string>) => {
-		const invalidated = checkedUncommittedFiles.filter(
-			(file) => !worktreeChangePaths.has(file.path),
-		);
-
-		if (invalidated.length > 0) {
-			dispatch(
-				projectSlice.actions.checkOperands({ projectId, operands: invalidated, checked: false }),
-			);
-		}
-	});
-
-	const checkedCommitFiles = checkedFiles.flatMap(({ parent, ...file }) =>
-		parent._tag === "Commit" ? [{ ...file, parent }] : [],
+	const reviewedFilesContextId = weakFileParentIdentityKey(uncommittedChangesFileParent);
+	const { data: reviewedUncommittedFiles } = useQuery(
+		reviewedFilesQueryOptions(projectId, reviewedFilesContextId),
 	);
-	const reconcileCheckedCommitFiles = useEffectEvent(
-		(headInfoIndex: HeadInfoIndex, checkedCommitFilesByCommitId: Map<string, Set<string>>) => {
-			const invalidated = checkedCommitFiles.filter(
-				(file) =>
-					!headInfoIndex.commitContextByCommitId(file.parent.commitId) ||
-					checkedCommitFilesByCommitId.get(file.parent.commitId)?.has(file.path) === false,
-			);
+	const { mutate: pruneReviewedFiles } = usePruneReviewedFiles();
+	const reconcileCheckedUncommittedFiles = useEffectEvent(
+		(worktreeChangesByPath: Map<string, TreeChange>) => {
+			const invalidated = checkedUncommittedFiles
+				.values()
+				.map((file) => (worktreeChangesByPath.has(file.path) ? null : file.address))
+				.filter((x) => x != null)
+				.toArray();
 
 			if (invalidated.length > 0) {
 				dispatch(
-					projectSlice.actions.checkOperands({ projectId, operands: invalidated, checked: false }),
+					projectSlice.actions.checkAddresses({
+						projectId,
+						addresses: invalidated,
+						checked: false,
+					}),
 				);
 			}
 		},
 	);
 
-	const checkedBranchFiles = checkedFiles.flatMap(({ parent, ...file }) =>
-		parent._tag === "Branch" ? [{ ...file, parent }] : [],
-	);
-	const reconcileCheckedBranchFiles = useEffectEvent(
-		(headInfoIndex: HeadInfoIndex, checkedBranchFilesByBranchName: Map<string, Set<string>>) => {
-			const invalidated = checkedBranchFiles.filter(
-				(file) =>
-					!headInfoIndex.branchContextByRefBytes(file.parent.branchRef) ||
-					checkedBranchFilesByBranchName.get(decodeBytes(file.parent.branchRef))?.has(file.path) ===
-						false,
-			);
+	const checkedCommitFiles = checkedFiles
+		.values()
+		.map((file) => (file.parent._tag === "Commit" ? { ...file, parent: file.parent } : null))
+		.filter((x) => x != null)
+		.toArray();
+	const reconcileCheckedCommitFiles = useEffectEvent(
+		(
+			headInfoIndex: HeadInfoIndex,
+			checkedCommitFilesByCommitId: Map<string, Map<string, TreeChange>>,
+		) => {
+			const invalidated = checkedCommitFiles
+				.values()
+				.map((file) =>
+					!headInfoIndex.commitContextByCommitId(file.parent.commitId) ||
+					checkedCommitFilesByCommitId.get(file.parent.commitId)?.has(file.path) === false
+						? file.address
+						: null,
+				)
+				.filter((x) => x != null)
+				.toArray();
 
 			if (invalidated.length > 0) {
 				dispatch(
-					projectSlice.actions.checkOperands({ projectId, operands: invalidated, checked: false }),
+					projectSlice.actions.checkAddresses({
+						projectId,
+						addresses: invalidated,
+						checked: false,
+					}),
+				);
+			}
+		},
+	);
+
+	const checkedBranchFiles = checkedFiles
+		.values()
+		.map((file) => (file.parent._tag === "Branch" ? { ...file, parent: file.parent } : null))
+		.filter((x) => x != null)
+		.toArray();
+	const reconcileCheckedBranchFiles = useEffectEvent(
+		(headInfoIndex: HeadInfoIndex, checkedBranchFilesByBranchName: Map<string, Set<string>>) => {
+			const invalidated = checkedBranchFiles
+				.values()
+				.map((file) =>
+					!headInfoIndex.isApplied(file.parent.branchRef) ||
+					checkedBranchFilesByBranchName.get(decodeBytes(file.parent.branchRef))?.has(file.path) ===
+						false
+						? file.address
+						: null,
+				)
+				.filter((x) => x != null)
+				.toArray();
+
+			if (invalidated.length > 0) {
+				dispatch(
+					projectSlice.actions.checkAddresses({
+						projectId,
+						addresses: invalidated,
+						checked: false,
+					}),
 				);
 			}
 		},
@@ -162,22 +206,46 @@ export const useStateReconciler = (): void => {
 		const prevHeadInfoIndex = prevHeadInfoIndexRef.current;
 		if (prevHeadInfoIndex) reconcileSelectedBranch(headInfo, headInfoIndex, prevHeadInfoIndex);
 
-		reconcileSelectedCommit(headInfoIndex);
 		reconcileCheckedCommits(headInfoIndex);
 
 		prevHeadInfoIndexRef.current = headInfoIndex;
 	}, [headInfo, headInfoIndex]);
 
-	const { data: worktreeChangePaths } = useQuery({
+	const { data: worktreeChangesByPath } = useQuery({
 		...changesInWorktreeQueryOptions(projectId),
-		select: (data) => new Set(data.changes.map((change) => change.path)),
-		enabled: checkedUncommittedFiles.length > 0,
+		select: (data) => new Map(data.changes.map((change) => [change.path, change])),
+		enabled:
+			checkedUncommittedFiles.length > 0 ||
+			(reviewedUncommittedFiles && reviewedUncommittedFiles.size > 0),
 	});
-	useLayoutEffect(() => {
-		if (!worktreeChangePaths) return;
 
-		reconcileCheckedUncommittedFiles(worktreeChangePaths);
-	}, [worktreeChangePaths]);
+	useLayoutEffect(() => {
+		if (!worktreeChangesByPath) return;
+
+		reconcileCheckedUncommittedFiles(worktreeChangesByPath);
+	}, [worktreeChangesByPath]);
+
+	const pruneReviewedUncommittedFiles = useEffectEvent(
+		(worktreeChangesByPath: Map<string, TreeChange>) => {
+			if (!reviewedUncommittedFiles) return;
+
+			const stalePaths = new Set(reviewedUncommittedFiles.keys()).difference(
+				new Set(worktreeChangesByPath.keys()),
+			);
+			if (stalePaths.size === 0) return;
+
+			pruneReviewedFiles({
+				projectId,
+				contextId: reviewedFilesContextId,
+				paths: stalePaths,
+			});
+		},
+	);
+	useEffect(() => {
+		if (!worktreeChangesByPath) return;
+
+		pruneReviewedUncommittedFiles(worktreeChangesByPath);
+	}, [reviewedUncommittedFiles, worktreeChangesByPath]);
 
 	const checkedCommitFileCommitIds = new Set(
 		checkedCommitFiles.map((file) => file.parent.commitId),
@@ -186,13 +254,19 @@ export const useStateReconciler = (): void => {
 		queries: Array.from(checkedCommitFileCommitIds, (commitId) =>
 			commitDetailsWithLineStatsQueryOptions({ projectId, commitId }),
 		),
-		combine: (results) =>
+		combine: (results): Map<string, Map<string, TreeChange>> =>
 			new Map(
-				results.flatMap((result) =>
-					result.data
-						? [[result.data.commit.id, new Set(result.data.changes.map((change) => change.path))]]
-						: [],
-				),
+				results
+					.values()
+					.map((result) =>
+						result.data
+							? ([
+									result.data.commit.id,
+									new Map(result.data.changes.map((change) => [change.path, change])),
+								] as const)
+							: null,
+					)
+					.filter((x) => x != null),
 			),
 	});
 	useLayoutEffect(() => {
@@ -210,12 +284,15 @@ export const useStateReconciler = (): void => {
 		),
 		combine: (results) =>
 			new Map(
-				results.flatMap((result, idx) => {
-					const key = checkedBranchFileBranchNames[idx];
-					return key !== undefined && result.data
-						? [[key, new Set(result.data.changes.map((change) => change.path))]]
-						: [];
-				}),
+				results
+					.values()
+					.map((result, idx) => {
+						const key = checkedBranchFileBranchNames[idx];
+						return key !== undefined && result.data
+							? ([key, new Set(result.data.changes.map((change) => change.path))] as const)
+							: null;
+					})
+					.filter((x) => x != null),
 			),
 	});
 	useLayoutEffect(() => {
@@ -223,4 +300,65 @@ export const useStateReconciler = (): void => {
 
 		reconcileCheckedBranchFiles(headInfoIndex, checkedBranchFilesByBranchName);
 	}, [headInfoIndex, checkedBranchFilesByBranchName]);
+
+	const checkedHunks = checkedAddresses.filter((address) => address._tag === "Hunk");
+	const checkedHunkFiles = Map.groupBy(checkedHunks, (hunk) =>
+		addressIdentityKey(fileAddress(hunk.parent)),
+	)
+		.values()
+		.map((hunks) => {
+			const anyHunk = hunks[0];
+			if (!anyHunk) return null;
+
+			const { parent, path } = anyHunk.parent;
+
+			const change =
+				parent._tag === "UncommittedChanges"
+					? worktreeChangesByPath?.get(path)
+					: parent._tag === "Commit"
+						? checkedCommitFilesByCommitId.get(parent.commitId)?.get(path)
+						: undefined;
+			return change ? { change, hunks } : null;
+		})
+		.filter((x) => x != null)
+		.toArray();
+	const { data: validCheckedHunkKeys = new Set<string>(), isFetching: checkingHunks } = useQuery({
+		...treeChangesDiffsQueryOptions({
+			projectId,
+			changes: checkedHunkFiles.map(({ change }) => change),
+		}),
+		select: (treeChangeDiffs): Set<string> =>
+			new Set(
+				treeChangeDiffs
+					.values()
+					.map((patch, index) => {
+						const file = checkedHunkFiles[index];
+						return file && patch?.type === "Patch" ? { file, patch } : null;
+					})
+					.filter((x) => x != null)
+					.flatMap(({ file, patch }) =>
+						file.hunks
+							.values()
+							.filter(
+								(hunk) =>
+									hunk.isResultOfBinaryToTextConversion ===
+										patch.subject.isResultOfBinaryToTextConversion &&
+									patch.subject.hunks.some((current) => hunkContainsHunk(current, hunk.hunkHeader)),
+							)
+							.map(addressIdentityKey),
+					),
+			),
+	});
+	const reconcileCheckedHunks = useEffectEvent((validHunkKeys: Set<string>) => {
+		const invalidated = checkedHunks.filter((hunk) => !validHunkKeys.has(addressIdentityKey(hunk)));
+
+		if (invalidated.length > 0) {
+			dispatch(
+				projectSlice.actions.checkAddresses({ projectId, addresses: invalidated, checked: false }),
+			);
+		}
+	});
+	useLayoutEffect(() => {
+		if (!checkingHunks) reconcileCheckedHunks(validCheckedHunkKeys);
+	}, [validCheckedHunkKeys, checkingHunks]);
 };

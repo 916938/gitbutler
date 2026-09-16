@@ -1,6 +1,7 @@
 import { app, type BrowserWindow, dialog } from "electron";
 import electronUpdater, { type AppUpdater, type UpdateDownloadedEvent } from "electron-updater";
 import { env } from "node:process";
+import { shutdownMetrics } from "./metrics.js";
 
 let updaterWindow: BrowserWindow | null = null;
 let updaterRegistered = false;
@@ -19,14 +20,21 @@ const showUpdateDownloadedDialog = async (event: UpdateDownloadedEvent): Promise
 
 	const { response } = await dialog.showMessageBox(updaterWindow, {
 		type: "info",
-		buttons: ["Restart and install"],
+		// Escape resolves to `cancelId`, so without a second button dismissing the dialog
+		// would restart the app mid-work rather than close the notice.
+		buttons: ["Restart and install", "Later"],
 		defaultId: 0,
-		cancelId: 0,
+		cancelId: 1,
 		message: `Update ${event.version} downloaded`,
-		detail: "Restart GitButler to install the update.",
+		detail: "Restart GitButler to install the update, or keep working and it installs on quit.",
 	});
 
-	if (response === 0) getAutoUpdater().quitAndInstall(false);
+	if (response === 0) {
+		// Flush metrics here; left to the quit handler it would preventDefault
+		// the updater's own quit and break the restart-into-new-version flow.
+		await shutdownMetrics();
+		getAutoUpdater().quitAndInstall(false);
+	}
 };
 
 export const registerUpdater = (mainWindow: BrowserWindow): void => {
@@ -35,7 +43,7 @@ export const registerUpdater = (mainWindow: BrowserWindow): void => {
 	updaterRegistered = true;
 
 	const autoUpdater = getAutoUpdater();
-	autoUpdater.autoDownload = true;
+	autoUpdater.autoDownload = autoUpdateEnabled;
 	autoUpdater.autoInstallOnAppQuit = true;
 	autoUpdater.on("update-downloaded", (event) => {
 		void showUpdateDownloadedDialog(event).catch((error) => {
@@ -49,10 +57,22 @@ export const registerUpdater = (mainWindow: BrowserWindow): void => {
 	});
 };
 
+/** Mirrors the `autoUpdate` setting, so a check can be refused without unregistering. */
+let autoUpdateEnabled = true;
+
+export const setAutoUpdateEnabled = (enabled: boolean): void => {
+	autoUpdateEnabled = enabled;
+	if (!updaterRegistered) return;
+	// Only affects a download that has not started; one already downloaded still
+	// installs on quit, which is what electron-updater has already committed to.
+	getAutoUpdater().autoDownload = enabled;
+};
+
 export const checkForUpdates = (): void => {
 	const updater = getAutoUpdater();
 
 	if (
+		!autoUpdateEnabled ||
 		!app.isPackaged ||
 		env.LITE_NO_AUTOUPDATE === "1" ||
 		process.platform === "win32" ||

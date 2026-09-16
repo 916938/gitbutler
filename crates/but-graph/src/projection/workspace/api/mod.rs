@@ -1,6 +1,9 @@
 use anyhow::Context;
 use bstr::BStr;
-use but_core::{RefMetadata, extract_remote_name_and_short_name, ref_metadata::StackId};
+use but_core::{
+    RefMetadata, extract_remote_name_and_short_name,
+    ref_metadata::{ProjectedWorkspaceStack, StackId},
+};
 use petgraph::Direction;
 use tracing::instrument;
 
@@ -22,8 +25,10 @@ pub use queries::legacy::HeadStatus;
 /// Lifecycle
 impl Workspace {
     /// Redo the graph traversal with the same settings as before, but use the latest
-    /// data from `repo`, `meta` and `project_meta` to do it.
+    /// data from `repo`, `meta`, `project_meta` and `db` to do it.
     /// This is useful to make this instance represent changes to `repo` or `meta`.
+    /// Worktree tips are [discovered](crate::init::Options::worktrees) afresh from
+    /// `db` rather than reusing the previous traversal's, as they may have changed.
     ///
     /// Pass a freshly read `project_meta` to pick up target changes as well, or
     /// `self.graph.project_meta.clone()` to deliberately keep the current one,
@@ -39,8 +44,9 @@ impl Workspace {
         repo: &gix::Repository,
         meta: &impl RefMetadata,
         project_meta: but_core::ref_metadata::ProjectMeta,
+        db: &mut but_db::DbHandle,
     ) -> anyhow::Result<()> {
-        let graph = Graph::from_head(repo, meta, project_meta, self.graph.options.clone())?;
+        let graph = Graph::from_head(repo, meta, project_meta, db, self.graph.options.clone())?;
         *self = graph.into_workspace()?;
         Ok(())
     }
@@ -74,6 +80,85 @@ impl Workspace {
 
 /// Utilities
 impl Workspace {
+    /// Reconcile workspace metadata with the stacks in this projection using
+    /// [`metadata.reconcile_projected_stacks()`](but_core::ref_metadata::Workspace::reconcile_projected_stacks).
+    pub fn reconcile_metadata(
+        &self,
+        metadata: &mut but_core::ref_metadata::Workspace,
+    ) -> anyhow::Result<()> {
+        metadata.reconcile_projected_stacks(
+            self.stacks.iter().map(|stack| ProjectedWorkspaceStack {
+                id: stack.id,
+                branches: stack
+                    .segments
+                    .iter()
+                    .filter_map(|segment| segment.ref_name().map(ToOwned::to_owned))
+                    .collect(),
+            }),
+            |_| StackId::generate(),
+        )
+    }
+
+    /// Return workspace metadata normalized against this projection.
+    ///
+    /// Unlike [`Self::metadata`], applied stacks absent from the projection are
+    /// treated as outside the workspace, and branches absent from a projected
+    /// stack are excluded.
+    ///
+    /// Branches checked out in linked worktrees are deliberately absent from
+    /// projected stacks, but they remain part of their recorded stack - being
+    /// checked out elsewhere is transient state, not a workspace change - so
+    /// they count as present here.
+    pub fn metadata_from_projection(
+        &self,
+    ) -> anyhow::Result<Option<but_core::ref_metadata::Workspace>> {
+        let Some(mut metadata) = self.metadata.clone() else {
+            return Ok(None);
+        };
+        let worktree_refs: std::collections::BTreeSet<&gix::refs::FullName> = self
+            .graph
+            .worktree_tips
+            .iter()
+            .filter_map(|tip| tip.ref_name.as_ref())
+            .collect();
+        for stack in &mut metadata.stacks {
+            if !stack.workspacecommit_relation.is_in_workspace() {
+                continue;
+            }
+            let Some(projected_stack) = self.stacks.iter().find(|projected| {
+                projected.id == Some(stack.id)
+                    || projected.segments.iter().any(|segment| {
+                        segment.ref_name().is_some_and(|projected_ref| {
+                            stack
+                                .branches
+                                .iter()
+                                .any(|branch| branch.ref_name == projected_ref)
+                        })
+                    })
+            }) else {
+                if stack
+                    .branches
+                    .iter()
+                    .any(|branch| worktree_refs.contains(&branch.ref_name))
+                {
+                    continue;
+                }
+                stack.workspacecommit_relation =
+                    but_core::ref_metadata::WorkspaceCommitRelation::Outside;
+                continue;
+            };
+            stack.branches.retain(|branch| {
+                worktree_refs.contains(&branch.ref_name)
+                    || projected_stack
+                        .segments
+                        .iter()
+                        .any(|segment| segment.ref_name() == Some(branch.ref_name.as_ref()))
+            });
+        }
+        self.reconcile_metadata(&mut metadata)?;
+        Ok(Some(metadata))
+    }
+
     /// Return the name of the remote most closely associated with this workspace.
     /// In order, we try:
     /// - The remote name of the [Self::target_ref].
@@ -175,7 +260,7 @@ impl Workspace {
             return false;
         };
 
-        t.ref_name.as_ref() == name
+        t.ref_name == name
             || self
                 .graph
                 .lookup_sibling_segment(t.segment_index)
@@ -410,9 +495,8 @@ impl Workspace {
             },
         );
         format!(
-            "{meta}{sign}:{id}:{name} <> ✓{target}{bound}",
+            "{meta}{sign}:{name} <> ✓{target}{bound}",
             meta = if self.metadata.is_some() { "📕" } else { "" },
-            id = self.id.index(),
             bound = self
                 .lower_bound
                 .map(|base| format!(" on {}", base.to_hex_with_len(7)))

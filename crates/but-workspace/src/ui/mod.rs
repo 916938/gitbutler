@@ -26,7 +26,7 @@ use crate::{
 // here to keep `but_workspace::ui::CommitState` (and the SDK schema) stable.
 pub use but_core::ui::CommitState;
 
-/// Commit that is a part of a [`StackBranch`](gitbutler_stack::StackBranch) and, as such, containing state derived in relation to the specific branch.
+/// Commit that is part of a legacy stack branch and contains state derived in relation to it.
 #[derive(Clone, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -78,46 +78,13 @@ pub struct Commit {
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(Commit);
 
-impl TryFrom<gix::Commit<'_>> for Commit {
-    type Error = anyhow::Error;
-    fn try_from(commit: gix::Commit<'_>) -> Result<Self, Self::Error> {
-        let commit_id = commit.id;
-        let commit = commit.decode()?;
-        let headers = but_core::commit::Headers::try_from_commit_headers(|| commit.extra_headers());
-        let has_conflicts = but_core::commit::is_conflicted(commit.message, headers.as_ref());
-        let change_id = headers
-            .unwrap_or_default()
-            .ensure_change_id(commit_id)
-            .change_id
-            .expect("change-id is ensured")
-            .to_string();
-        let message = but_core::commit::strip_conflict_markers(commit.message);
-        Ok(Commit {
-            id: commit_id,
-            parent_ids: commit.parents().collect(),
-            message,
-            has_conflicts,
-            state: CommitState::LocalAndRemote(commit_id),
-            authored_at: i128::from(commit.author()?.time()?.seconds) * 1000,
-            committed_at: i128::from(commit.time()?.seconds) * 1000,
-            author: commit.author()?.into(),
-            change_id,
-            gerrit_review_url: None,
-        })
-    }
-}
-
-impl From<but_core::CommitOwned> for Commit {
-    fn from(CommitOwned { id, inner }: CommitOwned) -> Self {
-        let headers = commit::Headers::try_from_commit(&inner);
-        let has_conflicts =
-            but_core::commit::is_conflicted(inner.message.as_ref(), headers.as_ref());
-        let change_id = headers
-            .unwrap_or_default()
-            .ensure_change_id(id)
-            .change_id
-            .expect("change-id is ensured")
-            .to_string();
+impl Commit {
+    /// Convert a detached `commit`. Its tree is not accessible without a repository,
+    /// so the caller must provide `has_conflicts` as determined by
+    /// [`but_core::Commit::is_conflicted()`] or an equivalent source.
+    pub fn from_commit_owned(commit: CommitOwned, has_conflicts: bool) -> Self {
+        let change_id = commit.change_id().to_string();
+        let CommitOwned { id, inner } = commit;
         let gix::objs::Commit {
             tree: _,
             parents,
@@ -136,7 +103,7 @@ impl From<but_core::CommitOwned> for Commit {
             state: CommitState::LocalAndRemote(id),
             authored_at: author.time.seconds as i128 * 1000,
             committed_at: committer.time.seconds as i128 * 1000,
-            author: author.to_ref(&mut TimeBuf::default()).into(),
+            author: author.to_ref(&mut TimeBuf::default()).trim().into(),
             change_id,
             gerrit_review_url: None,
         }
@@ -245,14 +212,6 @@ pub struct BranchDetails {
     )]
     /// The full reference of the branch
     pub reference: gix::refs::FullName,
-    /// The id of the linked worktree that has the reference of `name` checked out.
-    /// Note that we don't list the main worktree here.
-    #[serde(with = "but_serde::bstring_lossy_opt")]
-    #[cfg_attr(
-        feature = "export-schema",
-        schemars(schema_with = "but_schemars::bstring_lossy_opt")
-    )]
-    pub linked_worktree_id: Option<BString>,
     /// Upstream reference, e.g. `refs/remotes/origin/base-branch-improvements`
     #[serde(with = "but_serde::bstring_lossy_opt")]
     #[cfg_attr(
@@ -303,23 +262,6 @@ pub struct BranchDetails {
 }
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(BranchDetails);
-
-/// Information about the current state of a stack
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct StackDetails {
-    /// This is the name of the top-most branch, provided by the API for convenience
-    pub derived_name: String,
-    /// The pushable status for the stack
-    pub push_status: PushStatus,
-    /// The details about the contained branches
-    pub branch_details: Vec<BranchDetails>,
-    /// Whether the stack is conflicted.
-    pub is_conflicted: bool,
-}
-#[cfg(feature = "export-schema")]
-but_schemars::register_sdk_type!(StackDetails);
 
 /// Represents a branch in a `Stack`. It contains commits derived from the local pseudo branch and it's respective remote
 #[derive(Debug, Clone, Serialize)]

@@ -16,9 +16,31 @@
 		--commit-status-color: var(--commit-integrated);
 	}
 
+	&[data-status="Upstream"] {
+		--commit-status-color: var(--commit-upstream);
+	}
+
 	&[data-status="Diverged"] {
 		--commit-status-color: var(--commit-local);
 	}
+
+	/* Selected rows set --selection-inverted; flipping to the opposite color
+	   scheme resolves the line tokens to their inverted values, so the rail
+	   stays legible against the row's inverted selection background. */
+	@container style(--selection-inverted: true) {
+		color-scheme: dark;
+
+		@media (prefers-color-scheme: dark) {
+			color-scheme: light;
+		}
+	}
+}
+
+/* The rail is the glyph colour faded back, so it reads as a quieter companion
+   to the node without needing a token of its own. */
+.line {
+	stroke: currentColor;
+	stroke-opacity: 0.4;
 }
 
 .mainSegment {

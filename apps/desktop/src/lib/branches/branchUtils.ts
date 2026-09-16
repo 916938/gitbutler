@@ -10,27 +10,6 @@ export function createBranchRef(branchName: string, remote: string | undefined):
 	return `${REF_HEADS_PREFIX}${branchName}`;
 }
 
-/**
- * Get the branch name from a refname.
- *
- * If a remote is provided, the remote prefix will be removed.
- */
-export function getBranchNameFromRef(ref: string, remote?: string): string | undefined {
-	if (ref.startsWith(REF_REMOTES_PREFIX)) {
-		ref = ref.replace(REF_REMOTES_PREFIX, "");
-	}
-
-	if (remote !== undefined) {
-		const originPrefix = `${remote}${BRANCH_SEPARATOR}`;
-		if (!ref.startsWith(originPrefix)) {
-			throw new Error("Failed to parse branch name as reference");
-		}
-		ref = ref.replace(originPrefix, "");
-	}
-
-	return ref;
-}
-
 export function getBranchRemoteFromRef(ref: string): string | undefined {
 	if (ref.startsWith(REF_REMOTES_PREFIX)) {
 		ref = ref.slice(REF_REMOTES_PREFIX.length);

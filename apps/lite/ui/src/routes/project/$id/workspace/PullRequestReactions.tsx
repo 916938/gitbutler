@@ -1,7 +1,9 @@
+import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
-import { Popover, Tooltip } from "@base-ui/react";
+import { Tooltip } from "@base-ui/react";
+import { Dropdown } from "#ui/components/Popup.tsx";
 import type { ForgeReviewReaction, ForgeReviewReactionCount } from "@gitbutler/but-sdk";
 import { type FC, useState } from "react";
 import styles from "./PullRequestReactions.module.css";
@@ -72,8 +74,8 @@ export const Reactions: FC<{
 		myLogin == null ? undefined : reactors?.[kind]?.find((entry) => entry.login === myLogin);
 
 	const known = [...glyphByKind.keys()];
-	const chips = [...reactions]
-		.sort((a, b) => {
+	const chips = reactions
+		.toSorted((a, b) => {
 			const ai = known.indexOf(a.kind);
 			const bi = known.indexOf(b.kind);
 			return (ai === -1 ? known.length : ai) - (bi === -1 ? known.length : bi);
@@ -102,7 +104,8 @@ export const Reactions: FC<{
 								chip.mine !== undefined && styles.reactionChipMine,
 							)}
 						>
-							{glyph} {chip.count}
+							<span>{glyph}</span>
+							<span className="text-semibold">{chip.count}</span>
 						</span>
 					) : (
 						<button
@@ -117,7 +120,8 @@ export const Reactions: FC<{
 							)}
 							onClick={() => toggle(chip.kind, chip.mine)}
 						>
-							{glyph} {chip.count}
+							<span>{glyph}</span>
+							<span className="text-semibold">{chip.count}</span>
 						</button>
 					);
 				if (chip.who === undefined || chip.who.length === 0) return chipNode;
@@ -137,42 +141,39 @@ export const Reactions: FC<{
 			})}
 
 			{onToggle !== undefined && (
-				<Popover.Root open={pickerOpen} onOpenChange={setPickerOpen}>
-					<Popover.Trigger
-						render={
-							<button aria-label="Add reaction" className={styles.addReaction} type="button" />
-						}
-					>
-						<Icon name="smiley" />
-					</Popover.Trigger>
-					<Popover.Portal>
-						<Popover.Positioner align="start" sideOffset={4}>
-							<Popover.Popup className={styles.reactionPicker}>
-								{reactionGlyphs.map(([kind, glyph]) => {
-									const mine = mineFor(kind);
-									return (
-										<button
-											key={kind}
-											aria-label={`React with ${reactionName(kind)}`}
-											aria-pressed={mine !== undefined}
-											className={classes(
-												styles.pickerItem,
-												mine !== undefined && styles.pickerItemMine,
-											)}
-											onClick={() => {
-												toggle(kind, mine);
-												setPickerOpen(false);
-											}}
-											type="button"
-										>
-											{glyph}
-										</button>
-									);
-								})}
-							</Popover.Popup>
-						</Popover.Positioner>
-					</Popover.Portal>
-				</Popover.Root>
+				<Dropdown
+					open={pickerOpen}
+					onOpenChange={setPickerOpen}
+					className={styles.reactionPicker}
+					trigger={
+						<button
+							aria-label="Add reaction"
+							className={getButtonClassName({ variant: "ghost", iconOnly: true })}
+							type="button"
+						>
+							<Icon name="smiley" />
+						</button>
+					}
+				>
+					{reactionGlyphs.map(([kind, glyph]) => {
+						const mine = mineFor(kind);
+						return (
+							<button
+								key={kind}
+								aria-label={`React with ${reactionName(kind)}`}
+								aria-pressed={mine !== undefined}
+								className={classes(styles.pickerItem, mine !== undefined && styles.pickerItemMine)}
+								onClick={() => {
+									toggle(kind, mine);
+									setPickerOpen(false);
+								}}
+								type="button"
+							>
+								{glyph}
+							</button>
+						);
+					})}
+				</Dropdown>
 			)}
 		</div>
 	);

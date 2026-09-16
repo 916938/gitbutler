@@ -16,6 +16,7 @@ pub enum IntegrationStrategy {
 }
 
 #[derive(Debug, clap::Parser)]
+#[clap(after_help = "To rename an applied branch, use `but reword <branch> -m <new-name>`.")]
 pub struct Platform {
     #[clap(subcommand)]
     pub cmd: Option<Subcommands>,
@@ -193,6 +194,10 @@ pub struct NewPlatform {
         group = "targeting"
     )]
     pub below: Option<CliIdArg>,
+
+    /// Switch to the newly created branch instead of applying it to the GitButler workspace.
+    #[clap(long, short, group = "targeting")]
+    pub switch: bool,
 
     /// Name of the new branch.
     ///

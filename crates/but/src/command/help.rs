@@ -118,14 +118,13 @@ fn print_grouped_with_truncation(
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Diff => Group::Inspection,
                 #[cfg(feature = "legacy")]
-                SubcommandDiscriminant::_Diff2 => Group::Inspection,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Show => Group::Inspection,
                 SubcommandDiscriminant::_Comment => Group::Inspection,
 
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Commit => Group::BranchingAndCommitting,
                 SubcommandDiscriminant::Branch => Group::BranchingAndCommitting,
+                SubcommandDiscriminant::Worktree => Group::BranchingAndCommitting,
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Discard => Group::BranchingAndCommitting,
                 #[cfg(feature = "legacy")]
@@ -133,9 +132,12 @@ fn print_grouped_with_truncation(
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Apply => Group::BranchingAndCommitting,
                 #[cfg(feature = "legacy")]
+                SubcommandDiscriminant::Open => Group::Inspection,
+                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Clean => Group::BranchingAndCommitting,
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Pick => Group::BranchingAndCommitting,
+                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Switch => Group::BranchingAndCommitting,
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Resolve => Group::BranchingAndCommitting,
@@ -163,6 +165,8 @@ fn print_grouped_with_truncation(
                 SubcommandDiscriminant::Squash => Group::EditingCommits,
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Move => Group::EditingCommits,
+                #[cfg(feature = "legacy")]
+                SubcommandDiscriminant::Split => Group::EditingCommits,
 
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Oplog => Group::OperationHistory,
@@ -195,8 +199,6 @@ fn print_grouped_with_truncation(
                 SubcommandDiscriminant::Onboarding => continue,
                 SubcommandDiscriminant::External => continue,
 
-                #[cfg(feature = "legacy")]
-                SubcommandDiscriminant::Worktree => continue,
                 #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::RefreshRemoteData => continue,
                 #[cfg(feature = "legacy")]
@@ -373,12 +375,14 @@ Inspection:
   status       Overview of the project workspace state
   diff         Displays the diff of changes in the repo
   show         Shows detailed information about a commit or branch
+  open         Open the project in GitButler
 
 Branching and Committing:
   commit       Create a commit
   branch       Commands for managing branches
+  worktree     Manage worktrees (experimental, requires the worktreeManipulati…
   discard      Discard branches, commits, or changes
-  resolve      Resolve conflicts in a commit
+  resolve      Resolve conflicts in a commit or in uncommitted files
   unapply      Unapply a branch
   apply        Apply a branch
   clean        Remove empty branches from the workspace
@@ -387,9 +391,10 @@ Branching and Committing:
 Editing Commits:
   squash       Squash commits, branches, or changes
   move         Move commits and changes around
+  split        Split a commit in two
   absorb       Amends changes into the appropriate commits where they belong
   reword       Edit the commit message of the specified commit
-  uncommit     Uncommit commits, branches, or committed files
+  uncommit     Uncommit commits, branches, or committed changes
   amend        Amend uncommitted changes into a commit or branch
 
 Operation History:
@@ -446,7 +451,7 @@ Environment variables:
         let output = strip_ansi_codes(&buf);
 
         assert!(
-            output.contains("Uncommit commits, branches, or committed files"),
+            output.contains("Uncommit commits, branches, or committed changes"),
             "agent help should keep the full command description"
         );
         assert!(
@@ -479,6 +484,7 @@ Checkout the full docs here: https://docs.gitbutler.com/cli-overview
 
 Branching and Committing:
   branch       Commands for managing branches
+  worktree     Manage worktrees (experimental, requires the worktreeManipulati…
 
 Other Commands:
   gui          Open the GitButler GUI for the current project

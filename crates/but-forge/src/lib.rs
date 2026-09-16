@@ -6,28 +6,34 @@ pub use crate::forge::{ForgeName, ForgeRepoInfo, ForgeUser, deserialize_preferre
 mod association;
 mod ci;
 mod db;
-pub use db::list_cached_forge_reviews;
+pub use db::{cached_review_states, list_cached_forge_reviews};
 mod forge_info;
+mod merge_message;
+pub use merge_message::{MergedReviewFromMessage, merged_review_from_message};
 mod repo;
 mod review;
-pub use association::{pr_numbers_by_head, preferred_review, review_for_head_ref, reviews_by_head};
+pub use association::{
+    ReviewAssociation, preferred_review, review_associations_by_head, review_for_head_ref,
+    reviews_by_head,
+};
 pub use ci::{CiCheck, CiConclusion, CiOutput, CiStatus, ci_checks_for_ref_with_cache};
 pub use forge_info::{ForgeCapabilities, ForgeInfo, ForgeUnitInfo, compare_branch_url, forge_info};
 pub use repo::{RepoInfo, RepoPermissions, get_repo_info};
 pub use review::{
     CacheConfig, CreateForgeReviewParams, ForgeAccountValidity, ForgeReview, ForgeReviewComment,
     ForgeReviewFilter, ForgeReviewLabel, ForgeReviewReaction, ForgeReviewReactionCount,
-    ForgeReviewSubmission, ForgeReviewSubmissionState, ForgeReviewTargetUpdate,
-    ForgeReviewTimelineEvent, ForgeReviewTimelineEventKind, ForgeReviewUpdate, ForgeReviewUser,
-    GitHubStackingMode, PublishReviewOutcome, ReviewMergeMethod, ReviewMergeStatus,
-    ReviewStackingDescription, ReviewState, ReviewSyncOutcome, ReviewTemplateFunctions,
-    ReviewUpdatePayload, add_comment_reaction, add_review_labels, add_review_reaction,
-    available_review_templates, cache_review, check_forge_account_is_valid,
-    compute_review_target_updates, create_forge_review, create_review_comment,
-    delete_review_comment, get_forge_review, get_review_base_repo_url, get_review_merge_status,
-    get_review_template_functions, list_comment_reactions, list_forge_reviews_for_branch,
-    list_forge_reviews_with_cache, list_repo_labels, list_review_comments, list_review_reactions,
-    list_review_submissions, list_review_timeline_events, list_reviewer_candidates, merge_review,
+    ForgeReviewSubmission, ForgeReviewSubmissionState, ForgeReviewTargetUpdate, ForgeReviewThread,
+    ForgeReviewThreadComment, ForgeReviewThreadSide, ForgeReviewTimelineEvent,
+    ForgeReviewTimelineEventKind, ForgeReviewUpdate, ForgeReviewUser, GitHubStackingMode,
+    PublishReviewOutcome, ReviewMergeMethod, ReviewMergeStatus, ReviewStackingDescription,
+    ReviewState, ReviewSyncOutcome, ReviewTemplateFunctions, ReviewUpdatePayload,
+    add_comment_reaction, add_review_labels, add_review_reaction, available_review_templates,
+    cache_review, check_forge_account_is_valid, compute_review_target_updates, create_forge_review,
+    create_review_comment, create_review_thread_reply, delete_review_comment, get_forge_review,
+    get_review_base_repo_url, get_review_merge_status, get_review_template_functions,
+    list_comment_reactions, list_forge_reviews_for_branch, list_forge_reviews_with_cache,
+    list_repo_labels, list_review_comments, list_review_reactions, list_review_submissions,
+    list_review_threads, list_review_timeline_events, list_reviewer_candidates, merge_review,
     prepare_review_target_updates, remove_comment_reaction, remove_review_label,
     remove_review_reaction, request_review, restore_native_stacks, set_review_auto_merge_state,
     set_review_draftiness, sync_reviews, update_review, update_review_comment,
@@ -79,28 +85,10 @@ pub fn derive_forge_repo_info(url: &str) -> Option<ForgeRepoInfo> {
 /// Look for the best matching account by comparing the repository host to the
 /// account custom host string.
 fn match_host_to_accounts_custom_host(host: &str, accounts: &[ForgeUser]) -> Option<ForgeName> {
-    let user = accounts.iter().find(|account| match account {
-        ForgeUser::GitHub(gh_account) => gh_account
-            .custom_host()
-            .as_deref()
-            .is_some_and(|custom_host| custom_host_matches_repository_host(host, custom_host)),
-        ForgeUser::GitLab(gl_account) => gl_account
-            .custom_host()
-            .as_deref()
-            .is_some_and(|custom_host| custom_host_matches_repository_host(host, custom_host)),
-        // Bitbucket Cloud is fixed-host, so it never matches a custom host.
-        ForgeUser::Bitbucket(bb_account) => bb_account
-            .custom_host()
-            .as_deref()
-            .is_some_and(|custom_host| custom_host_matches_repository_host(host, custom_host)),
-    });
-
-    match user {
-        Some(ForgeUser::GitHub(_)) => Some(ForgeName::GitHub),
-        Some(ForgeUser::GitLab(_)) => Some(ForgeName::GitLab),
-        Some(ForgeUser::Bitbucket(_)) => Some(ForgeName::Bitbucket),
-        None => None,
-    }
+    accounts.iter().find_map(|account| {
+        let custom_host = account.custom_host()?;
+        custom_host_matches_repository_host(host, &custom_host).then(|| account.forge_name())
+    })
 }
 
 /// Compare a repository host to an account custom-host string.
@@ -151,10 +139,12 @@ fn normalize_host_for_comparison(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// The login this repository's forge calls authenticate as: the preferred
-/// account when it is known to storage, otherwise the first known account of
-/// the repository's forge — mirroring how the per-forge clients resolve
-/// their account. `None` when no matching account is configured.
+/// The login this repository's forge calls authenticate as, mirroring how
+/// the per-forge clients resolve their account: the preferred account when
+/// it is still in storage, otherwise (with no preference set) the first
+/// known account of the repository's forge. `None` when no account is
+/// configured — or when the preferred account is gone from storage, where
+/// the clients refuse to authenticate rather than fall back.
 pub fn current_forge_login(
     preferred_forge_user: &Option<ForgeUser>,
     forge_repo_info: &ForgeRepoInfo,
@@ -163,23 +153,21 @@ pub fn current_forge_login(
     match forge_repo_info.forge {
         ForgeName::GitHub => {
             let accounts = but_github::list_known_github_accounts(storage)?;
-            let preferred = preferred_forge_user
-                .as_ref()
-                .and_then(|user| user.github())
-                .filter(|preferred| accounts.contains(preferred));
-            Ok(preferred
-                .or(accounts.first())
-                .map(|account| account.username().to_string()))
+            let preferred = preferred_forge_user.as_ref().and_then(|user| user.github());
+            Ok(match preferred {
+                Some(preferred) => accounts.iter().find(|account| *account == preferred),
+                None => accounts.first(),
+            }
+            .map(|account| account.username().to_string()))
         }
         ForgeName::GitLab => {
             let accounts = but_gitlab::list_known_gitlab_accounts(storage)?;
-            let preferred = preferred_forge_user
-                .as_ref()
-                .and_then(|user| user.gitlab())
-                .filter(|preferred| accounts.contains(preferred));
-            Ok(preferred
-                .or(accounts.first())
-                .map(|account| account.username().to_string()))
+            let preferred = preferred_forge_user.as_ref().and_then(|user| user.gitlab());
+            Ok(match preferred {
+                Some(preferred) => accounts.iter().find(|account| *account == preferred),
+                None => accounts.first(),
+            }
+            .map(|account| account.username().to_string()))
         }
         _ => Ok(None),
     }
@@ -206,8 +194,134 @@ pub fn get_all_forge_accounts() -> anyhow::Result<Vec<ForgeUser>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ForgeName, ForgeUser, match_host_to_accounts_custom_host, normalize_host_for_comparison,
+        ForgeName, ForgeRepoInfo, ForgeUser, current_forge_login,
+        match_host_to_accounts_custom_host, normalize_host_for_comparison,
     };
+
+    fn github_repo_info() -> ForgeRepoInfo {
+        ForgeRepoInfo {
+            forge: ForgeName::GitHub,
+            owner: "gitbutlerapp".into(),
+            repo: "gitbutler".into(),
+            protocol: "https".into(),
+        }
+    }
+
+    fn gitlab_repo_info() -> ForgeRepoInfo {
+        ForgeRepoInfo {
+            forge: ForgeName::GitLab,
+            owner: "gitbutlerapp".into(),
+            repo: "gitbutler".into(),
+            protocol: "https".into(),
+        }
+    }
+
+    fn github_storage(usernames: &[&str]) -> (but_forge_storage::Controller, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = but_forge_storage::Controller::from_path(tmp.path());
+        for username in usernames {
+            storage
+                .add_github_account(&but_forge_storage::settings::GitHubAccount::OAuth {
+                    username: (*username).into(),
+                    access_token_key: format!("github_oauth_{username}"),
+                })
+                .unwrap();
+        }
+        (storage, tmp)
+    }
+
+    fn gitlab_storage(usernames: &[&str]) -> (but_forge_storage::Controller, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = but_forge_storage::Controller::from_path(tmp.path());
+        for username in usernames {
+            storage
+                .add_gitlab_account(&but_forge_storage::settings::GitLabAccount::Pat {
+                    username: (*username).into(),
+                    access_token_key: format!("gitlab_pat_{username}"),
+                })
+                .unwrap();
+        }
+        (storage, tmp)
+    }
+
+    #[test]
+    fn current_login_uses_the_first_account_without_a_preference() {
+        let (github, _gh_tmp) = github_storage(&["alice"]);
+        let (gitlab, _gl_tmp) = gitlab_storage(&["alice"]);
+
+        assert_eq!(
+            current_forge_login(&None, &github_repo_info(), &github).unwrap(),
+            Some("alice".into()),
+            "the GitHub client defaults to the first stored account"
+        );
+        assert_eq!(
+            current_forge_login(&None, &gitlab_repo_info(), &gitlab).unwrap(),
+            Some("alice".into()),
+            "the GitLab client defaults to the first stored account"
+        );
+    }
+
+    #[test]
+    fn current_login_uses_the_configured_preferred_account() {
+        let (github, _gh_tmp) = github_storage(&["alice", "bob"]);
+        let (gitlab, _gl_tmp) = gitlab_storage(&["alice", "bob"]);
+
+        assert_eq!(
+            current_forge_login(
+                &Some(ForgeUser::GitHub(
+                    but_github::GithubAccountIdentifier::oauth("bob"),
+                )),
+                &github_repo_info(),
+                &github,
+            )
+            .unwrap(),
+            Some("bob".into()),
+            "a stored preferred account is the one the GitHub client authenticates as"
+        );
+        assert_eq!(
+            current_forge_login(
+                &Some(ForgeUser::GitLab(but_gitlab::GitlabAccountIdentifier::pat(
+                    "bob"
+                ),)),
+                &gitlab_repo_info(),
+                &gitlab,
+            )
+            .unwrap(),
+            Some("bob".into()),
+            "a stored preferred account is the one the GitLab client authenticates as"
+        );
+    }
+
+    #[test]
+    fn current_login_rejects_a_missing_preferred_account() {
+        let (github, _gh_tmp) = github_storage(&["alice"]);
+        let (gitlab, _gl_tmp) = gitlab_storage(&["alice"]);
+
+        assert_eq!(
+            current_forge_login(
+                &Some(ForgeUser::GitHub(
+                    but_github::GithubAccountIdentifier::oauth("forgotten"),
+                )),
+                &github_repo_info(),
+                &github,
+            )
+            .unwrap(),
+            None,
+            "the GitHub client refuses a preferred account gone from storage, so no login is reported"
+        );
+        assert_eq!(
+            current_forge_login(
+                &Some(ForgeUser::GitLab(but_gitlab::GitlabAccountIdentifier::pat(
+                    "forgotten"
+                ),)),
+                &gitlab_repo_info(),
+                &gitlab,
+            )
+            .unwrap(),
+            None,
+            "the GitLab client refuses a preferred account gone from storage, so no login is reported"
+        );
+    }
 
     #[test]
     fn matches_github_enterprise_custom_host() {

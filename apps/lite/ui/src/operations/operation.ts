@@ -10,14 +10,14 @@
 import { Toast } from "@base-ui/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Match } from "effect";
-import type { QueryKey } from "#ui/api/queries.ts";
 import { rejectedChangesToastOptions } from "#ui/operations/toastOptions.tsx";
 import type { DiffSpec, InsertSide, RelativeTo } from "@gitbutler/but-sdk";
-import { type Operand, operandEquals, operandFileParent } from "#ui/operands.ts";
+import { type Address, addressEquals, addressFileParent } from "#ui/addresses.ts";
 import { resolveDiffSpecs, useResolveDiffSpecs } from "#ui/operations/diff-specs.ts";
 import { decodeBytes } from "#ui/api/bytes.ts";
+import { guiSettingsQueryOptions } from "#ui/api/queries.ts";
+import { defaultSettings } from "#ui/settings.ts";
 import { useAppDispatch } from "#ui/store.ts";
-import { useParams } from "@tanstack/react-router";
 import { errorMessageForToast } from "#ui/errors.ts";
 import { syncCoreCaches } from "#ui/api/mutations.ts";
 
@@ -27,17 +27,23 @@ import { syncCoreCaches } from "#ui/api/mutations.ts";
  * a single, atomic operation.
  */
 type Operation =
-	| { _tag: "AmendCommit"; sources: Array<Operand>; commitId: string }
+	| { _tag: "AmendCommit"; sources: Array<Address>; commitId: string }
+	| {
+			_tag: "CherryPick";
+			sourceCommitIds: Array<string>;
+			relativeTo: RelativeTo;
+			side: InsertSide;
+	  }
 	| {
 			_tag: "CreateCommit";
-			sources: Array<Operand>;
+			sources: Array<Address>;
 			relativeTo: RelativeTo;
 			side: InsertSide;
 			message: string;
 	  }
 	| {
 			_tag: "SplitCommit";
-			sources: Array<Operand>;
+			sources: Array<Address>;
 			sourceCommitId: string;
 			relativeTo: RelativeTo;
 			side: InsertSide;
@@ -50,19 +56,19 @@ type Operation =
 	  }
 	| {
 			_tag: "MoveCommitFile";
-			sources: Array<Operand>;
+			sources: Array<Address>;
 			sourceCommitId: string;
 			destinationCommitId: string;
 	  }
 	| {
 			_tag: "SquashCommit";
-			sourceCommitIds: Array<string>;
+			subjectCommitIds: Array<string>;
 			destinationCommitId: string;
 	  }
 	| { _tag: "UndoCommit"; subjectCommitIds: Array<string>; assignTo: string | null }
 	| {
 			_tag: "DiscardChanges";
-			sources: Array<Operand>;
+			sources: Array<Address>;
 			commitId: string;
 			assignTo: string | null;
 	  }
@@ -78,7 +84,7 @@ const executeOperation = async ({
 }: {
 	projectId: string;
 	operation: Operation;
-	resolveChanges: (sources: Array<Operand>) => Promise<Array<DiffSpec> | null>;
+	resolveChanges: (sources: Array<Address>) => Promise<Array<DiffSpec> | null>;
 	dryRun: boolean;
 }) =>
 	Match.value(operation).pipe(
@@ -94,6 +100,14 @@ const executeOperation = async ({
 					dryRun,
 				});
 			},
+			CherryPick: (operation) =>
+				window.lite.commitCherryPick({
+					projectId,
+					sourceCommitIds: operation.sourceCommitIds,
+					relativeTo: operation.relativeTo,
+					side: operation.side,
+					dryRun,
+				}),
 			MoveCommitFile: async (operation) => {
 				const changes = await resolveChanges(operation.sources);
 				if (!changes) return null;
@@ -108,8 +122,9 @@ const executeOperation = async ({
 			SquashCommit: (operation) =>
 				window.lite.commitSquash({
 					projectId,
-					sourceCommitIds: operation.sourceCommitIds,
-					destinationCommitId: operation.destinationCommitId,
+					subjectCommitIds: operation.subjectCommitIds,
+					targetCommitId: operation.destinationCommitId,
+					howToCombineMessages: "KeepBoth",
 					dryRun,
 				}),
 			UndoCommit: (operation) =>
@@ -188,11 +203,17 @@ const executeOperation = async ({
 
 export const useDryRunOperation = ({
 	projectId,
-	operation,
+	operation: requestedOperation,
 }: {
 	projectId: string;
 	operation?: Operation;
 }) => {
+	const { data: dryRunsEnabled } = useQuery({
+		...guiSettingsQueryOptions,
+		select: (cfg) => cfg.dryRunOperations ?? defaultSettings.dryRunOperations,
+	});
+	// Blank the operation when disabled so nothing below it does any work.
+	const operation = dryRunsEnabled ? requestedOperation : undefined;
 	const changes = useResolveDiffSpecs({
 		projectId,
 		sources: operation && "sources" in operation ? operation.sources : undefined,
@@ -200,7 +221,7 @@ export const useDryRunOperation = ({
 
 	return useQuery({
 		enabled: !!operation,
-		queryKey: ["dryRun" satisfies QueryKey, projectId, operation, changes],
+		queryKey: [projectId, "dryRun", operation, changes],
 		queryFn: () => {
 			if (!operation) return null;
 			return executeOperation({
@@ -215,8 +236,7 @@ export const useDryRunOperation = ({
 	});
 };
 
-export const useExecuteOperation = () => {
-	const { id: projectId } = useParams({ from: "/project/$id/workspace" });
+export const useExecuteOperation = (projectId: string) => {
 	const dispatch = useAppDispatch();
 	const queryClient = useQueryClient();
 	const toastManager = Toast.useToastManager();
@@ -257,19 +277,19 @@ export const useExecuteOperation = () => {
 	});
 };
 
-const isUncommittedChangesSource = (source: Operand): boolean =>
-	operandFileParent(source)?._tag === "UncommittedChanges";
+const isUncommittedChangesSource = (source: Address): boolean =>
+	addressFileParent(source)?._tag === "UncommittedChanges";
 
-const commitIdFromFileSources = (sources: Array<Operand>): string | null => {
+const commitIdFromFileSources = (sources: Array<Address>): string | null => {
 	const [source, ...rest] = sources;
 	if (!source) return null;
 
-	const parent = operandFileParent(source);
+	const parent = addressFileParent(source);
 	if (parent?._tag !== "Commit") return null;
 
 	const hasDisparateParent = rest.some((source) => {
-		const otherParent = operandFileParent(source);
-		return otherParent === null || !operandEquals(parent, otherParent);
+		const otherParent = addressFileParent(source);
+		return otherParent === null || !addressEquals(parent, otherParent);
 	});
 	return hasDisparateParent ? null : parent.commitId;
 };
@@ -285,8 +305,8 @@ const squashOperation = ({
 	sources,
 	target,
 }: {
-	sources: Array<Operand>;
-	target: Operand;
+	sources: Array<Address>;
+	target: Address;
 }): LabelledOperation | null => {
 	if (
 		target._tag === "Commit" &&
@@ -296,7 +316,7 @@ const squashOperation = ({
 		return {
 			operation: {
 				_tag: "SquashCommit",
-				sourceCommitIds: sources.map((source) => source.commitId),
+				subjectCommitIds: sources.map((source) => source.commitId),
 				destinationCommitId: target.commitId,
 			},
 			label: "Squash",
@@ -363,8 +383,8 @@ const intoOperation = ({
 	sources,
 	target,
 }: {
-	sources: Array<Operand>;
-	target: Operand;
+	sources: Array<Address>;
+	target: Address;
 }): LabelledOperation | null => {
 	const squash = squashOperation({ sources, target });
 	if (squash) return squash;
@@ -407,8 +427,8 @@ const moveOperation = ({
 	target,
 	side,
 }: {
-	sources: Array<Operand>;
-	target: Operand;
+	sources: Array<Address>;
+	target: Address;
 	side: InsertSide;
 }): LabelledOperation | null => {
 	const relativeTo: RelativeTo | null = Match.value({ target, side }).pipe(
@@ -419,7 +439,7 @@ const moveOperation = ({
 		Match.when(
 			{
 				target: { _tag: "Branch" },
-				// We use the branch operand as the source/target for the branch
+				// We use the branch address as the source/target for the branch
 				// contents. However, `RelativeTo` is interpreted to mean just the
 				// branch reference rather than the branch bucket, meaning `side:
 				// "below"` won't work as expected.
@@ -507,8 +527,9 @@ const moveOperation = ({
 };
 
 export type Placement = "into" | "above" | "below";
+export type TransferKind = "move" | "copy";
 
-const isOperationSourceEnabled = (source: Operand): boolean =>
+const isOperationSourceEnabled = (source: Address): boolean =>
 	Match.value(source).pipe(
 		Match.when({ _tag: "Hunk", isResultOfBinaryToTextConversion: true }, () => false),
 		Match.orElse(() => true),
@@ -516,27 +537,91 @@ const isOperationSourceEnabled = (source: Operand): boolean =>
 
 export type OperationsByPlacement = Record<Placement, LabelledOperation | null>;
 
-export const getOperations = (sources: Array<Operand>, target: Operand): OperationsByPlacement => {
-	if (
-		sources.length === 0 ||
-		sources.some((source) => operandEquals(source, target)) ||
-		!sources.every(isOperationSourceEnabled)
-	) {
+const cherryPickOperation = ({
+	sources,
+	target,
+	placement,
+}: {
+	sources: Array<Address>;
+	target: Address;
+	placement: Placement;
+}): LabelledOperation | null => {
+	if (sources.length === 0 || !sources.every((source) => source._tag === "Commit")) return null;
+
+	const destination = Match.value({ target, placement }).pipe(
+		Match.when({ target: { _tag: "Commit" } }, ({ target, placement }) =>
+			placement === "into"
+				? null
+				: {
+						relativeTo: {
+							type: "commit",
+							subject: target.commitId,
+						} satisfies RelativeTo,
+						side: placement,
+					},
+		),
+		Match.when({ target: { _tag: "Branch" }, placement: "into" }, ({ target }) => ({
+			relativeTo: {
+				type: "referenceBytes",
+				subject: target.branchRef,
+			} satisfies RelativeTo,
+			side: "below" as const,
+		})),
+		Match.orElse(() => null),
+	);
+	if (!destination) return null;
+
+	return {
+		operation: {
+			_tag: "CherryPick",
+			sourceCommitIds: sources.map((source) => source.commitId),
+			relativeTo: destination.relativeTo,
+			side: destination.side,
+		},
+		label: Match.value(placement).pipe(
+			Match.when("above", () => "Cherry-pick above"),
+			Match.when("below", () => "Cherry-pick below"),
+			Match.when("into", () => "Cherry-pick here"),
+			Match.exhaustive,
+		),
+	};
+};
+
+export const getOperations = (
+	sources: Array<Address>,
+	target: Address,
+	kind: TransferKind,
+): OperationsByPlacement => {
+	if (sources.length === 0 || !sources.every(isOperationSourceEnabled)) {
 		return {
 			into: null,
 			above: null,
 			below: null,
 		};
 	}
-	return {
-		into: intoOperation({ sources, target }),
-		above: moveOperation({ sources, target, side: "above" }),
-		below: moveOperation({ sources, target, side: "below" }),
-	};
+
+	switch (kind) {
+		case "copy":
+			return {
+				into: cherryPickOperation({ sources, target, placement: "into" }),
+				above: cherryPickOperation({ sources, target, placement: "above" }),
+				below: cherryPickOperation({ sources, target, placement: "below" }),
+			};
+		case "move":
+			if (sources.some((source) => addressEquals(source, target)))
+				return { into: null, above: null, below: null };
+
+			return {
+				into: intoOperation({ sources, target }),
+				above: moveOperation({ sources, target, side: "above" }),
+				below: moveOperation({ sources, target, side: "below" }),
+			};
+	}
 };
 
 export const getOperation = (x: {
-	sources: Array<Operand>;
-	target: Operand;
+	sources: Array<Address>;
+	target: Address;
 	placement: Placement;
-}): LabelledOperation | null => getOperations(x.sources, x.target)[x.placement];
+	kind: TransferKind;
+}): LabelledOperation | null => getOperations(x.sources, x.target, x.kind)[x.placement];

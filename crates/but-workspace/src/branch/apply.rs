@@ -1,10 +1,34 @@
+use anyhow::{Context as _, bail};
 use bstr::ByteSlice as _;
+use but_core::{
+    ObjectStorageExt, RefMetadata, RepositoryExt, extract_remote_name_and_short_name, ref_metadata,
+    ref_metadata::{
+        Workspace,
+        WorkspaceCommitRelation::{Merged, Outside},
+    },
+};
 use but_core::{
     WORKSPACE_REF_NAME,
     ref_metadata::{StackId, StackKind},
 };
+use but_graph::{SegmentIndex, init::Overlay, petgraph::Direction, workspace::WorkspaceKind};
+use gix::{
+    prelude::ObjectIdExt,
+    reference::Category,
+    refs::{
+        FullNameRef, Target,
+        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
+    },
+};
+use tracing::instrument;
 
 use crate::branch::{OnWorkspaceMergeConflict, try_find_validated_ref};
+use crate::{
+    WorkspaceCommit,
+    branch::{anon_stacks, ensure_no_missing_stacks},
+    commit::merge::Tip,
+    ref_info::WorkspaceExt,
+};
 
 /// A stack that conflicted while applying a branch.
 #[derive(Clone)]
@@ -167,33 +191,19 @@ pub struct Options {
     pub order: Option<usize>,
     /// Create new stack id, which by default is a function that generates a new StackId.
     pub new_stack_id: Option<fn(&gix::refs::FullNameRef) -> StackId>,
+    /// By default applying branches that are already applied is considered an error. Setting this
+    /// to `true` changes that so if we're not in a workspace, applying already applied branches is
+    /// allowed.
+    ///
+    /// The apply follows the normal apply path, as if the branch wasn't applied.
+    ///
+    /// The use case for this is to go from single branch mode to workspace mode. If we're in SBM
+    /// with branch `foo` applied and we apply `foo` with
+    /// `allow_applying_already_applied_branch_when_outside_workspace` set to `true`, we'll be put
+    /// into a workspace with only `foo` applied, regardless which branches were previously
+    /// applied.
+    pub allow_applying_already_applied_branch_when_outside_workspace: bool,
 }
-
-use anyhow::{Context as _, bail};
-use but_core::{
-    ObjectStorageExt, RefMetadata, RepositoryExt, extract_remote_name_and_short_name, ref_metadata,
-    ref_metadata::{
-        Workspace,
-        WorkspaceCommitRelation::{Merged, Outside},
-    },
-};
-use but_graph::{SegmentIndex, init::Overlay, petgraph::Direction, workspace::WorkspaceKind};
-use gix::{
-    prelude::ObjectIdExt,
-    reference::Category,
-    refs::{
-        FullNameRef, Target,
-        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
-    },
-};
-use tracing::instrument;
-
-use crate::{
-    WorkspaceCommit,
-    branch::{anon_stacks, ensure_no_missing_stacks},
-    commit::merge::Tip,
-    ref_info::WorkspaceExt,
-};
 
 /// Apply `branch` to the given `workspace`, and possibly create the workspace reference in `repo`
 /// along with its `meta`-data if it doesn't exist yet.
@@ -228,6 +238,7 @@ pub fn apply(
         workspace_reference_naming,
         order,
         new_stack_id,
+        allow_applying_already_applied_branch_when_outside_workspace,
     }: Options,
 ) -> anyhow::Result<Outcome> {
     let ws = workspace;
@@ -256,11 +267,22 @@ pub fn apply(
         branch = upstream_branch_name;
         branch_ref = try_find_validated_ref(repo, branch.as_ref(), "apply")?;
     }
+    let head_ref_name = repo.head_name()?.map(|name| name.to_owned());
+    let head_on_managed_workspace_ref = match &ws.kind {
+        WorkspaceKind::Managed { ref_info }
+        | WorkspaceKind::ManagedMissingWorkspaceCommit { ref_info } => head_ref_name
+            .as_ref()
+            .is_some_and(|head| head == &ref_info.ref_name),
+        WorkspaceKind::AdHoc => false,
+    };
     let branch_has_applied_metadata =
         branch_has_applied_workspace_metadata(branch.as_ref(), &ws, meta)?;
     let branch_already_applied =
         ws.is_reachable_from_entrypoint(branch.as_ref()) && branch_has_applied_metadata;
-    if branch_already_applied {
+    if branch_already_applied
+        && (!allow_applying_already_applied_branch_when_outside_workspace
+            || head_on_managed_workspace_ref)
+    {
         let workspace_ref_created = false;
         // When exiting early, don't try to adjust the ws commit.
         return Ok(Outcome {
@@ -382,7 +404,6 @@ pub fn apply(
     };
     // Whether HEAD already points at the workspace ref, or sits directly on a branch. When it's on a
     // branch we move HEAD onto the workspace ref and rebuild the workspace around the branches we keep.
-    let head_ref_name = repo.head_name()?.map(|rn| rn.to_owned());
     let head_on_workspace_ref = head_ref_name
         .as_ref()
         .is_some_and(|head| head.as_bstr() == workspace_ref_name_to_update.as_bstr());
@@ -415,33 +436,25 @@ pub fn apply(
     {
         let ws_mut: &mut Workspace = &mut ws_md;
         // Demote previously-applied stacks before re-applying, in two situations:
-        //  - stale AdHoc metadata left after switching out of the workspace: the stack no longer
-        //    appears in the projection, and
+        //  - stale metadata whose stack no longer appears in the projection, and
         //  - re-rooting around a branch we have checked out that's already in the workspace: keep
         //    only that branch and the branch being applied.
-        // Ref names the projection (`ws`) contains, in AdHoc mode only; `None` in a managed
-        // workspace, where the metadata is authoritative so projection absence doesn't demote.
-        let projected_refs = matches!(ws.kind, WorkspaceKind::AdHoc).then(|| {
-            ws.stacks
-                .iter()
-                .flat_map(|s| s.segments.iter())
-                .filter_map(|seg| seg.ref_name().map(|rn| rn.as_bstr()))
-                .collect::<std::collections::HashSet<_>>()
-        });
+        let projected_refs = ws
+            .stacks
+            .iter()
+            .flat_map(|s| s.segments.iter())
+            .filter_map(|seg| seg.ref_name().map(|rn| rn.as_bstr()))
+            .collect::<std::collections::HashSet<_>>();
         for stack in &mut ws_mut.stacks {
-            let dropped_from_projection = projected_refs.as_ref().is_some_and(|projected| {
-                !stack
-                    .branches
-                    .iter()
-                    .any(|b| projected.contains(b.ref_name.as_ref().as_bstr()))
-            });
+            let dropped_from_projection = !stack
+                .branches
+                .iter()
+                .any(|b| projected_refs.contains(b.ref_name.as_ref().as_bstr()));
             let stack_is_kept = stack.branches.iter().any(|b| {
-                branches_to_apply
-                    .iter()
-                    .any(|rn| rn.as_ref() == b.ref_name.as_ref())
+                branches_to_apply.iter().any(|rn| rn == &b.ref_name)
                     || head_ref_name
                         .as_ref()
-                        .is_some_and(|head| head.as_ref() == b.ref_name.as_ref())
+                        .is_some_and(|head| head == &b.ref_name)
             });
             if dropped_from_projection || (head_branch_in_workspace && !stack_is_kept) {
                 stack.workspacecommit_relation = Outside;
@@ -755,6 +768,7 @@ pub fn apply(
             ..Default::default()
         },
     )?;
+    ws.reconcile_metadata(&mut ws_md)?;
     persist_metadata_and_gitconfig(
         meta,
         &branches_to_apply,

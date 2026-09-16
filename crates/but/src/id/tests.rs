@@ -1,3 +1,10 @@
+//! Explicit low-level tests for the IdMap.
+//!
+//! Some more complex state is very laborious and error prone to setup, such as for resolving
+//! committed and uncommitted hunks. This is sparsely tested here. There are complimentary
+//! `but`-level tests in `crates/but/tests/but/command/expand.rs` that validate this functionality
+//! more closely.
+
 use anyhow::bail;
 use bstr::BString;
 use but_core::{ChangeId, ref_metadata::StackId};
@@ -8,8 +15,57 @@ use snapbox::{assert_data_eq, prelude::*};
 use crate::{
     CliId, IdMap,
     args::atoms::CliIdArg,
-    id::{BranchId, CommitId, id_usage::UintId},
+    id::{BranchId, ChangesInCommit, CommitId, OLD_UNCOMMITTED, UNCOMMITTED, id_usage::UintId},
+    utils::change_source::ChangeSourceId,
 };
+
+struct TestChanges<T>(T);
+
+impl<T> ChangesInCommit for TestChanges<T>
+where
+    T: Fn(gix::ObjectId, Option<gix::ObjectId>) -> anyhow::Result<Vec<but_core::TreeChange>>,
+{
+    fn tree_changes(
+        &self,
+        commit_id: gix::ObjectId,
+        parent_id: Option<gix::ObjectId>,
+    ) -> anyhow::Result<Vec<but_core::TreeChange>> {
+        self.0(commit_id, parent_id)
+    }
+
+    fn patch_for_tree_change(
+        &self,
+        _tree_change: &but_core::TreeChange,
+        _context_lines: u32,
+    ) -> anyhow::Result<Option<but_core::UnifiedPatch>> {
+        unimplemented!("Test patch resolution not implemented!")
+    }
+}
+
+#[test]
+fn committed_hunk_equality() {
+    let committed_hunk = |commit_id| super::CommittedHunk {
+        committed_file: super::CommittedFileId {
+            commit_id,
+            path: BString::from("file.txt"),
+            change_id: None,
+        },
+        id: "ignored by equality".into(),
+        hunk: hunk("file.txt"),
+    };
+
+    assert_eq!(
+        committed_hunk(id(1)),
+        committed_hunk(id(1)),
+        "same hunk in same commit is equal to itself"
+    );
+
+    assert_ne!(
+        committed_hunk(id(1)),
+        committed_hunk(id(2)),
+        "identical hunks in different commits are not equal"
+    );
+}
 
 #[test]
 fn uint_id_from_short_id() {
@@ -51,7 +107,13 @@ fn uint_id_to_short_id() {
 fn commit_id_works_with_two_or_more_characters() -> anyhow::Result<()> {
     let id1 = id(1);
     let stacks = vec![stack([segment("not-important", [id1], None, [])])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
         snapbox::str![[r#"
@@ -75,12 +137,12 @@ branches: [ no ]
         id: "0".to_string(),
     }];
     assert_eq!(
-        id_map.parse("0", Box::new(changed_paths_fn))?,
+        id_map.parse("0", &TestChanges(changed_paths_fn))?,
         expected,
         "one character is sufficient to parse a commit ID"
     );
     assert_eq!(
-        id_map.parse("01", Box::new(changed_paths_fn))?,
+        id_map.parse("01", &TestChanges(changed_paths_fn))?,
         expected,
         "two characters work too"
     );
@@ -94,7 +156,13 @@ fn commit_id_appearing_multiple_times() -> anyhow::Result<()> {
         stack([segment("branch1", [id(2), id1], None, [])]),
         stack([segment("branch2", [id(3), id1], None, [])]),
     ];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -103,7 +171,9 @@ fn commit_id_appearing_multiple_times() -> anyhow::Result<()> {
 
     // The commit should only appear once with a short ID.
     snapbox::assert_data_eq!(
-        id_map.parse("01", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("01", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     Commit {
@@ -126,7 +196,13 @@ fn commit_ids_become_longer_if_ambiguous() -> anyhow::Result<()> {
     let id2 = hex_to_id("21bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let id3 = hex_to_id("21bccccccccccccccccccccccccccccccccccccc");
     let stacks = vec![stack([segment("not-important", [id1, id2, id3], None, [])])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
         snapbox::str![[r#"
@@ -201,11 +277,15 @@ fn exact_branch_short_id_takes_priority() {
         [(commit_id, ChangeId::from(BString::from("tpm")))]
             .into_iter()
             .collect(),
+        Default::default(),
+        3,
     )
     .unwrap();
 
     assert_eq!(
-        id_map.parse("tp", Box::new(|_, _| unreachable!())).unwrap(),
+        id_map
+            .parse("tp", &TestChanges(|_, _| unreachable!()))
+            .unwrap(),
         [CliId::Branch(BranchId {
             name: "tp-branch".into(),
             id: "tp".into(),
@@ -218,7 +298,13 @@ fn exact_branch_short_id_takes_priority() {
 #[test]
 fn branches_work_with_single_character() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("f", [id(1)], None, [])])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -240,12 +326,12 @@ branches: [ g0 ]
         stack_id: None,
     })];
     assert_eq!(
-        id_map.parse("f", Box::new(changed_paths_fn))?,
+        id_map.parse("f", &TestChanges(changed_paths_fn))?,
         expected,
         "it's OK to have a CliID that is longer, but it would be up to the UI to not show them"
     );
     assert_eq!(
-        id_map.parse("g0", Box::new(changed_paths_fn))?,
+        id_map.parse("g0", &TestChanges(changed_paths_fn))?,
         expected,
         "the ID also works"
     );
@@ -253,9 +339,38 @@ branches: [ g0 ]
 }
 
 #[test]
-fn branches_avoid_uncommitted_area_id() -> anyhow::Result<()> {
+fn parsing_retired_uncommitted_area_errors() {
+    let id_map = IdMap::new(
+        Vec::new(),
+        Vec::new(),
+        Default::default(),
+        Default::default(),
+        3,
+    )
+    .unwrap();
+    let parse_error = id_map
+        .parse(
+            OLD_UNCOMMITTED,
+            &TestChanges(|_, _| bail!("shouldn't be used")),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        parse_error.to_string(),
+        "The uncommitted area has been renamed from 'zz' to '@'. Repeat the command with '@' instead to proceed."
+    )
+}
+
+#[test]
+fn branches_avoid_retired_uncommitted_area_id() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("zza", [id(1)], None, [])])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -277,9 +392,36 @@ branches: [ za ]
         stack_id: None,
     })];
     assert_eq!(
-        id_map.parse("za", Box::new(changed_paths_fn))?,
+        id_map.parse("za", &TestChanges(changed_paths_fn))?,
         expected,
-        "avoids uncommitted area ID (zz)"
+        "avoids retired uncommitted area ID (zz)"
+    );
+    Ok(())
+}
+
+#[test]
+fn uncommitted_files_avoid_retired_uncommitted_area_id() -> anyhow::Result<()> {
+    // SHA-1("file-1594") starts with 0x00, which maps to reverse-hex `zz`.
+    let id_map = IdMap::new(
+        Vec::new(),
+        vec![source_changes(
+            ChangeSourceId::Head,
+            vec![hunk("file-1594")],
+        )],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+
+    snapbox::assert_data_eq!(
+        id_map.debug_state().to_debug(),
+        snapbox::str![[r#"
+workspace_and_remote_commits_count: 0
+uncommitted_files: [ zzs ]
+uncommitted_hunks: [ zzs:e ]
+
+
+"#]]
     );
     Ok(())
 }
@@ -290,7 +432,13 @@ fn branches_avoid_invalid_ids() -> anyhow::Result<()> {
         segment("x-yz_/hi", [id(1)], None, []),
         segment("0ax", [id(2)], None, []),
     ])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
         snapbox::str![[r#"
@@ -312,7 +460,7 @@ branches: [ ax, yz ]
         stack_id: None,
     })];
     assert_eq!(
-        id_map.parse("yz", Box::new(changed_paths_fn))?,
+        id_map.parse("yz", &TestChanges(changed_paths_fn))?,
         expected,
         "avoids non-alphanumeric, taking first alphanumeric pair"
     );
@@ -322,7 +470,7 @@ branches: [ ax, yz ]
         stack_id: None,
     })];
     assert_eq!(
-        id_map.parse("ax", Box::new(changed_paths_fn))?,
+        id_map.parse("ax", &TestChanges(changed_paths_fn))?,
         expected,
         "avoids hexdigit pair which can be confused with a commit ID"
     );
@@ -333,7 +481,13 @@ branches: [ ax, yz ]
 fn branches_avoid_uncommitted_filenames() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("ghij", [id(1)], None, [])])];
     let hunks = vec![hunk("gh"), hunk("hi")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -345,7 +499,7 @@ fn branches_avoid_uncommitted_filenames() -> anyhow::Result<()> {
 workspace_and_remote_commits_count: 1
 branches: [ ij ]
 uncommitted_files: [ nx, yz ]
-uncommitted_hunks: [ nx:q, yz:q ]
+uncommitted_hunks: [ nx:e, yz:e ]
 
 
 "#]]
@@ -357,10 +511,78 @@ uncommitted_hunks: [ nx:q, yz:q ]
         stack_id: None,
     })];
     assert_eq!(
-        id_map.parse("ghij", Box::new(changed_paths_fn))?,
+        id_map.parse("ghij", &TestChanges(changed_paths_fn))?,
         expected,
         "avoids 'gh' and 'hi', which conflict with filenames"
     );
+    Ok(())
+}
+
+#[test]
+fn many_uncommitted_files_do_not_exhaust_generated_ids() -> anyhow::Result<()> {
+    const FILE_COUNT: usize = 26_641;
+    let stacks = vec![
+        Stack {
+            id: Some(StackId::from_number_for_testing(1)),
+            ..stack([segment("0", [id(1)], None, [])])
+        },
+        Stack {
+            id: Some(StackId::from_number_for_testing(2)),
+            ..stack([segment("1", [id(2)], None, [])])
+        },
+    ];
+    let hunks = (0..FILE_COUNT)
+        .map(|index| hunk(&format!("untracked-{index}")))
+        .collect();
+
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+
+    assert_eq!(
+        id_map.uncommitted_files.len(),
+        FILE_COUNT,
+        "all uncommitted files should receive path-derived IDs"
+    );
+    let file_id = id_map
+        .uncommitted_files
+        .values()
+        .next()
+        .expect("at least one uncommitted file")
+        .short_id
+        .clone();
+    let resolved_file = id_map.parse(&file_id, &TestChanges(|_, _| unreachable!()))?;
+    assert!(matches!(
+        resolved_file.as_slice(),
+        [CliId::UncommittedHunkOrFile(_)]
+    ));
+    assert_eq!(resolved_file[0].to_short_string(), file_id);
+
+    let real_ids: Vec<_> = id_map
+        .branch_ids()
+        .into_iter()
+        .chain(id_map.stack_ids.values().map(CliId::to_short_string))
+        .collect();
+    assert_eq!(real_ids.len(), 4);
+    for (index, real_id) in real_ids.iter().enumerate() {
+        assert!(
+            !real_ids[..index].contains(real_id),
+            "real IDs should be unique"
+        );
+        let resolved = id_map.parse(real_id, &TestChanges(|_, _| unreachable!()))?;
+        assert!(
+            matches!(
+                resolved.as_slice(),
+                [CliId::Branch(_) | CliId::Stack { .. }]
+            ),
+            "real IDs should resolve after synthetic fallback"
+        );
+        assert_eq!(resolved[0].to_short_string(), *real_id);
+    }
     Ok(())
 }
 
@@ -370,7 +592,13 @@ fn branch_that_is_substring_of_other_substring_still_gets_id() -> anyhow::Result
         stack([segment("substring", [id(1)], None, [])]),
         stack([segment("supersubstring", [id(2)], None, [])]),
     ];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -391,14 +619,17 @@ branches: [ su, up ]
         id: "su".into(),
         stack_id: None,
     })];
-    assert_eq!(id_map.parse("su", Box::new(changed_paths_fn))?, expected,);
+    assert_eq!(
+        id_map.parse("su", &TestChanges(changed_paths_fn))?,
+        expected,
+    );
     let expected = [CliId::Branch(BranchId {
         name: "supersubstring".into(),
         id: "up".into(),
         stack_id: None,
     })];
     assert_eq!(
-        id_map.parse("supersubstring", Box::new(changed_paths_fn))?,
+        id_map.parse("supersubstring", &TestChanges(changed_paths_fn))?,
         expected,
         "'su' would collide with substring, so 'up' is chosen"
     );
@@ -422,14 +653,20 @@ fn non_commit_ids_do_not_collide() -> anyhow::Result<()> {
         },
         hunk("uncommitted2.txt"),
     ];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
         snapbox::str![[r#"
 workspace_and_remote_commits_count: 1
 branches: [ h0 ]
 uncommitted_files: [ kv, ro ]
-uncommitted_hunks: [ kv:q, ro:q#0-2, ro:q#1-2 ]
+uncommitted_hunks: [ kv:e, ro:e#0-2, ro:e#1-2 ]
 stacks: [ j0 ]
 
 
@@ -464,7 +701,7 @@ stacks: [ j0 ]
             id: "kv",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kv:q",
+                    id: "kv:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "uncommitted2.txt",
@@ -474,14 +711,15 @@ stacks: [ j0 ]
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "kv:q",
+            id: "kv:e",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kv:q",
+                    id: "kv:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "uncommitted2.txt",
@@ -491,6 +729,7 @@ stacks: [ j0 ]
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
     UncommittedHunkOrFile(
@@ -498,7 +737,7 @@ stacks: [ j0 ]
             id: "ro",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ro:q#0-2",
+                    id: "ro:e#0-2",
                     hunk: SingleHunk {
                         hunk_header: Some(
                             HunkHeader("-1,2", "+1,2"),
@@ -509,7 +748,7 @@ stacks: [ j0 ]
                 },
                 tail: [
                     IdAndHunk {
-                        id: "ro:q#1-2",
+                        id: "ro:e#1-2",
                         hunk: SingleHunk {
                             hunk_header: Some(
                                 HunkHeader("-3,2", "+3,2"),
@@ -521,14 +760,15 @@ stacks: [ j0 ]
                 ],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "ro:q#0-2",
+            id: "ro:e#0-2",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ro:q#0-2",
+                    id: "ro:e#0-2",
                     hunk: SingleHunk {
                         hunk_header: Some(
                             HunkHeader("-1,2", "+1,2"),
@@ -540,14 +780,15 @@ stacks: [ j0 ]
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "ro:q#1-2",
+            id: "ro:e#1-2",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ro:q#1-2",
+                    id: "ro:e#1-2",
                     hunk: SingleHunk {
                         hunk_header: Some(
                             HunkHeader("-3,2", "+3,2"),
@@ -559,6 +800,7 @@ stacks: [ j0 ]
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -581,7 +823,13 @@ fn uncommitted_file_to_id_qualifies_hunk_ids() -> anyhow::Result<()> {
             ..hunk("uncommitted.txt")
         },
     ];
-    let id_map = IdMap::new(Vec::new(), hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        Vec::new(),
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let uncommitted_file = id_map
         .uncommitted_files
         .values()
@@ -612,7 +860,13 @@ fn uncommitted_file_to_id_qualifies_hunk_ids() -> anyhow::Result<()> {
 fn ids_are_case_sensitive() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("h0", [id(10)], Some(id(9)), [])])];
     let hunks = vec![hunk("uncommitted.txt")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -628,14 +882,16 @@ fn ids_are_case_sensitive() -> anyhow::Result<()> {
 workspace_and_remote_commits_count: 1
 branches: [ h0 ]
 uncommitted_files: [ ln ]
-uncommitted_hunks: [ ln:q ]
+uncommitted_hunks: [ ln:e ]
 
 
 "#]]
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("0a", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("0a", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     Commit {
@@ -650,13 +906,15 @@ uncommitted_hunks: [ ln:q ]
 "#]]
     );
     assert_eq!(
-        id_map.parse("0A", Box::new(changed_paths_fn))?,
+        id_map.parse("0A", &TestChanges(changed_paths_fn))?,
         [],
         "the case matters for commits"
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("h0", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("h0", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     Branch(
@@ -671,13 +929,15 @@ uncommitted_hunks: [ ln:q ]
 "#]]
     );
     assert_eq!(
-        id_map.parse("H0", Box::new(changed_paths_fn))?,
+        id_map.parse("H0", &TestChanges(changed_paths_fn))?,
         [],
         "the case matters for branches"
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("ln", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("ln", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -685,7 +945,7 @@ uncommitted_hunks: [ ln:q ]
             id: "ln",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ln:q",
+                    id: "ln:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "uncommitted.txt",
@@ -695,6 +955,7 @@ uncommitted_hunks: [ ln:q ]
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -702,14 +963,14 @@ uncommitted_hunks: [ ln:q ]
 "#]]
     );
     assert_eq!(
-        id_map.parse("LN", Box::new(changed_paths_fn))?,
+        id_map.parse("LN", &TestChanges(changed_paths_fn))?,
         [],
         "the case matters for uncommitted files"
     );
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("0a:zt", Box::new(changed_paths_fn))?
+            .parse("0a:zt", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -726,7 +987,7 @@ uncommitted_hunks: [ ln:q ]
 "#]]
     );
     assert_eq!(
-        id_map.parse("0a:ZT", Box::new(changed_paths_fn))?,
+        id_map.parse("0a:ZT", &TestChanges(changed_paths_fn))?,
         [],
         "the case matters for committed files"
     );
@@ -738,7 +999,13 @@ uncommitted_hunks: [ ln:q ]
 fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("foo", [id(1)], None, [])])];
     let hunks = vec![hunk("foo23"), hunk("foo242")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -751,7 +1018,9 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
 
     // Ambiguous ID returns every possible match
     snapbox::assert_data_eq!(
-        id_map.parse("kp", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("kp", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -759,7 +1028,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
             id: "kpo",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kpo:q",
+                    id: "kpo:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "foo242",
@@ -769,6 +1038,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
     UncommittedHunkOrFile(
@@ -776,7 +1046,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
             id: "kpr",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kpr:q",
+                    id: "kpr:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "foo23",
@@ -786,6 +1056,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -794,7 +1065,9 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("kpo", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("kpo", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -802,7 +1075,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
             id: "kpo",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kpo:q",
+                    id: "kpo:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "foo242",
@@ -812,6 +1085,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -819,7 +1093,9 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
 "#]]
     );
     snapbox::assert_data_eq!(
-        id_map.parse("kpr", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("kpr", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -827,7 +1103,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
             id: "kpr",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kpr:q",
+                    id: "kpr:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "foo23",
@@ -837,11 +1113,378 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
 
 "#]]
+    );
+
+    Ok(())
+}
+
+/// The same path dirty in several checkouts gets one distinct ID per checkout,
+/// formatted exactly like any other uncommitted file ID.
+///
+/// This is what the source mixed into [`super::create_reverse_hex_id`] buys: without
+/// it all three would hash alike and two of them would be unreachable.
+#[test]
+fn same_path_in_several_sources_gets_distinct_ids() -> anyhow::Result<()> {
+    let id_map = IdMap::new(
+        Vec::new(),
+        vec![
+            source_changes(ChangeSourceId::Head, vec![hunk("file")]),
+            source_changes(ChangeSourceId::Worktree("wt-a".into()), vec![hunk("file")]),
+            source_changes(ChangeSourceId::Worktree("wt-b".into()), vec![hunk("file")]),
+        ],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+
+    let ids: Vec<_> = id_map
+        .uncommitted_files
+        .values()
+        .map(|file| (file.short_id.clone(), file.source.clone()))
+        .collect();
+
+    // Three IDs, none of them carrying a collision index: the source separates
+    // them by hash, so no `#N` disambiguation is needed.
+    snapbox::assert_data_eq!(
+        ids.to_debug(),
+        snapbox::str![[r#"
+[
+    (
+        "pw",
+        Worktree(
+            "wt-b",
+        ),
+    ),
+    (
+        "qs",
+        Head,
+    ),
+    (
+        "rp",
+        Worktree(
+            "wt-a",
+        ),
+    ),
+]
+
+"#]]
+    );
+
+    Ok(())
+}
+
+/// A linked worktree gets its own CLI ID, resolves by name, and scopes a
+/// filename to its own checkout the way `@` does for the main worktree.
+#[test]
+fn worktree_container_id() -> anyhow::Result<()> {
+    let id_map = IdMap::new(
+        Vec::new(),
+        vec![
+            source_changes(ChangeSourceId::Head, vec![hunk("file")]),
+            source_changes(ChangeSourceId::Worktree("wt-a".into()), vec![hunk("file")]),
+            // A worktree without changes still gets an ID, so it can be listed.
+            source_changes(ChangeSourceId::Worktree("wt-b".into()), Vec::new()),
+        ],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+    let changed_paths_fn = |commit_id: gix::ObjectId,
+                            parent_id: Option<gix::ObjectId>|
+     -> anyhow::Result<Vec<but_core::TreeChange>> {
+        bail!("unexpected IDs {commit_id} {parent_id:?}");
+    };
+
+    let by_name = id_map.parse("wt-a", &TestChanges(changed_paths_fn))?;
+    snapbox::assert_data_eq!(
+        by_name.to_debug(),
+        snapbox::str![[r#"
+[
+    Worktree {
+        id: "wt",
+        name: "wt-a",
+    },
+]
+
+"#]]
+    );
+
+    // The short ID resolves to the same worktree.
+    let short_id = by_name[0].to_short_string();
+    let by_id = id_map.parse(&short_id, &TestChanges(changed_paths_fn))?;
+    assert_eq!(by_id, by_name, "name and short ID name the same worktree");
+
+    let one_char_prefix = short_id
+        .chars()
+        .next()
+        .expect("worktree short IDs are non-empty")
+        .to_string();
+    assert!(
+        id_map
+            .parse(&one_char_prefix, &TestChanges(changed_paths_fn))?
+            .is_empty(),
+        "worktree short IDs require an exact match"
+    );
+
+    // `<worktree>:<path>` disambiguates a path that is dirty in several checkouts.
+    let scoped = id_map.parse("wt-a:file", &TestChanges(changed_paths_fn))?;
+    assert_eq!(scoped.len(), 1, "scoped to one checkout");
+    let CliId::UncommittedHunkOrFile(scoped) = &scoped[0] else {
+        bail!("expected an uncommitted file, got {scoped:?}");
+    };
+    assert_eq!(
+        scoped.source,
+        ChangeSourceId::Worktree("wt-a".into()),
+        "the scoped match comes from the named checkout"
+    );
+
+    // The container expands to every file in that checkout, which is what
+    // `but commit <worktree>` commits.
+    let expanded = id_map.uncommitted_files_in(&ChangeSourceId::Worktree("wt-a".into()));
+    assert_eq!(expanded.len(), 1, "only the one dirty file lives in wt-a");
+    assert_eq!(
+        expanded[0].hunks.first().hunk.path,
+        "file",
+        "expansion yields that checkout's own file"
+    );
+    assert!(
+        id_map
+            .uncommitted_files_in(&ChangeSourceId::Worktree("wt-b".into()))
+            .is_empty(),
+        "a clean worktree expands to nothing"
+    );
+
+    Ok(())
+}
+
+/// `<worktree>:@` names that worktree's uncommitted area, the way `@` names the
+/// main worktree's, and is distinct from the worktree reference itself.
+#[test]
+fn worktree_uncommitted_area_id() -> anyhow::Result<()> {
+    let id_map = IdMap::new(
+        Vec::new(),
+        vec![
+            source_changes(ChangeSourceId::Head, vec![hunk("file")]),
+            source_changes(ChangeSourceId::Worktree("wt-a".into()), vec![hunk("file")]),
+        ],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+    let changed_paths_fn = |commit_id: gix::ObjectId,
+                            parent_id: Option<gix::ObjectId>|
+     -> anyhow::Result<Vec<but_core::TreeChange>> {
+        bail!("unexpected IDs {commit_id} {parent_id:?}");
+    };
+
+    let by_short_id = id_map.parse("wt:@", &TestChanges(changed_paths_fn))?;
+    snapbox::assert_data_eq!(
+        by_short_id.to_debug(),
+        snapbox::str![[r#"
+[
+    WorktreeUncommitted {
+        id: "wt:@",
+        name: "wt-a",
+    },
+]
+
+"#]]
+    );
+
+    // The full name reaches the same area, so a printed `<name>:@` hint resolves.
+    let by_name = id_map.parse("wt-a:@", &TestChanges(changed_paths_fn))?;
+    assert_eq!(by_name, by_short_id, "name and short ID name the same area");
+
+    // The rendered ID round-trips, which is what makes it copy-pasteable from `but status`.
+    let round_tripped = id_map.parse(
+        &by_short_id[0].to_short_string(),
+        &TestChanges(changed_paths_fn),
+    )?;
+    assert_eq!(round_tripped, by_short_id, "the printed ID resolves back");
+
+    // The reference and its area are different entities, not two spellings of one.
+    let reference = id_map.parse("wt", &TestChanges(changed_paths_fn))?;
+    assert_ne!(
+        reference, by_short_id,
+        "the lane and its uncommitted area are distinct IDs"
+    );
+    assert_eq!(
+        by_short_id[0].uncommitted_area(),
+        Some(ChangeSourceId::Worktree("wt-a".into())),
+        "the area names its own worktree"
+    );
+    assert_eq!(
+        reference[0].uncommitted_area(),
+        None,
+        "the reference holds no changes"
+    );
+
+    // `@` alone stays the main worktree's area and never reaches into a linked one.
+    let main = id_map.parse(UNCOMMITTED, &TestChanges(changed_paths_fn))?;
+    assert_eq!(
+        main[0].uncommitted_area(),
+        Some(ChangeSourceId::Head),
+        "the bare sentinel is still the main worktree"
+    );
+
+    Ok(())
+}
+
+/// Branches and worktrees draw from the same name-derived short-ID namespace.
+#[test]
+fn branch_and_worktree_short_ids_do_not_collide() -> anyhow::Result<()> {
+    let id_map = IdMap::new(
+        vec![stack([segment("work-branch", [], None, [])])],
+        vec![source_changes(
+            ChangeSourceId::Worktree("worktree-01".into()),
+            Vec::new(),
+        )],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+
+    snapbox::assert_data_eq!(
+        id_map.debug_state().to_debug(),
+        snapbox::str![[r#"
+workspace_and_remote_commits_count: 0
+branches: [ wo ]
+worktrees: [ or worktree-01 ]
+
+
+"#]]
+    );
+
+    Ok(())
+}
+
+/// Generated IDs for named and anonymous segments remain reserved when worktree IDs are allocated
+/// later, while retaining their distinct CLI ID kinds.
+#[test]
+fn generated_segment_ids_do_not_collide_with_worktree_names() -> anyhow::Result<()> {
+    let mut anonymous_segment = segment("unused", [], None, []);
+    anonymous_segment.ref_info = None;
+    let id_map = IdMap::new(
+        vec![stack([segment("ab", [], None, []), anonymous_segment])],
+        vec![
+            source_changes(ChangeSourceId::Worktree("g0-worktree".into()), Vec::new()),
+            source_changes(ChangeSourceId::Worktree("h0-worktree".into()), Vec::new()),
+        ],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+
+    let branch_ids = id_map.branch_ids();
+    assert_eq!(
+        branch_ids,
+        ["g0", "h0"],
+        "the named fallback and anonymous segment use generated IDs"
+    );
+    let worktree_ids: Vec<_> = id_map
+        .worktrees
+        .values()
+        .map(|worktree| worktree.short_id.as_str())
+        .collect();
+    for branch_id in &branch_ids {
+        assert!(
+            !worktree_ids.contains(&branch_id.as_str()),
+            "generated branch ID {branch_id} remains reserved"
+        );
+    }
+
+    let changed_paths_fn = |commit_id: gix::ObjectId,
+                            parent_id: Option<gix::ObjectId>|
+     -> anyhow::Result<Vec<but_core::TreeChange>> {
+        bail!("unexpected IDs {commit_id} {parent_id:?}");
+    };
+    let segment_ids = branch_ids
+        .iter()
+        .map(|id| id_map.parse(id, &TestChanges(changed_paths_fn)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    assert_eq!(
+        segment_ids
+            .iter()
+            .flatten()
+            .filter(|id| matches!(id, CliId::Branch(_)))
+            .count(),
+        1,
+        "named segment resolves as branch"
+    );
+    assert_eq!(
+        segment_ids
+            .iter()
+            .flatten()
+            .filter(|id| matches!(id, CliId::AnonymousSegment(_)))
+            .count(),
+        1,
+        "anonymous segment resolves as its own CLI ID kind"
+    );
+
+    for worktree in id_map.worktrees.values() {
+        assert_eq!(
+            id_map.parse(&worktree.short_id, &TestChanges(changed_paths_fn))?,
+            [CliId::Worktree {
+                id: worktree.short_id.clone(),
+                name: worktree.name.clone(),
+            }],
+            "each displayed worktree ID resolves to its worktree"
+        );
+    }
+
+    Ok(())
+}
+
+/// `@` names the main worktree, so `@:<path>` must not reach into a linked
+/// worktree that happens to have the same path dirty.
+#[test]
+fn at_scopes_filenames_to_the_main_worktree() -> anyhow::Result<()> {
+    let id_map = IdMap::new(
+        Vec::new(),
+        vec![
+            source_changes(ChangeSourceId::Head, vec![hunk("file")]),
+            source_changes(ChangeSourceId::Worktree("wt-a".into()), vec![hunk("file")]),
+        ],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
+    let changed_paths_fn = |commit_id: gix::ObjectId,
+                            parent_id: Option<gix::ObjectId>|
+     -> anyhow::Result<Vec<but_core::TreeChange>> {
+        bail!("unexpected IDs {commit_id} {parent_id:?}");
+    };
+
+    assert_eq!(
+        id_map.parse("@", &TestChanges(changed_paths_fn))?,
+        [CliId::Uncommitted { id: "@".into() }],
+        "bare @ names the main worktree's whole uncommitted area"
+    );
+
+    let scoped = id_map.parse("@:file", &TestChanges(changed_paths_fn))?;
+    assert_eq!(scoped.len(), 1, "`@` only ever matches the main worktree");
+    let CliId::UncommittedHunkOrFile(scoped) = &scoped[0] else {
+        bail!("expected an uncommitted file, got {scoped:?}");
+    };
+    assert_eq!(
+        scoped.source,
+        ChangeSourceId::Head,
+        "`@` scoping keeps the main worktree's copy"
+    );
+
+    // A bare filename is deliberately unscoped, so it reports both and the
+    // caller turns that into an ambiguity error.
+    let unscoped = id_map.parse("file", &TestChanges(changed_paths_fn))?;
+    assert_eq!(
+        unscoped.len(),
+        2,
+        "a bare path matches every checkout it is dirty in"
     );
 
     Ok(())
@@ -859,7 +1502,13 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
 fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("qsy", [id(1)], None, [])])];
     let hunks = vec![hunk("file")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -872,7 +1521,9 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
 
     // Only the branch is returned when querying by short ID
     snapbox::assert_data_eq!(
-        id_map.parse("qs", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("qs", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     Branch(
@@ -889,7 +1540,9 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
 
     // Still only the branch when querying by full name
     snapbox::assert_data_eq!(
-        id_map.parse("qsy", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("qsy", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     Branch(
@@ -906,7 +1559,9 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
 
     // More characters must be specified to get the file
     snapbox::assert_data_eq!(
-        id_map.parse("qsyn", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("qsyn", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -914,7 +1569,7 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
             id: "qsy",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "qsy:q",
+                    id: "qsy:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "file",
@@ -924,6 +1579,7 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -938,7 +1594,13 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
 fn longer_id_is_ok() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("foo", [id(1)], None, [])])];
     let hunks = vec![hunk("foo23")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -951,7 +1613,9 @@ fn longer_id_is_ok() -> anyhow::Result<()> {
 
     // "kp" would be sufficient (see the "id" field in the output), but "kpr" works too
     snapbox::assert_data_eq!(
-        id_map.parse("kpr", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("kpr", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -959,7 +1623,7 @@ fn longer_id_is_ok() -> anyhow::Result<()> {
             id: "kp",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kp:q",
+                    id: "kp:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "foo23",
@@ -969,6 +1633,7 @@ fn longer_id_is_ok() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -983,7 +1648,13 @@ fn longer_id_is_ok() -> anyhow::Result<()> {
 fn reverse_hex_filename_is_its_own_id() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("foo", [id(1)], None, [])])];
     let hunks = vec![hunk("klmxyz")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -996,7 +1667,9 @@ fn reverse_hex_filename_is_its_own_id() -> anyhow::Result<()> {
 
     // "klmxyz" does not have an autogenerated ID
     snapbox::assert_data_eq!(
-        id_map.parse("kl", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("kl", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1004,7 +1677,7 @@ fn reverse_hex_filename_is_its_own_id() -> anyhow::Result<()> {
             id: "kl",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "kl:q",
+                    id: "kl:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "klmxyz",
@@ -1014,6 +1687,7 @@ fn reverse_hex_filename_is_its_own_id() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1028,7 +1702,13 @@ fn reverse_hex_filename_is_its_own_id() -> anyhow::Result<()> {
 fn branch_and_file_by_name() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("foo", [id(1)], None, [])])];
     let hunks = vec![hunk("foo")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1043,7 +1723,9 @@ fn branch_and_file_by_name() -> anyhow::Result<()> {
     // have priority over the other (i.e. if there is both a branch and a file
     // that matches, the result is ambiguous).
     snapbox::assert_data_eq!(
-        id_map.parse("foo", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("foo", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     Branch(
@@ -1058,7 +1740,7 @@ fn branch_and_file_by_name() -> anyhow::Result<()> {
             id: "zo",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "zo:q",
+                    id: "zo:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "foo",
@@ -1068,6 +1750,7 @@ fn branch_and_file_by_name() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1085,7 +1768,13 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
         ..stack([segment("gggg", [id(2)], None, [])])
     }];
     let hunks = vec![hunk("uncommitted"), hunk("assigned")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1095,7 +1784,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
     // Short branch works
     snapbox::assert_data_eq!(
         id_map
-            .parse("gg@{stack}:assigned", Box::new(changed_paths_fn))?
+            .parse("gg@{stack}:assigned", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1104,7 +1793,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
             id: "nv",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "nv:q",
+                    id: "nv:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "assigned",
@@ -1114,6 +1803,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1124,7 +1814,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
     // Long branch works
     snapbox::assert_data_eq!(
         id_map
-            .parse("gggg@{stack}:assigned", Box::new(changed_paths_fn))?
+            .parse("gggg@{stack}:assigned", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1133,7 +1823,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
             id: "nv",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "nv:q",
+                    id: "nv:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "assigned",
@@ -1143,6 +1833,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1153,7 +1844,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
     // Uncommitted works
     snapbox::assert_data_eq!(
         id_map
-            .parse("zz:uncommitted", Box::new(changed_paths_fn))?
+            .parse("@:uncommitted", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1162,7 +1853,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
             id: "pv",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "pv:q",
+                    id: "pv:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "uncommitted",
@@ -1172,6 +1863,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1186,7 +1878,13 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
 fn uncommitted_path() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("foo", [id(1)], None, [])])];
     let hunks = vec![hunk("prefixx"), hunk("prefix/a"), hunk("prefix/b")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1196,7 +1894,7 @@ fn uncommitted_path() -> anyhow::Result<()> {
     // Returns one ID with all hunk assignments
     snapbox::assert_data_eq!(
         id_map
-            .parse("prefix/", Box::new(changed_paths_fn))?
+            .parse("prefix/", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1204,7 +1902,7 @@ fn uncommitted_path() -> anyhow::Result<()> {
         id: "prefix/",
         hunks: NonEmpty {
             head: IdAndHunk {
-                id: "yz:q",
+                id: "yz:e",
                 hunk: SingleHunk {
                     hunk_header: None,
                     path: "prefix/a",
@@ -1213,7 +1911,7 @@ fn uncommitted_path() -> anyhow::Result<()> {
             },
             tail: [
                 IdAndHunk {
-                    id: "uo:q",
+                    id: "uo:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "prefix/b",
@@ -1222,6 +1920,7 @@ fn uncommitted_path() -> anyhow::Result<()> {
                 },
             ],
         },
+        source: Head,
     },
 ]
 
@@ -1231,7 +1930,7 @@ fn uncommitted_path() -> anyhow::Result<()> {
     // If nothing matches, returns no ID
     snapbox::assert_data_eq!(
         id_map
-            .parse("doesnotmatch/", Box::new(changed_paths_fn))?
+            .parse("doesnotmatch/", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 []
@@ -1242,10 +1941,61 @@ fn uncommitted_path() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// This test represents a bad state: This shouldn't really happened, but if it does we don't want
+/// to just lose changes.
+///
+/// See [super::FileInfo::changes] for details on this situation.
+#[test]
+fn duplicate_tree_changes_for_committed_files_are_coalesced_for_short_id_assignment()
+-> anyhow::Result<()> {
+    let first = tree_change_addition("file.txt");
+    let second = but_core::TreeChange {
+        path: BString::from("file.txt"),
+        status: but_core::TreeStatus::Deletion {
+            previous_state: first.status.state().unwrap(),
+        },
+    };
+
+    let changes = super::short_ids_from_tree_changes(vec![first, second])?;
+
+    assert_eq!(
+        changes.len(),
+        1,
+        "duplicate path/commit tree change goes into single bucket"
+    );
+
+    assert_eq!(
+        changes[0].0.len(),
+        2,
+        "both tree changes are individually represented"
+    );
+    assert!(
+        matches!(
+            changes[0].0[0].status,
+            but_core::TreeStatus::Addition { .. }
+        ),
+        "first tree change is retained"
+    );
+    assert!(
+        matches!(
+            changes[0].0[1].status,
+            but_core::TreeStatus::Deletion { .. }
+        ),
+        "second tree change is retained"
+    );
+    Ok(())
+}
+
 #[test]
 fn committed_files_are_deduplicated_by_commit_oid_path() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("branch", [id(2)], Some(id(1)), [])])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
 
     // Simulate a changed_paths function that returns the same file twice
     // (which could happen due to a bug in the caller or data source)
@@ -1264,17 +2014,17 @@ fn committed_files_are_deduplicated_by_commit_oid_path() -> anyhow::Result<()> {
     };
 
     // Verify we can look up both files both by ID and filename
-    assert!(id_map.parse("02:uv", Box::new(changed_paths_fn))?.len() == 1);
-    assert!(id_map.parse("02:xw", Box::new(changed_paths_fn))?.len() == 1);
+    assert!(id_map.parse("02:uv", &TestChanges(changed_paths_fn))?.len() == 1);
+    assert!(id_map.parse("02:xw", &TestChanges(changed_paths_fn))?.len() == 1);
     assert!(
         id_map
-            .parse("02:file.txt", Box::new(changed_paths_fn))?
+            .parse("02:file.txt", &TestChanges(changed_paths_fn))?
             .len()
             == 1
     );
     assert!(
         id_map
-            .parse("02:other.txt", Box::new(changed_paths_fn))?
+            .parse("02:other.txt", &TestChanges(changed_paths_fn))?
             .len()
             == 1
     );
@@ -1291,7 +2041,14 @@ fn committed_file_can_be_referenced_by_either_change_id_or_commit_id() {
     ]
     .into_iter()
     .collect();
-    let id_map = IdMap::new(stacks, Vec::new(), commit_id_to_change_id).unwrap();
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        commit_id_to_change_id,
+        Default::default(),
+        3,
+    )
+    .unwrap();
 
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1308,7 +2065,7 @@ fn committed_file_can_be_referenced_by_either_change_id_or_commit_id() {
 
     assert_data_eq!(
         id_map
-            .parse("0:u", Box::new(changed_paths_fn))
+            .parse("0:u", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -1329,7 +2086,7 @@ fn committed_file_can_be_referenced_by_either_change_id_or_commit_id() {
     );
     assert_data_eq!(
         id_map
-            .parse("s:u", Box::new(changed_paths_fn))
+            .parse("s:u", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -1354,7 +2111,13 @@ fn committed_file_can_be_referenced_by_either_change_id_or_commit_id() {
 fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
     let stacks = vec![stack([segment("foo", [id(1)], None, [])])];
     let hunks = vec![hunk("k"), hunk("kl"), hunk("klm")];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1366,7 +2129,9 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
     };
 
     snapbox::assert_data_eq!(
-        id_map.parse("k", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("k", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1374,7 +2139,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
             id: "ky",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ky:q",
+                    id: "ky:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "k",
@@ -1384,6 +2149,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1392,7 +2158,9 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("kl", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("kl", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1400,7 +2168,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
             id: "klx",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "klx:q",
+                    id: "klx:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "kl",
@@ -1410,6 +2178,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1418,7 +2187,9 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("klm", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("klm", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1426,7 +2197,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
             id: "klml",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "klml:q",
+                    id: "klml:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "klm",
@@ -1436,6 +2207,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: true,
+            source: Head,
         },
     ),
 ]
@@ -1462,7 +2234,13 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
         },
         hunk("uncommitted2.txt"),
     ];
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1471,16 +2249,16 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("uncommitted1.txt:#0", Box::new(changed_paths_fn))?
+            .parse("uncommitted1.txt:#0", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "ro:q#0-2",
+            id: "ro:e#0-2",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ro:q#0-2",
+                    id: "ro:e#0-2",
                     hunk: SingleHunk {
                         hunk_header: Some(
                             HunkHeader("-1,2", "+1,2"),
@@ -1492,6 +2270,7 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1501,16 +2280,16 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
     // Short IDs for the filename part also work; should return exactly the same as above
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:#0", Box::new(changed_paths_fn))?
+            .parse("ro:#0", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "ro:q#0-2",
+            id: "ro:e#0-2",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ro:q#0-2",
+                    id: "ro:e#0-2",
                     hunk: SingleHunk {
                         hunk_header: Some(
                             HunkHeader("-1,2", "+1,2"),
@@ -1522,25 +2301,26 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
 
 "#]]
     );
-    // Files can also be accessed through zz
+    // Files can also be accessed through @.
     snapbox::assert_data_eq!(
         id_map
-            .parse("zz:uncommitted1.txt:#0", Box::new(changed_paths_fn))?
+            .parse("@:uncommitted1.txt:#0", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "ro:q#0-2",
+            id: "ro:e#0-2",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "ro:q#0-2",
+                    id: "ro:e#0-2",
                     hunk: SingleHunk {
                         hunk_header: Some(
                             HunkHeader("-1,2", "+1,2"),
@@ -1552,6 +2332,7 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1601,7 +2382,13 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
         hunk("hunk_without_diff.txt"),
     ];
 
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1609,7 +2396,9 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
     };
 
     snapbox::assert_data_eq!(
-        id_map.parse("ro:3", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("ro:3", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1631,6 +2420,7 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1640,7 +2430,9 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("ro:f", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("ro:f", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1662,6 +2454,7 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1671,7 +2464,9 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
     );
 
     snapbox::assert_data_eq!(
-        id_map.parse("ro:1", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("ro:1", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
@@ -1693,6 +2488,7 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1701,19 +2497,19 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
         .raw()
     );
 
-    // hunk without diff gets q identifier
+    // Hunk without diff gets an identifier from the empty-content prefix.
     snapbox::assert_data_eq!(
         id_map
-            .parse("hunk_without_diff.txt:q", Box::new(changed_paths_fn))?
+            .parse("hunk_without_diff.txt:e", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
     UncommittedHunkOrFile(
         UncommittedHunkOrFile {
-            id: "wp:q",
+            id: "wp:e",
             hunks: NonEmpty {
                 head: IdAndHunk {
-                    id: "wp:q",
+                    id: "wp:e",
                     hunk: SingleHunk {
                         hunk_header: None,
                         path: "hunk_without_diff.txt",
@@ -1723,6 +2519,7 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1760,7 +2557,13 @@ fn uncommitted_hunks_by_id_increase_id_length_as_necessary() -> anyhow::Result<(
         },
     ];
 
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1769,7 +2572,7 @@ fn uncommitted_hunks_by_id_increase_id_length_as_necessary() -> anyhow::Result<(
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:78", Box::new(changed_paths_fn))?
+            .parse("ro:78", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1792,6 +2595,7 @@ fn uncommitted_hunks_by_id_increase_id_length_as_necessary() -> anyhow::Result<(
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1802,7 +2606,7 @@ fn uncommitted_hunks_by_id_increase_id_length_as_necessary() -> anyhow::Result<(
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:79", Box::new(changed_paths_fn))?
+            .parse("ro:79", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1825,6 +2629,7 @@ fn uncommitted_hunks_by_id_increase_id_length_as_necessary() -> anyhow::Result<(
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1861,7 +2666,13 @@ fn uncommitted_hunks_overspecifying_id_prefix() -> anyhow::Result<()> {
         ..hunk("uncommitted1.txt")
     }];
 
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1870,7 +2681,7 @@ fn uncommitted_hunks_overspecifying_id_prefix() -> anyhow::Result<()> {
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:78", Box::new(changed_paths_fn))?
+            .parse("ro:78", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1893,6 +2704,7 @@ fn uncommitted_hunks_overspecifying_id_prefix() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -1935,7 +2747,13 @@ fn uncommitted_hunks_overspecifying_id_prefix_with_collision_disambiguation() ->
         },
     ];
 
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -1944,7 +2762,7 @@ fn uncommitted_hunks_overspecifying_id_prefix_with_collision_disambiguation() ->
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:3eeb#0-2", Box::new(changed_paths_fn))?
+            .parse("ro:3eeb#0-2", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -1967,6 +2785,7 @@ fn uncommitted_hunks_overspecifying_id_prefix_with_collision_disambiguation() ->
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -2014,7 +2833,13 @@ fn underspecifying_hunk_ids() -> anyhow::Result<()> {
         },
     ];
 
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -2023,82 +2848,8 @@ fn underspecifying_hunk_ids() -> anyhow::Result<()> {
 
     // Underspecifying with just first character finds all hunks
     snapbox::assert_data_eq!(
-        id_map.parse("ro:7", Box::new(changed_paths_fn))?.to_debug(),
-        snapbox::str![[r#"
-[
-    UncommittedHunkOrFile(
-        UncommittedHunkOrFile {
-            id: "ro:78#0-2",
-            hunks: NonEmpty {
-                head: IdAndHunk {
-                    id: "ro:78#0-2",
-                    hunk: SingleHunk {
-                        hunk_header: Some(
-                            HunkHeader("-1,6", "+1,7"),
-                        ),
-                        path: "uncommitted1.txt",
-                        diff: Some(
-                            "@@ -1,6 +1,7 @@\n 1\n 2\n 3\n+hellooooo\n 4\n 5\n 6\n",
-                        ),
-                    },
-                },
-                tail: [],
-            },
-            is_entire_file: false,
-        },
-    ),
-    UncommittedHunkOrFile(
-        UncommittedHunkOrFile {
-            id: "ro:79",
-            hunks: NonEmpty {
-                head: IdAndHunk {
-                    id: "ro:79",
-                    hunk: SingleHunk {
-                        hunk_header: Some(
-                            HunkHeader("-23,6", "+24,7"),
-                        ),
-                        path: "uncommitted1.txt",
-                        diff: Some(
-                            "@@ -23,6 +24,7 @@\n 1\n 2\n 3\n+hellooo\n 4\n 5\n 6\n",
-                        ),
-                    },
-                },
-                tail: [],
-            },
-            is_entire_file: false,
-        },
-    ),
-    UncommittedHunkOrFile(
-        UncommittedHunkOrFile {
-            id: "ro:78#1-2",
-            hunks: NonEmpty {
-                head: IdAndHunk {
-                    id: "ro:78#1-2",
-                    hunk: SingleHunk {
-                        hunk_header: Some(
-                            HunkHeader("-33,6", "+35,7"),
-                        ),
-                        path: "uncommitted1.txt",
-                        diff: Some(
-                            "@@ -33,6 +35,7 @@\n 1\n 2\n 3\n+hellooooo\n 4\n 5\n 6\n",
-                        ),
-                    },
-                },
-                tail: [],
-            },
-            is_entire_file: false,
-        },
-    ),
-]
-
-"#]]
-        .raw()
-    );
-
-    // Underspecifying with collision index only finds hunk with precisely matching collision index.
-    snapbox::assert_data_eq!(
         id_map
-            .parse("ro:7#0-2", Box::new(changed_paths_fn))?
+            .parse("ro:7", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -2121,6 +2872,86 @@ fn underspecifying_hunk_ids() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
+        },
+    ),
+    UncommittedHunkOrFile(
+        UncommittedHunkOrFile {
+            id: "ro:79",
+            hunks: NonEmpty {
+                head: IdAndHunk {
+                    id: "ro:79",
+                    hunk: SingleHunk {
+                        hunk_header: Some(
+                            HunkHeader("-23,6", "+24,7"),
+                        ),
+                        path: "uncommitted1.txt",
+                        diff: Some(
+                            "@@ -23,6 +24,7 @@\n 1\n 2\n 3\n+hellooo\n 4\n 5\n 6\n",
+                        ),
+                    },
+                },
+                tail: [],
+            },
+            is_entire_file: false,
+            source: Head,
+        },
+    ),
+    UncommittedHunkOrFile(
+        UncommittedHunkOrFile {
+            id: "ro:78#1-2",
+            hunks: NonEmpty {
+                head: IdAndHunk {
+                    id: "ro:78#1-2",
+                    hunk: SingleHunk {
+                        hunk_header: Some(
+                            HunkHeader("-33,6", "+35,7"),
+                        ),
+                        path: "uncommitted1.txt",
+                        diff: Some(
+                            "@@ -33,6 +35,7 @@\n 1\n 2\n 3\n+hellooooo\n 4\n 5\n 6\n",
+                        ),
+                    },
+                },
+                tail: [],
+            },
+            is_entire_file: false,
+            source: Head,
+        },
+    ),
+]
+
+"#]]
+        .raw()
+    );
+
+    // Underspecifying with collision index only finds hunk with precisely matching collision index.
+    snapbox::assert_data_eq!(
+        id_map
+            .parse("ro:7#0-2", &TestChanges(changed_paths_fn))?
+            .to_debug(),
+        snapbox::str![[r#"
+[
+    UncommittedHunkOrFile(
+        UncommittedHunkOrFile {
+            id: "ro:78#0-2",
+            hunks: NonEmpty {
+                head: IdAndHunk {
+                    id: "ro:78#0-2",
+                    hunk: SingleHunk {
+                        hunk_header: Some(
+                            HunkHeader("-1,6", "+1,7"),
+                        ),
+                        path: "uncommitted1.txt",
+                        diff: Some(
+                            "@@ -1,6 +1,7 @@\n 1\n 2\n 3\n+hellooooo\n 4\n 5\n 6\n",
+                        ),
+                    },
+                },
+                tail: [],
+            },
+            is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -2131,7 +2962,9 @@ fn underspecifying_hunk_ids() -> anyhow::Result<()> {
 
     // An entirely empty prefix matches nothing
     snapbox::assert_data_eq!(
-        id_map.parse("ro:", Box::new(changed_paths_fn))?.to_debug(),
+        id_map
+            .parse("ro:", &TestChanges(changed_paths_fn))?
+            .to_debug(),
         snapbox::str![[r#"
 []
 
@@ -2142,7 +2975,7 @@ fn underspecifying_hunk_ids() -> anyhow::Result<()> {
     // unless you are explicitly indexing into the file's hunks
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:#0-2", Box::new(changed_paths_fn))?
+            .parse("ro:#0-2", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 []
@@ -2180,7 +3013,13 @@ fn uncommitted_hunks_by_id_collision_handling() -> anyhow::Result<()> {
         },
     ];
 
-    let id_map = IdMap::new(stacks, hunks, gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        vec![source_changes(ChangeSourceId::Head, hunks)],
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -2189,7 +3028,7 @@ fn uncommitted_hunks_by_id_collision_handling() -> anyhow::Result<()> {
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:3#0-2", Box::new(changed_paths_fn))?
+            .parse("ro:3#0-2", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -2212,6 +3051,7 @@ fn uncommitted_hunks_by_id_collision_handling() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -2222,7 +3062,7 @@ fn uncommitted_hunks_by_id_collision_handling() -> anyhow::Result<()> {
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("ro:3#1-2", Box::new(changed_paths_fn))?
+            .parse("ro:3#1-2", &TestChanges(changed_paths_fn))?
             .to_debug(),
         snapbox::str![[r#"
 [
@@ -2245,6 +3085,7 @@ fn uncommitted_hunks_by_id_collision_handling() -> anyhow::Result<()> {
                 tail: [],
             },
             is_entire_file: false,
+            source: Head,
         },
     ),
 ]
@@ -2265,14 +3106,20 @@ fn commit_matches_are_deduplicated_by_commit_oid() -> anyhow::Result<()> {
         Some(id(1)),
         [commit_id],
     )])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
         bail!("unexpected IDs {commit_id} {parent_id:?}");
     };
 
-    let matches = id_map.parse("02", Box::new(changed_paths_fn))?;
+    let matches = id_map.parse("02", &TestChanges(changed_paths_fn))?;
     assert_eq!(matches.len(), 1);
     assert!(
         matches.iter().any(
@@ -2289,14 +3136,20 @@ fn dedupe_does_not_hide_ambiguity_between_distinct_commits() -> anyhow::Result<(
     let id1 = hex_to_id("21aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let id2 = hex_to_id("21bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let stacks = vec![stack([segment("branch", [id1, id2], None, [])])];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
         bail!("unexpected IDs {commit_id} {parent_id:?}");
     };
 
-    let matches = id_map.parse("21", Box::new(changed_paths_fn))?;
+    let matches = id_map.parse("21", &TestChanges(changed_paths_fn))?;
     assert_eq!(
         matches.len(),
         2,
@@ -2324,14 +3177,20 @@ fn dedupe_does_not_hide_ambiguity_between_branches_in_different_stacks() -> anyh
             ..stack([segment("foo", [id(2)], None, [])])
         },
     ];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
         bail!("unexpected IDs {commit_id} {parent_id:?}");
     };
 
-    let matches = id_map.parse("foo", Box::new(changed_paths_fn))?;
+    let matches = id_map.parse("foo", &TestChanges(changed_paths_fn))?;
     assert_eq!(
         matches.len(),
         2,
@@ -2357,14 +3216,20 @@ fn dedupe_treats_unmanaged_branches_with_same_name_as_the_same_branch() -> anyho
         stack([segment("foo", [id(1)], None, [])]),
         stack([segment("foo", [id(2)], None, [])]),
     ];
-    let id_map = IdMap::new(stacks, Vec::new(), gix::hashtable::HashMap::default())?;
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
+    )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
         bail!("unexpected IDs {commit_id} {parent_id:?}");
     };
 
-    let matches = id_map.parse("foo", Box::new(changed_paths_fn))?;
+    let matches = id_map.parse("foo", &TestChanges(changed_paths_fn))?;
     assert!(
         matches!(
             matches.as_slice(),
@@ -2388,7 +3253,14 @@ fn find_commits_by_change_id() {
     .into_iter()
     .collect();
 
-    let id_map = IdMap::new(stacks, Vec::new(), commit_id_to_change_id).unwrap();
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        commit_id_to_change_id,
+        Default::default(),
+        3,
+    )
+    .unwrap();
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
         snapbox::str![[r#"
@@ -2407,7 +3279,7 @@ branches: [ no ]
     // Should match both commits if we use a common prefix
     snapbox::assert_data_eq!(
         id_map
-            .parse("sws", Box::new(changed_paths_fn))
+            .parse("sws", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -2437,7 +3309,7 @@ branches: [ no ]
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("swst", Box::new(changed_paths_fn))
+            .parse("swst", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -2458,7 +3330,7 @@ branches: [ no ]
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("swsr", Box::new(changed_paths_fn))
+            .parse("swsr", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -2494,8 +3366,13 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
     // an agent copies from `but diff` before committing.
     let commitless = IdMap::new(
         vec![stack([segment("not-important", [], None, [])])],
-        vec![hunk("README.md")],
+        vec![source_changes(
+            ChangeSourceId::Head,
+            vec![hunk("README.md")],
+        )],
         gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
     )?;
     let file_id = commitless
         .all_ids()
@@ -2516,19 +3393,24 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
         [(id1, colliding_change_id)].into_iter().collect();
     let id_map = IdMap::new(
         vec![stack([segment("not-important", [id1], None, [])])],
-        vec![hunk("README.md")],
+        vec![source_changes(
+            ChangeSourceId::Head,
+            vec![hunk("README.md")],
+        )],
         commit_id_to_change_id,
+        Default::default(),
+        3,
     )?;
 
     // In the full namespace the commit shadows the previously issued file ID.
-    let full = id_map.parse(&file_id, changed_paths_fn())?;
+    let full = id_map.parse(&file_id, &TestChanges(changed_paths_fn()))?;
     assert!(
         matches!(full.as_slice(), [CliId::Commit { .. }]),
         "the commit change ID shadows the file ID in the full namespace: {full:?}"
     );
 
     // Scoped to uncommitted files, the same selector still finds the file.
-    let scoped = id_map.parse_uncommitted(&file_id, changed_paths_fn())?;
+    let scoped = id_map.parse_uncommitted(&file_id, &TestChanges(changed_paths_fn()))?;
     match scoped.as_slice() {
         [CliId::UncommittedHunkOrFile(uncommitted)] => {
             assert_eq!(
@@ -2541,7 +3423,8 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
     }
 
     // Hunk selectors under the file keep working too.
-    let hunk = id_map.parse_uncommitted(&format!("{file_id}:q"), changed_paths_fn())?;
+    let hunk =
+        id_map.parse_uncommitted(&format!("{file_id}:e"), &TestChanges(changed_paths_fn()))?;
     assert!(
         matches!(hunk.as_slice(), [CliId::UncommittedHunkOrFile(_)]),
         "hunk selector resolves in the scoped namespace: {hunk:?}"
@@ -2549,14 +3432,14 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
 
     let tmp = tempfile::TempDir::new()?;
     let repo = gix::init(tmp.path())?;
-    let resolved = CliIdArg(format!("{file_id}:q"))
+    let resolved = CliIdArg(format!("{file_id}:e"))
         .try_resolve_uncommitted(&repo, &id_map)
         .expect("selector resolution succeeds")
         .expect("the issued hunk selector still resolves");
     assert_eq!(resolved.len(), 1, "exactly one hunk resolves");
     assert_eq!(resolved[0].hunks.first().hunk.path, "README.md");
 
-    let resolved = CliIdArg(format!("{file_id}:q"))
+    let resolved = CliIdArg(format!("{file_id}:e"))
         .resolve_in_workspace(
             &repo,
             &id_map,
@@ -2576,7 +3459,7 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
 }
 
 #[test]
-fn uncommitted_scope_resolves_a_file_literally_named_zz() -> anyhow::Result<()> {
+fn a_file_literally_named_at_competes_with_the_uncommitted_area() -> anyhow::Result<()> {
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
      -> anyhow::Result<Vec<but_core::TreeChange>> {
@@ -2584,19 +3467,24 @@ fn uncommitted_scope_resolves_a_file_literally_named_zz() -> anyhow::Result<()> 
     };
     let id_map = IdMap::new(
         vec![stack([segment("not-important", [], None, [])])],
-        vec![hunk("zz")],
+        vec![source_changes(ChangeSourceId::Head, vec![hunk("@")])],
         gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
     )?;
 
-    // The full parser returns the filename match before considering the `zz`
-    // sentinel; the scoped parser must agree instead of reporting an
-    // ambiguity the full parser does not have.
-    let scoped = id_map.parse_uncommitted("zz", Box::new(changed_paths_fn))?;
+    // `@` names the whole area, so a dirty file of the same name must surface
+    // as a competing match for the resolver to report - not silently win, the
+    // same way a file named after a worktree competes with the worktree.
+    let scoped = id_map.parse_uncommitted("@", &TestChanges(changed_paths_fn))?;
     match scoped.as_slice() {
-        [CliId::UncommittedHunkOrFile(uncommitted)] => {
-            assert_eq!(uncommitted.hunks.first().hunk.path, "zz");
+        [
+            CliId::UncommittedHunkOrFile(uncommitted),
+            CliId::Uncommitted { .. },
+        ] => {
+            assert_eq!(uncommitted.hunks.first().hunk.path, "@");
         }
-        other => panic!("expected exactly the file named zz, got {other:?}"),
+        other => panic!("expected the file named @ and the area sentinel, got {other:?}"),
     }
     Ok(())
 }
@@ -2613,11 +3501,13 @@ fn uncommitted_scope_does_not_prefix_match_a_branch_short_id() -> anyhow::Result
     // prefix of the file's ID (branches win in the full namespace).
     let id_map = IdMap::new(
         vec![stack([segment("kp", [id(1)], None, [])])],
-        vec![hunk("foo242")],
+        vec![source_changes(ChangeSourceId::Head, vec![hunk("foo242")])],
         gix::hashtable::HashMap::default(),
+        Default::default(),
+        3,
     )?;
 
-    let full = id_map.parse("kp", Box::new(changed_paths_fn))?;
+    let full = id_map.parse("kp", &TestChanges(changed_paths_fn))?;
     assert!(
         matches!(full.as_slice(), [CliId::Branch(..)]),
         "precondition: the full namespace resolves 'kp' to the branch: {full:?}"
@@ -2626,7 +3516,7 @@ fn uncommitted_scope_does_not_prefix_match_a_branch_short_id() -> anyhow::Result
     // The scoped parser must NOT silently resolve the displayed branch ID to
     // the file by hex-prefix accident — an empty result lets callers produce
     // the targeted "is a branch" error via their full-namespace fallback.
-    let scoped = id_map.parse_uncommitted("kp", Box::new(changed_paths_fn))?;
+    let scoped = id_map.parse_uncommitted("kp", &TestChanges(changed_paths_fn))?;
     assert_eq!(
         scoped,
         vec![],
@@ -2634,7 +3524,7 @@ fn uncommitted_scope_does_not_prefix_match_a_branch_short_id() -> anyhow::Result
     );
 
     // A longer prefix that no branch owns still resolves the file.
-    let scoped = id_map.parse_uncommitted("kpo", Box::new(changed_paths_fn))?;
+    let scoped = id_map.parse_uncommitted("kpo", &TestChanges(changed_paths_fn))?;
     assert!(
         matches!(scoped.as_slice(), [CliId::UncommittedHunkOrFile(_)]),
         "file prefixes beyond the branch ID keep resolving: {scoped:?}"
@@ -2671,7 +3561,14 @@ fn change_ids_are_disambiguated_on_collision() {
     .into_iter()
     .collect();
 
-    let id_map = IdMap::new(stacks, Vec::new(), commit_id_to_change_id).unwrap();
+    let id_map = IdMap::new(
+        stacks,
+        Vec::new(),
+        commit_id_to_change_id,
+        Default::default(),
+        3,
+    )
+    .unwrap();
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
         snapbox::str![[r#"
@@ -2690,7 +3587,7 @@ branches: [ no ]
     // Should match both commits if we use a common prefix
     snapbox::assert_data_eq!(
         id_map
-            .parse("sws", Box::new(changed_paths_fn))
+            .parse("sws", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -2720,7 +3617,7 @@ branches: [ no ]
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("s#0", Box::new(changed_paths_fn))
+            .parse("s#0", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -2741,7 +3638,7 @@ branches: [ no ]
 
     snapbox::assert_data_eq!(
         id_map
-            .parse("s#1", Box::new(changed_paths_fn))
+            .parse("s#1", &TestChanges(changed_paths_fn))
             .unwrap()
             .to_debug(),
         snapbox::str![[r#"
@@ -2761,8 +3658,106 @@ branches: [ no ]
     )
 }
 
+/// Commits owned by a linked worktree share the commit and change-ID namespace with the
+/// workspace stacks: they resolve by change ID and hex prefix like workspace commits, and
+/// colliding prefixes on either side lengthen the IDs of both.
+#[test]
+fn worktree_commits_share_the_commit_namespace() -> anyhow::Result<()> {
+    let changed_paths_fn = |commit_id: gix::ObjectId,
+                            parent_id: Option<gix::ObjectId>|
+     -> anyhow::Result<Vec<but_core::TreeChange>> {
+        bail!("unexpected IDs {commit_id} {parent_id:?}");
+    };
+    // The hashes share the prefix "21", so neither commit may print it bare.
+    let ws_commit = hex_to_id("21aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let wt_commit = hex_to_id("21bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let stacks = vec![stack([segment("branch", [ws_commit], None, [])])];
+    let commit_id_to_change_id = [
+        (ws_commit, ChangeId::from(BString::from(&b"swst"[..]))),
+        (wt_commit, ChangeId::from(BString::from(&b"swsr"[..]))),
+    ]
+    .into_iter()
+    .collect();
+    // The worktree registers as a change source even when clean, which is what keys its
+    // commits into the map.
+    let sources = vec![source_changes(
+        ChangeSourceId::Worktree("wt-a".into()),
+        Vec::new(),
+    )];
+    let worktree_commits = [(
+        BString::from("wt-a"),
+        vec![but_graph::workspace::StackCommit {
+            id: wt_commit,
+            parent_ids: Vec::new(),
+            refs: Vec::new(),
+            flags: Default::default(),
+        }],
+    )]
+    .into_iter()
+    .collect();
+    let id_map = IdMap::new(stacks, sources, commit_id_to_change_id, worktree_commits, 3)?;
+
+    // The worktree commit resolves by its change ID, disambiguated against the
+    // workspace commit's "swst".
+    snapbox::assert_data_eq!(
+        id_map
+            .parse("swsr", &TestChanges(changed_paths_fn))
+            .unwrap()
+            .to_debug(),
+        snapbox::str![[r#"
+[
+    Commit {
+        commit: CommitId {
+            commit_id: Sha1(21bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb),
+            change_id: Some(
+                "swsr",
+            ),
+        },
+        id: "21b",
+    },
+]
+
+"#]],
+    );
+
+    // The shared hex prefix is ambiguous across the two sets.
+    assert_eq!(
+        id_map
+            .parse("21", &TestChanges(changed_paths_fn))
+            .unwrap()
+            .len(),
+        2,
+        "a hex prefix shared by a workspace and a worktree commit matches both"
+    );
+
+    // One more nybble singles out the workspace commit, whose short ID grew to match.
+    snapbox::assert_data_eq!(
+        id_map
+            .parse("21a", &TestChanges(changed_paths_fn))
+            .unwrap()
+            .to_debug(),
+        snapbox::str![[r#"
+[
+    Commit {
+        commit: CommitId {
+            commit_id: Sha1(21aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa),
+            change_id: Some(
+                "swst",
+            ),
+        },
+        id: "21a",
+    },
+]
+
+"#]],
+    );
+    Ok(())
+}
+
 mod util {
     use std::{cmp::Ordering, fmt::Formatter};
+
+    use super::TestChanges;
 
     use anyhow::bail;
     use bstr::BString;
@@ -2808,7 +3803,6 @@ mod util {
         StackSegment {
             ref_info,
             remote_tracking_ref_name: None,
-            sibling_segment_id: None,
             remote_tracking_branch_segment_id: None,
             id: Default::default(),
             commits,
@@ -2826,6 +3820,19 @@ mod util {
         Stack {
             id: None,
             segments: segments.into_iter().collect::<Vec<StackSegment>>(),
+        }
+    }
+
+    /// A source whose `changes` are left empty: [`IdMap`] reads only `hunks`, as
+    /// tree statuses are a status-rendering concern.
+    pub fn source_changes(
+        source: crate::ChangeSourceId,
+        hunks: Vec<but_core::SingleHunk>,
+    ) -> crate::utils::change_source::SourceChanges {
+        crate::utils::change_source::SourceChanges {
+            source,
+            changes: Vec::new(),
+            hunks,
         }
     }
 
@@ -2893,6 +3900,8 @@ mod util {
                 uncommitted: _,
                 uncommitted_files,
                 uncommitted_hunks,
+                worktrees: _,
+                diff_context_lines: _,
             } = self;
             let changed_paths_fn = |commit_id: gix::ObjectId,
                                     parent_id: Option<gix::ObjectId>|
@@ -2911,7 +3920,7 @@ mod util {
                 )
                 .chain(uncommitted_hunks.keys().cloned())
                 .flat_map(|id| {
-                    self.parse(&id, Box::new(changed_paths_fn))
+                    self.parse(&id, &TestChanges(changed_paths_fn))
                         .expect("BUG: valid ID means no error")
                 })
                 .sorted_by(id_cmp)
@@ -2932,6 +3941,8 @@ mod util {
                 uncommitted: _,
                 uncommitted_files,
                 uncommitted_hunks,
+                worktrees,
+                diff_context_lines: _,
             } = self.inner;
             let commits_count = self.inner.commit_ids().len();
             writeln!(f, "workspace_and_remote_commits_count: {}", &commits_count)?;
@@ -2948,6 +3959,14 @@ mod util {
                 f,
                 "uncommitted_hunks",
                 uncommitted_hunks.keys().sorted().cloned(),
+            )?;
+            id_list_if_not_empty(
+                f,
+                "worktrees",
+                worktrees
+                    .values()
+                    .map(|worktree| format!("{} {}", worktree.short_id, worktree.name))
+                    .sorted(),
             )?;
             id_list_if_not_empty(
                 f,
@@ -2975,4 +3994,4 @@ mod util {
         a.to_short_string().cmp(&b.to_short_string())
     }
 }
-use util::{hunk, id, segment, stack, tree_change_addition};
+use util::{hunk, id, segment, source_changes, stack, tree_change_addition};

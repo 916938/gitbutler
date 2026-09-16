@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use but_core::ref_metadata::StackId;
 use but_ctx::Context;
-use but_rebase::graph_rebase::mutate::InsertSide;
 use gix::refs::Category;
 use nonempty::NonEmpty;
 use ratatui::{backend::Backend, prelude::Span};
 
 use crate::{
-    CliId,
+    CliError, CliId,
     command::legacy::{
         commit,
         reword2::CommitMessageSource,
@@ -28,7 +27,11 @@ use crate::{
     },
     id::UncommittedHunkOrFile,
     tui::TerminalGuard,
-    utils::targeting,
+    utils::{
+        change_source::{ChangeSourceId, UncommittedSelection},
+        targeting::{self, Side},
+        worktrees::worktree_branch,
+    },
 };
 
 use super::{SquashMarks, SquashSource, mark::MarksRef};
@@ -36,7 +39,7 @@ use super::{SquashMarks, SquashSource, mark::MarksRef};
 #[derive(Debug, Clone)]
 pub struct CommitMode {
     pub source: Arc<CommitSource>,
-    pub insert_side: InsertSide,
+    pub insert_side: Side,
     /// If set, then the commit must be made on this stack
     ///
     /// Used when committing changes staged to a specific stack
@@ -61,15 +64,18 @@ pub enum CommitMessageComposer {
 #[derive(Debug)]
 pub enum CommitSource {
     Marks(NonEmpty<UncommittedHunkOrFile>),
-    Uncommitted,
     UncommittedHunk(UncommittedHunkOrFile),
+    /// Every uncommitted change of one worktree.
+    UncommittedArea(ChangeSourceId),
 }
 
 impl ModeRender for CommitMode {
     fn operation_extension(&self, data: &StatusOutputLineData) -> Option<OperationExtension<'_>> {
+        let is_worktree_heading = matches!(data, StatusOutputLineData::Worktree { .. });
         let direction = if matches!(data, StatusOutputLineData::Commit { .. }) {
             self.insert_side.into()
-        } else if matches!(data, StatusOutputLineData::Branch { .. }) {
+        } else if matches!(data, StatusOutputLineData::Branch { .. }) || is_worktree_heading {
+            // Below the heading is the top of the worktree's lane, which is where the commit goes.
             ExtensionDirection::Below
         } else {
             return None;
@@ -87,12 +93,13 @@ impl ModeRender for CommitMode {
         data: &StatusOutputLineData,
         line: &mut RenderSingleLineSpans<'_, '_>,
     ) {
-        if data
-            .cli_id()
-            .is_some_and(|target| self.source.contains(target))
-        {
-            render_commit_operation_target_marker(app, data, self, line);
+        let Some(target) = data.cli_id() else {
+            return;
+        };
+        if !self.source.contains(target) {
+            return;
         }
+        render_commit_operation_target_marker(app, data, self, line);
     }
 
     fn render_operation_source_marker(
@@ -121,8 +128,8 @@ impl CommitSource {
                     false
                 }
             }
-            CommitSource::Uncommitted => {
-                matches!(other, CliId::Uncommitted { .. })
+            CommitSource::UncommittedArea(source) => {
+                other.uncommitted_area().as_ref() == Some(source)
             }
             CommitSource::UncommittedHunk(lhs) => {
                 if let CliId::UncommittedHunkOrFile(rhs) = other {
@@ -137,10 +144,20 @@ impl CommitSource {
     fn try_from_cli_id(id: &CliId) -> Option<Self> {
         match id {
             CliId::Branch(..) | CliId::Commit { .. } | CliId::Uncommitted { .. } => {
-                Some(CommitSource::Uncommitted)
+                Some(CommitSource::UncommittedArea(ChangeSourceId::Head))
             }
             CliId::UncommittedHunkOrFile(hunk) => Some(CommitSource::UncommittedHunk(hunk.clone())),
-            CliId::PathPrefix { .. } | CliId::CommittedFile { .. } | CliId::Stack { .. } => None,
+            // The reference offers the area whose changes land on its lane by default, the way a
+            // branch row offers the main area: `c` then confirm on it commits the worktree's own
+            // changes, never another worktree's.
+            CliId::WorktreeUncommitted { name, .. } | CliId::Worktree { name, .. } => Some(
+                CommitSource::UncommittedArea(ChangeSourceId::Worktree(name.clone())),
+            ),
+            CliId::AnonymousSegment(..)
+            | CliId::PathPrefix { .. }
+            | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
+            | CliId::Stack { .. } => None,
         }
     }
 }
@@ -236,7 +253,9 @@ impl App {
             },
             Mode::Squash(squash_mode) => match &squash_mode.source {
                 SquashSource::Uncommitted => {
-                    self.handle_commit_start_source(CommitSource::Uncommitted);
+                    self.handle_commit_start_source(CommitSource::UncommittedArea(
+                        ChangeSourceId::Head,
+                    ));
                 }
                 SquashSource::UncommittedHunk(hunk) => {
                     self.handle_commit_start_source(CommitSource::UncommittedHunk(hunk.clone()));
@@ -260,7 +279,7 @@ impl App {
     fn handle_commit_start_source(&mut self, source: CommitSource) {
         let commit_mode = CommitMode {
             source: Arc::new(source),
-            insert_side: InsertSide::Below,
+            insert_side: Side::Below,
             scope_to_stack: None,
             message_composer: CommitMessageComposer::default(),
         };
@@ -295,7 +314,7 @@ impl App {
             .update_and_push_leave_normal_mode(&mut self.backstack, |mode| {
                 *mode = Mode::Commit(CommitMode {
                     source,
-                    insert_side: InsertSide::Below,
+                    insert_side: Side::Below,
                     scope_to_stack: None,
                     message_composer: CommitMessageComposer::default(),
                 });
@@ -345,17 +364,26 @@ impl App {
             },
             CliId::Commit { commit, id: _ } => commit::CommitRelativeToTarget::Commit {
                 commit: commit.clone(),
-                side: targeting::Side::from(*insert_side),
+                side: *insert_side,
             },
-            CliId::UncommittedHunkOrFile(..)
+            CliId::Worktree { name, .. } => {
+                let repo = ctx.repo.get()?;
+                commit::CommitRelativeToTarget::BranchTip {
+                    name: worktree_branch(&repo, name.as_ref())?,
+                }
+            }
+            CliId::AnonymousSegment(..)
+            | CliId::UncommittedHunkOrFile(..)
+            | CliId::WorktreeUncommitted { .. }
             | CliId::PathPrefix { .. }
             | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
             | CliId::Uncommitted { .. }
             | CliId::Stack { .. } => return Ok(()),
         };
         let commit_op = commit::CommitOperation::CommitAt(commit::CommitAtOperation { target });
 
-        commit_with(ctx, terminal_guard, messages, mode, commit_op)?;
+        commit_with(ctx, terminal_guard, messages, mode, commit_op, false)?;
 
         Ok(())
     }
@@ -395,13 +423,24 @@ impl App {
                 },
             }),
 
-            CliId::PathPrefix { .. }
+            CliId::AnonymousSegment(..)
+            | CliId::PathPrefix { .. }
             | CliId::CommittedFile { .. }
+            | CliId::CommittedHunk { .. }
             | CliId::Commit { .. }
+            | CliId::Worktree { .. }
+            | CliId::WorktreeUncommitted { .. }
             | CliId::Stack { .. } => return Ok(()),
         };
 
-        commit_with(ctx, terminal_guard, messages, mode, commit_op)?;
+        commit_with(
+            ctx,
+            terminal_guard,
+            messages,
+            mode,
+            commit_op,
+            commit::should_stack_on_head(&self.operating_mode),
+        )?;
 
         Ok(())
     }
@@ -413,10 +452,7 @@ impl App {
         else {
             return;
         };
-        commit_mode.insert_side = match commit_mode.insert_side {
-            InsertSide::Above => InsertSide::Below,
-            InsertSide::Below => InsertSide::Above,
-        };
+        commit_mode.insert_side = commit_mode.insert_side.toggle();
     }
 
     fn handle_commit_toggle_message_composer(&mut self, composer: CommitMessageComposer) {
@@ -455,6 +491,7 @@ fn commit_with<T>(
     messages: &mut Vec<Message>,
     mode: &CommitMode,
     commit_op: commit::CommitOperation,
+    stack_on_head: bool,
 ) -> anyhow::Result<()>
 where
     T: TerminalGuard,
@@ -473,11 +510,17 @@ where
     );
 
     let commit_selection = match &**source {
-        CommitSource::Marks(hunks) => commit::CommitSelection::Changes(Box::new(hunks.clone())),
-        CommitSource::Uncommitted => commit::CommitSelection::AllChanges,
-        CommitSource::UncommittedHunk(hunk) => {
-            commit::CommitSelection::Changes(Box::new(NonEmpty::new(hunk.clone())))
+        // Marks can span checkouts, so this is where that gets rejected.
+        CommitSource::Marks(hunks) => commit::CommitSelection::Changes(Box::new(
+            UncommittedSelection::new(hunks.clone()).map_err(CliError::into_internal)?,
+        )),
+        CommitSource::UncommittedArea(source) => {
+            commit::CommitSelection::AllChanges(source.clone())
         }
+        CommitSource::UncommittedHunk(hunk) => commit::CommitSelection::Changes(Box::new(
+            UncommittedSelection::new(NonEmpty::new(hunk.clone()))
+                .map_err(CliError::into_internal)?,
+        )),
     };
 
     let mut guard = ctx.exclusive_worktree_access();
@@ -501,6 +544,7 @@ where
         commit::CommitOutcome {
             new_commit,
             branch_name: _,
+            ..
         },
         _ws,
     ) = commit::run(
@@ -508,6 +552,7 @@ where
         &mut meta,
         guard.write_permission(),
         commit_op,
+        stack_on_head,
         commit_selection,
         reword_op,
     )?;

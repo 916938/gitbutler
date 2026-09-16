@@ -99,7 +99,7 @@ impl StatusOutput<'_> {
         )
     }
 
-    pub fn unstaged_changes(
+    pub fn uncommitted_changes(
         &mut self,
         connector: Vec<Span<'static>>,
         line: UncommittedLineContent,
@@ -109,6 +109,36 @@ impl StatusOutput<'_> {
             Some(connector),
             StatusOutputContent::Uncommitted(line),
             StatusOutputLineData::UncommittedChanges {
+                cli_id: Arc::new(id),
+            },
+        )
+    }
+
+    pub fn worktree(
+        &mut self,
+        connector: Vec<Span<'static>>,
+        line: UncommittedLineContent,
+        id: CliId,
+    ) -> anyhow::Result<()> {
+        self.push_line(
+            Some(connector),
+            StatusOutputContent::Uncommitted(line),
+            StatusOutputLineData::Worktree {
+                cli_id: Arc::new(id),
+            },
+        )
+    }
+
+    pub fn worktree_uncommitted(
+        &mut self,
+        connector: Vec<Span<'static>>,
+        line: UncommittedLineContent,
+        id: CliId,
+    ) -> anyhow::Result<()> {
+        self.push_line(
+            Some(connector),
+            StatusOutputContent::Uncommitted(line),
+            StatusOutputLineData::WorktreeUncommitted {
                 cli_id: Arc::new(id),
             },
         )
@@ -235,11 +265,17 @@ impl StatusOutput<'_> {
     pub fn merge_base(
         &mut self,
         connector: Vec<Span<'static>>,
-        line: Vec<Span<'static>>,
+        id: Vec<Span<'static>>,
+        suffix: Vec<Span<'static>>,
+        commit_id: gix::ObjectId,
     ) -> anyhow::Result<()> {
         self.push_line(
             Some(connector),
-            StatusOutputContent::Plain(line),
+            StatusOutputContent::MergeBase(MergeBaseLineContent {
+                id,
+                suffix,
+                commit_id,
+            }),
             StatusOutputLineData::MergeBase,
         )
     }
@@ -265,6 +301,14 @@ pub enum StatusOutputContent {
     Branch(BranchLineContent),
     File(FileLineContent),
     Uncommitted(UncommittedLineContent),
+    MergeBase(MergeBaseLineContent),
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeBaseLineContent {
+    pub id: Vec<Span<'static>>,
+    pub suffix: Vec<Span<'static>>,
+    pub commit_id: gix::ObjectId,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -304,11 +348,11 @@ pub struct FileLineContent {
     pub path: Vec<Span<'static>>,
 }
 
-/// Considering the example "zz [uncommitted] (no changes)" see the field docs for what exactly
+/// Considering the example "@ [uncommitted] (no changes)" see the field docs for what exactly
 /// they correspond to.
 #[derive(Debug, Default, Clone)]
 pub struct UncommittedLineContent {
-    /// "zz" in the example
+    /// "@" in the example
     pub id: Vec<Span<'static>>,
     /// " [" in the example
     pub decoration_start: Vec<Span<'static>>,
@@ -327,15 +371,15 @@ pub struct StatusOutputLine {
     ///
     /// Example:
     ///
-    /// ╭┄zz [uncommitted]                                      | Some("╭┄")
-    /// ┊   ur M flake.nix                                              | Some("┊   ")
-    /// ┊                                                               | Some("┊ ")
-    /// ┊╭┄dp [dp-branch-4]                                             | Some("┊╭┄")
-    /// ┊●   3dd0f00 (no commit message) (no changes)                   | Some("┊●   ")
-    /// ├╯                                                              | Some("├╯ ")
-    /// ┊                                                               | Some("┊ ")
+    /// ╭┄@ [uncommitted]                                                       | Some("╭┄")
+    /// ┊   ur M flake.nix                                                       | Some("┊   ")
+    /// ┊                                                                        | Some("┊ ")
+    /// ┊╭┄dp [dp-branch-4]                                                      | Some("┊╭┄")
+    /// ┊●   3dd0f00 (no commit message) (no changes)                            | Some("┊●   ")
+    /// ├╯                                                                       | Some("├╯ ")
+    /// ┊                                                                        | Some("┊ ")
     /// ┊● 7cd07f6 (upstream: origin/main) 1 new commit (checked 34 seconds ago) | Some("┊● ")
-    /// ├╯ 8678259 [origin/main] 2026-03-11 nix                         | Some("├╯ ")
+    /// ├╯ 8678259 [origin/main] 2026-03-11 nix                                  | Some("├╯ ")
     pub connector: Option<Vec<Span<'static>>>,
     /// The content of the line such as the commit, branch, or file.
     pub content: StatusOutputContent,
@@ -361,6 +405,8 @@ impl StatusOutputLine {
             StatusOutputLineData::StagedChanges { .. }
             | StatusOutputLineData::StagedFile { .. }
             | StatusOutputLineData::UncommittedChanges { .. }
+            | StatusOutputLineData::Worktree { .. }
+            | StatusOutputLineData::WorktreeUncommitted { .. }
             | StatusOutputLineData::UncommittedFile { .. }
             | StatusOutputLineData::CommitMessage
             | StatusOutputLineData::MergeBase
@@ -377,7 +423,8 @@ impl StatusOutputLine {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum::EnumDiscriminants)]
+#[strum_discriminants(name(StatusOutputLineDataKind))]
 pub enum StatusOutputLineData {
     UpdateNotice,
     Connector,
@@ -389,6 +436,12 @@ pub enum StatusOutputLineData {
         cli_id: Arc<CliId>,
     },
     UncommittedChanges {
+        cli_id: Arc<CliId>,
+    },
+    Worktree {
+        cli_id: Arc<CliId>,
+    },
+    WorktreeUncommitted {
         cli_id: Arc<CliId>,
     },
     UncommittedFile {
@@ -419,6 +472,8 @@ impl StatusOutputLineData {
     pub fn cli_id(&self) -> Option<&Arc<CliId>> {
         match self {
             StatusOutputLineData::UncommittedChanges { cli_id }
+            | StatusOutputLineData::Worktree { cli_id }
+            | StatusOutputLineData::WorktreeUncommitted { cli_id }
             | StatusOutputLineData::UncommittedFile { cli_id }
             | StatusOutputLineData::Branch { cli_id, .. }
             | StatusOutputLineData::StagedChanges { cli_id }

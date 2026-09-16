@@ -171,6 +171,40 @@ pub enum Code {
     /// "Not Found -" — kept here so the wire-level `Code` enum is the
     /// single source of truth for codes the desktop app may surface.
     GitHubTokenExpired,
+    /// GitLab returned HTTP 401 while validating a personal access token.
+    GitLabUnauthorized,
+    /// GitLab returned HTTP 403 while validating a personal access token.
+    GitLabForbidden,
+    /// A GitHub organization has enabled OAuth App access restrictions and
+    /// blocked the GitButler OAuth app. Terminal until the org approves the
+    /// app or the user switches credentials — retrying won't help.
+    GitHubOrgOAuthRestricted,
+    /// A GitHub organization requires SAML SSO authorization for the
+    /// current OAuth or personal access token. Terminal until the user
+    /// authorizes the credential for the organization.
+    GitHubOrgSamlRestricted,
+    /// GitHub returned 403 "Resource not accessible by personal access
+    /// token" — the token works but lacks a read permission such as Checks.
+    /// Terminal until the user grants the permission or reconnects with
+    /// other credentials.
+    GitHubInsufficientPermissions,
+    /// No credentials are stored for the forge integration — the user never
+    /// authenticated or logged out. Cached forge data stays valid; retrying
+    /// without re-authenticating won't help.
+    ForgeNotAuthenticated,
+    /// The GitHub device-flow code expired before the user authorized it.
+    /// Terminal for that code; starting the flow again issues a new one.
+    GitHubDeviceCodeExpired,
+    /// The user denied the GitHub device-flow authorization request.
+    /// Terminal for that code; starting the flow again is the only recovery.
+    GitHubDeviceAccessDenied,
+    /// GitHub refused the device-flow request for any other terminal reason
+    /// (bad client credentials or device code, unsupported grant type, the
+    /// device flow being disabled for the app). Retrying the same code won't help.
+    GitHubDeviceFlowRejected,
+    /// The target remote maps to no supported forge, so there is nothing to
+    /// list reviews from. Terminal until the target or remote changes.
+    ForgeUnrecognized,
     /// The operation was rejected because the current state doesn't allow it.
     /// Not a bug — the user's request simply can't be fulfilled right now.
     /// The frontend should present this as a warning rather than an error.

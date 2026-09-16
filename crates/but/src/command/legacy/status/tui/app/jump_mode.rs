@@ -7,6 +7,7 @@ use crate::{
     CliId,
     command::legacy::status::{
         FilesStatusFlag, StatusOutputLine,
+        output::StatusOutputContent,
         tui::{
             App, Backstack, Message, Mode, NormalMode,
             cursor::{self, Cursor},
@@ -65,18 +66,20 @@ fn find_line_by_jump_id<'a>(
 
     let mut matches = lines
         .iter()
-        .filter(|line| prefix_match(query, line, return_mode, show_files_flag));
+        .filter(|line| prefix_match(query, line, return_mode, show_files_flag))
+        .peekable();
 
     let needle = matches.next()?;
-
-    if matches.next().is_none()
-        && let Some(id) = needle.data.cli_id()
-        && jump_id_has_prefix(id, query)
-    {
-        Some(needle)
-    } else {
-        None
+    if matches.peek().is_none() {
+        return Some(needle);
     }
+    // A worktree's `wt` is a strict prefix of its own area `wt:@`, so typing it can never
+    // become unique; an ID typed out in full wins over the IDs extending it.
+    std::iter::once(needle).chain(matches).find(|line| {
+        line.data
+            .cli_id()
+            .is_some_and(|id| id.to_short_string() == query)
+    })
 }
 
 pub fn prefix_match(
@@ -85,21 +88,22 @@ pub fn prefix_match(
     return_mode: &Mode,
     show_files_flag: FilesStatusFlag,
 ) -> bool {
-    let Some(id) = line.data.cli_id() else {
-        return false;
-    };
     if !cursor::is_selectable_in_mode(line, return_mode.as_ref(), show_files_flag) {
         return false;
     }
-    if query.is_empty() {
-        true
-    } else {
-        jump_id_has_prefix(id, query)
-    }
+    jump_id_has_prefix(line, query)
 }
 
-fn jump_id_has_prefix(id: &CliId, query: &str) -> bool {
-    match id {
+fn jump_id_has_prefix(line: &StatusOutputLine, query: &str) -> bool {
+    if let StatusOutputContent::MergeBase(merge_base) = &line.content {
+        let mut buf = gix::hash::Kind::hex_buf();
+        return merge_base.commit_id.hex_to_buf(&mut buf).starts_with(query);
+    }
+
+    let Some(id) = line.data.cli_id() else {
+        return false;
+    };
+    match &**id {
         CliId::UncommittedHunkOrFile(hunk) => hunk.id.starts_with(query),
         CliId::Commit {
             commit: CommitId {
@@ -122,8 +126,20 @@ fn jump_id_has_prefix(id: &CliId, query: &str) -> bool {
         CliId::PathPrefix { id, .. }
         | CliId::CommittedFile { id, .. }
         | CliId::Uncommitted { id }
+        | CliId::Worktree { id, .. }
+        | CliId::WorktreeUncommitted { id, .. }
         | CliId::Stack { id, .. } => id.starts_with(query),
         CliId::Branch(branch) => branch.id.starts_with(query),
+        CliId::AnonymousSegment(segment) => segment.id.starts_with(query),
+        CliId::CommittedHunk(..) => false,
+    }
+}
+
+fn cursor_for_jump_line(line: &StatusOutputLine, lines: &[StatusOutputLine]) -> Option<Cursor> {
+    if matches!(line.content, StatusOutputContent::MergeBase(..)) {
+        Cursor::select_merge_base(lines)
+    } else {
+        line.data.cli_id().and_then(|id| Cursor::restore(id, lines))
     }
 }
 
@@ -173,6 +189,7 @@ impl App {
             | Mode::MoveStack(..)
             | Mode::PickChanges(..)
             | Mode::CherryPick(..)
+            | Mode::Branch(..)
             | Mode::Jump(..)) => mode.clone(),
         };
         let backstack = self.backstack.clone();
@@ -206,8 +223,7 @@ impl App {
             &self.status_lines,
             &mode.return_mode,
             self.flags.show_files,
-        ) && let Some(data) = line.data.cli_id()
-            && let Some(new_cursor) = cursor::Cursor::restore(data, &self.status_lines)
+        ) && let Some(new_cursor) = cursor_for_jump_line(line, &self.status_lines)
         {
             self.cursor = new_cursor;
 
@@ -283,7 +299,6 @@ pub fn find_jump_match(
             lines
                 .iter()
                 .find(|line| prefix_match(mode.query(), line, &mode.return_mode, show_files))
-                .and_then(|line| line.data.cli_id())
-                .and_then(|data| cursor::Cursor::restore(data, lines))
+                .and_then(|line| cursor_for_jump_line(line, lines))
         })
 }

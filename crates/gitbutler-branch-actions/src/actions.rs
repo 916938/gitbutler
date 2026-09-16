@@ -14,15 +14,13 @@ pub fn set_base_branch(
     perm: &mut RepoExclusive,
 ) -> Result<BaseBranch> {
     let _ = ctx.create_snapshot(SnapshotDetails::new(OperationKind::SetBaseBranch), perm);
-    base::set_base_branch(ctx, perm.read_permission(), target_branch)
+    set_base_branch_only(ctx, target_branch, perm)
 }
 
-pub(crate) trait Verify {
-    fn verify(&self, perm: &mut RepoExclusive) -> Result<()>;
-}
-
-impl Verify for Context {
-    fn verify(&self, perm: &mut RepoExclusive) -> Result<()> {
-        crate::integration::verify_branch(self, perm)
-    }
+pub fn set_base_branch_only(
+    ctx: &Context,
+    target_branch: &RemoteRefname,
+    perm: &mut RepoExclusive,
+) -> Result<BaseBranch> {
+    base::set_base_branch(ctx, perm, target_branch)
 }

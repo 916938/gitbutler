@@ -49,7 +49,7 @@ fn assert_num_snapshots(ctx: &Context, expected: usize) {
 #[test]
 fn squashing_three_commits() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, two, one] = find_commits(&env, ["1e25c58", "9b3b3d5", "dbdbcea"]);
 
@@ -102,7 +102,7 @@ fn squashing_three_commits() {
 #[test]
 fn rollback() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, two, one] = find_commits(&env, ["1e25c58", "9b3b3d5", "dbdbcea"]);
 
@@ -148,7 +148,7 @@ fn rollback() {
 #[test]
 fn create_reference_without_creating_commits() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three] = find_commits(&env, ["1e25c58"]);
 
@@ -185,6 +185,188 @@ fn create_reference_without_creating_commits() {
         "created reference should be persisted even if no commits are created"
     );
     assert_num_snapshots(&ctx, 1);
+}
+
+#[test]
+fn create_reference_and_checkout_are_undoable_together() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let original_head = repo
+        .head_name()
+        .unwrap()
+        .expect("HEAD starts symbolic")
+        .to_owned();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let snapshot_details = SnapshotDetails::new(OperationKind::CreateBranch);
+    let new_branch = FullName::try_from("refs/heads/checkout-in-transaction").unwrap();
+
+    let _workspace: WorkspaceState = with_transaction(
+        &mut ctx,
+        &mut meta,
+        snapshot_details,
+        DryRun::No,
+        |mut tx| {
+            tx.create_reference(
+                new_branch.as_ref(),
+                None,
+                |_| but_core::ref_metadata::StackId::generate(),
+                None,
+            )?;
+            tx.checkout(new_branch.as_ref())?;
+
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        ctx.repo
+            .get()
+            .unwrap()
+            .head_name()
+            .unwrap()
+            .expect("HEAD remains symbolic"),
+        new_branch,
+        "the requested branch should be checked out before the transaction returns"
+    );
+    assert_num_snapshots(&ctx, 1);
+
+    let snapshot = but_api::legacy::oplog::get_undo_target_snapshot(&ctx)
+        .unwrap()
+        .expect("the transaction records an undo target");
+    but_api::legacy::oplog::restore_snapshot_with_kind(
+        &mut ctx,
+        but_api::legacy::oplog::RestoreKind::RestoreFromSnapshotViaUndo,
+        snapshot.commit_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        ctx.repo
+            .get()
+            .unwrap()
+            .head_name()
+            .unwrap()
+            .expect("undo restores a symbolic HEAD"),
+        original_head,
+        "undo should restore the checkout from before the transaction"
+    );
+}
+
+#[test]
+fn checkout_is_not_applied_when_transaction_rolls_back() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let original_head = repo
+        .head_name()
+        .unwrap()
+        .expect("HEAD starts symbolic")
+        .to_owned();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let snapshot_details = SnapshotDetails::new(OperationKind::CreateBranch);
+    let new_branch = FullName::try_from("refs/heads/rolled-back-checkout").unwrap();
+
+    let outcome = with_transaction(
+        &mut ctx,
+        &mut meta,
+        snapshot_details,
+        DryRun::No,
+        |mut tx| {
+            tx.create_reference(
+                new_branch.as_ref(),
+                None,
+                |_| but_core::ref_metadata::StackId::generate(),
+                None,
+            )?;
+            tx.checkout(new_branch.as_ref())?;
+
+            Ok(tx.rollback("rolled back"))
+        },
+    )
+    .unwrap();
+
+    assert_eq!(outcome, "rolled back");
+    assert_eq!(
+        ctx.repo
+            .get()
+            .unwrap()
+            .head_name()
+            .unwrap()
+            .expect("HEAD remains symbolic"),
+        original_head,
+        "a rolled-back checkout should not change HEAD"
+    );
+    assert_eq!(
+        ref_target(&env, new_branch.as_ref()),
+        None,
+        "the branch created by the rolled-back transaction should be removed"
+    );
+    assert_num_snapshots(&ctx, 0);
+}
+
+#[test]
+fn checkout_dry_run_only_previews_the_new_head() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let original_head = repo
+        .head_name()
+        .unwrap()
+        .expect("HEAD starts symbolic")
+        .to_owned();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let snapshot_details = SnapshotDetails::new(OperationKind::CreateBranch);
+    let new_branch = FullName::try_from("refs/heads/dry-run-checkout").unwrap();
+
+    let _preview: WorkspaceState = with_transaction(
+        &mut ctx,
+        &mut meta,
+        snapshot_details,
+        DryRun::Yes,
+        |mut tx| {
+            tx.create_reference(
+                new_branch.as_ref(),
+                None,
+                |_| but_core::ref_metadata::StackId::generate(),
+                None,
+            )?;
+            tx.checkout(new_branch.as_ref())?;
+
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        ctx.repo
+            .get()
+            .unwrap()
+            .head_name()
+            .unwrap()
+            .expect("HEAD remains symbolic"),
+        original_head,
+        "a dry-run checkout should not change HEAD"
+    );
+    assert_eq!(
+        ref_target(&env, new_branch.as_ref()),
+        None,
+        "a dry-run should not persist the created branch"
+    );
+    assert_num_snapshots(&ctx, 0);
 }
 
 #[test]
@@ -282,7 +464,7 @@ fn create_reference_rolls_back_branch_stack_order_in_single_branch_mode() {
 #[test]
 fn create_reference_relative_to_various_anchors() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, two, base] = find_commits(&env, ["1e25c58", "9b3b3d5", "6674d4f"]);
 
@@ -349,7 +531,7 @@ fn create_reference_relative_to_various_anchors() {
 #[test]
 fn create_reference_then_remove_it_in_same_transaction() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three] = find_commits(&env, ["1e25c58"]);
 
@@ -392,7 +574,7 @@ fn create_reference_then_remove_it_in_same_transaction() {
 #[test]
 fn create_reference_then_commit_below_anchor_keeps_commit_in_workspace() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, base] = find_commits(&env, ["1e25c58", "6674d4f"]);
 
@@ -515,7 +697,7 @@ fn cherry_pick_then_reword_copied_commit() {
 #[test]
 fn move_commits_then_commit_relative_to_moved_commit() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, one] = find_commits(&env, ["1e25c58", "dbdbcea"]);
 
@@ -556,8 +738,8 @@ fn move_commits_then_commit_relative_to_moved_commit() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 4eb318d (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* a381780 (branch) 
+* d70d81f (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 3fb70d9 (branch) 
 * b18afe3 add file-one
 * 5fdd02a add file-three
 * 0d4aae5 add file-two
@@ -571,7 +753,7 @@ fn move_commits_then_commit_relative_to_moved_commit() {
 #[test]
 fn move_commits_reorders_multiple_subjects() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, two, one] = find_commits(&env, ["1e25c58", "9b3b3d5", "dbdbcea"]);
 
@@ -613,7 +795,7 @@ fn move_commits_reorders_multiple_subjects() {
 #[test]
 fn create_reference_then_commit_relative_to_it() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three] = find_commits(&env, ["1e25c58"]);
 
@@ -660,7 +842,7 @@ fn create_reference_then_commit_relative_to_it() {
 #[test]
 fn create_reference_is_removed_on_rollback() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three] = find_commits(&env, ["1e25c58"]);
 
@@ -703,7 +885,7 @@ fn create_reference_is_removed_on_rollback() {
 #[test]
 fn dynamic_rollback() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [three, two, one] = find_commits(&env, ["1e25c58", "9b3b3d5", "dbdbcea"]);
 
@@ -755,7 +937,7 @@ fn dynamic_rollback() {
 #[test]
 fn discarding_three_commits() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     snapbox::assert_data_eq!(
         env.git_log(),
@@ -811,7 +993,7 @@ fn discarding_three_commits() {
 #[test]
 fn discard_changes_from_commit() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     let [two] = find_commits(&env, ["9b3b3d5"]);
 
@@ -868,7 +1050,7 @@ fn discard_changes_from_commit() {
 #[test]
 fn remove_references() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
+    env.setup_metadata(&["branch"]);
 
     snapbox::assert_data_eq!(
         env.git_log(),

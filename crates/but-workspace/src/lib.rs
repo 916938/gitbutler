@@ -66,10 +66,11 @@ use but_graph::{SegmentIndex, workspace::TargetCommit};
 mod upstream_integration;
 pub use upstream_integration::{
     BottomUpdate, BottomUpdateKind, IntegrateUpstreamOutcome, ReviewIntegrationHint,
-    integrate_upstream, integrate_upstream_with_hints,
+    fast_forward_local_tracking_branch, integrate_upstream, integrate_upstream_with_hints,
+    local_tracking_branch_to_fast_forward,
 };
 mod worktree;
-pub use worktree::worktree_conflicts_for_rebase;
+pub use worktree::{resolve_worktree_conflicts, worktree_conflicts_for_rebase};
 
 pub mod worktrees;
 
@@ -79,7 +80,7 @@ pub mod workspace;
 ///
 /// We always try to deduce a set of stacks that are currently applied to a workspace,
 /// even though it's possible to look at refs that are outside a workspace as well.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RefInfo {
     /// The name of the ref that points to a workspace commit,
     /// *or* the name of the first stack segment, along with worktree information.
@@ -106,6 +107,10 @@ pub struct RefInfo {
     ///
     /// Indeed, it's valid to not set the reference, and to only set the commit which should act as an integration base.
     pub target_commit: Option<TargetCommit>,
+    /// Whether the stored target commit is where [`Self::target_ref`] points right now.
+    ///
+    /// Only a workspace update advances the stored target, so `false` means an update has work to do.
+    pub is_target_current: bool,
     /// The bound can be imagined as the segment from which all other commits in the workspace originate.
     /// It can also be imagined to be the delimiter at the bottom beyond which nothing belongs to the workspace,
     /// as antagonist to the first commit in tip of the segment with `id`, serving as first commit that is
@@ -133,6 +138,46 @@ pub struct RefInfo {
     pub ancestor_workspace_commit: Option<AncestorWorkspaceCommit>,
     /// The workspace represents what `HEAD` is pointing to.
     pub is_entrypoint: bool,
+    /// The active linked worktrees along with the commits they own, or empty if the traversal
+    /// wasn't seeded with worktree tips (i.e. the `worktreeManipulation` flag is off).
+    pub worktrees: Vec<worktrees::WorktreeInfo>,
+}
+
+/// Hand-written so `worktrees` only shows up once there are some, keeping the debug output (and
+/// the many snapshots built on it) unchanged for the overwhelmingly common flag-off case.
+impl std::fmt::Debug for RefInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let RefInfo {
+            workspace_ref_info,
+            symbolic_remote_names,
+            stacks,
+            target_ref,
+            target_commit,
+            is_target_current,
+            lower_bound,
+            is_managed_ref,
+            is_managed_commit,
+            ancestor_workspace_commit,
+            is_entrypoint,
+            worktrees,
+        } = self;
+        let mut s = f.debug_struct("RefInfo");
+        s.field("workspace_ref_info", workspace_ref_info)
+            .field("symbolic_remote_names", symbolic_remote_names)
+            .field("stacks", stacks)
+            .field("target_ref", target_ref)
+            .field("target_commit", target_commit)
+            .field("is_target_current", is_target_current)
+            .field("lower_bound", lower_bound)
+            .field("is_managed_ref", is_managed_ref)
+            .field("is_managed_commit", is_managed_commit)
+            .field("ancestor_workspace_commit", ancestor_workspace_commit)
+            .field("is_entrypoint", is_entrypoint);
+        if !worktrees.is_empty() {
+            s.field("worktrees", worktrees);
+        }
+        s.finish()
+    }
 }
 
 impl RefInfo {
@@ -186,6 +231,10 @@ pub struct WorkspaceCommit<'repo> {
 /// This is an important property as there are applications of [`DiffSpec`] sequences that are
 /// currently very sensitive to ordering, such as when discarding file renamings, additions and
 /// deletions of intersecting paths.
+///
+/// Corner case: If the same (path, previous_path) pair has entries both for individual hunks and
+/// the entire file, only the entire file is retained, regardless of where in the order the
+/// entire-file [`DiffSpec`] appeared.
 pub fn flatten_diff_specs(input: impl IntoIterator<Item = DiffSpec>) -> Vec<DiffSpec> {
     let mut output: IndexMap<String, DiffSpec> = IndexMap::new();
     for spec in input {
@@ -199,7 +248,14 @@ pub fn flatten_diff_specs(input: impl IntoIterator<Item = DiffSpec>) -> Vec<Diff
         );
         output
             .entry(key)
-            .and_modify(|e| e.hunk_headers.extend(spec.hunk_headers.clone()))
+            .and_modify(|e| {
+                if e.hunk_headers.is_empty() || spec.hunk_headers.is_empty() {
+                    // there's at least one entire-file entry -> result is entire file
+                    e.hunk_headers.clear();
+                } else {
+                    e.hunk_headers.extend(spec.hunk_headers.clone())
+                }
+            })
             .or_insert(spec);
     }
     output.into_values().collect()

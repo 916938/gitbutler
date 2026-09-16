@@ -12,8 +12,8 @@ use crate::ui::{self, CommitState, PushStatus, UpstreamCommit};
 /// Returns information about the current state of a branch identified by its `name`.
 /// This branch is assumed to not be in the workspace, but it will still be assumed to want to integrate with the workspace target
 /// reference if set.
-/// Note that for stacks, we shouldn't call `stack_details_v3`, but instead [`head_info()`](crate::head_info()) to get all stacks
-/// reachable from the current HEAD.
+/// Note that stacks are described by [`head_info()`](crate::head_info()) instead, which returns all
+/// stacks reachable from the current HEAD.
 ///
 /// ### Implementation
 ///
@@ -38,7 +38,10 @@ pub fn branch_details(
         .context("The branch to integrate with must be present")?;
     let integration_branch_id = integration_branch.peel_to_id()?;
 
-    let mut branch = repo.find_reference(name)?;
+    let Some(mut branch) = repo.try_find_reference(name)? else {
+        return Err(anyhow::anyhow!("The reference '{name}' did not exist")
+            .context(but_error::Code::BranchNotFound));
+    };
     let branch_id = branch.peel_to_id()?;
 
     let mut remote_tracking_branch = repo
@@ -125,7 +128,6 @@ pub fn branch_details(
     Ok(ui::BranchDetails {
         name: name.shorten().into(),
         reference: name.into(),
-        linked_worktree_id: None, /* probably not needed here */
         remote_tracking_branch: remote_tracking_branch.map(|b| b.name().as_bstr().to_owned()),
         pr_number: meta.review.pull_request,
         review_id: meta.review.review_id.clone(),

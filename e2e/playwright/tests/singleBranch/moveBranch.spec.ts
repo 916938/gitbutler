@@ -1,4 +1,5 @@
 import {
+	applyBranchFromBranchesView,
 	branchHeader,
 	createDependentBranch,
 	expectCurrentBranchChip,
@@ -6,12 +7,27 @@ import {
 	setupSingleBranchProject,
 	SINGLE_BRANCH_NAME,
 } from "./helpers.ts";
-import { assertBranch, assertCommitSubjects, branchTip } from "../../src/branch.ts";
+import {
+	assertBranch,
+	assertCommitSubjects,
+	assertSymbolicHead,
+	branchTip,
+	createNewBranch,
+} from "../../src/branch.ts";
 import { updateCommitMessage } from "../../src/commit.ts";
+import { expect } from "../../src/expect.ts";
 import { writeToFile } from "../../src/file.ts";
 import { test } from "../../src/test.ts";
-import { clickByTestId, commitRow, dragAndDropByLocator, getByTestId } from "../../src/util.ts";
-import { expect, type Page } from "@playwright/test";
+import {
+	clickByTestId,
+	commitRow,
+	dragAndDropByLocator,
+	getByTestId,
+	stack,
+	waitForTestId,
+} from "../../src/util.ts";
+import { type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import type { GitButler } from "../../src/setup.ts";
 
 test.use({
@@ -21,6 +37,65 @@ test.use({
 			featureFlags: { singleBranch: true },
 		},
 	},
+});
+
+test("keeps managed branch order after checking out a middle branch", async ({
+	page,
+	gitbutler,
+}) => {
+	await gitbutler.runScript("project-with-remote-branches.sh");
+	await openSingleBranchWorkspace(page);
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+
+	await createNewBranch(page, "A");
+	await expect(stack(page)).toHaveCount(1);
+	await createNewBranch(page, "B");
+	await expect(stack(page)).toHaveCount(2);
+
+	await createDependentBranch(page, "D", "A");
+	await createDependentBranch(page, "C", "A");
+	await expectBranchHeaderOrder(page, ["C", "D", "A"], "A");
+
+	await dragAndDropByLocator(page, branchHeader(page, "A"), branchHeader(page, "D"), {
+		force: true,
+		position: { x: 120, y: 0 },
+	});
+	await expectBranchHeaderOrder(page, ["C", "A", "D"], "A");
+
+	execFileSync("git", ["checkout", "A"], { cwd: localClone });
+
+	await assertSymbolicHead("A", localClone);
+	await expect(stack(page)).toHaveCount(1);
+	await expectBranchHeaderOrder(page, ["A", "D"]);
+});
+
+test("keeps the ad-hoc stack when applying an independent empty branch", async ({
+	page,
+	gitbutler,
+}) => {
+	await gitbutler.runScript("project-with-remote-branches.sh");
+	await openSingleBranchWorkspace(page);
+	const localClone = gitbutler.pathInWorkdir("local-clone");
+
+	await createNewBranch(page, "A");
+	await expect(stack(page)).toHaveCount(1);
+	await createDependentBranch(page, "B", "A");
+	await expectBranchHeaderOrder(page, ["B", "A"], "A");
+	await createDependentBranch(page, "C", "A");
+	await expectBranchHeaderOrder(page, ["C", "B", "A"], "A");
+	await createNewBranch(page, "D");
+	await expect(stack(page)).toHaveCount(2);
+
+	execFileSync("git", ["checkout", "C"], { cwd: localClone });
+	await assertSymbolicHead("C", localClone);
+	await expect(stack(page)).toHaveCount(1);
+	await expectBranchHeaderOrder(page, ["C", "B", "A"]);
+
+	await applyBranchFromBranchesView(page, "D");
+	await assertSymbolicHead("gitbutler/workspace", localClone);
+	await expect(stack(page)).toHaveCount(2);
+	await expectBranchHeaderOrder(page, ["C", "B", "A"], "A");
+	await expectBranchHeaderOrder(page, ["D"], "D");
 });
 
 test("can reorder empty branches by dragging within the single-branch stack", async ({
@@ -55,6 +130,18 @@ test("can reorder empty branches by dragging within the single-branch stack", as
 	await expectBranchHeaderOrder(page, ["empty-top", "empty-low", "empty-mid", SINGLE_BRANCH_NAME]);
 	await expectCurrentBranchChip(page, "empty-top");
 	await assertBranch("empty-top", localClone);
+
+	await gitbutler.runScript("undo-redo.sh", ["undo", "local-clone"]);
+	await page.reload();
+	await waitForTestId(page, "workspace-view");
+	await expectBranchHeaderOrder(page, ["empty-top", "empty-mid", "empty-low", SINGLE_BRANCH_NAME]);
+	await expectCurrentBranchChip(page, "empty-top");
+
+	await gitbutler.runScript("undo-redo.sh", ["redo", "local-clone"]);
+	await page.reload();
+	await waitForTestId(page, "workspace-view");
+	await expectBranchHeaderOrder(page, ["empty-top", "empty-low", "empty-mid", SINGLE_BRANCH_NAME]);
+	await expectCurrentBranchChip(page, "empty-top");
 });
 
 test("moving an empty branch above the checked-out branch checks out the new tip", async ({
@@ -268,11 +355,16 @@ async function dragBranchToInsertionDropzone(
 	await page.mouse.up();
 }
 
-async function expectBranchHeaderOrder(page: Page, expectedBranchNames: string[]): Promise<void> {
+async function expectBranchHeaderOrder(
+	page: Page,
+	expectedBranchNames: string[],
+	stackBranch?: string,
+): Promise<void> {
+	const root = stackBranch ? stack(page).filter({ has: branchHeader(page, stackBranch) }) : page;
 	await expect
 		.poll(
 			async () =>
-				await page
+				await root
 					.locator('[data-testid="branch-header"]')
 					.evaluateAll((headers) =>
 						headers.map((header) => header.getAttribute("data-testid-branch-header")),

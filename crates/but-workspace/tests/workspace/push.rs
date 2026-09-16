@@ -49,6 +49,7 @@ fn head_info(
     but_workspace::head_info_and_workspace(
         repo,
         meta,
+        &mut but_testsupport::project_db(repo)?,
         Options {
             project_meta: project_meta(repo)?,
             expensive_commit_info: true,
@@ -88,7 +89,7 @@ fn apply_remote_tracking_updates(
     repo: &gix::Repository,
     result: &gitbutler_git::PushResult,
 ) -> anyhow::Result<()> {
-    for ((_branch, remote_refname), (_, _, after_sha)) in result
+    for ((_branch, remote_refname, _remote_branch_name), (_, _, after_sha)) in result
         .branch_to_remote
         .iter()
         .zip(result.branch_sha_updates.iter())
@@ -152,6 +153,51 @@ fn logical_push_scope_is_selected_branch_plus_ancestors() -> anyhow::Result<()> 
 }
 
 #[test]
+fn pushed_branch_reports_its_name_on_the_remote_it_landed_on() -> anyhow::Result<()> {
+    let (tmp, repo, meta) = fixture("push")?;
+    // Track `bottom` on a second remote so its own remote differs from the push default,
+    // which is derived from the target ref and stays `origin`.
+    let fork = tmp.path().join("remote.git");
+    let workdir = repo.workdir().expect("fixtures have workdirs");
+    // The tracking ref has to exist for the branch to be seen as tracking `fork`, and it
+    // points at the base so `bottom` still has commits left to push.
+    let base = repo.rev_parse_single("main")?.to_string();
+    for args in [
+        vec!["remote", "add", "fork", fork.to_str().expect("utf8 path")],
+        vec!["config", "branch.bottom.remote", "fork"],
+        vec!["config", "branch.bottom.merge", "refs/heads/bottom"],
+        vec!["update-ref", "refs/remotes/fork/bottom", base.as_str()],
+    ] {
+        let status = std::process::Command::new("git")
+            .current_dir(workdir)
+            .args(args)
+            .status()?;
+        assert!(status.success(), "fixture setup should succeed");
+    }
+    // Reopen so the configuration written above is visible.
+    let repo = gix::open(repo.path())?;
+
+    let result = push(&repo, &meta, r("refs/heads/bottom"), false, false, false)?;
+
+    assert_eq!(
+        result.remote, "origin",
+        "the push default still comes from the target ref"
+    );
+    let (branch, remote_refname, remote_branch_name) = result
+        .branch_to_remote
+        .first()
+        .expect("bottom should have been pushed");
+    assert_eq!(branch, "bottom");
+    assert_eq!(remote_refname, "refs/remotes/fork/bottom");
+    assert_eq!(
+        remote_branch_name, "bottom",
+        "the branch name on the remote must be stripped of the remote the branch actually landed on, not the push default"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn pushing_bottom_of_stack_reports_only_bottom_as_pushed() -> anyhow::Result<()> {
     let (_tmp, repo, meta) = fixture("push")?;
 
@@ -160,7 +206,7 @@ fn pushing_bottom_of_stack_reports_only_bottom_as_pushed() -> anyhow::Result<()>
         result
             .branch_to_remote
             .iter()
-            .map(|(branch, _)| branch.as_str())
+            .map(|(branch, _, _)| branch.as_str())
             .collect::<Vec<_>>(),
         ["bottom"],
         "pushing the bottom branch should not push the top branch"
@@ -188,7 +234,7 @@ fn pushing_top_of_stack_reports_top_as_pushed_after_bottom_is_current() -> anyho
         result
             .branch_to_remote
             .iter()
-            .map(|(branch, _)| branch.as_str())
+            .map(|(branch, _, _)| branch.as_str())
             .collect::<Vec<_>>(),
         ["top"],
         "once the ancestors are current, pushing the top branch should report only the top"
@@ -229,7 +275,7 @@ fn force_push_protection_is_observed_when_pushing_bottom_branch() -> anyhow::Res
         result
             .branch_to_remote
             .iter()
-            .map(|(branch, _)| branch.as_str())
+            .map(|(branch, _, _)| branch.as_str())
             .collect::<Vec<_>>(),
         ["bottom"],
         "skipping force push protection should allow pushing the rewritten bottom branch"
@@ -257,11 +303,67 @@ fn force_push_protection_is_observed_when_pushing_top_branch() -> anyhow::Result
         result
             .branch_to_remote
             .iter()
-            .map(|(branch, _)| branch.as_str())
+            .map(|(branch, _, _)| branch.as_str())
             .collect::<Vec<_>>(),
         ["bottom", "top"],
         "skipping force push protection should allow pushing the bottom ancestor and top branch"
     );
 
+    Ok(())
+}
+
+#[test]
+fn pushing_with_an_ordinary_branch_checked_out_pushes_it_and_its_ancestors() -> anyhow::Result<()> {
+    let (_tmp, repo, meta) = fixture("push-single-branch")?;
+    assert!(
+        repo.find_reference("refs/heads/gitbutler/workspace")
+            .is_err(),
+        "the fixture has no workspace branch"
+    );
+    let (info, _) = head_info(&repo, &meta)?;
+    assert_eq!(
+        logical_scope(&info, "top"),
+        ["top", "bottom"],
+        "the checked-out branch and its ancestor form the push scope"
+    );
+    assert_eq!(
+        status(&info, "bottom"),
+        CompletelyUnpushed,
+        "nothing has been pushed yet"
+    );
+    assert_eq!(
+        status(&info, "top"),
+        CompletelyUnpushed,
+        "nothing has been pushed yet"
+    );
+
+    let result = push(&repo, &meta, r("refs/heads/top"), false, false, false)?;
+    assert_eq!(
+        result
+            .branch_to_remote
+            .iter()
+            .map(|(branch, _, _)| branch.as_str())
+            .collect::<Vec<_>>(),
+        ["bottom", "top"],
+        "the checked-out branch and its unpushed ancestor are pushed"
+    );
+
+    apply_remote_tracking_updates(&repo, &result)?;
+    let (info, _) = head_info(&repo, &meta)?;
+    assert_eq!(
+        status(&info, "bottom"),
+        NothingToPush,
+        "the ancestor is current after the push"
+    );
+    assert_eq!(
+        status(&info, "top"),
+        NothingToPush,
+        "the checked-out branch is current after the push"
+    );
+    assert_eq!(
+        repo.head_name()?.map(|name| name.as_bstr().to_string()),
+        Some("refs/heads/top".into()),
+        "pushing leaves the checkout untouched"
+    );
     Ok(())
 }

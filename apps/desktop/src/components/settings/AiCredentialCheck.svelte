@@ -235,7 +235,9 @@
 								<span>
 									Please check your DeepSeek API key.
 									<br />
-									Get your key at <Link href="https://platform.deepseek.com">platform.deepseek.com</Link>
+									Get your key at <Link href="https://platform.deepseek.com"
+										>platform.deepseek.com</Link
+									>
 								</span>
 							{:else if modelKind === ModelKind.OpenRouter}
 								<span>

@@ -1,0 +1,9 @@
+.filterRow {
+	column-gap: 4px;
+	align-items: center;
+}
+
+.filterField {
+	flex-grow: 1;
+	min-width: 0;
+}

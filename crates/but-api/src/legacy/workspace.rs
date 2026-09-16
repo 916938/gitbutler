@@ -1,8 +1,9 @@
 use std::str::FromStr;
 
 use anyhow::{Context as _, Result};
+use bstr::ByteSlice;
 use but_api_macros::but_api;
-use but_core::{RepositoryExt, ref_metadata::StackId};
+use but_core::RepositoryExt;
 use but_ctx::{Context, ThreadSafeContext};
 use but_rebase::{
     RebaseOutput,
@@ -11,11 +12,7 @@ use but_rebase::{
         mutate::{InsertSide, RelativeToRef},
     },
 };
-use but_workspace::{
-    commit_engine,
-    legacy::{StacksFilter, ui::StackEntry},
-};
-use gitbutler_branch_actions::BranchManagerExt;
+use but_workspace::commit_engine;
 use gitbutler_commit::commit_ext::CommitExt;
 use gitbutler_oplog::{
     OplogExt, SnapshotExt,
@@ -23,14 +20,27 @@ use gitbutler_oplog::{
 };
 use tracing::instrument;
 
-use crate::json::HexHash;
-
-#[but_api(napi, try_from = but_workspace::ui::RefInfo)]
+#[but_api(napi, try_from = but_workspace::ui::RefInfo, provides = [Workspace])]
 #[instrument(err(Debug))]
 pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
-    let traversal = ctx.graph_options(but_graph::init::Options::limited())?;
     let repo = ctx.clone_repo_for_merging_non_persisting()?;
     let meta = ctx.meta()?;
+    // The worktree-discovering database borrow must end before the gerrit handle
+    // borrows the database again below.
+    let ws = {
+        let mut db = ctx.db.get_cache_mut()?;
+        but_graph::Graph::from_head(
+            &repo,
+            &meta,
+            ctx.project_meta()?,
+            &mut db,
+            but_graph::init::Options {
+                worktrees: ctx.settings.feature_flags.worktree_manipulation,
+                ..but_graph::init::Options::limited()
+            },
+        )?
+        .into_workspace()?
+    };
     let gerrit_mode_enabled = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
     let db = gerrit_mode_enabled
         .then(|| ctx.db.get_cache())
@@ -39,124 +49,42 @@ pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
         Some(db) => but_workspace::ref_info::GerritMode::Enabled(db.gerrit_metadata()),
         None => but_workspace::ref_info::GerritMode::Disabled,
     };
-    let mut info = but_workspace::head_info(
+    let mut info = but_workspace::ref_info::graph_to_ref_info(
+        &ws,
         &repo,
-        &meta,
         but_workspace::ref_info::Options {
             project_meta: ctx.project_meta()?,
-            traversal,
+            traversal: but_graph::init::Options::limited(),
             expensive_commit_info: true,
             gerrit_mode,
         },
     )?
     .pruned_to_entrypoint();
 
-    // Resolve each segment's PR association from the forge review cache instead
-    // of stored branch metadata, keyed by the segment's remote/pushed short name.
+    // Enrich active associations from the forge cache while keeping durable
+    // stored identity for integrated branches.
     let forge_db = ctx.db.get_cache()?;
     info.apply_forge_review_associations(
         &repo,
-        &crate::workspace_state::forge_prs_by_head(&forge_db)?,
+        &but_forge::review_associations_by_head(&forge_db)?,
     );
 
     Ok(info)
-}
-
-#[but_api]
-#[instrument(err(Debug))]
-pub fn stacks(
-    ctx: &Context,
-    filter: Option<but_workspace::legacy::StacksFilter>,
-) -> Result<Vec<StackEntry>> {
-    stacks_v3_from_ctx(ctx, filter.unwrap_or_default())
-}
-///
-/// Return stack information for the repository that `ctx` refers to using legacy metadata.
-#[expect(deprecated, reason = "calls but_workspace::legacy::stacks_v3")]
-pub(crate) fn stacks_v3_from_ctx(
-    ctx: &Context,
-    filter: StacksFilter,
-) -> anyhow::Result<Vec<but_workspace::legacy::ui::StackEntry>> {
-    let repo = ctx.clone_repo_for_merging_non_persisting()?;
-    let meta = ctx.meta()?;
-    let workspace_ref = match repo.head() {
-        Ok(head)
-            if head.referent_name().is_some_and(|head_ref| {
-                head_ref.as_bstr() == gitbutler_operating_modes::EDIT_BRANCH_REF
-            }) =>
-        {
-            [
-                gitbutler_operating_modes::WORKSPACE_BRANCH_REF,
-                gitbutler_operating_modes::INTEGRATION_BRANCH_REF,
-            ]
-            .iter()
-            .find_map(|&name| {
-                let ref_name: &gix::refs::FullNameRef = name.try_into().ok()?;
-                repo.try_find_reference(ref_name).ok().flatten()?;
-                Some(ref_name)
-            })
-        }
-        _ => None,
-    };
-    // Only prefer a workspace-like ref during edit mode. When HEAD points at
-    // `gitbutler/edit`, querying stacks from HEAD would produce entries without stack IDs
-    // because the edit branch itself is not part of the workspace metadata.
-    let traversal = match workspace_ref {
-        Some(_) => but_graph::init::Options::limited(),
-        None => ctx.graph_options(but_graph::init::Options::limited())?,
-    };
-    but_workspace::legacy::stacks_v3(
-        &repo,
-        &meta,
-        &ctx.project_meta()?,
-        traversal,
-        filter,
-        workspace_ref,
-    )
 }
 
 #[cfg(unix)]
 #[but_api]
 #[instrument(err(Debug))]
 pub fn show_graph_svg(ctx: &Context) -> Result<()> {
-    let mut options = ctx.graph_options(but_graph::init::Options::limited())?;
+    let mut options = but_graph::init::Options::limited();
     options.collect_tags = true;
+    options.worktrees = ctx.settings.feature_flags.worktree_manipulation;
     let repo = ctx.open_isolated_repo()?;
     let meta = ctx.meta()?;
-    let graph = but_graph::Graph::from_head(&repo, &meta, ctx.project_meta()?, options)?;
+    let mut db = ctx.db.get_cache_mut()?;
+    let graph = but_graph::Graph::from_head(&repo, &meta, ctx.project_meta()?, &mut db, options)?;
     graph.open_as_svg();
     Ok(())
-}
-
-#[but_api]
-#[instrument(err(Debug))]
-#[expect(deprecated, reason = "calls but_workspace::legacy::stack_details_v3")]
-pub fn stack_details(
-    ctx: &Context,
-    stack_id: Option<StackId>,
-) -> Result<but_workspace::ui::StackDetails> {
-    let traversal = ctx.graph_options(but_graph::init::Options::limited())?;
-    let mut details = {
-        let repo = ctx.clone_repo_for_merging_non_persisting()?;
-        let meta = ctx.meta()?;
-        but_workspace::legacy::stack_details_v3(
-            stack_id,
-            &repo,
-            &meta,
-            &ctx.project_meta()?,
-            traversal,
-        )
-    }?;
-    let repo = ctx.repo.get()?;
-    let gerrit_mode = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
-    let db = ctx.db.get_cache()?;
-    if gerrit_mode {
-        for branch in details.branch_details.iter_mut() {
-            handle_gerrit(branch, &repo, &db)?;
-            update_push_status(branch);
-        }
-    }
-    Ok(details)
 }
 
 fn update_push_status(branch: &mut but_workspace::ui::BranchDetails) {
@@ -209,7 +137,7 @@ fn handle_gerrit(
             if matches!(commit.state, but_workspace::ui::CommitState::Integrated) {
                 return Ok(());
             }
-            if commit.id.to_string() == meta.commit_id {
+            if commit.id == meta.commit_id {
                 // Pushed, and identical at the remote
                 commit.state = but_workspace::ui::CommitState::LocalAndRemote(commit.id);
             } else {
@@ -222,7 +150,7 @@ fn handle_gerrit(
     Ok(())
 }
 
-#[but_api(napi)]
+#[but_api(napi, provides = [Branches])]
 #[instrument(err(Debug))]
 pub fn branch_details(
     ctx: &but_ctx::Context,
@@ -248,10 +176,11 @@ pub fn branch_details(
     let repo = ctx.repo.get()?;
     let db = ctx.db.get_cache()?;
 
-    // Derive the PR association from the forge cache rather than reading a stored
-    // number off branch metadata: match the branch's remote/pushed short name
-    // (what the forge records as a review's `source_branch`) against the cached
-    // reviews. `review_id` is no longer used, so it is always cleared.
+    // The open forge-cache association, matching the workspace projection's
+    // rule for active branches. There is no integrated arm here on purpose:
+    // `but_workspace::branch_details` never computes the `Integrated` push
+    // status, so branch-scoped surfaces resolve a landed branch's review from
+    // the branch listing's cached review instead.
     details.review_id = None;
     details.pr_number = {
         let pushed_short_name = details
@@ -264,6 +193,7 @@ pub fn branch_details(
             });
         match pushed_short_name {
             Some(short) => but_forge::review_for_head_ref(&db, &short)?
+                .filter(but_forge::ForgeReview::is_open)
                 .and_then(|review| usize::try_from(review.number).ok()),
             None => None,
         }
@@ -326,23 +256,28 @@ pub fn stash_into_branch(
 
     let _ = ctx.snapshot_stash_into_branch(branch_name.clone(), perm);
 
-    let stack = ctx.branch_manager().create_virtual_branch(
-        &gitbutler_branch::BranchCreateRequest {
-            name: Some(branch_name.clone()),
-            ..Default::default()
-        },
+    let full_ref_name = gix::refs::Category::LocalBranch
+        .to_full_name(but_core::branch::normalize_short_name(branch_name.as_str())?.as_bstr())?;
+    crate::branch::branch_create_with_perm(
+        ctx,
+        Some(full_ref_name.clone()),
+        crate::branch::json::BranchCreatePlacement::Independent,
         perm,
     )?;
-
-    let branch_name = stack.derived_name()?;
-    let full_ref_name: gix::refs::FullName = format!("refs/heads/{branch_name}").try_into()?;
+    let stack_id = {
+        let (_, ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
+        ws.find_segment_and_stack_by_refname(full_ref_name.as_ref())
+            .and_then(|(stack, _)| stack.id)
+            .context("created stash branch is missing its stack id")?
+    };
 
     ctx.reload_repo_and_invalidate_workspace(perm)?;
 
     let outcome = {
+        let context_lines = ctx.settings.context_lines;
         let mut meta = ctx.meta()?;
-        let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
-        let editor = Editor::create(&mut ws, &mut meta, &repo)?;
+        let (repo, mut ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
+        let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
         let but_workspace::commit::CommitCreateOutcome {
             rebase,
             commit_selector,
@@ -353,7 +288,7 @@ pub fn stash_into_branch(
             RelativeToRef::Reference(full_ref_name.as_ref()),
             InsertSide::Below,
             "Mo-Stashed changes",
-            ctx.settings.context_lines,
+            context_lines,
             but_workspace::commit::ChangeSource::Head,
         )?;
 
@@ -389,45 +324,16 @@ pub fn stash_into_branch(
 
     ctx.reload_repo_and_invalidate_workspace(perm)?;
 
-    gitbutler_branch_actions::update_workspace_commit(ctx, false)
+    gitbutler_branch_actions::update_workspace_commit_with_perm(ctx, false, perm)
         .context("failed to update gitbutler workspace")?;
 
-    super::virtual_branches::unapply_stack_with_perm(ctx, stack.id, perm)?;
+    super::virtual_branches::unapply_stack_with_perm(ctx, stack_id, perm)?;
 
     outcome
 }
 
-/// Returns a new available branch name based on a simple template - user_initials-branch-count
-/// The main point of this is to be able to provide branch names that are not already taken.
-/// This checks local branches and the short-names of remote tracking branches. The reason for
-/// the latter is that the but-graph traversal, for now, associates local branches
-/// with remote tracking branches by name, not only by configuration, to support older GitButler setups.
-///
-// TODO(apply): once the new apply is used by default, we can start thinking about phasing this out
-//              as it will setup normal Git tracking branch associations via `.git/config`.
-#[but_api]
-#[instrument(err(Debug))]
-pub fn canned_branch_name(ctx: &Context) -> Result<String> {
-    let rn = but_core::branch::unique_canned_refname(&*ctx.repo.get()?)?;
-    Ok(rn.shorten().to_string())
-}
-
-#[but_api]
-#[instrument(err(Debug))]
-pub fn target_commits(
-    ctx: &but_ctx::Context,
-    last_commit_id: Option<HexHash>,
-    page_size: Option<usize>,
-) -> Result<Vec<but_workspace::ui::Commit>> {
-    but_workspace::legacy::log_target_first_parent(
-        ctx,
-        last_commit_id.map(|id| id.into()),
-        page_size.unwrap_or(30),
-    )
-}
-
 /// Push a branch and any parent references that lie within the current workspace projection.
-#[but_api(napi, json::PushResult)]
+#[but_api(napi, json::PushResult, invalidates = [Workspace, Reviews, MergeStatus, Checks, ReviewTimeline])]
 #[instrument(err(Debug))]
 pub async fn workspace_branch_and_ancestors_push(
     ctx: ThreadSafeContext,
@@ -523,22 +429,32 @@ pub fn workspace_branch_and_ancestors_push_only(
     run_hooks: bool,
     push_opts: Vec<but_gerrit::PushFlag>,
 ) -> Result<gitbutler_git::PushResult> {
-    let traversal = ctx.graph_options(but_graph::init::Options::limited())?;
     let repo = ctx.clone_repo_for_merging_non_persisting()?;
     let meta = ctx.meta()?;
-    let gerrit_mode_enabled = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
     let mut db = ctx.db.get_cache_mut()?;
+    let ws = but_graph::Graph::from_head(
+        &repo,
+        &meta,
+        ctx.project_meta()?,
+        &mut db,
+        but_graph::init::Options {
+            worktrees: ctx.settings.feature_flags.worktree_manipulation,
+            ..but_graph::init::Options::limited()
+        },
+    )?
+    .into_workspace()?;
+    let gerrit_mode_enabled = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
     let gerrit_mode = if gerrit_mode_enabled {
         but_workspace::ref_info::GerritMode::Enabled(db.gerrit_metadata())
     } else {
         but_workspace::ref_info::GerritMode::Disabled
     };
-    let (head_info, ws) = but_workspace::head_info_and_workspace(
+    let head_info = but_workspace::ref_info::graph_to_ref_info(
+        &ws,
         &repo,
-        &meta,
         but_workspace::ref_info::Options {
             project_meta: ctx.project_meta()?,
-            traversal,
+            traversal: but_graph::init::Options::limited(),
             expensive_commit_info: true,
             gerrit_mode,
         },
@@ -572,10 +488,14 @@ pub mod json {
     #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
     #[serde(rename_all = "camelCase")]
     pub struct PushResult {
-        /// The name of the remote to which the branches were pushed.
+        /// The name of the remote the push defaulted to.
+        ///
+        /// A branch may track a different remote, so read the remote off each entry's
+        /// refname in `branchToRemote` rather than this one when acting on a branch.
         pub remote: String,
-        /// The list of pushed branches and their corresponding remote refnames.
-        pub branch_to_remote: Vec<(String, String)>,
+        /// The list of pushed branches with their remote refnames and the branch name on the remote.
+        /// Format: (branch_name, remote_refname, remote_branch_name)
+        pub branch_to_remote: Vec<(String, String, String)>,
         /// The list of branches with their before/after commit SHAs.
         /// Format: (branch_name, before_sha, after_sha)
         pub branch_sha_updates: Vec<(String, String, String)>,
@@ -593,7 +513,9 @@ pub mod json {
                     .push
                     .branch_to_remote
                     .into_iter()
-                    .map(|(name, refname)| (name, refname.to_string()))
+                    .map(|(name, refname, remote_branch_name)| {
+                        (name, refname.to_string(), remote_branch_name)
+                    })
                     .collect(),
                 branch_sha_updates: value.push.branch_sha_updates,
                 review_sync: value.review_sync,
@@ -622,6 +544,7 @@ mod tests {
                 "refs/remotes/origin/feature"
                     .try_into()
                     .expect("valid remote reference"),
+                "feature".into(),
             )],
             branch_sha_updates: Vec::new(),
         };

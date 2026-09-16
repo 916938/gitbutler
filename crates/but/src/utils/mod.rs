@@ -2,6 +2,8 @@ use std::io::Write;
 
 mod output_channel;
 use but_api::json::{ChangeIdString, HexHash};
+use but_core::sync::RepoShared;
+use but_ctx::Context;
 pub(crate) use output_channel::PromptLine;
 pub use output_channel::{
     CliOutput, CliOutputHuman, Confirm, ConfirmDefault, ConfirmOrEmpty, InputOutputChannel,
@@ -17,7 +19,7 @@ mod debug_as_type;
 pub(crate) use debug_as_type::DebugAsType;
 
 pub mod metrics;
-pub use metrics::types::OneshotMetricsContext;
+pub use metrics::OneshotMetricsContext;
 
 use crate::id::CommitId;
 
@@ -25,12 +27,15 @@ pub mod detect_agent;
 pub mod time;
 
 pub(crate) mod binary_path;
+pub(crate) mod change_source;
 pub(crate) mod diff_specs;
 #[cfg(feature = "legacy")]
 pub(crate) mod merged_upstream;
 #[cfg(feature = "legacy")]
 pub(crate) mod rejection;
 pub(crate) mod targeting;
+#[cfg(feature = "legacy")]
+pub(crate) mod worktrees;
 
 pub mod diff_rendering;
 pub mod string_interning;
@@ -43,10 +48,15 @@ pub mod envs;
 
 impl ResultErrorExt for anyhow::Result<()> {
     fn show_root_cause_error_then_exit_without_destructors(self, out: OutputChannel) -> ! {
+        let full_error_chain = out.full_error_chain();
         // Trigger the pager to be flushed before exiting early, or destructors aren't called.
         drop(out);
         let code = if let Err(e) = &self {
-            writeln!(std::io::stderr(), "{} {}", e, e.root_cause()).ok();
+            if full_error_chain {
+                writeln!(std::io::stderr(), "{e:#}").ok();
+            } else {
+                writeln!(std::io::stderr(), "{} {}", e, e.root_cause()).ok();
+            }
             1
         } else {
             0
@@ -98,4 +108,16 @@ impl From<CommitId> for CommitIdJson {
             change_id: value.change_id.map(Into::into),
         }
     }
+}
+
+#[cfg(feature = "legacy")]
+pub fn in_single_branch_mode(ctx: &Context) -> anyhow::Result<bool> {
+    let guard = ctx.shared_worktree_access();
+    in_single_branch_mode_with_perm(ctx, guard.read_permission())
+}
+
+#[cfg(feature = "legacy")]
+pub fn in_single_branch_mode_with_perm(ctx: &Context, perm: &RepoShared) -> anyhow::Result<bool> {
+    Ok(ctx.settings.feature_flags.single_branch
+        && gitbutler_operating_modes::in_outside_workspace_mode(ctx, perm)?)
 }

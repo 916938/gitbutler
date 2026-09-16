@@ -1,5 +1,6 @@
 import { OpenAIClient } from "$lib/ai/openAIClient";
-import { DeepSeekModelName, OpenAIModelName } from "$lib/ai/types";
+import { DeepSeekModelName, MessageRole, OpenAIModelName } from "$lib/ai/types";
+import OpenAI from "openai";
 import { describe, expect, test, vi, beforeEach } from "vitest";
 
 // Mock the OpenAI SDK so tests don't make real network calls.
@@ -15,8 +16,6 @@ vi.mock("openai", () => ({
 	})),
 }));
 
-import OpenAI from "openai";
-
 describe("OpenAIClient", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -26,23 +25,13 @@ describe("OpenAIClient", () => {
 	describe("constructor with DeepSeek model", () => {
 		test("When constructed with DeepSeekModelName.Flash, it does not throw", () => {
 			expect(
-				() =>
-					new OpenAIClient(
-						"test-key",
-						DeepSeekModelName.Flash,
-						"https://api.deepseek.com",
-					),
+				() => new OpenAIClient("test-key", DeepSeekModelName.Flash, "https://api.deepseek.com"),
 			).not.toThrow();
 		});
 
 		test("When constructed with DeepSeekModelName.Pro, it does not throw", () => {
 			expect(
-				() =>
-					new OpenAIClient(
-						"test-key",
-						DeepSeekModelName.Pro,
-						"https://api.deepseek.com",
-					),
+				() => new OpenAIClient("test-key", DeepSeekModelName.Pro, "https://api.deepseek.com"),
 			).not.toThrow();
 		});
 
@@ -61,9 +50,7 @@ describe("OpenAIClient", () => {
 
 	describe("constructor with OpenAI model", () => {
 		test("When constructed with OpenAIModelName, it does not throw", () => {
-			expect(
-				() => new OpenAIClient("oai-key", OpenAIModelName.GPT54Nano, undefined),
-			).not.toThrow();
+			expect(() => new OpenAIClient("oai-key", OpenAIModelName.GPT54Nano, undefined)).not.toThrow();
 		});
 
 		test("When constructed without a baseURL, it passes undefined to the OpenAI SDK", () => {
@@ -81,21 +68,15 @@ describe("OpenAIClient", () => {
 
 	describe("constructor with OpenRouter model", () => {
 		test("When constructed with an OpenRouter-style model name, it does not throw", () => {
-			expect(
-				() => new OpenAIClient("or-key", "openai/gpt-4.1-mini", undefined),
-			).not.toThrow();
+			expect(() => new OpenAIClient("or-key", "openai/gpt-4.1-mini", undefined)).not.toThrow();
 		});
 	});
 
 	describe("#evaluate", () => {
 		test("When evaluate is called with a DeepSeek model, it sends the correct model name to the API", async () => {
-			const client = new OpenAIClient(
-				"dk-key",
-				DeepSeekModelName.Pro,
-				"https://api.deepseek.com",
-			);
+			const client = new OpenAIClient("dk-key", DeepSeekModelName.Pro, "https://api.deepseek.com");
 
-			await client.evaluate([{ role: "user", content: "hello" }]);
+			await client.evaluate([{ role: MessageRole.User, content: "hello" }]);
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -107,7 +88,7 @@ describe("OpenAIClient", () => {
 		test("When evaluate is called with an OpenAI model, it sends the correct model name to the API", async () => {
 			const client = new OpenAIClient("oai-key", OpenAIModelName.GPT54, undefined);
 
-			await client.evaluate([{ role: "user", content: "hello" }]);
+			await client.evaluate([{ role: MessageRole.User, content: "hello" }]);
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({

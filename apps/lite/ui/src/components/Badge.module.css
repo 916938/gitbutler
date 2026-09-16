@@ -3,15 +3,13 @@
 	align-items: center;
 	justify-content: center;
 	min-width: 16px;
-	height: 16px;
-	padding-inline: 5px;
-	border-radius: 10px;
+	border-radius: 30px;
 	--badge-bg-opacity: 20%;
 
-	/* Selected rows set --badge-inverted; flipping to the opposite color scheme
-	   makes every light-dark() token inside the badge resolve to its inverted
-	   value, matching the row's inverted selection background. */
-	@container style(--badge-inverted: true) {
+	/* Selected rows set --selection-inverted; flipping to the opposite color
+	   scheme makes every light-dark() token inside the badge resolve to its
+	   inverted value, matching the row's inverted selection background. */
+	@container style(--selection-inverted: true) {
 		--badge-bg-opacity: 40%;
 		color-scheme: dark;
 
@@ -20,6 +18,24 @@
 			--badge-bg-opacity: 20%;
 		}
 	}
+}
+
+.regular {
+	height: 16px;
+	padding-inline: 5px;
+	gap: 2px;
+}
+
+.large {
+	height: 20px;
+	padding-inline: 6px;
+	gap: 3px;
+}
+
+/* Single-line labels only, so trimming to the cap/baseline box lets the fixed
+   badge height center the glyphs themselves instead of the line box. */
+.label {
+	text-box: trim-both cap alphabetic;
 }
 
 .fillGray {
@@ -62,12 +78,8 @@
 	color: var(--text-blue);
 }
 
-/* Matches the graph's integrated commit color, so the pill and the glyphs
-   telling the same story share a hue. */
-.integrated {
-	background-color: var(
-		--badge-integrated-bg,
-		color-mix(in srgb, var(--commit-integrated) 18%, var(--bg-1))
-	);
-	color: var(--badge-integrated-fg, var(--commit-integrated));
+.pop {
+	--_bg: var(--fill-pop-bg);
+	background-color: color-mix(in srgb, var(--_bg) var(--badge-bg-opacity), transparent);
+	color: var(--text-pop);
 }

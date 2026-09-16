@@ -11,7 +11,7 @@ use crate::ref_info::with_workspace_commit::utils::named_writable_scenario_with_
 
 #[test]
 fn insert_below_commit() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let one = repo.rev_parse_single("one")?.detach();
@@ -26,8 +26,7 @@ fn insert_below_commit() -> anyhow::Result<()> {
 
 "#]]
     );
-
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
     but_workspace::commit::cherry_pick_commits(
         editor,
         [one],
@@ -40,9 +39,9 @@ fn insert_below_commit() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 68995ae (HEAD -> three) commit three
-* 75334f1 (two) commit two
-* 50680ef commit one
+* b9b86a6 (HEAD -> three) commit three
+* cdde196 (two) commit two
+* ec7d41d commit one
 | * 16fd221 (origin/two) commit two
 |/  
 * 8b426d0 (one) commit one
@@ -55,7 +54,7 @@ fn insert_below_commit() -> anyhow::Result<()> {
 
 #[test]
 fn insert_above_commit() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let one = repo.rev_parse_single("one")?.detach();
@@ -70,8 +69,7 @@ fn insert_above_commit() -> anyhow::Result<()> {
 
 "#]]
     );
-
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
     but_workspace::commit::cherry_pick_commits(
         editor,
         [one],
@@ -84,8 +82,8 @@ fn insert_above_commit() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* b4ca6cc (HEAD -> three) commit three
-* 5ad6169 (two) commit one
+* 331b55d (HEAD -> three) commit three
+* 4dcc949 (two) commit one
 * 16fd221 (origin/two) commit two
 * 8b426d0 (one) commit one
 
@@ -97,7 +95,7 @@ fn insert_above_commit() -> anyhow::Result<()> {
 
 #[test]
 fn insert_below_reference() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("reword-three-commits", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let one = repo.rev_parse_single("one")?.detach();
@@ -112,8 +110,7 @@ fn insert_below_reference() -> anyhow::Result<()> {
 
 "#]]
     );
-
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
     but_workspace::commit::cherry_pick_commits(
         editor,
         [one],
@@ -126,8 +123,8 @@ fn insert_below_reference() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* b4ca6cc (HEAD -> three) commit three
-* 5ad6169 (two) commit one
+* 331b55d (HEAD -> three) commit three
+* 4dcc949 (two) commit one
 * 16fd221 (origin/two) commit two
 * 8b426d0 (one) commit one
 
@@ -139,7 +136,7 @@ fn insert_below_reference() -> anyhow::Result<()> {
 
 #[test]
 fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let b = repo.rev_parse_single("B")?.detach();
@@ -160,8 +157,7 @@ fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
 "#]]
         .raw()
     );
-
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
     let (rebase, _) = but_workspace::commit::cherry_pick_commits(
         editor,
         [b, c],
@@ -173,10 +169,10 @@ fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-*   ce4b2e2 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   a30eed0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |\  
-| * f603807 (A) C
-| * 698ccd3 B
+| * f11d4a3 (A) C
+| * 0a0a61c B
 | * 09d8e52 A
 * | 09bc93e (C) C
 * | c813d8d (B) B
@@ -192,7 +188,7 @@ fn sources_are_applied_in_the_order_given() -> anyhow::Result<()> {
 
 #[test]
 fn sources_are_deduped() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let b = repo.rev_parse_single("B")?.detach();
@@ -212,8 +208,7 @@ fn sources_are_deduped() -> anyhow::Result<()> {
 "#]]
         .raw()
     );
-
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
     let (rebase, inserted_selectors) = but_workspace::commit::cherry_pick_commits(
         editor,
         [b, b],
@@ -231,9 +226,9 @@ fn sources_are_deduped() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-*   ec1bb42 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   e9a5189 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |\  
-| * 698ccd3 (A) B
+| * 0a0a61c (A) B
 | * 09d8e52 A
 * | 09bc93e (C) C
 * | c813d8d (B) B
@@ -249,12 +244,12 @@ fn sources_are_deduped() -> anyhow::Result<()> {
 
 #[test]
 fn copies_get_new_change_ids() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let source = repo.rev_parse_single("B")?.detach();
     let target_ref: gix::refs::FullName = "refs/heads/A".try_into()?;
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
 
     let (rebase, inserted_selectors) = but_workspace::commit::cherry_pick_commits(
         editor,
@@ -276,12 +271,12 @@ fn copies_get_new_change_ids() -> anyhow::Result<()> {
 
 #[test]
 fn copies_commit_contents() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack-files", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let source = repo.rev_parse_single("B")?.detach();
     let target_ref: gix::refs::FullName = "refs/heads/A".try_into()?;
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
 
     let (rebase, inserted_selectors) = but_workspace::commit::cherry_pick_commits(
         editor,
@@ -317,12 +312,12 @@ fn copies_commit_contents() -> anyhow::Result<()> {
 
 #[test]
 fn rebased_children_keep_contents() -> anyhow::Result<()> {
-    let (_tmp, graph, repo, mut meta, _description) =
+    let (_tmp, graph, repo, mut meta, _description, mut db) =
         writable_scenario("ws-ref-ws-commit-single-stack-double-stack-files", |_| {})?;
     let mut workspace = graph.into_workspace()?;
     let source = repo.rev_parse_single("B")?.detach();
     let target = repo.rev_parse_single("A")?.detach();
-    let editor = Editor::create(&mut workspace, &mut meta, &repo)?;
+    let editor = Editor::create(&mut workspace, &mut meta, &repo, &mut db)?;
 
     but_workspace::commit::cherry_pick_commits(
         editor,

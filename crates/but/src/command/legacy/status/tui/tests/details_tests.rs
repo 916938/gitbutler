@@ -235,7 +235,7 @@ fn commit_message_wraps_in_details_view() {
 
     tui.input('d');
 
-    tui.render_with_messages((KeyModifiers::CONTROL, 'n'), Vec::new())
+    tui.render_with_messages(None, Vec::new())
         .assert_rendered_term_svg_eq(file![
             "snapshots/commit_message_wraps_in_details_view_005.svg"
         ]);
@@ -390,6 +390,40 @@ fn details_view_syntax_highlighting_survives_scrolling() {
         .assert_rendered_term_svg_eq(file![
             "snapshots/details_view_syntax_highlighting_survives_scrolling_003.svg"
         ]);
+}
+
+#[test]
+fn details_view_highlights_swift() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.file(
+        "AppModel.swift",
+        r#"import Foundation
+
+@MainActor
+final class AppModel: ObservableObject {
+    @Published private(set) var isRefreshing = false
+    private let refreshInterval: Int = 5
+
+    func refresh() async throws {
+        print("Refreshing every \(refreshInterval) minutes")
+    }
+}
+"#,
+    );
+
+    let mut tui = test_status_tui_with_options(
+        env,
+        TestTuiOptions {
+            width: 100,
+            height: 18,
+            ..Default::default()
+        },
+    );
+
+    tui.input('l')
+        .assert_rendered_term_svg_eq(file!["snapshots/details_view_highlights_swift_001.svg"]);
 }
 
 #[test]
@@ -1368,7 +1402,7 @@ fn marking_all_hunks_marks_file_with_multiple_files_changed() {
 }
 
 #[test]
-fn marking_zz_marks_all_hunks_in_detail_view() {
+fn marking_uncommitted_area_marks_all_hunks_in_detail_view() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
 
@@ -1390,10 +1424,10 @@ fn marking_zz_marks_all_hunks_in_detail_view() {
     tui.input('g');
     tui.input('d');
     tui.input(' ').assert_rendered_term_svg_eq(file![
-        "snapshots/marking_zz_marks_all_hunks_in_detail_view_001.svg"
+        "snapshots/marking_uncommitted_area_marks_all_hunks_in_detail_view_001.svg"
     ]);
     tui.input(' ').assert_rendered_term_svg_eq(file![
-        "snapshots/marking_zz_marks_all_hunks_in_detail_view_002.svg"
+        "snapshots/marking_uncommitted_area_marks_all_hunks_in_detail_view_002.svg"
     ]);
 }
 

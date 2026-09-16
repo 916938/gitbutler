@@ -6,6 +6,7 @@ use snapbox::prelude::*;
 pub fn head_info(
     repo: &gix::Repository,
     meta: &but_meta::VirtualBranchesTomlMetadata,
+    db: &mut but_db::DbHandle,
     mut opts: but_workspace::ref_info::Options,
 ) -> anyhow::Result<RefInfo> {
     if opts.project_meta == Default::default() {
@@ -14,12 +15,13 @@ pub fn head_info(
     if opts.traversal.extra_target_commit_id.is_none() {
         opts.traversal.extra_target_commit_id = opts.project_meta.target_commit_id;
     }
-    crate::ref_info::head_info(repo, meta, opts)
+    crate::ref_info::head_info(repo, meta, db, opts)
 }
 
 pub fn ref_info(
     existing_ref: gix::Reference<'_>,
     meta: &but_meta::VirtualBranchesTomlMetadata,
+    db: &mut but_db::DbHandle,
     mut opts: but_workspace::ref_info::Options,
 ) -> anyhow::Result<RefInfo> {
     if opts.project_meta == Default::default() {
@@ -28,12 +30,12 @@ pub fn ref_info(
     if opts.traversal.extra_target_commit_id.is_none() {
         opts.traversal.extra_target_commit_id = opts.project_meta.target_commit_id;
     }
-    but_workspace::ref_info(existing_ref, meta, opts)
+    but_workspace::ref_info(existing_ref, meta, db, opts)
 }
 
 #[test]
 fn direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::Result<()> {
-    let (_tmp, repo, meta) = writable_scenario("remote-advanced-ff")?;
+    let (_tmp, repo, meta, mut db) = writable_scenario("remote-advanced-ff")?;
     let workspace_tip = repo.head_id()?;
     repo.reference(
         "refs/heads/direct-workspace",
@@ -45,6 +47,7 @@ fn direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::Result<()>
     let info = ref_info(
         repo.find_reference("refs/heads/direct-workspace")?,
         &meta,
+        &mut db,
         standard_options(),
     )?;
 
@@ -57,7 +60,7 @@ fn direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::Result<()>
 
 #[test]
 fn advanced_direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::Result<()> {
-    let (_tmp, repo, meta) = writable_scenario("remote-advanced-ff")?;
+    let (_tmp, repo, meta, mut db) = writable_scenario("remote-advanced-ff")?;
     let workspace_tip = repo.head_id()?;
     let advanced_tip = repo
         .write_object(gix::objs::Commit {
@@ -76,6 +79,7 @@ fn advanced_direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::R
     let info = ref_info(
         repo.find_reference("refs/heads/direct-workspace")?,
         &meta,
+        &mut db,
         standard_options(),
     )?;
 
@@ -92,21 +96,23 @@ fn advanced_direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::R
 
 #[test]
 fn gerrit_mode_uses_metadata_for_commit_review_urls_and_push_status() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("remote-advanced-ff")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("remote-advanced-ff")?;
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
-    let base_info = head_info(&repo, &meta, standard_options())?;
+    let base_info = head_info(&repo, &meta, &mut db, standard_options())?;
     let local_commit = base_info.stacks[0].segments[0].commits[0].clone();
     let change_id = local_commit.change_id().to_string();
     let review_url = "https://gerrit.example.com/c/project/+/1";
-    let mut db = but_db::DbHandle::new_at_path(":memory:")?;
-    db.gerrit_metadata_mut()
+    let mut gerrit_db = but_db::DbHandle::new_at_path(":memory:")?;
+    gerrit_db
+        .gerrit_metadata_mut()
         .insert(gerrit_meta(change_id, local_commit.id, review_url))?;
 
     let info = head_info(
         &repo,
         &meta,
+        &mut db,
         but_workspace::ref_info::Options {
-            gerrit_mode: but_workspace::ref_info::GerritMode::Enabled(db.gerrit_metadata()),
+            gerrit_mode: but_workspace::ref_info::GerritMode::Enabled(gerrit_db.gerrit_metadata()),
             ..standard_options()
         },
     )?;
@@ -135,13 +141,13 @@ fn gerrit_mode_uses_metadata_for_commit_review_urls_and_push_status() -> anyhow:
 
 #[test]
 fn gerrit_mode_treats_recorded_different_patchset_as_force_push() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("remote-advanced-ff")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("remote-advanced-ff")?;
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
-    let base_info = head_info(&repo, &meta, standard_options())?;
+    let base_info = head_info(&repo, &meta, &mut db, standard_options())?;
     let local_commit = base_info.stacks[0].segments[0].commits[0].clone();
     let remote_commit_id = repo.find_reference("origin/A")?.peel_to_id()?.detach();
-    let mut db = but_db::DbHandle::new_at_path(":memory:")?;
-    db.gerrit_metadata_mut().insert(gerrit_meta(
+    let mut gerrit_db = but_db::DbHandle::new_at_path(":memory:")?;
+    gerrit_db.gerrit_metadata_mut().insert(gerrit_meta(
         local_commit.change_id().to_string(),
         remote_commit_id,
         "https://gerrit.example.com/c/project/+/2",
@@ -150,8 +156,9 @@ fn gerrit_mode_treats_recorded_different_patchset_as_force_push() -> anyhow::Res
     let info = head_info(
         &repo,
         &meta,
+        &mut db,
         but_workspace::ref_info::Options {
-            gerrit_mode: but_workspace::ref_info::GerritMode::Enabled(db.gerrit_metadata()),
+            gerrit_mode: but_workspace::ref_info::GerritMode::Enabled(gerrit_db.gerrit_metadata()),
             ..standard_options()
         },
     )?;
@@ -187,7 +194,7 @@ fn gerrit_meta(
 
 #[test]
 fn remote_ahead_fast_forwardable() -> anyhow::Result<()> {
-    let (mut repo, mut meta) = read_only_in_memory_scenario("remote-advanced-ff")?;
+    let (mut repo, mut meta, mut db) = read_only_in_memory_scenario("remote-advanced-ff")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -203,7 +210,7 @@ fn remote_ahead_fast_forwardable() -> anyhow::Result<()> {
     // Needs a branch for workspace implied by a branch with metadata.
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
     // We can look at a workspace ref directly (via HEAD)
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -269,6 +276,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -283,7 +291,7 @@ RefInfo {
     );
 
     let at = repo.find_reference("refs/heads/A")?;
-    let info = ref_info(at, &meta, standard_options())?;
+    let info = ref_info(at, &meta, &mut db, standard_options())?;
     // Information doesn't change just because the starting point is different.
     snapbox::assert_data_eq!(
         info.to_debug(),
@@ -350,6 +358,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -369,7 +378,7 @@ RefInfo {
         .remove_section("branch", info.stacks[0].name().unwrap().shorten().as_bstr());
 
     let at = repo.find_reference("refs/heads/A")?;
-    let info = ref_info(at, &meta, standard_options())?;
+    let info = ref_info(at, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -435,6 +444,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -452,7 +462,7 @@ RefInfo {
 
 #[test]
 fn two_dependent_branches_rebased_with_remotes() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-dependent-branches-rebased-with-remotes")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -470,7 +480,7 @@ fn two_dependent_branches_rebased_with_remotes() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 0, "B-on-A", StackState::InWorkspace, &["A"]);
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -548,6 +558,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -565,7 +576,7 @@ RefInfo {
 
 #[test]
 fn stacked_bottom_remote_still_points_at_now_split_top() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("stacked-bottom-remote-still-points-at-now-split-top")?;
     // origin/bottom still points at the previously-pushed combined commit (T),
     // but the local stack has been split so `bottom` now contains only B and
@@ -584,7 +595,7 @@ fn stacked_bottom_remote_still_points_at_now_split_top() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 0, "top", StackState::InWorkspace, &["bottom"]);
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     let bottom = info
         .stacks
         .first()
@@ -636,7 +647,7 @@ fn stacked_bottom_remote_still_points_at_now_split_top() -> anyhow::Result<()> {
 
 #[test]
 fn two_dependent_branches_rebased_explicit_remote_in_extra_segment() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "two-dependent-branches-rebased-explicit-remote-in-extra-segment",
     )?;
     snapbox::assert_data_eq!(
@@ -657,7 +668,7 @@ fn two_dependent_branches_rebased_explicit_remote_in_extra_segment() -> anyhow::
     // and it comes with an official remote configuration.
     add_stack_with_segments(&mut meta, 0, "B-on-A", StackState::InWorkspace, &["A"]);
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -747,6 +758,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -765,7 +777,7 @@ RefInfo {
 
 #[test]
 fn two_dependent_branches_first_merged_no_ff() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-dependent-branches-first-merge-no-ff")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -785,7 +797,7 @@ fn two_dependent_branches_first_merged_no_ff() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 0, "B-on-A", StackState::InWorkspace, &["A"]);
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -862,6 +874,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -881,7 +894,7 @@ RefInfo {
 #[test]
 fn two_dependent_branches_first_merged_no_ff_second_merged_on_remote_into_base_branch_integration_caught_up()
 -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "two-dependent-branches-first-merge-no-ff-second-merge-into-first-on-remote",
     )?;
     snapbox::assert_data_eq!(
@@ -909,7 +922,7 @@ fn two_dependent_branches_first_merged_no_ff_second_merged_on_remote_into_base_b
     add_stack_with_segments(&mut meta, 0, "B-on-A", StackState::InWorkspace, &["A"]);
 
     // With the standard targets, A is considered integrated.
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -973,6 +986,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(4),
     ),
@@ -992,7 +1006,7 @@ RefInfo {
     options.project_meta = utils::project_meta(&repo)?;
     options.project_meta.target_commit_id = Some(old_target);
     options.traversal.extra_target_commit_id = Some(old_target);
-    let info = head_info(&repo, &meta, options)?;
+    let info = head_info(&repo, &meta, &mut db, options)?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1071,6 +1085,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -1088,7 +1103,7 @@ RefInfo {
 
 #[test]
 fn two_dependent_branches_first_rebased_and_merged_into_target() -> anyhow::Result<()> {
-    let (mut repo, mut meta) =
+    let (mut repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-dependent-branches-first-rebased-and-merged")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -1105,7 +1120,7 @@ fn two_dependent_branches_first_rebased_and_merged_into_target() -> anyhow::Resu
 
     add_workspace(&mut meta);
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1180,6 +1195,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -1195,7 +1211,7 @@ RefInfo {
 
     repo.config_snapshot_mut()
         .remove_section("remote", Some("origin".into()));
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     // Without remote setup, remotes can't be deducted. However, we still have a commits reachable from the target remote tracking
     // branch up to the workspace base, which we should consider.
     snapbox::assert_data_eq!(
@@ -1270,6 +1286,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -1287,7 +1304,7 @@ RefInfo {
 
 #[test]
 fn target_ahead_remote_rewritten() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("target-ahead-remote-rewritten")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("target-ahead-remote-rewritten")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1308,7 +1325,12 @@ fn target_ahead_remote_rewritten() -> anyhow::Result<()> {
     );
 
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
-    let info = ref_info(repo.find_reference("A")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("A")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1377,6 +1399,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -1394,7 +1417,7 @@ RefInfo {
 
 #[test]
 fn single_commit_but_two_branches_one_in_ws_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-branches-one-advanced-one-parent-ws-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -1416,7 +1439,7 @@ fn single_commit_but_two_branches_one_in_ws_commit() -> anyhow::Result<()> {
     {
         add_stack(&mut meta, idx as u128, name, StackState::InWorkspace);
     }
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1524,6 +1547,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -1541,7 +1565,7 @@ RefInfo {
 
 #[test]
 fn single_commit_but_two_branches_one_in_ws_commit_with_virtual_segments() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("multiple-dependent-branches-per-stack-without-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -1570,7 +1594,12 @@ fn single_commit_but_two_branches_one_in_ws_commit_with_virtual_segments() -> an
 
     // The stacks should come out just like defined above, "lane" and then "lane2" with all the right segments.
     // The lane-segment01|02 bits are brought up as dependent branch as well.
-    let info = ref_info(repo.find_reference("lane")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("lane")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1699,6 +1728,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -1728,7 +1758,12 @@ RefInfo {
         StackState::InWorkspace,
         &["lane-segment-01", "lane-segment-02"],
     );
-    let info = ref_info(repo.find_reference("lane")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("lane")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1857,6 +1892,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -1874,7 +1910,7 @@ RefInfo {
 
 #[test]
 fn single_commit_but_two_branches_both_in_ws_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-branches-one-advanced-two-parent-ws-commit")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -1892,7 +1928,7 @@ fn single_commit_but_two_branches_both_in_ws_commit() -> anyhow::Result<()> {
     for (idx, name) in ["advanced-lane", "lane"].into_iter().enumerate() {
         add_stack(&mut meta, idx as u128, name, StackState::InWorkspace);
     }
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -1977,6 +2013,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -1994,7 +2031,7 @@ RefInfo {
 
 #[test]
 fn single_commit_pushed_but_two_branches_both_in_ws_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "two-branches-one-advanced-two-parent-ws-commit-advanced-fully-pushed",
     )?;
     snapbox::assert_data_eq!(
@@ -2012,7 +2049,7 @@ fn single_commit_pushed_but_two_branches_both_in_ws_commit() -> anyhow::Result<(
 
     // For complexity, we also don't set up any branch metadata, only 'something' to get the target ref.
     add_workspace(&mut meta);
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -2074,6 +2111,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2091,7 +2129,7 @@ RefInfo {
 
 #[test]
 fn single_commit_pushed_but_two_branches_both_in_ws_commit_empty_dependent() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "two-branches-one-advanced-two-parent-ws-commit-advanced-fully-pushed-empty-dependent",
     )?;
     snapbox::assert_data_eq!(
@@ -2115,7 +2153,7 @@ fn single_commit_pushed_but_two_branches_both_in_ws_commit_empty_dependent() -> 
         &["advanced-lane"],
     );
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -2190,6 +2228,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2214,7 +2253,7 @@ RefInfo {
 
     // Even though we *could* special-case this to keep the commit in the branch that has a remote,
     // we just keep it below at all times. The frontend currently only creates them on top, for good reason.
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -2289,6 +2328,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2306,7 +2346,7 @@ RefInfo {
 
 #[test]
 fn single_commit_pushed_ws_commit_empty_dependent() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "three-branches-one-advanced-ws-commit-advanced-fully-pushed-empty-dependent",
     )?;
     snapbox::assert_data_eq!(
@@ -2327,7 +2367,7 @@ fn single_commit_pushed_ws_commit_empty_dependent() -> anyhow::Result<()> {
         &["dependent", "advanced-lane"],
     );
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -2413,6 +2453,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2435,7 +2476,7 @@ RefInfo {
         &["on-top-of-dependent", "advanced-lane"],
     );
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -2521,6 +2562,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2538,7 +2580,7 @@ RefInfo {
 
 #[test]
 fn two_branches_stacked_with_remotes() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-dependent-branches-with-one-commit-with-remotes")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -2558,7 +2600,7 @@ fn two_branches_stacked_with_remotes() -> anyhow::Result<()> {
         StackState::InWorkspace,
         &["lane"],
     );
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -2635,6 +2677,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2651,8 +2694,52 @@ RefInfo {
 }
 
 #[test]
+fn target_current_follows_the_recording_not_workspace_content() -> anyhow::Result<()> {
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("two-dependent-branches-with-interesting-remote-setup")?;
+    add_stack(&mut meta, 1, "A", StackState::InWorkspace);
+
+    // The tip of `origin/main` already sits inside stack `A`, so `commits_ahead`
+    // is 0 — but the stored target still trails the ref, so an update has work to do.
+    let info = ref_info(
+        repo.find_reference("A")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
+    assert_eq!(
+        info.target_ref.as_ref().map(|tr| tr.commits_ahead),
+        Some(0),
+        "every upstream commit is already contained in a workspace stack"
+    );
+    assert!(
+        !info.is_target_current,
+        "the recording trails the ref, so an update has work to do"
+    );
+
+    // With the stored target at the ref's tip there is nothing to update, even
+    // though the graph drops this target commit (it is not first in its segment).
+    let mut opts = standard_options();
+    opts.project_meta = but_core::ref_metadata::ProjectMeta {
+        target_ref: Some("refs/remotes/origin/main".try_into()?),
+        target_commit_id: Some(
+            repo.find_reference("refs/remotes/origin/main")?
+                .peel_to_id()?
+                .detach(),
+        ),
+        push_remote: None,
+    };
+    let info = ref_info(repo.find_reference("A")?, &meta, &mut db, opts)?;
+    assert!(
+        info.is_target_current,
+        "the recording is where the ref points, nothing to update"
+    );
+    Ok(())
+}
+
+#[test]
 fn two_branches_stacked_with_interesting_remote_setup() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-dependent-branches-with-interesting-remote-setup")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -2671,7 +2758,13 @@ fn two_branches_stacked_with_interesting_remote_setup() -> anyhow::Result<()> {
 
     // Just a single explicit reference we want to know of.
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
-    let info = ref_info(repo.find_reference("A")?, &meta, standard_options()).unwrap();
+    let info = ref_info(
+        repo.find_reference("A")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )
+    .unwrap();
 
     snapbox::assert_data_eq!(
         info.to_debug(),
@@ -2751,6 +2844,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -2768,7 +2862,7 @@ RefInfo {
 
 #[test]
 fn single_commit_but_two_branches_stack_on_top_of_ws_commit() -> anyhow::Result<()> {
-    let (repo, mut meta) =
+    let (repo, mut meta, mut db) =
         read_only_in_memory_scenario("two-branches-one-advanced-ws-commit-on-top-of-stack")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -2782,7 +2876,7 @@ fn single_commit_but_two_branches_stack_on_top_of_ws_commit() -> anyhow::Result<
     for (idx, name) in ["advanced-lane", "lane"].into_iter().enumerate() {
         add_stack(&mut meta, idx as u128, name, StackState::InWorkspace);
     }
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     // It's fine to have no managed commit, but we have to deal with it - see flag is_managed.
     snapbox::assert_data_eq!(
         info.to_debug(),
@@ -2868,6 +2962,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -2884,6 +2979,7 @@ RefInfo {
     let info = ref_info(
         repo.find_reference("advanced-lane")?,
         &meta,
+        &mut db,
         standard_options(),
     )
     .unwrap();
@@ -2971,6 +3067,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -2990,7 +3087,7 @@ RefInfo {
 #[test]
 fn two_branches_one_advanced_two_parent_ws_commit_diverged_remote_tracking_branch()
 -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario(
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario(
         "two-branches-one-advanced-two-parent-ws-commit-diverged-ttb",
     )?;
     snapbox::assert_data_eq!(
@@ -3010,7 +3107,7 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_remote_tracking_branc
     for (idx, name) in ["lane", "advanced-lane"].into_iter().enumerate() {
         add_stack(&mut meta, idx as u128, name, StackState::InWorkspace);
     }
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -3093,6 +3190,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -3110,6 +3208,7 @@ RefInfo {
     let info = ref_info(
         repo.find_reference("advanced-lane")?,
         &meta,
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
@@ -3194,6 +3293,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -3207,7 +3307,12 @@ RefInfo {
         .raw()
     );
 
-    let info = ref_info(repo.find_reference("lane")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("lane")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -3290,6 +3395,7 @@ RefInfo {
             segment_index: NodeIndex(0),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(0),
     ),
@@ -3309,7 +3415,7 @@ RefInfo {
         add_stack(&mut meta, idx as u128, name, StackState::InWorkspace);
     }
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -3392,6 +3498,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: false,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -3409,7 +3516,7 @@ RefInfo {
 
 #[test]
 fn disjoint() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("disjoint")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("disjoint")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -3420,7 +3527,7 @@ fn disjoint() -> anyhow::Result<()> {
     );
 
     add_stack(&mut meta, 1, "disjoint", StackState::InWorkspace);
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
 
     // We see the commit in the branch as there is no base to hide it.
     snapbox::assert_data_eq!(
@@ -3451,10 +3558,12 @@ RefInfo {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
             ),
-            base: None,
+            base: Some(
+                Sha1(32791d22e276ec0ed87d14f906321137356bc6d6),
+            ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
+                    id: NodeIndex([..]),
                     ref_name: "►disjoint[🌳]",
                     remote_tracking_ref_name: "None",
                     commits: [],
@@ -3462,7 +3571,7 @@ RefInfo {
                     commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
-                    base: "None",
+                    base: "32791d2",
                 },
             ],
         },
@@ -3472,18 +3581,19 @@ RefInfo {
             ref_name: FullName(
                 "refs/remotes/origin/main",
             ),
-            segment_index: NodeIndex(2),
+            segment_index: NodeIndex([..]),
             commits_ahead: 0,
         },
     ),
     target_commit: Some(
         TargetCommit {
             commit_id: Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-            segment_index: NodeIndex(1),
+            segment_index: NodeIndex([..]),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
-        NodeIndex(0),
+        NodeIndex([..]),
     ),
     is_managed_ref: false,
     is_managed_commit: false,
@@ -3498,7 +3608,8 @@ RefInfo {
 
 #[test]
 fn multiple_branches_with_shared_segment() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("multiple-stacks-with-shared-segment")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("multiple-stacks-with-shared-segment")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -3517,7 +3628,7 @@ fn multiple_branches_with_shared_segment() -> anyhow::Result<()> {
     );
 
     add_stack(&mut meta, 1, "C-on-A", StackState::InWorkspace);
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
 
     // The shared "A" segment is used in both stacks, as it's reachable from both.
     // Stack A isn't listed, so it has no stack id.
@@ -3635,6 +3746,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -3648,7 +3760,12 @@ RefInfo {
         .raw()
     );
 
-    let info = ref_info(repo.find_reference("C-on-A")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("C-on-A")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
 
     // A partial workspace is provided, but the entire workspace is known.
     snapbox::assert_data_eq!(
@@ -3765,6 +3882,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -3778,7 +3896,12 @@ RefInfo {
         .raw()
     );
 
-    let b_info = ref_info(repo.find_reference("B-on-A")?, &meta, standard_options())?;
+    let b_info = ref_info(
+        repo.find_reference("B-on-A")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
 
     // It's like the stack is part of the workspace, the result is the same, with entrypoints changed.
     snapbox::assert_data_eq!(
@@ -3895,6 +4018,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -3908,7 +4032,12 @@ RefInfo {
         .raw()
     );
 
-    let a_info = ref_info(repo.find_reference("A")?, &meta, standard_options())?;
+    let a_info = ref_info(
+        repo.find_reference("A")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
 
     // We can also show segments that are part of the stack (like homing in on them), as long as they are in a workspace.
     // It's notable how there are two entrypoints, so the UI has to assure both are visible.
@@ -4026,6 +4155,7 @@ RefInfo {
             segment_index: NodeIndex(3),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(3),
     ),
@@ -4043,7 +4173,8 @@ RefInfo {
 
 #[test]
 fn empty_workspace_with_branch_below() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("empty-workspace-with-branch-below")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("empty-workspace-with-branch-below")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph(&repo, "HEAD")?,
         snapbox::str![[r#"
@@ -4054,7 +4185,7 @@ fn empty_workspace_with_branch_below() -> anyhow::Result<()> {
     );
 
     add_stack(&mut meta, 1, "unrelated", StackState::InWorkspace);
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     // Active branches we should see, but only "unrelated",
     // not any other branch that happens to point at that commit.
     snapbox::assert_data_eq!(
@@ -4118,6 +4249,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -4130,7 +4262,12 @@ RefInfo {
 "#]]
     );
 
-    let info = ref_info(repo.find_reference("unrelated")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("unrelated")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
     // It can be checked out with the same effect, the parent workspace is still known.
     snapbox::assert_data_eq!(
         info.to_debug(),
@@ -4193,6 +4330,7 @@ RefInfo {
             segment_index: NodeIndex(0),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(0),
     ),
@@ -4208,7 +4346,7 @@ RefInfo {
     // Change the stack to be inactive, so it's not considered to be part of the workspace.
     add_stack(&mut meta, 1, "unrelated", StackState::Inactive);
 
-    let info = head_info(&repo, &meta, standard_options())?;
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
     // Now there should be no stack, it's an empty workspace.
     snapbox::assert_data_eq!(
         info.to_debug(),
@@ -4249,6 +4387,7 @@ RefInfo {
             segment_index: NodeIndex(2),
         },
     ),
+    is_target_current: true,
     lower_bound: Some(
         NodeIndex(2),
     ),
@@ -4263,7 +4402,12 @@ RefInfo {
 
     // The unrelated reference would be its own pseudo-workspace, single-branch mode effectively.
     // It's on the base and clearly outside the workspace.
-    let info = ref_info(repo.find_reference("unrelated")?, &meta, standard_options())?;
+    let info = ref_info(
+        repo.find_reference("unrelated")?,
+        &meta,
+        &mut db,
+        standard_options(),
+    )?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
@@ -4287,7 +4431,9 @@ RefInfo {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
             ),
-            base: None,
+            base: Some(
+                Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
+            ),
             segments: [
                 ref_info::ui::Segment {
                     id: NodeIndex(0),
@@ -4298,7 +4444,7 @@ RefInfo {
                     commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
-                    base: "None",
+                    base: "c166d42",
                 },
             ],
         },
@@ -4318,6 +4464,7 @@ RefInfo {
             segment_index: NodeIndex(0),
         },
     ),
+    is_target_current: true,
     lower_bound: None,
     is_managed_ref: false,
     is_managed_commit: false,
@@ -4332,7 +4479,7 @@ RefInfo {
 
 #[test]
 fn advanced_workspace_multi_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("advanced-workspace-ref")?;
+    let (repo, mut meta, mut db) = read_only_in_memory_scenario("advanced-workspace-ref")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -4357,7 +4504,7 @@ fn advanced_workspace_multi_stack() -> anyhow::Result<()> {
 
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &[]);
-    let err = head_info(&repo, &meta, standard_options()).unwrap_err();
+    let err = head_info(&repo, &meta, &mut db, standard_options()).unwrap_err();
     snapbox::assert_data_eq!(
         err.to_string(),
         snapbox::str![[r#"
@@ -4374,7 +4521,8 @@ Worktree changes need to be re-committed manually for now.
 
 #[test]
 fn advanced_workspace_single_stack() -> anyhow::Result<()> {
-    let (repo, mut meta) = read_only_in_memory_scenario("advanced-workspace-ref-and-single-stack")?;
+    let (repo, mut meta, mut db) =
+        read_only_in_memory_scenario("advanced-workspace-ref-and-single-stack")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -4395,7 +4543,7 @@ fn advanced_workspace_single_stack() -> anyhow::Result<()> {
     );
 
     add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
-    let err = head_info(&repo, &meta, standard_options()).unwrap_err();
+    let err = head_info(&repo, &meta, &mut db, standard_options()).unwrap_err();
     snapbox::assert_data_eq!(
         err.to_string(),
         snapbox::str![[r#"
@@ -4412,7 +4560,6 @@ Worktree changes need to be re-committed manually for now.
 
 mod branch_details;
 mod journey;
-mod legacy;
 
 pub(crate) mod utils {
     use but_core::ref_metadata::{ProjectMeta, StackId};
@@ -4428,13 +4575,19 @@ pub(crate) mod utils {
     ) -> anyhow::Result<(
         gix::Repository,
         std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        but_db::DbHandle,
     )> {
         named_read_only_in_memory_scenario("with-remotes-and-workspace", name)
     }
 
     pub fn writable_scenario(
         name: &str,
-    ) -> anyhow::Result<(TempDir, gix::Repository, VirtualBranchesTomlMetadata)> {
+    ) -> anyhow::Result<(
+        TempDir,
+        gix::Repository,
+        VirtualBranchesTomlMetadata,
+        but_db::DbHandle,
+    )> {
         let tmp = but_testsupport::gix_testtools::scripted_fixture_writable(
             "scenario/with-remotes-and-workspace.sh",
         )
@@ -4443,7 +4596,8 @@ pub(crate) mod utils {
         let meta =
             VirtualBranchesTomlMetadata::from_path(repo.path().join("virtual-branches.toml"))?;
         project_meta(&repo)?.persist(&repo)?;
-        Ok((tmp, repo, meta))
+        let db = but_testsupport::project_db(&repo)?;
+        Ok((tmp, repo, meta, db))
     }
 
     pub fn named_read_only_in_memory_scenario(
@@ -4452,10 +4606,9 @@ pub(crate) mod utils {
     ) -> anyhow::Result<(
         gix::Repository,
         std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        but_db::DbHandle,
     )> {
-        let (repo, meta) =
-            crate::ref_info::utils::named_read_only_in_memory_scenario(script, name)?;
-        Ok((repo, meta))
+        crate::ref_info::utils::named_read_only_in_memory_scenario(script, name)
     }
 
     pub fn project_meta(repo: &gix::Repository) -> anyhow::Result<ProjectMeta> {
@@ -4477,6 +4630,7 @@ pub(crate) mod utils {
         gix::Repository,
         VirtualBranchesTomlMetadata,
         String,
+        but_db::DbHandle,
     )> {
         named_writable_scenario_with_args_and_description(name, None::<String>)
     }
@@ -4490,6 +4644,7 @@ pub(crate) mod utils {
         gix::Repository,
         VirtualBranchesTomlMetadata,
         String,
+        but_db::DbHandle,
     )> {
         named_writable_scenario_with_args_and_description_and_graph(name, None::<String>, init_meta)
     }
@@ -4502,8 +4657,9 @@ pub(crate) mod utils {
         gix::Repository,
         VirtualBranchesTomlMetadata,
         String,
+        but_db::DbHandle,
     )> {
-        let (tmp, repo, meta) =
+        let (tmp, repo, meta, db) =
             crate::ref_info::utils::named_writable_scenario_with_args(name, args)?;
         project_meta(&repo)?.persist(&repo)?;
         let refresh_sentinel = meta
@@ -4515,7 +4671,7 @@ pub(crate) mod utils {
             std::fs::remove_file(refresh_sentinel)?;
         }
         let desc = std::fs::read_to_string(repo.git_dir().join("description"))?;
-        Ok((tmp, repo, meta, desc))
+        Ok((tmp, repo, meta, desc, db))
     }
 
     /// Use `init_meta` to configure metadata for the graph that is also returned.
@@ -4529,8 +4685,9 @@ pub(crate) mod utils {
         gix::Repository,
         VirtualBranchesTomlMetadata,
         String,
+        but_db::DbHandle,
     )> {
-        let (tmp, repo, mut meta, desc) =
+        let (tmp, repo, mut meta, desc, mut db) =
             named_writable_scenario_with_args_and_description(name, args)?;
 
         init_meta(&mut meta);
@@ -4539,19 +4696,25 @@ pub(crate) mod utils {
             &repo,
             &meta,
             project_meta,
+            &mut db,
             Options {
                 extra_target_commit_id: repo.rev_parse_single("main").ok().map(|id| id.detach()),
                 ..Options::limited()
             },
         )?;
-        Ok((tmp, graph, repo, meta, desc))
+        Ok((tmp, graph, repo, meta, desc, db))
     }
 
     pub fn named_writable_scenario(
         name: &str,
-    ) -> anyhow::Result<(TempDir, gix::Repository, VirtualBranchesTomlMetadata)> {
-        let (a, b, c, _desc) = named_writable_scenario_with_description(name)?;
-        Ok((a, b, c))
+    ) -> anyhow::Result<(
+        TempDir,
+        gix::Repository,
+        VirtualBranchesTomlMetadata,
+        but_db::DbHandle,
+    )> {
+        let (a, b, c, _desc, db) = named_writable_scenario_with_description(name)?;
+        Ok((a, b, c, db))
     }
 
     pub fn named_read_only_in_memory_scenario_with_description(
@@ -4561,10 +4724,11 @@ pub(crate) mod utils {
         gix::Repository,
         std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
         String,
+        but_db::DbHandle,
     )> {
-        let (repo, meta) = named_read_only_in_memory_scenario(script, name)?;
+        let (repo, meta, db) = named_read_only_in_memory_scenario(script, name)?;
         let desc = std::fs::read_to_string(repo.git_dir().join("description"))?;
-        Ok((repo, meta, desc))
+        Ok((repo, meta, desc, db))
     }
 
     pub enum StackState {

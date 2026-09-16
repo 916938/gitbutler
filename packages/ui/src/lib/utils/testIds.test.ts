@@ -1,13 +1,11 @@
+import { TestId } from "$lib/utils/testIds";
 import { describe, expect, test } from "vitest";
-import { TestId } from "./testIds";
 
 describe("TestId", () => {
 	describe("upstream-merged members", () => {
 		test("BranchHeaderContextMenu_CreatePR exists with correct value", () => {
 			expect(TestId.BranchHeaderContextMenu_CreatePR).toBeDefined();
-			expect(TestId.BranchHeaderContextMenu_CreatePR).toBe(
-				"branch-header-context-menu-create-pr",
-			);
+			expect(TestId.BranchHeaderContextMenu_CreatePR).toBe("branch-header-context-menu-create-pr");
 		});
 
 		test("BranchHeaderContextMenu_Land exists with correct value", () => {

@@ -1,0 +1,757 @@
+/**
+ * The workspace route's page — the app's hub, and the place to start
+ * reading. Everything above (main → App → routes.tsx) is bootstrap,
+ * providers and window chrome; everything interesting hangs from here:
+ * this file derives every list's address space and data, then renders
+ * the pages — each a list — beside Details, and wires the app-level
+ * hotkeys and operation controls.
+ */
+import {
+	absorptionPlanQueryOptions,
+	changesInWorktreeQueryOptions,
+	guiSettingsQueryOptions,
+	headInfoQueryOptions,
+	listProjectsQueryOptions,
+	operatingModeQueryOptions,
+	treeChangesDiffsQueryOptions,
+} from "#ui/api/queries.ts";
+import { EditModePage } from "./EditModePage.tsx";
+import { useRestoreSnapshot } from "#ui/api/mutations.ts";
+import {
+	focusHorizontalScope,
+	focusScope,
+	getFocusedScope,
+	useCommittedSelectionFocus,
+	type FocusScope,
+} from "#ui/focus-scopes.ts";
+import { projectSlice } from "#ui/projects/state.ts";
+import { useParams } from "@tanstack/react-router";
+import { interfaceSlice } from "#ui/interface/state.ts";
+import { ResizeHandle } from "#ui/components/ResizeHandle.tsx";
+import { globalHotkeys, workspaceHotkeys } from "#ui/hotkeys.ts";
+import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
+import { useHotkey, useHotkeys, type UseHotkeyDefinition } from "@tanstack/react-hotkeys";
+import {
+	QueryErrorResetBoundary,
+	useQueries,
+	useQuery,
+	useSuspenseQuery,
+} from "@tanstack/react-query";
+import { monitorForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import { Match } from "effect";
+import {
+	type FC,
+	Activity,
+	useCallback,
+	useDeferredValue,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { Group, Panel, useDefaultLayout } from "react-resizable-panels";
+import { branchAddress, type BranchAddress, uncommittedChangesFileParent } from "#ui/addresses.ts";
+import type { DiffLineSelection } from "#ui/cursors.ts";
+import { Details, type DiffViewerHandle, UncommittedFilesDetails } from "./Details.tsx";
+import { buildAppliedAddressSpace } from "./applied-address-space.ts";
+import { getDiffFileNavigation } from "./diff-view.ts";
+import { buildUncommittedFileRows } from "./file-row.ts";
+import { fileTreeAddressSpace, selectedFilePath } from "./file-tree.ts";
+import { useFileDisplayMode } from "./useFileDisplayMode.ts";
+import styles from "./Page.module.css";
+import { ApplyBranchPicker } from "./ApplyBranchPicker.tsx";
+import { BranchPicker } from "./BranchPicker.tsx";
+import { CommandPalette } from "./CommandPalette.tsx";
+import { OperationsLogPicker } from "./OperationsLogPicker.tsx";
+import { DetailsPlaceholder } from "./DetailsPlaceholder.tsx";
+import { Sidebar } from "./Sidebar.tsx";
+import { OperationControls } from "#ui/routes/project/$id/workspace/OperationControls.tsx";
+import { ErrorBoundary } from "#ui/components/ErrorBoundary.tsx";
+import { Settings } from "./Settings/Settings.tsx";
+import { useBranchesList } from "./useBranchesList.ts";
+import { upstreamCommitReview, useUpstreamList } from "./useUpstreamList.ts";
+import { useStateReconciler as useReconcileState } from "#ui/reconcile.ts";
+import { useReviewActivityInbox } from "#ui/review-notifications.ts";
+import { useStampReviewsSeen } from "#ui/review-seen.ts";
+import {
+	setCursor,
+	setActiveList,
+	cancelPendingOperation,
+	useCanShowFiles,
+	useSidebarFocusScope,
+	usePage,
+	useSelection,
+	useActiveList,
+} from "#ui/use-cursor.ts";
+import type { ActiveList } from "#ui/projects/project.ts";
+import { defaultSettings } from "#ui/settings.ts";
+import { parseDragData } from "./DragData.ts";
+
+// This must be unique as to not collide with other IDs, and stable because it's
+// stored in local storage.
+type PanelId = "sidebar-panel" | "details-panel";
+
+const useWorkspaceHotkeys = (projectId: string) => {
+	const dispatch = useAppDispatch();
+	const store = useAppStore();
+	const detailsFullWindow = useAppSelector(interfaceSlice.selectors.selectDetailsFullWindow);
+	const dialog = useAppSelector(interfaceSlice.selectors.selectDialogState);
+	const canShowFiles = useCanShowFiles();
+	const noOperationPending = useAppSelector(
+		(state) => projectSlice.selectors.selectPendingOperation(state, projectId)._tag === "None",
+	);
+	const sidebarFocusScope = useSidebarFocusScope();
+	const page = usePage();
+	const getFilesVisible = () =>
+		canShowFiles && projectSlice.selectors.selectFilesVisible(store.getState(), projectId);
+
+	const { isPending: isRestoreSnapshotPending, mutate: restoreSnapshot } = useRestoreSnapshot({
+		projectId,
+	});
+
+	// Shared by the arrow keys and their h/l aliases so the pairs cannot diverge.
+	const focusPane = (offset: -1 | 1) => {
+		focusHorizontalScope({
+			filesVisible: getFilesVisible(),
+			offset,
+			sidebarFocusScope,
+			detailsFullWindow,
+		});
+	};
+	const focusPaneLeft = () => {
+		focusPane(-1);
+	};
+	const focusPaneRight = () => {
+		focusPane(1);
+	};
+
+	useHotkeys([
+		{
+			hotkey: globalHotkeys.redo.hotkey,
+			callback: () => restoreSnapshot({ _tag: "redo" }),
+			options: {
+				enabled: noOperationPending && !isRestoreSnapshotPending,
+				meta: globalHotkeys.redo.meta,
+				ignoreInputs: true,
+			},
+		},
+		{
+			hotkey: globalHotkeys.undo.hotkey,
+			callback: () => restoreSnapshot({ _tag: "undo" }),
+			options: {
+				enabled: noOperationPending && !isRestoreSnapshotPending,
+				meta: globalHotkeys.undo.meta,
+				ignoreInputs: true,
+			},
+		},
+		{
+			hotkey: globalHotkeys.commandPalette.hotkey,
+			callback: () => {
+				if (dialog._tag === "CommandPalette") dispatch(interfaceSlice.actions.closeDialog());
+				else dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "CommandPalette" } }));
+			},
+			options: {
+				conflictBehavior: "allow",
+			},
+		},
+		{
+			hotkey: globalHotkeys.operationsLog.hotkey,
+			callback: () => {
+				if (dialog._tag === "OperationsLogPicker") dispatch(interfaceSlice.actions.closeDialog());
+				else
+					dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "OperationsLogPicker" } }));
+			},
+			options: {
+				enabled: noOperationPending,
+				meta: globalHotkeys.operationsLog.meta,
+			},
+		},
+		{
+			hotkey: workspaceHotkeys.toggleFiles.hotkey,
+			callback: () => {
+				if (getFocusedScope(document.activeElement) === "files" && getFilesVisible())
+					focusScope(detailsFullWindow ? "diff" : "sidebar");
+
+				dispatch(projectSlice.actions.toggleFiles({ projectId }));
+			},
+			options: {
+				conflictBehavior: "allow",
+				enabled: canShowFiles,
+				meta: workspaceHotkeys.toggleFiles.meta,
+			},
+		},
+		{
+			hotkey: "0",
+			callback: () => focusScope("details"),
+		},
+		...Match.value(page).pipe(
+			Match.withReturnType<Array<UseHotkeyDefinition>>(),
+			Match.when("workspace", () => [
+				{
+					hotkey: "1",
+					callback: () => focusScope("uncommitted-files"),
+					options: {
+						enabled: !detailsFullWindow,
+					},
+				},
+				{
+					hotkey: "2",
+					callback: () => focusScope("sidebar"),
+					options: {
+						enabled: !detailsFullWindow,
+					},
+				},
+			]),
+			Match.when("branches", () => [
+				{
+					hotkey: "1",
+					callback: () => focusScope("sidebar"),
+					options: {
+						enabled: !detailsFullWindow,
+					},
+				},
+			]),
+			Match.when("upstream", () => [
+				{
+					hotkey: "1",
+					callback: () => focusScope("sidebar"),
+					options: {
+						enabled: !detailsFullWindow,
+					},
+				},
+			]),
+			Match.exhaustive,
+		),
+		{
+			hotkey: workspaceHotkeys.focusHorizontalScopeLeft.hotkey,
+			callback: focusPaneLeft,
+			options: {
+				conflictBehavior: "allow",
+			},
+		},
+		{
+			hotkey: "H",
+			callback: focusPaneLeft,
+			options: {
+				conflictBehavior: "allow",
+			},
+		},
+		{
+			hotkey: workspaceHotkeys.focusHorizontalScopeRight.hotkey,
+			callback: focusPaneRight,
+			options: {
+				conflictBehavior: "allow",
+			},
+		},
+		{
+			hotkey: "L",
+			callback: focusPaneRight,
+			options: {
+				conflictBehavior: "allow",
+			},
+		},
+	]);
+};
+
+const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
+	useReconcileState(projectId);
+	useReviewActivityInbox(projectId);
+	useStampReviewsSeen(projectId);
+
+	// A virtualised drag source may unmount before the drag ends, leaving us stuck in a pending
+	// operation state. This monitor is essentially a finally block for this scenario; its onDrop runs
+	// after those of valid drop targets, in which case it's a no-op.
+	useEffect(
+		() =>
+			monitorForElements({
+				canMonitor: ({ source }) => parseDragData(source.data) !== null,
+				onDrop: cancelPendingOperation,
+			}),
+		[],
+	);
+
+	const dispatch = useAppDispatch();
+
+	const { data: renderAllFiles } = useSuspenseQuery({
+		...guiSettingsQueryOptions,
+		select: (cfg) => cfg.unidiff ?? defaultSettings.unidiff,
+	});
+
+	const viewerRef = useRef<DiffViewerHandle>(null);
+
+	// In the all-in-one view, file selection scrolls to that file, which triggers CodeView's scroll
+	// handler and updates file selection again (as per usual scrolling scenario). That latter file
+	// selection is based upon the first file visible in the viewport, which may exclude trailing
+	// files collectively shorter than the scroll container.
+	//
+	// The callback doesn't provide any way of knowing what triggered the scroll, so we use this ref
+	// to bypass that latter file selection. We could alternatively attempt to pad the scroll
+	// container, but that comes with other complexities and tradeoffs.
+	const didScrollToViaFileRef = useRef(false);
+
+	// useCallback, not compiler memoisation: the deferred details element below
+	// keys on this identity, so it must be stable by construction.
+	const onActiveFileSelection = useCallback(
+		(itemId: string, firstSelection: DiffLineSelection | null) => {
+			setCursor("diff", firstSelection);
+
+			if (renderAllFiles) {
+				didScrollToViaFileRef.current = true;
+				const viewer = viewerRef.current?.getInstance();
+				// Details selection is deferred, so the ref may still point at a viewer without this file.
+				if (!viewer?.getItem(itemId)) return;
+
+				viewer.scrollTo({
+					type: "item",
+					id: itemId,
+				});
+			}
+		},
+		[renderAllFiles],
+	);
+
+	const detailsFullWindow = useAppSelector(interfaceSlice.selectors.selectDetailsFullWindow);
+	const dialog = useAppSelector(interfaceSlice.selectors.selectDialogState);
+	const pendingOperation = useAppSelector((state) =>
+		projectSlice.selectors.selectPendingOperation(state, projectId),
+	);
+
+	useWorkspaceHotkeys(projectId);
+
+	const selectBranch = (branch: BranchAddress) => {
+		setCursor("applied", branchAddress(branch));
+		focusScope("sidebar");
+	};
+
+	const setBranchPickerOpen = (open: boolean) => {
+		if (open) dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "BranchPicker" } }));
+		else dispatch(interfaceSlice.actions.closeDialog());
+	};
+
+	const setApplyBranchPickerOpen = (open: boolean) => {
+		if (open)
+			dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "ApplyBranchPicker" } }));
+		else dispatch(interfaceSlice.actions.closeDialog());
+	};
+
+	const setCommandPaletteOpen = (open: boolean) => {
+		if (open) dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "CommandPalette" } }));
+		else dispatch(interfaceSlice.actions.closeDialog());
+	};
+
+	const setOperationsLogPickerOpen = (open: boolean) => {
+		if (open)
+			dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "OperationsLogPicker" } }));
+		else dispatch(interfaceSlice.actions.closeDialog());
+	};
+
+	const setSettingsOpen = (open: boolean) => {
+		if (open) dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "Settings" } }));
+		else dispatch(interfaceSlice.actions.closeDialog());
+	};
+
+	const openProjectPicker = () => {
+		dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "ProjectPicker" } }));
+	};
+
+	const toggleDetailsFullWindow = () => {
+		if (
+			!detailsFullWindow &&
+			getFocusedScope(document.activeElement) === ("sidebar" satisfies FocusScope)
+		)
+			requestAnimationFrame(() => focusScope("diff"));
+
+		dispatch(interfaceSlice.actions.toggleDetailsFullWindow());
+	};
+
+	useHotkeys([
+		{
+			hotkey: workspaceHotkeys.toggleSidebar.hotkey,
+			callback: toggleDetailsFullWindow,
+			options: {
+				conflictBehavior: "allow",
+				meta: workspaceHotkeys.toggleSidebar.meta,
+			},
+		},
+		{
+			hotkey: "Escape",
+			callback: toggleDetailsFullWindow,
+			options: {
+				conflictBehavior: "allow",
+				enabled: detailsFullWindow,
+			},
+		},
+		{
+			hotkey: workspaceHotkeys.settings.hotkey,
+			callback: () => setSettingsOpen(dialog._tag !== "Settings"),
+		},
+	]);
+
+	// These two hooks sit above the derivation below on purpose. The compiler
+	// cannot memoize a value whose mutable range spans a hook call, and a hook
+	// between `new Set(...)` and `buildAppliedAddressSpace(...)` left both
+	// unmemoized: every render rebuilt the address space and re-rendered every
+	// row that reads it through context.
+	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
+	const foldedSegments = useAppSelector((state) =>
+		projectSlice.selectors.selectFoldedSegments(state, projectId),
+	);
+	const absorptionPlanTarget = Match.value(pendingOperation).pipe(
+		Match.tags({ Absorb: ({ sourceTarget }) => sourceTarget }),
+		Match.orElse(() => null),
+	);
+	const [absorptionPlanQuery] = useQueries({
+		queries: (absorptionPlanTarget ? [absorptionPlanTarget] : []).map((target) =>
+			absorptionPlanQueryOptions({ projectId, target }),
+		),
+	});
+	const absorptionTargetCommitIds = new Set(
+		absorptionPlanQuery?.data?.map(({ commitId }) => commitId),
+	);
+
+	const appliedAddressSpace = buildAppliedAddressSpace({
+		headInfo,
+		pendingOperation,
+		absorptionTargetCommitIds,
+		foldedSegments,
+	});
+
+	const page = usePage();
+	// Destructured here: the result object itself is a new identity every render.
+	const {
+		data: branches,
+		isPending: branchesPending,
+		isError: branchesError,
+	} = useBranchesList(projectId);
+	const upstreamList = useUpstreamList(projectId);
+
+	const appliedSelection = useSelection("applied", appliedAddressSpace);
+	const branchesSelection = useSelection("unapplied", branches?.addressSpace);
+	const upstreamSelection = useSelection("upstream", upstreamList.addressSpace);
+
+	const { data: worktreeChanges } = useQuery(changesInWorktreeQueryOptions(projectId));
+	const uncommittedFilesFilter = useAppSelector((state) =>
+		projectSlice.selectors.selectUncommittedFilesFilter(state, projectId),
+	);
+	const uncommittedFilesDisplayMode = useFileDisplayMode();
+	const uncommittedFilesRecentFirst = useAppSelector((state) =>
+		projectSlice.selectors.selectUncommittedFilesRecentFirst(state, projectId),
+	);
+	const uncommittedFilesCollapsedDirectories = useAppSelector((state) =>
+		projectSlice.selectors.selectUncommittedFilesCollapsedDirectories(state, projectId),
+	);
+	const uncommittedFileRows = buildUncommittedFileRows({
+		worktreeChanges,
+		filter: uncommittedFilesFilter,
+		mode: uncommittedFilesDisplayMode,
+		collapsedDirectories: uncommittedFilesCollapsedDirectories,
+		recentFirst: uncommittedFilesRecentFirst,
+	});
+	// Directories take the cursor as files do, so the index follows the layout the
+	// list renders — and a collapsed directory takes its files out of it too.
+	const uncommittedAddressSpace = fileTreeAddressSpace(uncommittedFileRows);
+	const { data: uncommittedTreeChangeDiffs } = useQuery({
+		...treeChangesDiffsQueryOptions({
+			projectId,
+			changes: worktreeChanges?.changes ?? [],
+		}),
+		enabled: worktreeChanges !== undefined,
+	});
+
+	const onActiveUncommittedFileSelection = (selection: string) => {
+		// A directory row stands for the first file below it, so activating a
+		// folder still gives the details pane somewhere to go.
+		const path = selectedFilePath(uncommittedFileRows, selection);
+		// Indexed against the worktree changes rather than the address space,
+		// which the file filter can narrow out from under them.
+		const index = worktreeChanges?.changes.findIndex((change) => change.path === path) ?? -1;
+		const change = index === -1 ? undefined : worktreeChanges?.changes[index];
+		const treeChangeDiff = index === -1 ? undefined : uncommittedTreeChangeDiffs?.[index];
+		const navigation =
+			change && treeChangeDiff !== undefined
+				? getDiffFileNavigation({
+						fileParent: uncommittedChangesFileParent,
+						change,
+						treeChangeDiff,
+					})
+				: null;
+
+		setCursor("uncommitted", selection);
+		if (navigation) onActiveFileSelection(navigation.itemId, navigation.firstSelection);
+	};
+
+	const uncommittedFilesSelection = useSelection("uncommitted", uncommittedAddressSpace);
+
+	const activeList = useActiveList();
+	// Which list's cursor drives the pane. Normally the active one, but a cursor
+	// is null only when its list is empty, and an empty list has no details to
+	// give: rather than go blank beside a sibling with content in it, the pane
+	// shows the sibling. Only the pane bends — `activeList` still says where the
+	// user is standing, which is what operations and the keyboard act on.
+	const detailsList: ActiveList =
+		activeList === "applied"
+			? appliedSelection === null && uncommittedFilesSelection !== null
+				? "uncommitted"
+				: "applied"
+			: uncommittedFilesSelection === null && appliedSelection !== null
+				? "applied"
+				: "uncommitted";
+	// The page picks only which list's cursor drives the pane; one Details
+	// component then dispatches on the selection itself. The uncommitted arm is
+	// the genuine fork — its cursor is a path, not an address. Memoised because
+	// `useDeferredValue` compares by identity, so a freshly built element every
+	// render would defer every render. Looked up outside the memo so the details
+	// only rebuild when the review itself changes, not on every list rerun.
+	const upstreamReview =
+		upstreamSelection?._tag === "Commit"
+			? upstreamCommitReview(upstreamList, upstreamSelection.commitId)
+			: null;
+	const details = useMemo(() => {
+		const viewProps = { projectId, onActiveFileSelection, viewerRef, didScrollToViaFileRef };
+
+		return Match.value(page).pipe(
+			Match.when("workspace", () =>
+				Match.value(detailsList).pipe(
+					Match.when("applied", () =>
+						appliedSelection === null ? (
+							// Both lists are empty by now: `detailsList` would have picked the
+							// uncommitted one if it had anything to show.
+							<DetailsPlaceholder
+								title="Nothing to show yet"
+								description="Details of whatever you select appear in this pane"
+							/>
+						) : (
+							<Details selection={appliedSelection} review={null} {...viewProps} />
+						),
+					),
+					Match.when("uncommitted", () =>
+						uncommittedFilesSelection === null ? (
+							<DetailsPlaceholder
+								title="Nothing to show yet"
+								description="Details of whatever you select appear in this pane"
+							/>
+						) : (
+							<UncommittedFilesDetails path={uncommittedFilesSelection} {...viewProps} />
+						),
+					),
+					Match.exhaustive,
+				),
+			),
+			Match.when("upstream", () =>
+				upstreamSelection === null ? (
+					<DetailsPlaceholder
+						title="Upstream commits appear here"
+						description="Whatever lands on your target branch before you bring it in"
+					/>
+				) : (
+					<Details selection={upstreamSelection} review={upstreamReview} {...viewProps} />
+				),
+			),
+			Match.when("branches", () =>
+				branchesSelection === null ? (
+					<DetailsPlaceholder
+						title="Branch details appear here"
+						description="The commits, files and pull request of whichever branch you pick"
+					/>
+				) : (
+					<Details selection={branchesSelection} review={null} {...viewProps} />
+				),
+			),
+			Match.exhaustive,
+		);
+	}, [
+		projectId,
+		branchesSelection,
+		onActiveFileSelection,
+		appliedSelection,
+		page,
+		uncommittedFilesSelection,
+		upstreamReview,
+		upstreamSelection,
+		detailsList,
+	]);
+
+	const deferredDetails = useDeferredValue(details);
+	const [focusRestoreRequest, setFocusRestoreRequest] = useState<{ scope: FocusScope } | null>(
+		null,
+	);
+	const consumedFocusRestoreRequest = useRef(focusRestoreRequest);
+	// The event callback cannot restore focus itself: the router settles before deferred details do.
+	// oxlint-disable react-you-might-not-need-an-effect/no-event-handler
+	useEffect(() => {
+		if (
+			focusRestoreRequest === null ||
+			consumedFocusRestoreRequest.current === focusRestoreRequest ||
+			deferredDetails !== details
+		)
+			return;
+
+		focusScope(focusRestoreRequest.scope);
+		consumedFocusRestoreRequest.current = focusRestoreRequest;
+	}, [deferredDetails, details, focusRestoreRequest]);
+	// oxlint-enable react-you-might-not-need-an-effect/no-event-handler
+
+	const { data: projects } = useSuspenseQuery(listProjectsQueryOptions);
+	const project = projects.find((candidate) => candidate.id === projectId);
+	// Names the project group in settings. The route has already established it resolves.
+	const projectName = project?.title ?? "";
+	// Resolved here rather than in the handler, so the hotkey can disable itself when
+	// there is no terminal chosen yet rather than failing on activation.
+	const { data: terminalId } = useQuery({
+		...guiSettingsQueryOptions,
+		select: (cfg) => cfg.terminalId ?? "",
+	});
+
+	const canOpenTerminal = project !== undefined && terminalId !== undefined && terminalId !== "";
+	useHotkey(
+		workspaceHotkeys.openInTerminal.hotkey,
+		() => {
+			if (!canOpenTerminal) return;
+			void window.lite.openInTerminal({ terminalId, path: project.path });
+		},
+		{ enabled: canOpenTerminal, meta: workspaceHotkeys.openInTerminal.meta },
+	);
+
+	useHotkey(globalHotkeys.selectProject.hotkey, openProjectPicker, {
+		enabled: projects.length > 0,
+		meta: globalHotkeys.selectProject.meta,
+	});
+
+	const layoutId = `project=${projectId}:workspace`;
+	const panelIds: Array<PanelId> = detailsFullWindow
+		? ["details-panel"]
+		: ["sidebar-panel", "details-panel"];
+	const workspaceLayout = useDefaultLayout({
+		id: layoutId,
+		panelIds,
+	});
+	const selectionFocus = useCommittedSelectionFocus((scope) => {
+		if (page !== "workspace") return;
+		if (scope === "uncommitted-files") setActiveList("uncommitted");
+		if (scope === "sidebar") setActiveList("applied");
+	});
+
+	const selectedProject = projects.find((project) => project.id === projectId);
+	if (!selectedProject) throw new Error("Could not find selected project");
+
+	return (
+		<>
+			<Group
+				{...selectionFocus}
+				id={layoutId}
+				className={styles.page}
+				defaultLayout={workspaceLayout.defaultLayout}
+				onLayoutChanged={workspaceLayout.onLayoutChanged}
+				data-selection-focus-styles={
+					!(pendingOperation._tag === "Transfer" && pendingOperation.value._tag === "Pointer")
+				}
+			>
+				<Activity mode={detailsFullWindow ? "hidden" : "visible"}>
+					<Panel
+						id={"sidebar-panel" satisfies PanelId}
+						className={styles.panel}
+						minSize={260}
+						defaultSize={420}
+						groupResizeBehavior="preserve-pixel-size"
+					>
+						{/* No reset key: the child is built inline, so its identity changes
+						    every render. Recovery here is the fallback's Retry button. */}
+						<ErrorBoundary>
+							<Sidebar
+								projectId={projectId}
+								project={selectedProject}
+								branches={branches}
+								branchesPending={branchesPending}
+								branchesError={branchesError}
+								upstreamList={upstreamList}
+								addressSpace={appliedAddressSpace}
+								uncommittedAddressSpace={uncommittedAddressSpace}
+								absorptionTargetCommitIds={absorptionTargetCommitIds}
+								onActiveFileSelection={onActiveUncommittedFileSelection}
+							/>
+						</ErrorBoundary>
+					</Panel>
+					<ResizeHandle />
+				</Activity>
+
+				<Panel
+					id={"details-panel" satisfies PanelId}
+					className={styles.panel}
+					data-focus-scope={"details" satisfies FocusScope}
+				>
+					{/* Keyed on the deferred view itself, not on the URL: the deferred
+					    value still holds the old view for a beat after navigating, so a
+					    URL key would clear the error onto the element that just threw. */}
+					<ErrorBoundary resetKeys={[deferredDetails]}>{deferredDetails}</ErrorBoundary>
+				</Panel>
+			</Group>
+
+			<OperationControls
+				projectId={projectId}
+				appliedAddressSpace={appliedAddressSpace}
+				onFocusRestore={(scope) => setFocusRestoreRequest({ scope })}
+			/>
+
+			{Match.value(dialog).pipe(
+				Match.tagsExhaustive({
+					None: () => null,
+					ApplyBranchPicker: () => (
+						<ApplyBranchPicker open onOpenChange={setApplyBranchPickerOpen} projectId={projectId} />
+					),
+					BranchPicker: () => (
+						<BranchPicker
+							projectId={projectId}
+							open
+							onOpenChange={setBranchPickerOpen}
+							onSelectBranch={selectBranch}
+						/>
+					),
+					CommandPalette: () => <CommandPalette open onOpenChange={setCommandPaletteOpen} />,
+					OperationsLogPicker: () => (
+						<OperationsLogPicker
+							open
+							projectId={projectId}
+							onOpenChange={setOperationsLogPickerOpen}
+						/>
+					),
+					// The picker is an anchored dropdown living with the project name in the header, so
+					// this state only tells it to open — there is nothing for the switch to render.
+					ProjectPicker: () => null,
+					Settings: () => (
+						<Settings
+							open
+							projectId={projectId}
+							projectName={projectName}
+							onOpenChange={setSettingsOpen}
+						/>
+					),
+				}),
+			)}
+		</>
+	);
+};
+
+export const Page: FC = () => {
+	const { id: projectId } = useParams({ from: "/project/$id/workspace" });
+
+	const { data: projects } = useSuspenseQuery(listProjectsQueryOptions);
+	const { data: headAndMode } = useQuery(operatingModeQueryOptions(projectId));
+	const project = projects.find((project) => project.id === projectId);
+	if (!project) return <p className={styles.notFound}>Project not found.</p>;
+
+	// Edit mode is repository state, not navigation: the whole surface swaps
+	// while HEAD is parked on the edit ref, and swaps back when it returns —
+	// including when the transition happened in a terminal.
+	if (headAndMode?.operatingMode.type === "Edit")
+		return <EditModePage projectId={projectId} metadata={headAndMode.operatingMode.subject} />;
+
+	return (
+		<QueryErrorResetBoundary>
+			{({ reset }) => (
+				<ErrorBoundary onReset={reset}>
+					<PageBody projectId={projectId} />
+				</ErrorBoundary>
+			)}
+		</QueryErrorResetBoundary>
+	);
+};

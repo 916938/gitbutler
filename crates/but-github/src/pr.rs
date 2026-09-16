@@ -2,21 +2,48 @@ use anyhow::{Context as _, Result};
 
 use crate::client::{GitHubClient, HttpStatusError};
 
+const GITHUB_ORG_SAML_RESTRICTION_MESSAGE: &str = "This GitHub organization requires SAML SSO. Authorize the GitButler OAuth app on the organization's SSO page, or authorize your personal access token in GitHub's token SSO settings, then try again.";
 pub async fn list(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     owner: &str,
     repo: &str,
     storage: &but_forge_storage::Controller,
 ) -> Result<Vec<crate::client::PullRequest>> {
-    if let Ok(gh) = GitHubClient::from_storage(storage, preferred_account) {
-        gh.list_open_pulls(owner, repo)
-            .await
-            .map_err(classify_forge_error)
-            .context("Failed to list open pull requests")
-    } else {
-        Ok(vec![])
-    }
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_open_pulls(owner, repo)
+        .await
+        .map_err(classify_review_list_error)
+        .context("Failed to list open pull requests")
 }
+
+/// A 404 on the open-PR listing means the repository is gone or invisible to
+/// this account, so retrying cannot succeed: it is tagged as a permission
+/// problem right here. Every other error goes through [`classify_forge_error`].
+fn classify_review_list_error(err: anyhow::Error) -> anyhow::Error {
+    if err
+        .downcast_ref::<HttpStatusError>()
+        .is_some_and(|http_err| http_err.status == reqwest::StatusCode::NOT_FOUND)
+    {
+        return err.context(but_error::Context::new_static(
+            but_error::Code::GitHubInsufficientPermissions,
+            "GitHub could not find this repository. Check that it still exists and that your account can access it.",
+        ));
+    }
+    classify_forge_error(err)
+}
+pub async fn list_recently_closed(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<crate::client::PullRequest>> {
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_recently_closed_pulls(owner, repo)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list recently closed pull requests")
+}
+
 pub async fn list_all_for_branch(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     owner: &str,
@@ -24,14 +51,11 @@ pub async fn list_all_for_branch(
     branch: &str,
     storage: &but_forge_storage::Controller,
 ) -> Result<Vec<crate::client::PullRequest>> {
-    if let Ok(gh) = GitHubClient::from_storage(storage, preferred_account) {
-        gh.list_pulls_for_base(owner, repo, branch)
-            .await
-            .map_err(classify_forge_error)
-            .context("Failed to list pull requests for branch")
-    } else {
-        Ok(vec![])
-    }
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_pulls_for_base(owner, repo, branch)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list pull requests for branch")
 }
 
 pub async fn list_for_commit(
@@ -41,19 +65,15 @@ pub async fn list_for_commit(
     commit_sha: &str,
     storage: &but_forge_storage::Controller,
 ) -> Result<Vec<crate::client::PullRequest>> {
-    if let Ok(gh) = GitHubClient::from_storage(storage, preferred_account) {
-        gh.list_pulls_for_commit(owner, repo, commit_sha)
-            .await
-            .map_err(classify_forge_error)
-            .context("Failed to list pull requests for commit")
-    } else {
-        Ok(vec![])
-    }
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_pulls_for_commit(owner, repo, commit_sha)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list pull requests for commit")
 }
 
-/// Tag transport / auth failures with a `but_error::Code` so the desktop
-/// can present them appropriately (silent for offline, re-auth hint for 401).
-/// Only applied to read paths — mutations should still surface failures.
+/// Tag selected transport, auth, and permission failures with a
+/// `but_error::Code` so callers can present actionable guidance.
 pub(crate) fn classify_forge_error(err: anyhow::Error) -> anyhow::Error {
     if let Some(reqwest_err) = err.downcast_ref::<reqwest::Error>()
         && crate::is_network_error(reqwest_err)
@@ -63,13 +83,39 @@ pub(crate) fn classify_forge_error(err: anyhow::Error) -> anyhow::Error {
             "Unable to connect to GitHub.",
         ));
     }
-    if let Some(http_err) = err.downcast_ref::<HttpStatusError>()
-        && http_err.status == reqwest::StatusCode::UNAUTHORIZED
-    {
-        return err.context(but_error::Context::new_static(
-            but_error::Code::GitHubTokenExpired,
-            "GitHub authentication failed.",
-        ));
+    if let Some(http_err) = err.downcast_ref::<HttpStatusError>() {
+        if http_err.status == reqwest::StatusCode::UNAUTHORIZED {
+            return err.context(but_error::Context::new_static(
+                but_error::Code::GitHubTokenExpired,
+                "GitHub authentication failed.",
+            ));
+        }
+        if http_err.status == reqwest::StatusCode::FORBIDDEN {
+            // `ensure_success` keeps GitHub's response body in the chain.
+            let contains =
+                |needle: &str| err.chain().any(|cause| cause.to_string().contains(needle));
+            let context = if contains("OAuth App access restrictions") {
+                Some(but_error::Context::new_static(
+                    but_error::Code::GitHubOrgOAuthRestricted,
+                    "A GitHub organization has restricted access for the GitButler OAuth app. Ask an organization owner to approve it, or authenticate with a personal access token instead.",
+                ))
+            } else if contains("Resource protected by organization SAML enforcement") {
+                Some(but_error::Context::new_static(
+                    but_error::Code::GitHubOrgSamlRestricted,
+                    GITHUB_ORG_SAML_RESTRICTION_MESSAGE,
+                ))
+            } else if contains("Resource not accessible by personal access token") {
+                Some(but_error::Context::new_static(
+                    but_error::Code::GitHubInsufficientPermissions,
+                    "Your GitHub token doesn't have permission to read this. Grant the token the missing repository read permission (such as Checks), or reconnect GitHub with different credentials.",
+                ))
+            } else {
+                None
+            };
+            if let Some(context) = context {
+                return err.context(context);
+            }
+        }
     }
     err
 }
@@ -100,6 +146,21 @@ pub async fn get(
         .map_err(classify_forge_error)
         .context("Failed to get pull request")?;
     Ok(pr)
+}
+
+pub async fn get_merge_status(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    storage: &but_forge_storage::Controller,
+) -> Result<crate::client::PullRequestMergeStatus> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .get_pull_request_merge_status(owner, repo, pr_number)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to fetch PR merge status")
 }
 
 pub async fn list_comments(
@@ -347,6 +408,36 @@ pub async fn list_pr_reviews(
         .context("Failed to list pull request reviews")
 }
 
+/// Reply into an existing review thread, returning the comment it made.
+pub async fn create_review_thread_reply(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    thread_id: &str,
+    body: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<crate::client::PullRequestReviewThreadComment> {
+    GitHubClient::from_storage(storage, preferred_account)?
+        .add_review_thread_reply(thread_id, body)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to reply to the review thread")
+}
+
+/// List the diff-anchored review threads on a pull request, oldest first.
+pub async fn list_review_threads(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    storage: &but_forge_storage::Controller,
+) -> Result<Vec<crate::client::PullRequestReviewThread>> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .list_pull_request_review_threads(owner, repo, pr_number)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to list pull request review threads")
+}
+
 pub async fn create_comment(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     owner: &str,
@@ -405,4 +496,142 @@ pub async fn set_auto_merge(
         .set_pull_request_auto_merge(&params)
         .await
         .context("Failed to update PR auto-merge state")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shape the error like `ensure_success` does: the status-carrying error
+    /// wrapped by what the forge said in the response body.
+    fn http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+        anyhow::Error::from(HttpStatusError { status }).context(body.to_string())
+    }
+
+    #[test]
+    fn org_oauth_restriction_403_gets_dedicated_code() {
+        let err = classify_forge_error(http_error(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"403 Forbidden: {"message":"Although you appear to have the correct authorization credentials, the organization has enabled OAuth App access restrictions."}"#,
+        ));
+        let ctx = err.downcast_ref::<but_error::Context>();
+        assert_eq!(
+            ctx.map(|c| c.code),
+            Some(but_error::Code::GitHubOrgOAuthRestricted),
+            "the frontend keys its presentation off this code"
+        );
+    }
+
+    #[test]
+    fn saml_enforcement_403_gets_dedicated_code_and_static_message() {
+        let bodies = [
+            r#"403 Forbidden: {"message":"Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization."}"#,
+            r#"403 Forbidden: {"message":"Resource protected by organization SAML enforcement. You must grant your OAuth token access to an organization within this enterprise. Visit https://example.invalid/orgs/example/sso?authorization_request=redacted and try again."}"#,
+            // Compatibility fixture for GitHub's PAT-token wording.
+            r#"403 Forbidden: {"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}"#,
+        ];
+        for body in bodies {
+            let err = classify_forge_error(http_error(reqwest::StatusCode::FORBIDDEN, body));
+            let ctx = err
+                .downcast_ref::<but_error::Context>()
+                .expect("a SAML enforcement 403 needs a frontend context");
+            assert_eq!(
+                (ctx.code, ctx.message.as_deref()),
+                (
+                    but_error::Code::GitHubOrgSamlRestricted,
+                    Some(GITHUB_ORG_SAML_RESTRICTION_MESSAGE)
+                ),
+                "SAML responses need a dedicated code and static guidance"
+            );
+            let message = ctx.message.as_deref().expect("SAML guidance is present");
+            assert!(
+                !["authorization_request", "/sso?"]
+                    .iter()
+                    .any(|detail| message.contains(detail)),
+                "the classifier must discard per-request SSO details"
+            );
+        }
+    }
+
+    #[test]
+    fn saml_phrase_requires_reqwest_http_403() {
+        let body = r#"Resource protected by organization SAML enforcement. You must authorize this credential."#;
+        let code = |err: anyhow::Error| {
+            classify_forge_error(err)
+                .downcast_ref::<but_error::Context>()
+                .map(|ctx| ctx.code)
+        };
+        assert_eq!(
+            code(http_error(reqwest::StatusCode::UNAUTHORIZED, body)),
+            Some(but_error::Code::GitHubTokenExpired),
+            "401 retains its authentication classification"
+        );
+        assert_eq!(
+            code(http_error(reqwest::StatusCode::NOT_FOUND, body)),
+            None,
+            "a phrase-bearing 404 stays unclassified"
+        );
+        // GraphQL errors returned with HTTP 200 have no HttpStatusError.
+        assert_eq!(
+            code(anyhow::anyhow!(body)),
+            None,
+            "GraphQL 200 errors stay outside the status classifier"
+        );
+    }
+
+    #[test]
+    fn pat_permission_403_gets_dedicated_code() {
+        let err = classify_forge_error(http_error(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"403 Forbidden: {"message":"Resource not accessible by personal access token"}"#,
+        ));
+        let ctx = err.downcast_ref::<but_error::Context>();
+        assert_eq!(
+            ctx.map(|c| c.code),
+            Some(but_error::Code::GitHubInsufficientPermissions),
+            "a PAT permission 403 is terminal and needs its remediation surfaced"
+        );
+    }
+
+    #[test]
+    fn review_list_404_classification_is_operation_local() {
+        let list_err = classify_review_list_error(http_error(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"404 Not Found: {"message":"Not Found"}"#,
+        ));
+        assert_eq!(
+            list_err
+                .downcast_ref::<but_error::Context>()
+                .map(|ctx| ctx.code),
+            Some(but_error::Code::GitHubInsufficientPermissions),
+            "a review-list 404 needs repository access before retrying can succeed"
+        );
+
+        let other_err = classify_forge_error(http_error(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"404 Not Found: {"message":"Not Found"}"#,
+        ));
+        assert!(
+            other_err.downcast_ref::<but_error::Context>().is_none(),
+            "other GitHub read operations keep their existing 404 semantics"
+        );
+    }
+
+    #[test]
+    fn other_403s_stay_unclassified() {
+        // Only production-observed wordings are classified; the rest keep
+        // their raw message and stay visible in telemetry as `Unknown`.
+        for body in [
+            r#"403 Forbidden: {"message":"Resource not accessible by integration"}"#,
+            r#"403 Forbidden: {"message":"API rate limit exceeded for user ID 1."}"#,
+            r#"403 Forbidden: {"message":"See the SAML setup guide","documentation_url":"https://example.invalid/docs/saml-enforcement"}"#,
+            r#"403 Forbidden: {"message":"Repository access blocked"}"#,
+        ] {
+            let err = classify_forge_error(http_error(reqwest::StatusCode::FORBIDDEN, body));
+            assert!(
+                err.downcast_ref::<but_error::Context>().is_none(),
+                "an unrecognized 403 must not be misclassified: {body}"
+            );
+        }
+    }
 }

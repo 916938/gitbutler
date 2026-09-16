@@ -63,7 +63,8 @@ impl BitbucketClient {
         } else {
             Err(anyhow::anyhow!(
                 "No Bitbucket access token found for account '{account_id}'.\nRun 'but config forge auth' to re-authenticate."
-            ))
+            )
+            .context(NOT_AUTHENTICATED))
         }
     }
 
@@ -152,6 +153,31 @@ impl BitbucketClient {
             urlencoding::encode(workspace),
             urlencoding::encode(repo_slug),
             urlencoding::encode(&list_for_target_query(target_branch)),
+        );
+        let prs: Vec<BitbucketApiPullRequest> = self.get_first_page(url).await?;
+        Ok(prs.into_iter().map(Into::into).collect())
+    }
+
+    /// Fetch the single page of the most recently updated merged, declined,
+    /// or superseded pull requests.
+    ///
+    /// This is the fate sweep for the review cache: everything that left the
+    /// open listing since the last sync appears here, unless more than a
+    /// page's worth of settled pull requests were updated in between — the
+    /// leftovers then fall back to cache deletion, the pre-sweep behavior.
+    pub async fn list_recently_closed_prs(
+        &self,
+        workspace: &str,
+        repo_slug: &str,
+    ) -> Result<Vec<BitbucketPullRequest>> {
+        let url = format!(
+            "{}/repositories/{}/{}/pullrequests?pagelen=50&sort=-updated_on&q={}",
+            self.base_url,
+            urlencoding::encode(workspace),
+            urlencoding::encode(repo_slug),
+            urlencoding::encode(
+                "state = \"MERGED\" OR state = \"DECLINED\" OR state = \"SUPERSEDED\""
+            ),
         );
         let prs: Vec<BitbucketApiPullRequest> = self.get_first_page(url).await?;
         Ok(prs.into_iter().map(Into::into).collect())
@@ -484,6 +510,7 @@ impl BitbucketClient {
 
         Ok(BitbucketRepo {
             is_fork: repo.parent.is_some(),
+            is_private: repo.is_private,
             permission,
         })
     }
@@ -617,23 +644,33 @@ impl BitbucketClient {
     }
 }
 
+/// Marks credential lookups that came up empty, so consumers can tell "the
+/// user is not authenticated" apart from a failing forge and e.g. keep
+/// serving cached data instead of surfacing an error.
+pub(crate) const NOT_AUTHENTICATED: but_error::Context = but_error::Context::new_static(
+    but_error::Code::ForgeNotAuthenticated,
+    "Not authenticated with Bitbucket. Connect your account under Settings → Integrations.",
+);
+
 pub(crate) fn resolve_account(
     preferred_account: Option<&crate::BitbucketAccountIdentifier>,
     storage: &but_forge_storage::Controller,
 ) -> Result<crate::BitbucketAccountIdentifier, anyhow::Error> {
     let known_accounts = crate::token::list_known_bitbucket_accounts(storage)?;
     let Some(default_account) = known_accounts.first() else {
-        bail!(
+        return Err(anyhow::anyhow!(
             "No authenticated Bitbucket users found.\nRun 'but config forge auth' to authenticate with Bitbucket."
-        );
+        )
+        .context(NOT_AUTHENTICATED));
     };
     let account = if let Some(account) = preferred_account {
         if known_accounts.contains(account) {
             account
         } else {
-            bail!(
+            return Err(anyhow::anyhow!(
                 "Preferred Bitbucket account '{account}' has not authenticated yet.\nRun 'but config forge auth' to authenticate, or choose another account."
-            );
+            )
+            .context(NOT_AUTHENTICATED));
         }
     } else {
         default_account
@@ -945,6 +982,7 @@ impl From<BitbucketApiPullRequest> for BitbucketPullRequest {
 #[derive(Debug)]
 pub struct BitbucketRepo {
     pub is_fork: bool,
+    pub is_private: bool,
     /// The authenticated user's permission: `admin`, `write` or `read`.
     pub permission: Option<String>,
 }
@@ -954,6 +992,8 @@ struct BitbucketApiRepository {
     /// Present (and non-null) only when the repository is a fork.
     #[serde(default)]
     parent: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    is_private: bool,
 }
 
 /// A Bitbucket commit build status (Pipelines or any external CI that reports back).

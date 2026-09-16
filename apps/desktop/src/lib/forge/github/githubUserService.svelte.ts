@@ -1,10 +1,10 @@
-import { providesItem, providesList, ReduxTag } from "$lib/state/tags";
+import { invalidatesList, providesItem, providesList, ReduxTag } from "$lib/state/tags";
 import { InjectionToken } from "@gitbutler/core/context";
 import type { BackendApi } from "$lib/state/backendApi";
 import type { ReactiveQuery } from "$lib/state/butlerModule";
 import type {
 	GithubAccountIdentifier,
-	GithubAuthStatusResponseSensitive,
+	GithubAuthStatusResponse,
 	GithubAuthenticatedUserSensitive,
 } from "@gitbutler/but-sdk";
 
@@ -160,7 +160,11 @@ function injectBackendEndpoints(api: BackendApi) {
 				query: (account) => ({
 					account,
 				}),
-				invalidatesTags: [providesList(ReduxTag.GitHubUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitHubUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 			initDeviceOauth: build.mutation<Verification, void>({
 				extraOptions: {
@@ -169,13 +173,17 @@ function injectBackendEndpoints(api: BackendApi) {
 				},
 				query: () => ({}),
 			}),
-			checkAuthStatus: build.mutation<GithubAuthStatusResponseSensitive, { deviceCode: string }>({
+			checkAuthStatus: build.mutation<GithubAuthStatusResponse, { deviceCode: string }>({
 				extraOptions: {
 					command: "check_github_auth_status",
 					actionName: "Check GitHub Auth Status",
 				},
 				query: (args) => args,
-				invalidatesTags: [providesList(ReduxTag.GitHubUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitHubUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 			getGitHubUser: build.query<
 				GithubAuthenticatedUserSensitive | null,
@@ -202,18 +210,26 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Clear All GitHub Accounts",
 				},
 				query: () => ({}),
-				invalidatesTags: [providesList(ReduxTag.GitHubUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitHubUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
-			storeGitHubPat: build.mutation<GithubAuthStatusResponseSensitive, { accessToken: string }>({
+			storeGitHubPat: build.mutation<GithubAuthStatusResponse, { accessToken: string }>({
 				extraOptions: {
 					command: "store_github_pat",
 					actionName: "Store GitHub PAT",
 				},
 				query: (args) => args,
-				invalidatesTags: [providesList(ReduxTag.GitHubUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitHubUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 			storeGithuibEnterprisePat: build.mutation<
-				GithubAuthStatusResponseSensitive,
+				GithubAuthStatusResponse,
 				{ host: string; accessToken: string }
 			>({
 				extraOptions: {
@@ -221,7 +237,11 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Store GitHub Enterprise PAT",
 				},
 				query: (args) => args,
-				invalidatesTags: [providesList(ReduxTag.GitHubUserList)],
+				invalidatesTags: [
+					providesList(ReduxTag.GitHubUserList),
+					invalidatesList(ReduxTag.PullRequests),
+					invalidatesList(ReduxTag.Checks),
+				],
 			}),
 		}),
 	});

@@ -50,8 +50,6 @@ members = [
     "crates/but-serde", # 📄Serde attributes for serialisation and deserialisation of custom datatypes.
     # 👉Lacks tests. Centralized simple utility schema generation modules.
     "crates/but-schemars", # 📄`schemars` json schema generation utilities.
-    # 👉Feels overengingeered, uses `but-ctx` and legacy crates.
-    "crates/but-worktrees", # 📄Worktree creation and removal;
     # 👉Could be exemplary after review.
     "crates/but-update", # 📄Retrieve information about available program versions to guide updates.
     # 👉Unclear purpose (a mix of everything?); lacks tests and docs. Uses legacy crates (a lot).
@@ -153,7 +151,6 @@ but-branches = { path = "crates/but-branches" }
 but-comments = { path = "crates/but-comments" }
 but-hunk-assignment = { path = "crates/but-hunk-assignment" }
 but-hunk-dependency = { path = "crates/but-hunk-dependency" }
-but-worktrees = { path = "crates/but-worktrees" }
 but-db = { path = "crates/but-db" }
 but-path = { path = "crates/but-path" }
 but-graph = { path = "crates/but-graph" }
@@ -200,8 +197,6 @@ gitbutler-reference = { path = "crates/gitbutler-reference" }
 gitbutler-commit = { path = "crates/gitbutler-commit" }
 gitbutler-operating-modes = { path = "crates/gitbutler-operating-modes" }
 gitbutler-edit-mode = { path = "crates/gitbutler-edit-mode" }
-gitbutler-cherry-pick = { path = "crates/gitbutler-cherry-pick" }
-gitbutler-stack = { path = "crates/gitbutler-stack" }
 gitbutler-workspace = { path = "crates/gitbutler-workspace" }
 
 # Bundled to ensure a consistent SQLite version across all platforms.
@@ -212,11 +207,11 @@ bstr = "1.12.1"
 zip = { version = "4", default-features = false, features = ["bzip2"] }
 # Add the `tracing` or `tracing-detail` features to see more of gitoxide in the logs. Useful to see which programs it invokes.
 # When adjusting this, update `gix-testtools` as well!
-gix = { version = "0.86.0", git = "https://github.com/GitoxideLabs/gitoxide", rev = "83e074c1e2d070059febaaab1022058948855101", default-features = false, features = [
+gix = { version = "0.87.0", git = "https://github.com/GitoxideLabs/gitoxide", rev = "ab66595c079832218a60f823d12e571512ffce9d", default-features = false, features = [
     "sha1",
     "sha256",
 ] }
-gix-testtools = { version = "0.20.0", git = "https://github.com/GitoxideLabs/gitoxide", rev = "83e074c1e2d070059febaaab1022058948855101" }
+gix-testtools = { version = "0.20.0", git = "https://github.com/GitoxideLabs/gitoxide", rev = "ab66595c079832218a60f823d12e571512ffce9d" }
 
 
 git2 = { version = "0.21.0", features = [
@@ -309,16 +304,16 @@ self_cell = "1.2.2"
 unicode-segmentation = "1.13.2"
 urlencoding = "2.1"
 inventory = "0.3"
-git-meta-lib = { git = "https://github.com/git-meta/git-meta", rev = "61cabd2840197cda3caf1852a925b101ea0c244f" }
+git-meta-lib = { git = "https://github.com/git-meta/git-meta", rev = "d5ad47dcd2935f0ca1836cef0cbab03ca1431190" }
 smallvec = "1.15.1"
 
 sapling-renderdag = "0.1.0"
 
 [patch.crates-io]
-# Keep workspace crates that use the `gix 0.86` line on the same git revision.
+# Keep workspace crates that use the `gix 0.87` line on the same git revision.
 # This was relevant to force `git-meta` to use our version.
-gix = { git = "https://github.com/GitoxideLabs/gitoxide", rev = "83e074c1e2d070059febaaab1022058948855101" }
-git2 = { git = "https://github.com/gitbutlerapp/git2-rs", rev = "efce108bf14cb1708cfc4c80f2ddf3244a2635ff" }
+gix = { git = "https://github.com/GitoxideLabs/gitoxide", rev = "ab66595c079832218a60f823d12e571512ffce9d" }
+git2 = { git = "https://github.com/gitbutlerapp/git2-rs", rev = "a87a7bb3f6843504339fe7434ee0732a3e968f3e" }
 
 [workspace.lints.clippy]
 # Note that `all` doesn't include everything, so extra lints should be added here.

@@ -79,6 +79,22 @@ pub fn committed_file_picker(
     )
 }
 
+pub fn worktree_picker(
+    name: BString,
+    id: ShortId,
+    theme: &'static Theme,
+) -> FuzzyPicker<CopySelectionItem> {
+    picker(
+        NonEmpty::from_slice(&[
+            CopySelectionItem::ShortId(id),
+            CopySelectionItem::WorktreePath(name.clone()),
+            CopySelectionItem::WorktreeName(name),
+        ])
+        .unwrap(),
+        theme,
+    )
+}
+
 fn picker(
     items: NonEmpty<CopySelectionItem>,
     theme: &'static Theme,
@@ -118,6 +134,10 @@ pub enum CopySelectionItem {
 
     // uncommitted files/hunks
     HunkDiff(Box<UncommittedHunkOrFile>),
+
+    // worktrees
+    WorktreeName(BString),
+    WorktreePath(BString),
 }
 
 impl CopySelectionItem {
@@ -136,6 +156,8 @@ impl CopySelectionItem {
             CopySelectionItem::PullRequestUrl(_) => "Pull Request URL",
             CopySelectionItem::ShortId(_) => "Short ID",
             CopySelectionItem::FilePath(_) => "File path",
+            CopySelectionItem::WorktreeName(_) => "Worktree name",
+            CopySelectionItem::WorktreePath(_) => "Worktree path",
         }
     }
 
@@ -228,6 +250,15 @@ impl CopySelectionItem {
                 uncommitted_hunk_or_file_to_diff(ctx, uncommitted_hunk_or_file)
             }
             CopySelectionItem::FilePath(path) => Ok(path.to_owned()),
+            CopySelectionItem::WorktreePath(name) => {
+                let entry = ctx
+                    .worktrees_with_state()?
+                    .into_iter()
+                    .find(|entry| entry.name == *name)
+                    .context("worktree no longer exists")?;
+                Ok(entry.path.display().to_string())
+            }
+            CopySelectionItem::WorktreeName(name) => Ok(name.to_string()),
         }
     }
 }
@@ -251,9 +282,22 @@ fn uncommitted_hunk_or_file_to_diff(
     ctx: &Context,
     uncommitted: &UncommittedHunkOrFile,
 ) -> anyhow::Result<String> {
-    let repo = ctx.repo.get()?;
-    let worktree_changes =
-        but_api::diff::changes_in_worktree(ctx, but_api::commit::json::ChangesSource::Head, false)?;
+    // The changes have to be read from the checkout the selection lives in, or
+    // a linked worktree's file would copy the main worktree's diff of that path.
+    let (repo, changes_source) = {
+        let main_repo = ctx.repo.get()?;
+        match uncommitted.source.worktree_name() {
+            None => (
+                (*main_repo).clone(),
+                but_api::commit::json::ChangesSource::Head,
+            ),
+            Some(name) => (
+                but_workspace::worktrees::open_worktree_repo(&main_repo, name)?,
+                but_api::commit::json::ChangesSource::Worktree(name.to_string()),
+            ),
+        }
+    };
+    let worktree_changes = but_api::diff::changes_in_worktree(ctx, changes_source, false)?;
     let hunks: Vec<_> = but_core::hunks_from_changes(
         &repo,
         worktree_changes.worktree_changes.changes.clone(),

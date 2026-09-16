@@ -1,21 +1,21 @@
 import { headInfoQueryOptions } from "#ui/api/queries.ts";
 import { PickerDialog } from "#ui/components/PickerDialog.tsx";
-import type { BranchOperand } from "#ui/operands.ts";
+import type { BranchAddress } from "#ui/addresses.ts";
 import type { Segment, Stack } from "@gitbutler/but-sdk";
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
 import type { FC } from "react";
 
 type BranchPickerOption = {
 	id: string;
 	label: string;
-	branch: BranchOperand;
+	branch: BranchAddress;
 };
 
 type Props = {
+	projectId: string;
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
-	onSelectBranch: (branch: BranchOperand) => void;
+	onSelectBranch: (branch: BranchAddress) => void;
 };
 
 const segmentToBranchPickerOption = ({
@@ -33,14 +33,13 @@ const segmentToBranchPickerOption = ({
 	};
 };
 
-const stackToBranchPickerOptions = (stack: Stack): Array<BranchPickerOption> =>
-	stack.segments.flatMap((segment): Array<BranchPickerOption> => {
-		const option = segmentToBranchPickerOption({ segment });
-		return option ? [option] : [];
-	});
+const stackToBranchPickerOptions = (stack: Stack): IteratorObject<BranchPickerOption> =>
+	stack.segments
+		.values()
+		.map((segment) => segmentToBranchPickerOption({ segment }))
+		.filter((x) => x != null);
 
-export const BranchPicker: FC<Props> = ({ open, onOpenChange, onSelectBranch }) => {
-	const { id: projectId } = useParams({ from: "/project/$id/workspace" });
+export const BranchPicker: FC<Props> = ({ projectId, open, onOpenChange, onSelectBranch }) => {
 	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
 	const selectBranch = (option: BranchPickerOption) => {
 		onOpenChange(false);
@@ -59,13 +58,14 @@ export const BranchPicker: FC<Props> = ({ open, onOpenChange, onSelectBranch }) 
 			items={[
 				{
 					value: "Branches",
-					items: headInfo?.stacks.flatMap(stackToBranchPickerOptions) ?? [],
+					items: headInfo?.stacks.values().flatMap(stackToBranchPickerOptions).toArray() ?? [],
 				},
 			]}
 			open={open}
 			onOpenChange={onOpenChange}
 			onSelectItem={selectBranch}
 			placeholder="Search for branches…"
+			selectLabel="Go to branch"
 		/>
 	);
 };

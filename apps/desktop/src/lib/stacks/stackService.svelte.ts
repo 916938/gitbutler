@@ -1,4 +1,3 @@
-import { getBranchNameFromRef } from "$lib/branches/branchUtils";
 import { sortLikeFileTree } from "$lib/files/filetreeV3";
 import { showWarning } from "$lib/notifications/toasts";
 import {
@@ -396,10 +395,7 @@ export class StackService {
 					const invalidations = [invalidatesList(ReduxTag.PullRequests)];
 
 					if (result) {
-						const upstreamBranchNames = result.branchToRemote
-							.map(([_, refname]) => getBranchNameFromRef(refname, result.remote))
-							.filter(isDefined);
-						for (const name of upstreamBranchNames) {
+						for (const [, , name] of result.branchToRemote) {
 							invalidations.push(invalidatesItem(ReduxTag.Checks, name));
 						}
 					}
@@ -673,44 +669,6 @@ export class StackService {
 		return this.backendApi.endpoints.stashIntoBranch.mutate;
 	}
 
-	get updateBranchName() {
-		return this.backendApi.endpoints.updateBranchName.useMutation({
-			sideEffect: (_, args) => {
-				// Immediately update the selection and the exclusive action.
-				const laneState = this.uiState.lane(args.laneId);
-				const projectState = this.uiState.project(args.projectId);
-				const exclusiveAction = projectState.exclusiveAction.current;
-				const previousSelection = laneState.selection.current;
-
-				if (previousSelection) {
-					const updatedSelection = replaceBranchInStackSelection(
-						previousSelection,
-						args.branchName,
-						args.newName,
-					);
-					laneState.selection.set(updatedSelection);
-				}
-
-				if (exclusiveAction) {
-					const updatedExclusiveAction = replaceBranchInExclusiveAction(
-						exclusiveAction,
-						args.branchName,
-						args.newName,
-					);
-					projectState.exclusiveAction.set(updatedExclusiveAction);
-				}
-			},
-			onError: (_, args) => {
-				const state = this.uiState.lane(args.laneId);
-				const previewOpen = state.selection.current?.previewOpen ?? false;
-				state.selection.set({
-					branchName: args.branchName,
-					previewOpen,
-				});
-			},
-		});
-	}
-
 	get commitMove() {
 		return this.backendApi.endpoints.commitMove.mutate;
 	}
@@ -888,13 +846,10 @@ export class StackService {
 		);
 	}
 
-	async targetCommits(projectId: string, lastCommitId: string | undefined, pageSize: number) {
+	async targetCommits(projectId: string, from: string | undefined, limit: number) {
 		return await this.backendApi.endpoints.targetCommits.fetch(
-			{ projectId, lastCommitId, pageSize },
-			{
-				forceRefetch: true,
-				transform: (commits) => commitSelectors.selectAll(commits),
-			},
+			{ projectId, from, limit },
+			{ forceRefetch: true },
 		);
 	}
 
@@ -917,10 +872,6 @@ export class StackService {
 			projectId,
 			forge: forgeName,
 		});
-	}
-
-	get createReference() {
-		return this.backendApi.endpoints.createReference.useMutation();
 	}
 
 	get absorb() {

@@ -126,10 +126,7 @@ pub(crate) mod function {
     use anyhow::{Context as _, bail, ensure};
     use std::borrow::Cow;
 
-    use but_core::{
-        ObjectStorageExt as _, RefMetadata, RepositoryExt as _,
-        ref_metadata::{ProjectedWorkspaceStack, StackId},
-    };
+    use but_core::{ObjectStorageExt as _, RefMetadata, RepositoryExt as _};
     use but_graph::init::Overlay;
     use gix::{
         prelude::ObjectIdExt,
@@ -224,7 +221,7 @@ pub(crate) mod function {
         }
 
         if let Some(workspace_ref_name) = workspace_ref_name.as_ref()
-            && workspace_ref_name.as_ref() == branch
+            && workspace_ref_name == branch
         {
             return unapply_workspace_reference(
                 ws,
@@ -256,17 +253,7 @@ pub(crate) mod function {
         };
         let mut ws_md = meta.workspace(workspace_ref_name.as_ref())?;
         if ws.kind.has_managed_ref() || ws.has_metadata() {
-            ws_md.reconcile_projected_stacks(
-                ws.stacks.iter().map(|stack| ProjectedWorkspaceStack {
-                    id: stack.id,
-                    branches: stack
-                        .segments
-                        .iter()
-                        .filter_map(|segment| segment.ref_name().map(ToOwned::to_owned))
-                        .collect(),
-                }),
-                |_| StackId::generate(),
-            )?;
+            ws.reconcile_metadata(&mut ws_md)?;
         }
         let branch_removed_from_ws_meta = ws_md.unapply_branch(branch);
         if !branch_removed_from_ws_meta {
@@ -351,7 +338,7 @@ pub(crate) mod function {
                 && stack
                     .branches
                     .iter()
-                    .any(|stack_branch| stack_branch.ref_name.as_ref() == branch)
+                    .any(|stack_branch| stack_branch.ref_name == branch)
         }) {
             bail!(
                 "BUG: branch '{}' is still present in rebuilt workspace metadata after unapply",

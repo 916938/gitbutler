@@ -9,7 +9,7 @@ use crate::utils::{fixture_writable, standard_options};
 
 #[test]
 fn reword_a_commit() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("merge-in-the-middle")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("merge-in-the-middle")?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -33,12 +33,13 @@ fn reword_a_commit() -> Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     // get the original a
     let a = repo.rev_parse_single("A")?.detach();
@@ -63,15 +64,15 @@ fn reword_a_commit() -> Result<()> {
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    └── ·78aaae2 (⌂|1)
+    └── ·78aaae2 (⌂)
         └── ►:1[1]:anon:
-            └── ·53af95a (⌂|1)
+            └── ·53af95a (⌂)
                 ├── ►:2[2]:A
-                │   └── ·6de6b92 (⌂|1)
+                │   └── ·6de6b92 (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+                │           └── 🏁·8f0d338 (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·984fd1c (⌂|1)
+                    └── ·984fd1c (⌂)
                         └── →:4: (main)
 
 "#]]
@@ -113,7 +114,7 @@ fn reword_a_commit() -> Result<()> {
 
 #[test]
 fn amend_a_commit() -> Result<()> {
-    let (repo, _tmpdir, mut meta) = fixture_writable("merge-in-the-middle")?;
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("merge-in-the-middle")?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -144,12 +145,13 @@ f766d1f
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     let mut ws = graph.into_workspace()?;
-    let mut editor = Editor::create(&mut ws, &mut *meta, &repo)?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
 
     // get the original a
     let a = repo.rev_parse_single("A")?;
@@ -185,15 +187,15 @@ f766d1f
         snapbox::str![[r#"
 
 └── 👉►:0[0]:with-inner-merge[🌳]
-    └── ·e7221b5 (⌂|1)
+    └── ·e7221b5 (⌂)
         └── ►:1[1]:anon:
-            └── ·8101192 (⌂|1)
+            └── ·8101192 (⌂)
                 ├── ►:2[2]:A
-                │   └── ·f1905a8 (⌂|1)
+                │   └── ·f1905a8 (⌂)
                 │       └── ►:4[3]:main
-                │           └── 🏁·8f0d338 (⌂|1) ►tags/base
+                │           └── 🏁·8f0d338 (⌂) ►tags/base
                 └── ►:3[2]:B
-                    └── ·984fd1c (⌂|1)
+                    └── ·984fd1c (⌂)
                         └── →:4: (main)
 
 "#]]

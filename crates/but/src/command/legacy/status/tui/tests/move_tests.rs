@@ -14,7 +14,7 @@ fn esc_leaves_move_mode() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -42,16 +42,16 @@ fn move_mode_keeps_selected_commit_and_extension_visible_when_scrolled() {
     );
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1#0 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   mul (no commit message) (no changes)"]);
 
     tui.input([KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┊●   tpm add A"]);
@@ -73,16 +73,16 @@ fn move_commit_above_other_commit_reorders_tui() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1#0 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   mul (no commit message) (no changes)"]);
 
     tui.input([KeyCode::Down, KeyCode::Down])
         .assert_current_line_eq(str!["┊●   tpm add A"]);
@@ -116,16 +116,16 @@ fn move_commit_down_from_source_selects_next_commit() {
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input('n')
-        .assert_current_line_eq(str!["┊●   1#0 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   mul (no commit message) (no changes)"]);
 
     tui.input(KeyCode::Down)
-        .assert_current_line_eq(str!["┊●   1#1 (no commit message) (no changes)"]);
+        .assert_current_line_eq(str!["┊●   oun (no commit message) (no changes)"]);
 
     tui.input('m').assert_current_line_eq(str![
-        "┊●   << source >> << noop >> 1#1 (no commit message) (no changes)"
+        "┊●   << source >> << noop >> oun (no commit message) (no changes)"
     ]);
 
     tui.input(KeyCode::Down)
@@ -165,7 +165,7 @@ fn move_branch_onto_other_branch_reorders_stacks() {
     let mut tui = test_status_tui(env);
 
     tui.reload()
-        .assert_current_line_eq(str!["╭┄ zz [uncommitted] (no changes)"]);
+        .assert_current_line_eq(str!["╭┄ @ [uncommitted] (no changes)"]);
 
     tui.input(KeyCode::Down)
         .assert_current_line_eq(str!["┊╭┄ g0 [A]"]);
@@ -210,6 +210,51 @@ fn move_branch_to_merge_base_tears_off_branch() {
 }
 
 #[test]
+fn move_commit_to_merge_base_creates_new_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui(env);
+
+    tui.input([KeyCode::Down, KeyCode::Down])
+        .assert_current_line_eq(str!["┊●   ywx add second"]);
+
+    tui.input('m')
+        .assert_current_line_eq(str!["┊●   << source >> << noop >> ywx add second"]);
+
+    tui.input([KeyCode::Down, KeyCode::Down])
+        .assert_rendered_term_svg_eq(file![
+            "snapshots/move_commit_to_merge_base_creates_new_branch_001.svg"
+        ]);
+
+    tui.input(KeyCode::Enter).assert_rendered_term_svg_eq(file![
+        "snapshots/move_commit_to_merge_base_creates_new_branch_final.svg"
+    ]);
+}
+
+#[test]
+fn move_marked_commits_to_merge_base_creates_new_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack-two-commits");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui(env);
+
+    tui.input([KeyCode::Down, KeyCode::Down]);
+    tui.input(' ');
+    tui.input(KeyCode::Down);
+    tui.input(' ');
+    tui.input('m');
+
+    tui.input(KeyCode::Down).assert_rendered_term_svg_eq(file![
+        "snapshots/move_marked_commits_to_merge_base_creates_new_branch_001.svg"
+    ]);
+
+    tui.input(KeyCode::Enter).assert_rendered_term_svg_eq(file![
+        "snapshots/move_marked_commits_to_merge_base_creates_new_branch_final.svg"
+    ]);
+}
+
+#[test]
 fn moving_multiple_commits() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
@@ -217,6 +262,7 @@ fn moving_multiple_commits() {
     let mut tui = test_status_tui(env);
 
     tui.input('b');
+    tui.input('n');
     tui.input('g')
         .assert_rendered_term_svg_eq(file!["snapshots/moving_multiple_commits_001.svg"]);
 
@@ -237,4 +283,30 @@ fn moving_multiple_commits() {
         .assert_rendered_term_svg_eq(file!["snapshots/moving_multiple_commits_004.svg"]);
     tui.input(KeyCode::Enter)
         .assert_rendered_term_svg_eq(file!["snapshots/moving_multiple_commits_005.svg"]);
+}
+
+#[test]
+fn switch_from_move_mode_to_branch_mode() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui(env);
+
+    tui.input('j');
+    tui.input('m').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_move_mode_to_branch_mode_001.svg"
+    ]);
+    tui.input('b').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_move_mode_to_branch_mode_002.svg"
+    ]);
+    tui.input(KeyCode::Esc);
+
+    tui.input('j');
+    tui.input('m').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_move_mode_to_branch_mode_003.svg"
+    ]);
+    tui.input('b').assert_rendered_term_svg_eq(file![
+        "snapshots/switch_from_move_mode_to_branch_mode_004.svg"
+    ]);
+    tui.input(KeyCode::Esc);
 }

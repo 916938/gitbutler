@@ -3,30 +3,27 @@ use but_graph::{
     init::{Overlay, Tip},
 };
 use but_testsupport::{
+    CommandExt as _,
     gix_testtools::{self, Creation, rust_fixture_writable},
-    graph_tree, graph_workspace, visualize_commit_graph_all,
+    graph_workspace, visualize_commit_graph_all,
 };
 use gix::prelude::ObjectIdExt;
 use snapbox::prelude::*;
 
+use crate::support::graph_dag;
+
 #[test]
 fn unborn() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("unborn")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("unborn")?;
 
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
-    snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
-        snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
-
-"#]]
-    );
+    snapbox::assert_data_eq!(graph_dag(&graph), snapbox::str!["◎  👉main[🌳]"]);
     snapbox::assert_data_eq!(
         graph.to_debug(),
         snapbox::str![[r#"
@@ -68,8 +65,9 @@ Graph {
         hard_limit: None,
         extra_target_commit_id: None,
         dangerously_skip_postprocessing_for_debugging: false,
-        worktree_tips: [],
+        worktrees: false,
     },
+    worktree_tips: [],
     project_meta: ProjectMeta {
         target_ref: None,
         target_commit_id: None,
@@ -88,9 +86,9 @@ Graph {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓!
-└── ≡:0:main[🌳] {1}
-    └── :0:main[🌳]
+⌂:main[🌳] <> ✓!
+└── ≡:main[🌳] {1}
+    └── :main[🌳]
 
 "#]]
     );
@@ -100,7 +98,7 @@ Graph {
 
 #[test]
 fn detached() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("detached")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("detached")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -116,17 +114,20 @@ fn detached() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:0[0]:anon:
-    └── 👉·541396b (⌂|1) ►tags/annotated, ►tags/release/v1, ►main
-        └── ►:1[1]:other
-            └── 🏁·fafd9d0 (⌂|1)
-
+◎  main
+│ ◎  tags/annotated
+├─╯
+│ ◎  tags/release/v1
+├─╯
+●  👉·541396b (⌂)
+◎  other
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
@@ -147,7 +148,7 @@ Graph {
                 sibling_segment_id: None,
                 remote_tracking_branch_segment_id: None,
                 commits: [
-                    Commit(541396b, ⌂|1►annotated, ►release/v1, ►main),
+                    Commit(541396b, ⌂►annotated, ►release/v1, ►main),
                 ],
                 metadata: "None",
             },
@@ -159,7 +160,7 @@ Graph {
                 sibling_segment_id: None,
                 remote_tracking_branch_segment_id: None,
                 commits: [
-                    Commit(fafd9d0, ⌂|1),
+                    Commit(fafd9d0, ⌂),
                 ],
                 metadata: "None",
             },
@@ -212,8 +213,9 @@ Graph {
         hard_limit: None,
         extra_target_commit_id: None,
         dangerously_skip_postprocessing_for_debugging: false,
-        worktree_tips: [],
+        worktrees: false,
     },
+    worktree_tips: [],
     project_meta: ProjectMeta {
         target_ref: None,
         target_commit_id: None,
@@ -250,11 +252,11 @@ Graph {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:DETACHED <> ✓!
-└── ≡:0:anon: {1}
-    ├── :0:anon:
+⌂:DETACHED <> ✓!
+└── ≡:anon: {1}
+    ├── :anon:
     │   └── ·541396b ►tags/annotated, ►tags/release/v1, ►main
-    └── :1:other
+    └── :other
         └── ·fafd9d0
 
 "#]]
@@ -264,7 +266,7 @@ Graph {
 
 #[test]
 fn shallow_clone_stops_at_shallow_boundary() -> anyhow::Result<()> {
-    let (repo, meta) =
+    let (repo, meta, mut db) =
         utils::named_read_only_in_memory_scenario("special-conditions", "shallow-clone-depth-2")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -286,18 +288,17 @@ fn shallow_clone_stops_at_shallow_boundary() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:1[0]:origin/main →:0:
-    └── 👉►:0[1]:main[🌳] <> origin/main →:1:
-        ├── ·71a64f3 (⌂|1)
-        └── ⛰·62d65ed (⌂|⛰|1)
-
+◎  origin/main
+◎  👉main[🌳] <> origin/main
+●  ·71a64f3 (⌂)
+●  ⛰·62d65ed (⌂|⛰)
 "#]]
     );
     let (boundary_sidx, boundary_cidx) = graph
@@ -339,9 +340,9 @@ fn shallow_clone_stops_at_shallow_boundary() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓refs/remotes/origin/main on 71a64f3
-└── ≡:0:main[🌳] <> origin/main →:1: {1}
-    └── :0:main[🌳] <> origin/main →:1:
+⌂:main[🌳] <> ✓refs/remotes/origin/main on 71a64f3
+└── ≡:main[🌳] <> origin/main on 71a64f3 {1}
+    └── :main[🌳] <> origin/main
 
 "#]]
     );
@@ -350,7 +351,7 @@ fn shallow_clone_stops_at_shallow_boundary() -> anyhow::Result<()> {
 
 #[test]
 fn merge_first_parent_older_non_workspace_maintains_graph_order() -> anyhow::Result<()> {
-    let (repo, meta) = utils::named_read_only_in_memory_scenario(
+    let (repo, meta, mut db) = utils::named_read_only_in_memory_scenario(
         "special-conditions",
         "merge-first-parent-older",
     )?;
@@ -376,27 +377,27 @@ fn merge_first_parent_older_non_workspace_maintains_graph_order() -> anyhow::Res
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:first-parent[🌳]
-    └── ·738ea18 (⌂|1)
-        └── ►:1[1]:anon:
-            └── ·408ca26 (⌂|1)
-                ├── ►:3[2]:anon:
-                │   └── ·2854fa2 (⌂|1)
-                │       └── ►:4[3]:main
-                │           └── 🏁·793a434 (⌂|1) ►tags/base
-                └── ►:2[2]:second-parent
-                    ├── ·75369b0 (⌂|1)
-                    ├── ·553bbf7 (⌂|1)
-                    └── ·72614bb (⌂|1)
-                        └── →:4: (main)
-
+◎  👉first-parent[🌳]
+●  ·738ea18 (⌂)
+●    ·408ca26 (⌂)
+├─╮
+● │  ·2854fa2 (⌂)
+│ ◎  second-parent
+│ ●  ·75369b0 (⌂)
+│ ●  ·553bbf7 (⌂)
+│ ●  ·72614bb (⌂)
+├─╯
+◎  main
+│ ◎  tags/base
+├─╯
+●  🏁·793a434 (⌂)
 "#]]
     );
 
@@ -404,13 +405,13 @@ fn merge_first_parent_older_non_workspace_maintains_graph_order() -> anyhow::Res
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:first-parent[🌳] <> ✓!
-└── ≡:0:first-parent[🌳] {1}
-    ├── :0:first-parent[🌳]
+⌂:first-parent[🌳] <> ✓!
+└── ≡:first-parent[🌳] {1}
+    ├── :first-parent[🌳]
     │   ├── ·738ea18
     │   ├── ·408ca26
     │   └── ·2854fa2
-    └── :4:main
+    └── :main
         └── ·793a434 ►tags/base
 
 "#]]
@@ -420,7 +421,8 @@ fn merge_first_parent_older_non_workspace_maintains_graph_order() -> anyhow::Res
 
 #[test]
 fn main_advanced_remote_advanced() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("main-advanced-remote-advanced-two-shared")?;
+    let (repo, meta, mut db) =
+        read_only_in_memory_scenario("main-advanced-remote-advanced-two-shared")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -437,30 +439,28 @@ fn main_advanced_remote_advanced() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-├── 👉►:0[0]:main[🌳] <> origin/main →:1:
-│   └── ·971953d (⌂|01)
-│       └── ►:2[1]:anon:
-│           ├── ·ce09734 (⌂|11)
-│           └── 🏁·fafd9d0 (⌂|11)
-└── ►:1[0]:origin/main →:0:
-    └── 🟣5d29d62 (0x0|10)
-        └── →:2:
-
+◎  👉main[🌳] <> origin/main
+●  ·971953d (⌂)
+│ ◎  origin/main
+│ ●  🟣5d29d62 (0x0)
+├─╯
+●  ·ce09734 (⌂)
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓refs/remotes/origin/main⇣1 on ce09734
-└── ≡:0:main[🌳] <> origin/main →:1:⇡1⇣1 on ce09734 {1}
-    └── :0:main[🌳] <> origin/main →:1:⇡1⇣1
+⌂:main[🌳] <> ✓refs/remotes/origin/main⇣1 on ce09734
+└── ≡:main[🌳] <> origin/main⇡1⇣1 on ce09734 {1}
+    └── :main[🌳] <> origin/main⇡1⇣1
         ├── 🟣5d29d62
         └── ·971953d
 
@@ -472,7 +472,7 @@ fn main_advanced_remote_advanced() -> anyhow::Result<()> {
 
 #[test]
 fn only_remote_advanced() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("only-remote-advanced")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("only-remote-advanced")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -489,21 +489,20 @@ fn only_remote_advanced() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:1[0]:origin/main →:0:
-    └── 🟣085535d (0x0|10)
-        └── ►:2[1]:origin/split-segment
-            └── 🟣dd9f8d9 (0x0|10)
-                └── 👉►:0[2]:main[🌳] <> origin/main →:1:
-                    ├── ·971953d (⌂|11)
-                    ├── ·ce09734 (⌂|11)
-                    └── 🏁·fafd9d0 (⌂|11)
-
+◎  origin/main
+●  🟣085535d (0x0)
+◎  origin/split-segment
+●  🟣dd9f8d9 (0x0)
+◎  👉main[🌳] <> origin/main
+●  ·971953d (⌂)
+●  ·ce09734 (⌂)
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -513,9 +512,9 @@ fn only_remote_advanced() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓refs/remotes/origin/main⇣2 on 971953d
-└── ≡:0:main[🌳] <> origin/main →:1:⇣1 {1}
-    └── :0:main[🌳] <> origin/main →:1:⇣1
+⌂:main[🌳] <> ✓refs/remotes/origin/main⇣2 on 971953d
+└── ≡:main[🌳] <> origin/main⇣1 on 971953d {1}
+    └── :main[🌳] <> origin/main⇣1
         └── 🟣085535d
 
 "#]]
@@ -526,7 +525,7 @@ fn only_remote_advanced() -> anyhow::Result<()> {
 
 #[test]
 fn only_remote_advanced_with_special_branch_name() -> anyhow::Result<()> {
-    let (repo, meta) =
+    let (repo, meta, mut db) =
         read_only_in_memory_scenario("only-remote-advanced-with-special-branch-name")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -544,22 +543,21 @@ fn only_remote_advanced_with_special_branch_name() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:1[0]:origin/main →:0:
-    └── 🟣085535d (0x0|10)
-        └── ►:3[1]:origin/split-segment
-            └── 🟣dd9f8d9 (0x0|10)
-                └── 👉►:0[2]:main[🌳] <> origin/main →:1:
-                    └── ·971953d (⌂|11)
-                        └── ►:2[3]:gitbutler/target
-                            ├── ·ce09734 (⌂|11)
-                            └── 🏁·fafd9d0 (⌂|11)
-
+◎  origin/main
+●  🟣085535d (0x0)
+◎  origin/split-segment
+●  🟣dd9f8d9 (0x0)
+◎  👉main[🌳] <> origin/main
+●  ·971953d (⌂)
+◎  gitbutler/target
+●  ·ce09734 (⌂)
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -569,9 +567,9 @@ fn only_remote_advanced_with_special_branch_name() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓refs/remotes/origin/main⇣2 on 971953d
-└── ≡:0:main[🌳] <> origin/main →:1:⇣1 {1}
-    └── :0:main[🌳] <> origin/main →:1:⇣1
+⌂:main[🌳] <> ✓refs/remotes/origin/main⇣2 on 971953d
+└── ≡:main[🌳] <> origin/main⇣1 on 971953d {1}
+    └── :main[🌳] <> origin/main⇣1
         └── 🟣085535d
 
 "#]]
@@ -582,7 +580,7 @@ fn only_remote_advanced_with_special_branch_name() -> anyhow::Result<()> {
 
 #[test]
 fn multi_root() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("multi-root")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("multi-root")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -605,27 +603,26 @@ fn multi_root() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
-    └── ·c6c8c05 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   └── ·76fc5c4 (⌂|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── 🏁·e5d0542 (⌂|1)
-        │       └── ►:4[2]:B
-        │           └── 🏁·366d496 (⌂|1)
-        └── ►:2[1]:C
-            └── ·8631946 (⌂|1)
-                ├── ►:5[2]:anon:
-                │   └── 🏁·00fab2a (⌂|1)
-                └── ►:6[2]:D
-                    └── 🏁·f4955b6 (⌂|1)
-
+◎  👉main[🌳]
+●    ·c6c8c05 (⌂)
+├─╮
+● │    ·76fc5c4 (⌂)
+├───╮
+● │ │  🏁·e5d0542 (⌂)
+  │ ◎  B
+  │ ●  🏁·366d496 (⌂)
+  ◎  C
+  ●  ·8631946 (⌂)
+╭─┤
+│ ●  🏁·00fab2a (⌂)
+◎  D
+●  🏁·f4955b6 (⌂)
 "#]]
     );
     assert_eq!(
@@ -641,9 +638,9 @@ fn multi_root() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓!
-└── ≡:0:main[🌳] {1}
-    └── :0:main[🌳]
+⌂:main[🌳] <> ✓!
+└── ≡:main[🌳] {1}
+    └── :main[🌳]
         ├── ·c6c8c05
         ├── ·76fc5c4
         └── ·e5d0542
@@ -655,7 +652,7 @@ fn multi_root() -> anyhow::Result<()> {
 
 #[test]
 fn four_diamond() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -682,32 +679,32 @@ fn four_diamond() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:1[1]:A
-        │   └── ·62b409a (⌂|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── ·592abec (⌂|1)
-        │       │       └── ►:7[3]:main
-        │       │           └── 🏁·965998b (⌂|1)
-        │       └── ►:4[2]:B
-        │           └── ·f16dddf (⌂|1)
-        │               └── →:7: (main)
-        └── ►:2[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:5[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:7: (main)
-                └── ►:6[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:7: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂)
+├───╮
+● │ │  ·592abec (⌂)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂)
 "#]]
     );
 
@@ -726,14 +723,14 @@ fn four_diamond() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:merged[🌳] <> ✓!
-└── ≡:0:merged[🌳] {1}
-    ├── :0:merged[🌳]
+⌂:merged[🌳] <> ✓!
+└── ≡:merged[🌳] {1}
+    ├── :merged[🌳]
     │   └── ·8a6c109
-    ├── :1:A
+    ├── :A
     │   ├── ·62b409a
     │   └── ·592abec
-    └── :7:main
+    └── :main
         └── ·965998b
 
 "#]]
@@ -743,7 +740,7 @@ fn four_diamond() -> anyhow::Result<()> {
 
 #[test]
 fn explicit_traversal_tips_reject_duplicate_traversal_seeds() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = id_by_rev(&repo, "merged").detach();
     let a_id = id_by_rev(&repo, "A").detach();
     let a_ref = ref_name("refs/heads/A");
@@ -757,6 +754,7 @@ fn explicit_traversal_tips_reject_duplicate_traversal_seeds() -> anyhow::Result<
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )
     .expect_err("duplicate traversal seeds must be rejected");
@@ -771,7 +769,7 @@ fn explicit_traversal_tips_reject_duplicate_traversal_seeds() -> anyhow::Result<
 
 #[test]
 fn explicit_traversal_tips_allow_overlapping_commit_ids() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("detached")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("detached")?;
     let main_id = id_by_rev(&repo, "main").detach();
     let main_ref = ref_name("refs/heads/main");
     let release_tag = ref_name("refs/tags/release/v1");
@@ -784,20 +782,21 @@ fn explicit_traversal_tips_allow_overlapping_commit_ids() -> anyhow::Result<()> 
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:0[0]:tags/release/v1
-    └── 👉►:1[1]:main
-        └── ·541396b (⌂|1) ►tags/annotated, ►tags/release/v1
-            └── ►:2[2]:other
-                └── 🏁·fafd9d0 (⌂|1)
-
+◎  tags/annotated
+│ ◎  tags/release/v1
+│ ◎  👉main
+├─╯
+●  ·541396b (⌂)
+◎  other
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
     Ok(())
@@ -806,7 +805,7 @@ fn explicit_traversal_tips_allow_overlapping_commit_ids() -> anyhow::Result<()> 
 #[test]
 fn explicit_traversal_tips_allow_named_and_anonymous_integrated_targets_on_same_commit()
 -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = id_by_rev(&repo, "merged").detach();
     let main_id = id_by_rev(&repo, "main").detach();
 
@@ -841,35 +840,35 @@ fn explicit_traversal_tips_allow_named_and_anonymous_integrated_targets_on_same_
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
 
     // anonymous target context with the same commit collapses into the named target ref
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:1[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:2[1]:A
-        │   └── ·62b409a (⌂|1)
-        │       ├── ►:4[2]:anon:
-        │       │   └── ·592abec (⌂|1)
-        │       │       └── ►:0[3]:main
-        │       │           └── 🏁·965998b (⌂|✓|1)
-        │       └── ►:5[2]:B
-        │           └── ·f16dddf (⌂|1)
-        │               └── →:0: (main)
-        └── ►:3[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:6[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:0: (main)
-                └── ►:7[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:0: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂)
+├───╮
+● │ │  ·592abec (⌂)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂|✓)
 "#]]
     );
     Ok(())
@@ -877,7 +876,7 @@ fn explicit_traversal_tips_allow_named_and_anonymous_integrated_targets_on_same_
 
 #[test]
 fn explicit_traversal_tips_reject_multiple_entrypoints() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = id_by_rev(&repo, "merged").detach();
     let a_id = id_by_rev(&repo, "A").detach();
 
@@ -889,6 +888,7 @@ fn explicit_traversal_tips_reject_multiple_entrypoints() -> anyhow::Result<()> {
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )
     .expect_err("multiple entrypoints must be rejected");
@@ -902,7 +902,7 @@ fn explicit_traversal_tips_reject_multiple_entrypoints() -> anyhow::Result<()> {
 
 #[test]
 fn explicit_traversal_tips_reject_duplicate_ref_names() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let a_id = id_by_rev(&repo, "A").detach();
     let c_id = id_by_rev(&repo, "C").detach();
     let a_ref = ref_name("refs/heads/A");
@@ -915,6 +915,7 @@ fn explicit_traversal_tips_reject_duplicate_ref_names() -> anyhow::Result<()> {
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )
     .expect_err("duplicate ref names must be rejected");
@@ -928,7 +929,7 @@ fn explicit_traversal_tips_reject_duplicate_ref_names() -> anyhow::Result<()> {
 
 #[test]
 fn explicit_traversal_tips_reject_detached_entrypoint_with_ref_name() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = id_by_rev(&repo, "merged").detach();
 
     let err = Graph::from_commit_traversal_tips(
@@ -939,6 +940,7 @@ fn explicit_traversal_tips_reject_detached_entrypoint_with_ref_name() -> anyhow:
             .with_is_detached(true)],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )
     .expect_err("detached entrypoints must not be named");
@@ -952,7 +954,7 @@ fn explicit_traversal_tips_reject_detached_entrypoint_with_ref_name() -> anyhow:
 
 #[test]
 fn explicit_traversal_tips_reject_ref_names_that_point_elsewhere() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = id_by_rev(&repo, "merged").detach();
     let a_id = id_by_rev(&repo, "A").detach();
     let a_ref = ref_name("refs/heads/A");
@@ -962,6 +964,7 @@ fn explicit_traversal_tips_reject_ref_names_that_point_elsewhere() -> anyhow::Re
         [Tip::entrypoint(merged_id, Some(a_ref.clone()))],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )
     .expect_err("ref names must resolve to their tip id");
@@ -975,7 +978,7 @@ fn explicit_traversal_tips_reject_ref_names_that_point_elsewhere() -> anyhow::Re
 
 #[test]
 fn traversal_entrypoint_ref_override_must_point_to_entrypoint() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = id_by_rev(&repo, "merged").detach();
     let a_id = id_by_rev(&repo, "A").detach();
     let a_ref = ref_name("refs/heads/A");
@@ -985,6 +988,7 @@ fn traversal_entrypoint_ref_override_must_point_to_entrypoint() -> anyhow::Resul
         Some(a_ref.clone()),
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )
     .expect_err("entrypoint ref override must resolve to the entrypoint id");
@@ -998,7 +1002,7 @@ fn traversal_entrypoint_ref_override_must_point_to_entrypoint() -> anyhow::Resul
 
 #[test]
 fn explicit_traversal_tips_use_integrated_tip_as_workspace_target_commit() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("four-diamond")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1034,33 +1038,33 @@ fn explicit_traversal_tips_use_integrated_tip_as_workspace_target_commit() -> an
         ],
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:2[0]:merged[🌳]
-    └── ·8a6c109 (⌂|1)
-        ├── ►:0[1]:A
-        │   └── ·62b409a (⌂|✓|1)
-        │       ├── ►:3[2]:anon:
-        │       │   └── ·592abec (⌂|✓|1)
-        │       │       └── ►:1[3]:main
-        │       │           └── 🏁·965998b (⌂|✓|1)
-        │       └── ►:4[2]:B
-        │           └── ·f16dddf (⌂|✓|1)
-        │               └── →:1: (main)
-        └── ►:5[1]:C
-            └── ·7ed512a (⌂|1)
-                ├── ►:6[2]:anon:
-                │   └── ·35ee481 (⌂|1)
-                │       └── →:1: (main)
-                └── ►:7[2]:D
-                    └── ·ecb1877 (⌂|1)
-                        └── →:1: (main)
-
+◎  👉merged[🌳]
+●    ·8a6c109 (⌂)
+├─╮
+◎ │  A
+● │    ·62b409a (⌂|✓)
+├───╮
+● │ │  ·592abec (⌂|✓)
+│ │ ◎  B
+│ │ ●  ·f16dddf (⌂|✓)
+├───╯
+│ ◎  C
+│ ●    ·7ed512a (⌂)
+│ ├─╮
+│ ● │  ·35ee481 (⌂)
+├─╯ │
+│   ◎  D
+│   ●  ·ecb1877 (⌂)
+├───╯
+◎  main
+●  🏁·965998b (⌂|✓)
 "#]]
     );
 
@@ -1075,11 +1079,11 @@ fn explicit_traversal_tips_use_integrated_tip_as_workspace_target_commit() -> an
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-⌂:2:merged[🌳] <> ✓refs/heads/A⇣3 on 965998b
-└── ≡:2:merged[🌳] on 965998b {1}
-    ├── :2:merged[🌳]
+⌂:merged[🌳] <> ✓refs/heads/A⇣3 on 965998b
+└── ≡:merged[🌳] on 965998b {1}
+    ├── :merged[🌳]
     │   └── ·8a6c109
-    └── :0:A
+    └── :A
         ├── ·62b409a (✓)
         └── ·592abec (✓)
 
@@ -1102,7 +1106,7 @@ fn explicit_traversal_tips_use_integrated_tip_as_workspace_target_commit() -> an
 
 #[test]
 fn stacked_rebased_remotes() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("remote-includes-another-remote")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("remote-includes-another-remote")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1121,25 +1125,24 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options().with_limit_hint(1),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-├── 👉►:0[0]:B[🌳] <> origin/B →:1:
-│   └── ·312f819 (⌂|0001)
-│       └── ►:2[1]:A <> origin/A →:3:
-│           └── ·e255adc (⌂|0101)
-│               └── ►:4[2]:main
-│                   └── 🏁·fafd9d0 (⌂|1111)
-└── ►:1[0]:origin/B →:0:
-    └── 🟣682be32 (0x0|0010)
-        └── ►:3[1]:origin/A →:2:
-            └── 🟣e29c23d (0x0|1010)
-                └── →:4: (main)
-
+◎  👉B[🌳] <> origin/B
+●  ·312f819 (⌂)
+◎  A <> origin/A
+●  ·e255adc (⌂)
+│ ◎  origin/B
+│ ●  🟣682be32 (0x0)
+│ ◎  origin/A
+│ ●  🟣e29c23d (0x0)
+├─╯
+◎  main
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -1147,12 +1150,12 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:B[🌳] <> ✓refs/remotes/origin/B⇣2 on fafd9d0
-└── ≡:0:B[🌳] <> origin/B →:1:⇡1⇣1 on fafd9d0 {1}
-    ├── :0:B[🌳] <> origin/B →:1:⇡1⇣1
+⌂:B[🌳] <> ✓refs/remotes/origin/B⇣2 on fafd9d0
+└── ≡:B[🌳] <> origin/B⇡1⇣1 on fafd9d0 {1}
+    ├── :B[🌳] <> origin/B⇡1⇣1
     │   ├── 🟣682be32
     │   └── ·312f819
-    └── :2:A <> origin/A →:3:⇡1⇣1
+    └── :A <> origin/A⇡1⇣1
         ├── 🟣e29c23d
         └── ·e255adc
 
@@ -1165,25 +1168,24 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options().with_hard_limit(5),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-├── 👉►:0[0]:B[🌳] <> origin/B →:1:
-│   └── ·312f819 (⌂|001)
-│       └── ►:2[1]:A <> origin/A →:5:
-│           └── ❌·e255adc (⌂|101)
-├── ►:1[0]:origin/B →:0:
-│   └── 🟣682be32 (0x0|010)
-│       └── ►:5[1]:origin/A →:2:
-│           └── 🟣e29c23d (0x0|010)
-│               └── ►:4[2]:main
-│                   └── 🏁🟣fafd9d0 (0x0|010)
-└── ►:3[0]:origin/A
-
+◎  👉B[🌳] <> origin/B
+●  ·312f819 (⌂)
+◎  A <> origin/A
+●  ❌·e255adc (⌂)
+│ ◎  origin/B
+│ ●  🟣682be32 (0x0)
+│ ◎  origin/A
+│ ●  🟣e29c23d (0x0)
+│ ◎  main
+├─╯
+●  🏁🟣fafd9d0 (0x0)
 "#]]
     );
     assert!(
@@ -1193,9 +1195,9 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:B[🌳] <> ✓refs/remotes/origin/B⇣1 on 312f819
-└── ≡:0:B[🌳] <> origin/B →:1:⇣1 on e255adc {1}
-    └── :0:B[🌳] <> origin/B →:1:⇣1
+⌂:B[🌳] <> ✓refs/remotes/origin/B⇣1 on 312f819
+└── ≡:B[🌳] <> origin/B⇣1 on 312f819 {1}
+    └── :B[🌳] <> origin/B⇣1
         └── 🟣682be32
 
 "#]]
@@ -1206,25 +1208,24 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-├── 👉►:0[0]:B[🌳] <> origin/B →:1:
-│   └── ·312f819 (⌂|0001)
-│       └── ►:2[1]:A <> origin/A →:3:
-│           └── ·e255adc (⌂|0101)
-│               └── ►:4[2]:main
-│                   └── 🏁·fafd9d0 (⌂|1111)
-└── ►:1[0]:origin/B →:0:
-    └── 🟣682be32 (0x0|0010)
-        └── ►:3[1]:origin/A →:2:
-            └── 🟣e29c23d (0x0|1010)
-                └── →:4: (main)
-
+◎  👉B[🌳] <> origin/B
+●  ·312f819 (⌂)
+◎  A <> origin/A
+●  ·e255adc (⌂)
+│ ◎  origin/B
+│ ●  🟣682be32 (0x0)
+│ ◎  origin/A
+│ ●  🟣e29c23d (0x0)
+├─╯
+◎  main
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -1235,29 +1236,28 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
         name,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-├── 👉►:0[0]:A <> origin/A →:1:
-│   └── ·e255adc (⌂|01)
-│       └── ►:2[1]:main
-│           └── 🏁·fafd9d0 (⌂|11)
-└── ►:1[0]:origin/A →:0:
-    └── 🟣e29c23d (0x0|10)
-        └── →:2: (main)
-
+◎  👉A <> origin/A
+●  ·e255adc (⌂)
+│ ◎  origin/A
+│ ●  🟣e29c23d (0x0)
+├─╯
+◎  main
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:A <> ✓refs/remotes/origin/A⇣1 on fafd9d0
-└── ≡:0:A <> origin/A →:1:⇡1⇣1 on fafd9d0 {1}
-    └── :0:A <> origin/A →:1:⇡1⇣1
+⌂:A <> ✓refs/remotes/origin/A⇣1 on fafd9d0
+└── ≡:A <> origin/A⇡1⇣1 on fafd9d0 {1}
+    └── :A <> origin/A⇡1⇣1
         ├── 🟣e29c23d
         └── ·e255adc
 
@@ -1268,7 +1268,7 @@ fn stacked_rebased_remotes() -> anyhow::Result<()> {
 
 #[test]
 fn with_limits() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("triple-merge")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("triple-merge")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1300,50 +1300,49 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   ├── ·6861158 (⌂|1)
-        │   ├── ·4f1f248 (⌂|1)
-        │   └── ·487ffce (⌂|1)
-        │       └── ►:4[2]:main
-        │           ├── ·edc4dee (⌂|1)
-        │           ├── ·01d0e1e (⌂|1)
-        │           ├── ·4b3e5a8 (⌂|1)
-        │           ├── ·34d0715 (⌂|1)
-        │           └── 🏁·eb5f731 (⌂|1)
-        ├── ►:2[1]:A
-        │   ├── ·20a823c (⌂|1)
-        │   ├── ·442a12f (⌂|1)
-        │   └── ·686706b (⌂|1)
-        │       └── →:4: (main)
-        └── ►:3[1]:B
-            ├── ·9908c99 (⌂|1)
-            ├── ·60d9a56 (⌂|1)
-            └── ·9d171ff (⌂|1)
-                └── →:4: (main)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ·6861158 (⌂)
+● │ │  ·4f1f248 (⌂)
+● │ │  ·487ffce (⌂)
+│ ◎ │  A
+│ ● │  ·20a823c (⌂)
+│ ● │  ·442a12f (⌂)
+│ ● │  ·686706b (⌂)
+├─╯ │
+│   ◎  B
+│   ●  ·9908c99 (⌂)
+│   ●  ·60d9a56 (⌂)
+│   ●  ·9d171ff (⌂)
+├───╯
+◎  main
+●  ·edc4dee (⌂)
+●  ·01d0e1e (⌂)
+●  ·4b3e5a8 (⌂)
+●  ·34d0715 (⌂)
+●  🏁·eb5f731 (⌂)
 "#]]
     );
     // No limits list the first parent everywhere.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓!
-└── ≡:0:C[🌳] {1}
-    ├── :0:C[🌳]
+⌂:C[🌳] <> ✓!
+└── ≡:C[🌳] {1}
+    ├── :C[🌳]
     │   ├── ·2a95729
     │   ├── ·6861158
     │   ├── ·4f1f248
     │   └── ·487ffce
-    └── :4:main
+    └── :main
         ├── ·edc4dee
         ├── ·01d0e1e
         ├── ·4b3e5a8
@@ -1359,25 +1358,24 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options().with_limit_hint(0),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ✂·2a95729 (⌂|1)
-
+◎  👉C[🌳]
+●  ✂·2a95729 (⌂)
 "#]]
     );
     // The cut by limit is also represented here.
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓!
-└── ≡:0:C[🌳] {1}
-    └── :0:C[🌳]
+⌂:C[🌳] <> ✓!
+└── ≡:C[🌳] {1}
+    └── :C[🌳]
         └── ✂️·2a95729
 
 "#]]
@@ -1388,30 +1386,29 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options().with_limit_hint(1),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   └── ✂·6861158 (⌂|1)
-        ├── ►:2[1]:A
-        │   └── ✂·20a823c (⌂|1)
-        └── ►:3[1]:B
-            └── ✂·9908c99 (⌂|1)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ✂·6861158 (⌂)
+  ◎ │  A
+  ● │  ✂·20a823c (⌂)
+    ◎  B
+    ●  ✂·9908c99 (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓!
-└── ≡:0:C[🌳] {1}
-    └── :0:C[🌳]
+⌂:C[🌳] <> ✓!
+└── ≡:C[🌳] {1}
+    └── :C[🌳]
         ├── ·2a95729
         └── ✂️·6861158
 
@@ -1424,6 +1421,7 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options().with_hard_limit(2),
     )?
     .validated()?;
@@ -1432,18 +1430,16 @@ fn with_limits() -> anyhow::Result<()> {
         "graph should record that traversal stopped queueing after hitting the hard limit"
     );
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   └── ❌·6861158 (⌂|1)
-        ├── ►:2[1]:A
-        │   └── ❌·20a823c (⌂|1)
-        └── ►:3[1]:B
-            └── ❌·9908c99 (⌂|1)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ❌·6861158 (⌂)
+  ◎ │  A
+  ● │  ❌·20a823c (⌂)
+    ◎  B
+    ●  ❌·9908c99 (⌂)
 "#]]
     );
 
@@ -1452,33 +1448,32 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options().with_limit_hint(2),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   ├── ·6861158 (⌂|1)
-        │   └── ✂·4f1f248 (⌂|1)
-        ├── ►:2[1]:A
-        │   ├── ·20a823c (⌂|1)
-        │   └── ✂·442a12f (⌂|1)
-        └── ►:3[1]:B
-            ├── ·9908c99 (⌂|1)
-            └── ✂·60d9a56 (⌂|1)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ·6861158 (⌂)
+● │ │  ✂·4f1f248 (⌂)
+  ◎ │  A
+  ● │  ·20a823c (⌂)
+  ● │  ✂·442a12f (⌂)
+    ◎  B
+    ●  ·9908c99 (⌂)
+    ●  ✂·60d9a56 (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓!
-└── ≡:0:C[🌳] {1}
-    └── :0:C[🌳]
+⌂:C[🌳] <> ✓!
+└── ≡:C[🌳] {1}
+    └── :C[🌳]
         ├── ·2a95729
         ├── ·6861158
         └── ✂️·4f1f248
@@ -1492,36 +1487,35 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options()
             .with_limit_hint(2)
             .with_limit_extension_at(Some(id_by_rev(&repo, ":/A3").detach())),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   ├── ·6861158 (⌂|1)
-        │   └── ✂·4f1f248 (⌂|1)
-        ├── ►:2[1]:A
-        │   ├── ·20a823c (⌂|1)
-        │   ├── ·442a12f (⌂|1)
-        │   └── ✂·686706b (⌂|1)
-        └── ►:3[1]:B
-            ├── ·9908c99 (⌂|1)
-            └── ✂·60d9a56 (⌂|1)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ·6861158 (⌂)
+● │ │  ✂·4f1f248 (⌂)
+  ◎ │  A
+  ● │  ·20a823c (⌂)
+  ● │  ·442a12f (⌂)
+  ● │  ✂·686706b (⌂)
+    ◎  B
+    ●  ·9908c99 (⌂)
+    ●  ✂·60d9a56 (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓!
-└── ≡:0:C[🌳] {1}
-    └── :0:C[🌳]
+⌂:C[🌳] <> ✓!
+└── ≡:C[🌳] {1}
+    └── :C[🌳]
         ├── ·2a95729
         ├── ·6861158
         └── ✂️·4f1f248
@@ -1535,33 +1529,34 @@ fn with_limits() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options()
             .with_limit_hint(2)
             .with_limit_extension_at([id(":/A3"), id(":/A1"), id(":/B3"), id(":/C3")]),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   ├── ·6861158 (⌂|1)
-        │   ├── ·4f1f248 (⌂|1)
-        │   └── ✂·487ffce (⌂|1)
-        ├── ►:2[1]:A
-        │   ├── ·20a823c (⌂|1)
-        │   ├── ·442a12f (⌂|1)
-        │   └── ·686706b (⌂|1)
-        │       └── ►:4[2]:main
-        │           ├── ·edc4dee (⌂|1)
-        │           └── ✂·01d0e1e (⌂|1)
-        └── ►:3[1]:B
-            ├── ·9908c99 (⌂|1)
-            ├── ·60d9a56 (⌂|1)
-            └── ✂·9d171ff (⌂|1)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ·6861158 (⌂)
+● │ │  ·4f1f248 (⌂)
+● │ │  ✂·487ffce (⌂)
+│ ◎ │  A
+│ ● │  ·20a823c (⌂)
+│ ● │  ·442a12f (⌂)
+│ ● │  ·686706b (⌂)
+│ ◎ │  main
+├─╯ │
+│   ◎  B
+│   ●  ·9908c99 (⌂)
+│   ●  ·60d9a56 (⌂)
+│   ●  ✂·9d171ff (⌂)
+├───╯
+●  ·edc4dee (⌂)
+●  ✂·01d0e1e (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
@@ -1619,9 +1614,9 @@ Statistics {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓!
-└── ≡:0:C[🌳] {1}
-    └── :0:C[🌳]
+⌂:C[🌳] <> ✓!
+└── ≡:C[🌳] {1}
+    └── :C[🌳]
         ├── ·2a95729
         ├── ·6861158
         ├── ·4f1f248
@@ -1635,47 +1630,46 @@ Statistics {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options_with_extra_target(&repo, "main"),
     )?
     .validated()?;
 
     // This limits the reach of the stack naturally.
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:C[🌳]
-    └── ·2a95729 (⌂|1)
-        ├── ►:2[1]:anon:
-        │   ├── ·6861158 (⌂|1)
-        │   ├── ·4f1f248 (⌂|1)
-        │   └── ·487ffce (⌂|1)
-        │       └── ►:1[2]:main
-        │           ├── ·edc4dee (⌂|✓|1)
-        │           ├── ·01d0e1e (⌂|✓|1)
-        │           ├── ·4b3e5a8 (⌂|✓|1)
-        │           ├── ·34d0715 (⌂|✓|1)
-        │           └── 🏁·eb5f731 (⌂|✓|1)
-        ├── ►:3[1]:A
-        │   ├── ·20a823c (⌂|1)
-        │   ├── ·442a12f (⌂|1)
-        │   └── ·686706b (⌂|1)
-        │       └── →:1: (main)
-        └── ►:4[1]:B
-            ├── ·9908c99 (⌂|1)
-            ├── ·60d9a56 (⌂|1)
-            └── ·9d171ff (⌂|1)
-                └── →:1: (main)
-
+◎  👉C[🌳]
+●      ·2a95729 (⌂)
+├─┬─╮
+● │ │  ·6861158 (⌂)
+● │ │  ·4f1f248 (⌂)
+● │ │  ·487ffce (⌂)
+│ ◎ │  A
+│ ● │  ·20a823c (⌂)
+│ ● │  ·442a12f (⌂)
+│ ● │  ·686706b (⌂)
+├─╯ │
+│   ◎  B
+│   ●  ·9908c99 (⌂)
+│   ●  ·60d9a56 (⌂)
+│   ●  ·9d171ff (⌂)
+├───╯
+◎  main
+●  ·edc4dee (⌂|✓)
+●  ·01d0e1e (⌂|✓)
+●  ·4b3e5a8 (⌂|✓)
+●  ·34d0715 (⌂|✓)
+●  🏁·eb5f731 (⌂|✓)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:C[🌳] <> ✓! on edc4dee
-└── ≡:0:C[🌳] on edc4dee {1}
-    └── :0:C[🌳]
+⌂:C[🌳] <> ✓! on edc4dee
+└── ≡:C[🌳] on edc4dee {1}
+    └── :C[🌳]
         ├── ·2a95729
         ├── ·6861158
         ├── ·4f1f248
@@ -1688,7 +1682,7 @@ Statistics {
 
 #[test]
 fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("special-branches")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("special-branches")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1703,21 +1697,20 @@ fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     // Standard handling after travrsal and post-processing.
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
-    └── ·3686017 (⌂|1)
-        └── ►:1[1]:gitbutler/edit
-            └── ·9725482 (⌂|1)
-                └── ►:2[2]:gitbutler/target
-                    └── 🏁·fafd9d0 (⌂|1)
-
+◎  👉main[🌳]
+●  ·3686017 (⌂)
+◎  gitbutler/edit
+●  ·9725482 (⌂)
+◎  gitbutler/target
+●  🏁·fafd9d0 (⌂)
 "#]]
     );
 
@@ -1725,9 +1718,9 @@ fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳] <> ✓!
-└── ≡:0:main[🌳] {1}
-    └── :0:main[🌳]
+⌂:main[🌳] <> ✓!
+└── ≡:main[🌳] {1}
+    └── :main[🌳]
         ├── ·3686017
         ├── ·9725482
         └── ·fafd9d0
@@ -1739,7 +1732,7 @@ fn special_branch_names_do_not_end_up_in_segment() -> anyhow::Result<()> {
 
 #[test]
 fn ambiguous_worktrees() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("ambiguous-worktrees")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("ambiguous-worktrees")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
@@ -1752,25 +1745,28 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳@repo]
-    └── 🏁·85efbe4 (⌂|1) ►wt-inside-ambiguous-worktree[📁], ►wt-outside-ambiguous-worktree[📁]
-
+◎  👉main[🌳@repo]
+│ ◎  wt-inside-ambiguous-worktree[📁]
+├─╯
+│ ◎  wt-outside-ambiguous-worktree[📁]
+├─╯
+●  🏁·85efbe4 (⌂)
 "#]]
     );
 
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:main[🌳@repo] <> ✓!
-└── ≡:0:main[🌳@repo] {1}
-    └── :0:main[🌳@repo]
+⌂:main[🌳@repo] <> ✓!
+└── ≡:main[🌳@repo] {1}
+    └── :main[🌳@repo]
         └── ·85efbe4 ►wt-inside-ambiguous-worktree[📁], ►wt-outside-ambiguous-worktree[📁]
 
 "#]]
@@ -1788,17 +1784,20 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
         &linked_repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     // when the graph is built from the linked worktree repository, it can't see anything else without metadata
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:wt-inside-ambiguous-worktree[📁@repo]
-    └── 🏁·85efbe4 (⌂|1) ►main[🌳], ►wt-outside-ambiguous-worktree[📁]
-
+◎  main[🌳]
+│ ◎  👉wt-inside-ambiguous-worktree[📁@repo]
+├─╯
+│ ◎  wt-outside-ambiguous-worktree[📁]
+├─╯
+●  🏁·85efbe4 (⌂)
 "#]]
     );
 
@@ -1806,9 +1805,9 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:wt-inside-ambiguous-worktree[📁@repo] <> ✓!
-└── ≡:0:wt-inside-ambiguous-worktree[📁@repo] {1}
-    └── :0:wt-inside-ambiguous-worktree[📁@repo]
+⌂:wt-inside-ambiguous-worktree[📁@repo] <> ✓!
+└── ≡:wt-inside-ambiguous-worktree[📁@repo] {1}
+    └── :wt-inside-ambiguous-worktree[📁@repo]
         └── ·85efbe4 ►main[🌳], ►wt-outside-ambiguous-worktree[📁]
 
 "#]]
@@ -1818,115 +1817,111 @@ fn ambiguous_worktrees() -> anyhow::Result<()> {
 
 #[test]
 fn worktree_tips_as_extra_traversal_heads() -> anyhow::Result<()> {
-    let (repo, meta) = read_only_in_memory_scenario("worktree-ahead")?;
+    let (repo, meta, mut db) = read_only_in_memory_scenario("worktree-ahead")?;
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
 * 9175ab3 (wt-feature) W
+| * 3c2f313 D
+|/  
 * 85efbe4 (HEAD -> main) M
 
 "#]]
     );
 
-    // Without worktree tips, the worktree branch head is unreachable and invisible.
+    // With collection disabled, nothing is discovered - the worktree heads are
+    // unreachable and invisible.
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
         standard_options(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
-    └── 🏁·85efbe4 (⌂|1)
-
+◎  👉main[🌳]
+●  🏁·85efbe4 (⌂)
 "#]]
     );
 
-    // With the worktree head as extra tip, its commit and branch join the graph.
-    let wt_head_id = repo.find_reference("wt-feature")?.peel_to_id()?.detach();
-    let with_worktree_tip = |ref_name: Option<gix::refs::FullName>| but_graph::init::Options {
-        worktree_tips: vec![but_graph::init::WorktreeTip {
-            name: "worktree-ahead-feature".into(),
-            ref_name,
-            id: wt_head_id,
-        }],
+    // With collection enabled, discovery seeds the branch-checkout worktree
+    // through its ref and the detached worktree by commit id alone.
+    let options = but_graph::init::Options {
+        worktrees: true,
         ..standard_options()
     };
+    // Adoption already ran, so the fixture worktrees count as active.
+    db.worktree_meta_mut().mark_adopted()?;
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
-        with_worktree_tip(Some("refs/heads/wt-feature".try_into()?)),
+        &mut db,
+        options.clone(),
     )?
     .validated()?;
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:1[0]:wt-feature[📁worktree-ahead-feature]
-    └── ·9175ab3 (⌂)
-        └── 👉►:0[1]:main[🌳@repo]
-            └── 🏁·85efbe4 (⌂|1)
-
+●  ·3c2f313 (⌂)
+│ ◎  wt-feature[📁worktree-ahead-feature]
+│ ●  ·9175ab3 (⌂)
+├─╯
+◎  👉main[🌳@repo]
+●  🏁·85efbe4 (⌂)
 "#]]
     );
+    assert_eq!(
+        graph
+            .worktree_tips
+            .iter()
+            .map(|tip| (tip.name.to_string(), tip.ref_name.is_some()))
+            .collect::<Vec<_>>(),
+        [
+            ("worktree-ahead-detached".to_string(), false),
+            ("worktree-ahead-feature".to_string(), true)
+        ],
+        "the graph records each discovered worktree, detached ones without a ref"
+    );
 
-    // A detached worktree tip (no ref name) is seeded by commit id alone.
+    // Archived worktrees are not discovered.
+    db.worktree_meta_mut().upsert(but_db::WorktreeMeta {
+        name: b"worktree-ahead-detached".to_vec(),
+        archived: true,
+    })?;
     let graph = Graph::from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
-        with_worktree_tip(None),
+        &mut db,
+        options,
     )?
     .validated()?;
-    snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
-        snapbox::str![[r#"
+    let feature_only = snapbox::str![[r#"
+◎  wt-feature[📁worktree-ahead-feature]
+●  ·9175ab3 (⌂)
+◎  👉main[🌳@repo]
+●  🏁·85efbe4 (⌂)
+"#]];
+    snapbox::assert_data_eq!(graph_dag(&graph), feature_only.clone());
 
-└── ►:1[0]:wt-feature[📁worktree-ahead-feature]
-    └── ·9175ab3 (⌂)
-        └── 👉►:0[1]:main[🌳@repo]
-            └── 🏁·85efbe4 (⌂|1)
-
-"#]]
-    );
-
-    // The re-resolved ref target wins over the recorded id: a stale recorded id -
-    // here main's head, which another tip already seeds and dedup would swallow -
-    // must not keep the ref's current target out of the graph.
-    let graph = Graph::from_head(
-        &repo,
-        &*meta,
-        but_core::ref_metadata::ProjectMeta::default(),
-        but_graph::init::Options {
-            worktree_tips: vec![but_graph::init::WorktreeTip {
-                name: "worktree-ahead-feature".into(),
-                ref_name: Some("refs/heads/wt-feature".try_into()?),
-                id: repo.head_id()?.detach(),
-            }],
-            ..standard_options()
-        },
-    )?
-    .validated()?;
-    snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
-        snapbox::str![[r#"
-
-└── ►:1[0]:wt-feature[📁worktree-ahead-feature]
-    └── ·9175ab3 (⌂)
-        └── 👉►:0[1]:main[🌳@repo]
-            └── 🏁·85efbe4 (⌂|1)
-
-"#]]
-    );
+    // Redone traversals re-resolve the recorded refs: a stale recorded id - here
+    // main's head, which another tip already seeds and dedup would swallow - must
+    // not keep the ref's current target out of the graph.
+    let mut stale = graph.clone();
+    stale.worktree_tips[0].id = repo.head_id()?.detach();
+    let redone = stale
+        .redo_traversal_with_overlay(&repo, &*meta, Default::default())?
+        .validated()?;
+    snapbox::assert_data_eq!(graph_dag(&redone), feature_only);
 
     // A worktree tip pointing at an already-seeded commit is dropped, and a tip
     // whose ref vanished is not resurrected from its recorded id - both leave
-    // the graph exactly as if no worktree tips were given.
+    // the graph exactly as if no worktree tips were known.
+    let wt_head_id = repo.find_reference("wt-feature")?.peel_to_id()?.detach();
     for tip in [
         but_graph::init::WorktreeTip {
             name: "worktree-at-head".into(),
@@ -1939,25 +1934,106 @@ fn worktree_tips_as_extra_traversal_heads() -> anyhow::Result<()> {
             id: wt_head_id,
         },
     ] {
-        let mut options = standard_options();
-        options.worktree_tips = vec![tip];
-        let graph = Graph::from_head(
-            &repo,
-            &*meta,
-            but_core::ref_metadata::ProjectMeta::default(),
-            options,
-        )?
-        .validated()?;
+        let mut stale = graph.clone();
+        stale.worktree_tips = vec![tip];
+        let redone = stale
+            .redo_traversal_with_overlay(&repo, &*meta, Default::default())?
+            .validated()?;
         snapbox::assert_data_eq!(
-            graph_tree(&graph).to_string(),
+            graph_dag(&redone),
             snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
-    └── 🏁·85efbe4 (⌂|1)
-
+◎  👉main[🌳]
+●  🏁·85efbe4 (⌂)
 "#]]
         );
     }
+
+    // A workspace refresh re-discovers worktrees instead of reusing the previous
+    // traversal's tips, picking up the detached worktree unarchived here.
+    db.worktree_meta_mut().upsert(but_db::WorktreeMeta {
+        name: b"worktree-ahead-detached".to_vec(),
+        archived: false,
+    })?;
+    let mut ws = graph.into_workspace()?;
+    ws.refresh_from_head(
+        &repo,
+        &*meta,
+        but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
+    )?;
+    assert_eq!(
+        ws.graph
+            .worktree_tips
+            .iter()
+            .map(|tip| tip.name.to_string())
+            .collect::<Vec<_>>(),
+        ["worktree-ahead-detached", "worktree-ahead-feature"],
+        "the refreshed workspace sees the worktree that became active since"
+    );
+    Ok(())
+}
+
+/// Adoption archives the worktrees that predate GitButler's worktree support, so it must
+/// record that it ran even when there is nothing to archive - otherwise the next graph
+/// build would adopt afresh and archive every worktree created since.
+#[test]
+fn worktree_created_after_adoption_is_active() -> anyhow::Result<()> {
+    let (tmp, repo) = empty_repo()?;
+    let base = commit(&repo, "M")?;
+    let meta = in_memory_meta(tmp.as_ref())?;
+    let options = but_graph::init::Options {
+        worktrees: true,
+        ..standard_options()
+    };
+
+    // The first graph build runs adoption with no worktree on disk to adopt.
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        but_core::ref_metadata::ProjectMeta::default(),
+        &mut but_testsupport::project_db(&repo)?,
+        options.clone(),
+    )?
+    .validated()?;
+    assert!(
+        graph.worktree_tips.is_empty(),
+        "there is nothing to discover"
+    );
+
+    repo.commit(
+        "refs/heads/wt-feature",
+        "W",
+        repo.object_hash().empty_tree(),
+        Some(base),
+    )?;
+    but_testsupport::git(&repo)
+        .args(["worktree", "add", "wt-feature", "wt-feature"])
+        .run();
+
+    // A fresh handle, just like the next process to build a graph: adoption already ran,
+    // so the worktree created since is active and seeds a traversal tip.
+    let mut db = but_testsupport::project_db(&repo)?;
+    let graph = Graph::from_head(
+        &repo,
+        &*meta,
+        but_core::ref_metadata::ProjectMeta::default(),
+        &mut db,
+        options,
+    )?
+    .validated()?;
+    snapbox::assert_data_eq!(
+        graph_dag(&graph),
+        snapbox::str![[r#"
+◎  wt-feature[📁]
+●  ·88cbbc5 (⌂)
+◎  👉main[🌳@repo]
+●  🏁·7dfaa8f (⌂)
+"#]]
+    );
+    assert!(
+        db.worktree_meta().list()?.is_empty(),
+        "nothing was archived, so no row was written"
+    );
     Ok(())
 }
 
@@ -2008,20 +2084,17 @@ fn commit_with_two_parents() -> anyhow::Result<()> {
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut but_testsupport::project_db(&repo)?,
         standard_options(),
     )?
     .validated()?;
     // Duplicate parent commits are kept verbatim.
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
-    └── ·06470d7 (⌂|1)
-        ├── ►:1[1]:anon:
-        │   └── 🏁·86719d5 (⌂|1)
-        └── →:1:
-
+◎  👉main[🌳]
+●  ·06470d7 (⌂)
+●  🏁·86719d5 (⌂)
 "#]]
     );
     Ok(())
@@ -2043,13 +2116,13 @@ fn ad_hoc_same_tip_order_creates_empty_branch_segments() -> anyhow::Result<()> {
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:1[0]:top
-    └── ►:0[1]:bottom
-        └── 🏁·960152d (⌂|1) ►main[🌳]
-
+◎  main[🌳]
+│ ◎  👉top
+│ ◎  bottom
+├─╯
+●  🏁·960152d (⌂)
 "#]]
     );
     assert_eq!(
@@ -2060,10 +2133,10 @@ fn ad_hoc_same_tip_order_creates_empty_branch_segments() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:1:top <> ✓!
-└── ≡:1:top {1}
-    ├── :1:top
-    └── :0:bottom
+⌂:top <> ✓!
+└── ≡:top {1}
+    ├── :top
+    └── :bottom
         └── ·960152d ►main[🌳]
 
 "#]]
@@ -2087,21 +2160,21 @@ fn ad_hoc_order_projects_from_entrypoint_when_top_is_above_it() -> anyhow::Resul
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── ►:1[0]:top
-    └── 👉►:0[1]:bottom
-        └── 🏁·960152d (⌂|1) ►main[🌳]
-
+◎  main[🌳]
+│ ◎  top
+│ ◎  👉bottom
+├─╯
+●  🏁·960152d (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:bottom <> ✓!
-└── ≡:0:bottom {1}
-    └── :0:bottom
+⌂:bottom <> ✓!
+└── ≡:bottom {1}
+    └── :bottom
         └── ·960152d ►main[🌳]
 
 "#]]
@@ -2129,24 +2202,24 @@ fn ad_hoc_three_branch_order_preserves_middle_empty_segment() -> anyhow::Result<
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:1[0]:top
-    └── ►:2[1]:middle
-        └── ►:0[2]:bottom
-            └── 🏁·960152d (⌂|1) ►main[🌳]
-
+◎  main[🌳]
+│ ◎  👉top
+│ ◎  middle
+│ ◎  bottom
+├─╯
+●  🏁·960152d (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:1:top <> ✓!
-└── ≡:1:top {1}
-    ├── :1:top
-    ├── :2:middle
-    └── :0:bottom
+⌂:top <> ✓!
+└── ≡:top {1}
+    ├── :top
+    ├── :middle
+    └── :bottom
         └── ·960152d ►main[🌳]
 
 "#]]
@@ -2170,22 +2243,22 @@ fn ad_hoc_order_ignores_missing_metadata_refs_without_phantoms() -> anyhow::Resu
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:1[0]:top
-    └── ►:0[1]:bottom
-        └── 🏁·960152d (⌂|1) ►main[🌳]
-
+◎  main[🌳]
+│ ◎  👉top
+│ ◎  bottom
+├─╯
+●  🏁·960152d (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:1:top <> ✓!
-└── ≡:1:top {1}
-    ├── :1:top
-    └── :0:bottom
+⌂:top <> ✓!
+└── ≡:top {1}
+    ├── :top
+    └── :bottom
         └── ·960152d ►main[🌳]
 
 "#]]
@@ -2211,21 +2284,23 @@ fn ad_hoc_order_does_not_force_diverged_refs_into_empty_stack() -> anyhow::Resul
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:0[0]:top
-    ├── ·5cd63e5 (⌂|1)
-    └── 🏁·fa91c94 (⌂|1) ►bottom, ►main[🌳]
-
+◎  bottom
+│ ◎  main[🌳]
+├─╯
+│ ◎  👉top
+│ ●  ·5cd63e5 (⌂)
+├─╯
+●  🏁·fa91c94 (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:top <> ✓!
-└── ≡:0:top {1}
-    └── :0:top
+⌂:top <> ✓!
+└── ≡:top {1}
+    └── :top
         ├── ·5cd63e5
         └── ·fa91c94 ►bottom, ►main[🌳]
 
@@ -2264,14 +2339,14 @@ fn ad_hoc_order_preserves_empty_top_above_commit_owning_branch() -> anyhow::Resu
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:3:empty-top <> ✓!
-└── ≡:3:empty-top {1}
-    ├── :3:empty-top
-    ├── :0:commit-branch
+⌂:empty-top <> ✓!
+└── ≡:empty-top {1}
+    ├── :empty-top
+    ├── :commit-branch
     │   └── ·4782705
-    ├── :1:bottom
+    ├── :bottom
     │   └── ·dbc3a4c
-    └── :2:main[🌳]
+    └── :main[🌳]
         └── ·67b14ca
 
 "#]]
@@ -2314,15 +2389,15 @@ fn ad_hoc_order_keeps_lower_empty_branches_after_non_empty_move() -> anyhow::Res
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:0:commit-branch <> ✓!
-└── ≡:0:commit-branch {1}
-    ├── :0:commit-branch
+⌂:commit-branch <> ✓!
+└── ≡:commit-branch {1}
+    ├── :commit-branch
     │   └── ·5380c0a
-    ├── :3:empty-top
-    ├── :4:empty-low
-    ├── :2:base
+    ├── :empty-top
+    ├── :empty-low
+    ├── :base
     │   └── ·a5cd64d
-    └── :1:main[🌳]
+    └── :main[🌳]
         └── ·67b14ca
 
 "#]]
@@ -2358,25 +2433,88 @@ fn ad_hoc_order_scopes_empty_segments_to_active_chain() -> anyhow::Result<()> {
     .validated()?;
 
     snapbox::assert_data_eq!(
-        graph_tree(&graph).to_string(),
+        graph_dag(&graph),
         snapbox::str![[r#"
-
-└── 👉►:1[0]:top
-    └── ►:0[1]:bottom
-        └── 🏁·960152d (⌂|1) ►main[🌳], ►other-bottom, ►other-top
-
+◎  main[🌳]
+│ ◎  other-bottom
+├─╯
+│ ◎  other-top
+├─╯
+│ ◎  👉top
+│ ◎  bottom
+├─╯
+●  🏁·960152d (⌂)
 "#]]
     );
     snapbox::assert_data_eq!(
         graph_workspace(&graph.into_workspace()?).to_string(),
         snapbox::str![[r#"
-⌂:1:top <> ✓!
-└── ≡:1:top {1}
-    ├── :1:top
-    └── :0:bottom
+⌂:top <> ✓!
+└── ≡:top {1}
+    ├── :top
+    └── :bottom
         └── ·960152d ►main[🌳], ►other-bottom, ►other-top
 
 "#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn ad_hoc_branch_at_target_tip_rests_on_the_target_tip() -> anyhow::Result<()> {
+    let tmp = but_testsupport::gix_testtools::tempfile::TempDir::new()?;
+    let repo = gix::ThreadSafeRepository::init_opts(
+        tmp.path(),
+        gix::create::Kind::WithWorktree,
+        gix::create::Options::default(),
+        but_testsupport::open_repo_config()?,
+    )?
+    .to_thread_local();
+    let m1 = commit(&repo, "M1")?;
+    create_branches(&repo, m1, ["refs/heads/feature"])?;
+    repo.edit_reference(gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: gix::refs::transaction::LogChange::default(),
+            expected: gix::refs::transaction::PreviousValue::Any,
+            new: gix::refs::Target::Symbolic(ref_name("refs/heads/feature")),
+        },
+        name: ref_name("HEAD"),
+        deref: false,
+    })?;
+    let f1 = commit_with_parent(&repo, "F1", m1)?;
+    // The checked-out branch and the target both point at F1, while the target's local
+    // tracking branch `main` stayed behind at M1.
+    create_branches(&repo, f1, ["refs/remotes/origin/main"])?;
+    let meta = in_memory_meta(tmp.path())?;
+    let project_meta = but_core::ref_metadata::ProjectMeta {
+        target_ref: Some(ref_name("refs/remotes/origin/main")),
+        ..Default::default()
+    };
+    let ws = Graph::from_head(
+        &repo,
+        &*meta,
+        project_meta,
+        &mut but_testsupport::project_db(&repo)?,
+        standard_options(),
+    )?
+    .validated()?
+    .into_workspace()?;
+
+    // The branch is inline with the target, so it has no commits of its own and rests
+    // on the target tip — not on the stale local `main` further down.
+    snapbox::assert_data_eq!(
+        graph_workspace(&ws).to_string(),
+        snapbox::str![[r#"
+⌂:feature[🌳] <> ✓refs/remotes/origin/main on d1b2aed
+└── ≡:feature[🌳] on d1b2aed {1}
+    └── :feature[🌳]
+
+"#]]
+    );
+    assert_eq!(
+        ws.stacks[0].base(),
+        Some(f1),
+        "an empty branch at the target tip rests on the commit it points to"
     );
     Ok(())
 }
@@ -2480,11 +2618,13 @@ fn graph_with_branch_orders(
     for order in orders {
         overlay = overlay.with_branch_stack_order_override(order.iter().copied().map(ref_name));
     }
+    // These tests never exercise worktree discovery, so the database stands alone.
     Graph::from_commit_traversal(
         tip.attach(repo),
         Some(entrypoint_ref),
         meta,
         but_core::ref_metadata::ProjectMeta::default(),
+        &mut but_testsupport::in_memory_db(),
         standard_options(),
     )?
     .redo_traversal_with_overlay(repo, meta, overlay)

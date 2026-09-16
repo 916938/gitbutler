@@ -3,7 +3,9 @@
 	import GitHubAccountBadge from "$components/forge/GitHubAccountBadge.svelte";
 	import GitLabAccountBadge from "$components/forge/GitLabAccountBadge.svelte";
 	import ForgeAccountConfig from "$components/projectSettings/ForgeAccountConfig.svelte";
+	import GitHubOrgRestrictionNotice from "$components/projectSettings/GitHubOrgRestrictionNotice.svelte";
 	import { GIT_CONFIG_SERVICE } from "$lib/config/gitConfigService";
+	import { isNormalizedError } from "$lib/error/normalizedError";
 	import {
 		bitbucketAccountIdentifierToString,
 		stringToBitbucketAccountIdentifier,
@@ -20,6 +22,7 @@
 		stringToGitLabAccountIdentifier,
 	} from "$lib/forge/gitlab/gitlabUserService.svelte";
 	import { usePreferredGitLabUsername } from "$lib/forge/gitlab/hooks.svelte";
+	import { LISTING_SERVICE } from "$lib/forge/listingService.svelte";
 	import { PROJECTS_SERVICE } from "$lib/project/projectsService";
 	import { inject } from "@gitbutler/core/context";
 	import { reactive } from "@gitbutler/shared/reactiveUtils.svelte";
@@ -29,6 +32,7 @@
 	import type {
 		BitbucketAccountIdentifier,
 		ForgeName,
+		ForgeUser,
 		GitHubStackingMode,
 		GithubAccountIdentifier,
 		GitlabAccountIdentifier,
@@ -71,6 +75,15 @@
 		reactive(() => projectId),
 	);
 
+	// The workspace's polled review listing keeps this cache entry current,
+	// so it reflects whether the integration currently works at all.
+	const listingService = inject(LISTING_SERVICE);
+	const listingState = $derived(listingService.listingState(projectId));
+	const listingError = $derived(listingState.result.error);
+	const listingErrorCode = $derived(
+		isNormalizedError(listingError) ? listingError.code : undefined,
+	);
+
 	// GitLab hooks
 	const { preferredGitLabAccount, gitlabAccounts } = usePreferredGitLabUsername(
 		reactive(() => projectId),
@@ -94,25 +107,28 @@
 		projectsService.updateProject(mutableProject);
 	}
 
-	function updatePreferredGitHubAccount(projectId: string, account: GithubAccountIdentifier) {
-		projectsService.updatePreferredForgeUser(projectId, {
-			provider: "github",
-			details: account,
-		});
+	async function updatePreferredForgeUser(projectId: string, forgeUser: ForgeUser) {
+		await projectsService.updatePreferredForgeUser(projectId, forgeUser);
+		// The cached review listing was fetched with the previous account's
+		// credentials; refresh it so a credential-caused failure (e.g. an
+		// org OAuth restriction) clears as soon as the account changes
+		// instead of on the next 15-minute poll.
+		await listingService.refresh(projectId);
 	}
 
-	function updatePreferredGitLabAccount(projectId: string, account: GitlabAccountIdentifier) {
-		projectsService.updatePreferredForgeUser(projectId, {
-			provider: "gitlab",
-			details: account,
-		});
+	async function updatePreferredGitHubAccount(projectId: string, account: GithubAccountIdentifier) {
+		await updatePreferredForgeUser(projectId, { provider: "github", details: account });
 	}
 
-	function updatePreferredBitbucketAccount(projectId: string, account: BitbucketAccountIdentifier) {
-		projectsService.updatePreferredForgeUser(projectId, {
-			provider: "bitbucket",
-			details: account,
-		});
+	async function updatePreferredGitLabAccount(projectId: string, account: GitlabAccountIdentifier) {
+		await updatePreferredForgeUser(projectId, { provider: "gitlab", details: account });
+	}
+
+	async function updatePreferredBitbucketAccount(
+		projectId: string,
+		account: BitbucketAccountIdentifier,
+	) {
+		await updatePreferredForgeUser(projectId, { provider: "bitbucket", details: account });
 	}
 
 	async function updateReviewStackingDescription(value: ReviewStackingDescription) {
@@ -244,7 +260,11 @@
 			AccountBadge={GitHubAccountBadge}
 			docsUrl="https://docs.gitbutler.com/features/forge-integration/github-integration"
 			requestType="pull request"
-		/>
+		>
+			{#snippet notice()}
+				<GitHubOrgRestrictionNotice errorCode={listingErrorCode} />
+			{/snippet}
+		</ForgeAccountConfig>
 	{/if}
 
 	{#if forgeInfo?.name === "gitlab"}

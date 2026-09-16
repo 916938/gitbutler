@@ -1,8 +1,10 @@
+import { parseError } from "$lib/error/parser";
 import {
 	mapForgeReviewToPullRequest,
 	type ForgeReview,
 	type PullRequest,
 } from "$lib/forge/interface/types";
+import { catchUpOnReturn } from "$lib/forge/shared/catchUpOnReturn";
 import { createSelectByIds } from "$lib/state/customSelectors";
 import { invalidatesList, providesList, ReduxTag } from "$lib/state/tags";
 import { InjectionToken } from "@gitbutler/core/context";
@@ -33,7 +35,7 @@ export class ListingService {
 	list(projectId: string, pollingInterval?: number) {
 		return this.backendApi.endpoints.listPrs.useQuery(projectId, {
 			transform: (result) => prSelectors.selectAll(result),
-			subscriptionOptions: { pollingInterval },
+			subscriptionOptions: { ...catchUpOnReturn, pollingInterval },
 		});
 	}
 
@@ -55,10 +57,31 @@ export class ListingService {
 		return branchNames.map((branch) => prSelectors.selectById(result, branch)).filter(isDefined);
 	}
 
+	/**
+	 * Latest cached `list_reviews` result for the project, read without
+	 * subscribing or fetching. The workspace's polled listing keeps this
+	 * current; its `error` lets settings surface a degraded integration
+	 * state (e.g. an org-level OAuth restriction).
+	 */
+	listingState(projectId: string) {
+		return this.backendApi.endpoints.listPrs.useQueryState(projectId);
+	}
+
 	async refresh(projectId: string): Promise<void> {
 		// Force a live fetch so the DB cache is refreshed, then invalidate the
 		// cached listing so its subscribers re-read the just-updated data.
-		await this.backendApi.endpoints.listPrsLive.fetch(projectId);
+		//
+		// A deliberately disconnected forge fails the live fetch with
+		// `ForgeNotAuthenticated` (no stored credentials) — there is nothing
+		// to refresh then, so keep the cache-derived view without surfacing
+		// an error, matching how the backend serves cached reads in that
+		// state. Other failures (expired token, API errors) reach the caller.
+		try {
+			await this.backendApi.endpoints.listPrsLive.fetch(projectId);
+		} catch (err) {
+			if (parseError(err).code === "ForgeNotAuthenticated") return;
+			throw err;
+		}
 		this.dispatch(this.backendApi.util.invalidateTags([invalidatesList(ReduxTag.PullRequests)]));
 	}
 }
