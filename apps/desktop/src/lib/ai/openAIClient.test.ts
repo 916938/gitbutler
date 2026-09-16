@@ -1,5 +1,6 @@
 import { OpenAIClient } from "$lib/ai/openAIClient";
 import { DeepSeekModelName, MessageRole, OpenAIModelName } from "$lib/ai/types";
+import OpenAI from "openai";
 import { describe, expect, test, vi, beforeEach } from "vitest";
 
 // Mock the OpenAI SDK so tests don't make real network calls.
@@ -14,8 +15,6 @@ vi.mock("openai", () => ({
 		},
 	})),
 }));
-
-import OpenAI from "openai";
 
 describe("OpenAIClient", () => {
 	beforeEach(() => {

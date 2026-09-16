@@ -1,5 +1,5 @@
+import { TestId } from "$lib/utils/testIds";
 import { describe, expect, test } from "vitest";
-import { TestId } from "./testIds";
 
 describe("TestId", () => {
 	describe("upstream-merged members", () => {
