@@ -28,13 +28,19 @@ const HUNK: HunkAddress = {
 
 type GutterHandle = ReturnType<typeof useDiffGutterCheckboxes<unknown>>;
 
+/** One line per number, so a drag can be asked which lines it painted. */
+const lineAddress = ({ lineNumber }: { lineNumber: number }) =>
+	hunkAddress({ ...HUNK, lineGroups: [{ side: "additions", start: lineNumber, lines: 1 }] });
+
+const onCheckLine = vi.fn<(address: HunkAddress, shiftKey: boolean) => void>();
+
 const Probe = forwardRef<GutterHandle>((_props, ref) => {
 	const result = useDiffGutterCheckboxes<unknown>(
 		vi.fn(),
-		() => hunkAddress(HUNK),
+		lineAddress,
 		() => hunkAddress(HUNK),
 		"project",
-		vi.fn(),
+		onCheckLine,
 		vi.fn(),
 	);
 	useImperativeHandle(ref, () => result, [result]);
@@ -62,6 +68,58 @@ const pointerOver = (element: HTMLElement) =>
 		element.dispatchEvent(new Event("pointerover", { bubbles: true, composed: true }));
 	});
 
+type ColumnLine = { number: number; type?: "change-addition" | "context" };
+
+/**
+ * A column of number cells laid out the way Pierre renders one: a code element holding a gutter
+ * whose children are the cells. jsdom has no layout, so the cell under a point is whichever one
+ * the test last said it was.
+ */
+const createColumn = (
+	lines: Array<ColumnLine>,
+): {
+	host: HTMLElement;
+	cells: Array<HTMLElement>;
+	pointAt: (cell: HTMLElement) => void;
+	/** Rebuilds every cell from scratch, as a re-render of the diff does. */
+	rerender: () => Array<HTMLElement>;
+} => {
+	const host = document.createElement("div");
+	const shadowRoot = host.attachShadow({ mode: "open" });
+	const column = document.createElement("code");
+	column.setAttribute("data-code", "");
+	column.setAttribute("data-unified", "");
+	const gutter = document.createElement("div");
+	gutter.setAttribute("data-gutter", "");
+	column.append(gutter);
+	shadowRoot.append(column);
+	const build = (): Array<HTMLElement> =>
+		lines.map(({ number, type = "change-addition" }, index) => {
+			const cell = document.createElement("div");
+			cell.setAttribute("data-column-number", `${number}`);
+			cell.setAttribute("data-line-type", type);
+			cell.setAttribute("data-line-index", `${index},${index}`);
+			return cell;
+		});
+	const cells = build();
+	gutter.append(...cells);
+	let under: HTMLElement | null = null;
+	Reflect.set(shadowRoot, "elementFromPoint", () => under);
+	return {
+		host,
+		cells,
+		pointAt: (cell) => void (under = cell),
+		rerender: () => {
+			const next = build();
+			gutter.replaceChildren(...next);
+			return next;
+		},
+	};
+};
+
+const pointer = (type: string, init: PointerEventInit = {}): PointerEvent =>
+	new PointerEvent(type, { bubbles: true, composed: true, button: 0, ...init });
+
 describe("useDiffGutterCheckboxes", () => {
 	let container: HTMLDivElement;
 	let root: Root;
@@ -73,6 +131,7 @@ describe("useDiffGutterCheckboxes", () => {
 	};
 
 	beforeEach(() => {
+		onCheckLine.mockReset();
 		container = document.createElement("div");
 		document.body.append(container);
 		root = createRoot(container);
@@ -103,5 +162,87 @@ describe("useDiffGutterCheckboxes", () => {
 
 		pointerOver(code);
 		expect(host.shadowRoot?.querySelector("[data-gitbutler-diff-actions]")).toBeNull();
+	});
+
+	describe("checkbox drag", () => {
+		/** Mounts the column and presses the checkbox on `cell`. */
+		const press = async (host: HTMLElement, cell: HTMLElement): Promise<void> => {
+			const context = { type: "diff", item: ITEM, element: host, version: ITEM.version };
+			await act(async () => {
+				Reflect.apply(handle().onPostRender, undefined, [host, {}, "mount", context]);
+			});
+			const slot = cell.querySelector("slot[data-gitbutler-diff-gutter-slot-kind='line']");
+			if (!(slot instanceof HTMLElement)) throw new Error("expected a line slot");
+			slot.dispatchEvent(pointer("pointerdown"));
+		};
+
+		const paintedLines = (): Array<number | undefined> =>
+			onCheckLine.mock.calls.map(([address]) => address.lineGroups[0]?.start);
+
+		const cellAt = (cells: Array<HTMLElement>, index: number): HTMLElement => {
+			const cell = cells[index];
+			if (!cell) throw new Error(`expected a cell at ${index}`);
+			return cell;
+		};
+
+		it("paints every line a fast drag jumps over", async () => {
+			const { host, cells, pointAt } = createColumn([1, 2, 3, 4].map((number) => ({ number })));
+			pointAt(cellAt(cells, 0));
+			await press(host, cellAt(cells, 0));
+
+			// The pointer outran the sampling, so the only move lands three lines down.
+			pointAt(cellAt(cells, 3));
+			window.dispatchEvent(pointer("pointermove"));
+			window.dispatchEvent(pointer("pointerup"));
+
+			expect(paintedLines()).toEqual([1, 2, 3, 4]);
+		});
+
+		it("paints an upward drag in the order it travelled", async () => {
+			const { host, cells, pointAt } = createColumn([1, 2, 3, 4].map((number) => ({ number })));
+			pointAt(cellAt(cells, 3));
+			await press(host, cellAt(cells, 3));
+
+			pointAt(cellAt(cells, 0));
+			window.dispatchEvent(pointer("pointermove"));
+			window.dispatchEvent(pointer("pointerup"));
+
+			expect(paintedLines()).toEqual([4, 3, 2, 1]);
+		});
+
+		it("keeps a press that drifts onto a context line as a click", async () => {
+			const { host, cells, pointAt } = createColumn([
+				{ number: 1 },
+				{ number: 2, type: "context" },
+			]);
+			pointAt(cellAt(cells, 0));
+			await press(host, cellAt(cells, 0));
+
+			pointAt(cellAt(cells, 1));
+			window.dispatchEvent(pointer("pointermove"));
+			window.dispatchEvent(pointer("pointerup"));
+
+			expect(paintedLines()).toEqual([]);
+			expect(host.hasAttribute("data-gitbutler-diff-check-drag")).toBe(false);
+		});
+
+		it("carries on filling after the column is re-rendered mid-drag", async () => {
+			const { host, cells, pointAt, rerender } = createColumn(
+				[1, 2, 3, 4].map((number) => ({ number })),
+			);
+			pointAt(cellAt(cells, 0));
+			await press(host, cellAt(cells, 0));
+
+			pointAt(cellAt(cells, 1));
+			window.dispatchEvent(pointer("pointermove"));
+			expect(paintedLines()).toEqual([1, 2]);
+
+			const fresh = rerender();
+			pointAt(cellAt(fresh, 3));
+			window.dispatchEvent(pointer("pointermove"));
+			window.dispatchEvent(pointer("pointerup"));
+
+			expect(paintedLines()).toEqual([1, 2, 3, 4]);
+		});
 	});
 });

@@ -12,9 +12,6 @@ pub fn head_info(
     if opts.project_meta == Default::default() {
         opts.project_meta = utils::project_meta(repo)?;
     }
-    if opts.traversal.extra_target_commit_id.is_none() {
-        opts.traversal.extra_target_commit_id = opts.project_meta.target_commit_id;
-    }
     crate::ref_info::head_info(repo, meta, db, opts)
 }
 
@@ -26,9 +23,6 @@ pub fn ref_info(
 ) -> anyhow::Result<RefInfo> {
     if opts.project_meta == Default::default() {
         opts.project_meta = utils::project_meta(existing_ref.repo)?;
-    }
-    if opts.traversal.extra_target_commit_id.is_none() {
-        opts.traversal.extra_target_commit_id = opts.project_meta.target_commit_id;
     }
     but_workspace::ref_info(existing_ref, meta, db, opts)
 }
@@ -83,10 +77,6 @@ fn advanced_direct_workspace_ref_has_no_ancestor_workspace_commit() -> anyhow::R
         standard_options(),
     )?;
 
-    assert!(
-        !info.is_managed_ref,
-        "a direct branch without workspace metadata is ad hoc"
-    );
     assert!(
         info.ancestor_workspace_commit.is_none(),
         "an ad-hoc ref does not interpret managed workspace commits in its ancestry"
@@ -215,22 +205,6 @@ fn remote_ahead_fast_forwardable() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(fb27086e5fe152421aac3fbb76934b57a179263a),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -253,7 +227,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -280,10 +253,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -297,22 +267,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(fb27086e5fe152421aac3fbb76934b57a179263a),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -325,7 +279,7 @@ RefInfo {
                 Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►A",
                     remote_tracking_ref_name: "refs/remotes/origin/A",
@@ -335,7 +289,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -362,10 +315,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -383,22 +333,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(fb27086e5fe152421aac3fbb76934b57a179263a),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -411,7 +345,7 @@ RefInfo {
                 Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►A",
                     remote_tracking_ref_name: "refs/remotes/origin/A",
@@ -421,7 +355,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -448,10 +381,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -485,22 +415,6 @@ fn two_dependent_branches_rebased_with_remotes() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(d909178c50bba05d43acb4bffb2e6e59329e7710),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -521,7 +435,6 @@ RefInfo {
                         LocalCommit(3ba6995, "change in B\n", local/remote(ec39463)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "f504e38",
@@ -535,7 +448,6 @@ RefInfo {
                         LocalCommit(807f596, "change in A\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommits,
                     base: "fafd9d0",
@@ -562,10 +474,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -673,22 +582,6 @@ fn two_dependent_branches_rebased_explicit_remote_in_extra_segment() -> anyhow::
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(d909178c50bba05d43acb4bffb2e6e59329e7710),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -709,7 +602,6 @@ RefInfo {
                         LocalCommit(3ba6995, "change in B\n", local/remote(ec39463)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "f504e38",
@@ -722,7 +614,6 @@ RefInfo {
                         LocalCommit(f504e38, "change after push\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "807f596",
@@ -735,7 +626,6 @@ RefInfo {
                         LocalCommit(807f596, "change in A\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: NothingToPush,
                     base: "fafd9d0",
@@ -762,10 +652,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -802,22 +689,6 @@ fn two_dependent_branches_first_merged_no_ff() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(4a62dfc214fe3aeb34debeb4831640fab49933ba),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -838,7 +709,6 @@ RefInfo {
                         LocalCommit(de11c03, "change in B\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "0ee3a9e",
@@ -851,7 +721,6 @@ RefInfo {
                         LocalCommit(0ee3a9e, "change in A\n", integrated(0ee3a9e)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: Integrated,
                     base: "fafd9d0",
@@ -878,10 +747,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -927,22 +793,6 @@ fn two_dependent_branches_first_merged_no_ff_second_merged_on_remote_into_base_b
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(4a62dfc214fe3aeb34debeb4831640fab49933ba),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -963,7 +813,6 @@ RefInfo {
                         LocalCommit(de11c03, "change in B\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "0ee3a9e",
@@ -990,43 +839,23 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(4),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
         .raw()
     );
 
-    // If we set a reasonably old extra target, then the A segment, despite integrated, is shown.
+    // If we set a reasonably old target commit, then the A segment, despite integrated, is shown.
     let old_target = repo.rev_parse_single("fafd9d0")?.detach();
     let mut options = standard_options();
     options.project_meta = utils::project_meta(&repo)?;
     options.project_meta.target_commit_id = Some(old_target);
-    options.traversal.extra_target_commit_id = Some(old_target);
     let info = head_info(&repo, &meta, &mut db, options)?;
     snapbox::assert_data_eq!(
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(4a62dfc214fe3aeb34debeb4831640fab49933ba),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -1047,7 +876,6 @@ RefInfo {
                         LocalCommit(de11c03, "change in B\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "0ee3a9e",
@@ -1062,7 +890,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(059cc4f, "Merge branch \'B-on-A\' into new-origin-A\n"),
                     ],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: Integrated,
                     base: "fafd9d0",
@@ -1089,10 +916,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -1125,22 +949,6 @@ fn two_dependent_branches_first_rebased_and_merged_into_target() -> anyhow::Resu
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(4f08b8d7e0d7d524a13ca13eaf2cdff9cf4f4719),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -1159,7 +967,6 @@ RefInfo {
                         LocalCommit(da597e8, "B\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: CompletelyUnpushed,
                     base: "1818c17",
@@ -1172,7 +979,6 @@ RefInfo {
                         LocalCommit(1818c17, "A\n", integrated(0b6b861)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: Integrated,
                     base: "281456a",
@@ -1199,10 +1005,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -1218,22 +1021,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(4f08b8d7e0d7d524a13ca13eaf2cdff9cf4f4719),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {},
     stacks: [
         Stack {
@@ -1250,7 +1037,6 @@ RefInfo {
                         LocalCommit(da597e8, "B\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: CompletelyUnpushed,
                     base: "1818c17",
@@ -1263,7 +1049,6 @@ RefInfo {
                         LocalCommit(1818c17, "A\n", integrated(0b6b861)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: Integrated,
                     base: "281456a",
@@ -1290,10 +1075,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -1335,22 +1117,6 @@ fn target_ahead_remote_rewritten() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(03d2336cd39022a6898ff7678a0c1f985bd5ff60),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -1363,7 +1129,7 @@ RefInfo {
                 Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►A",
                     remote_tracking_ref_name: "refs/remotes/origin/A",
@@ -1376,7 +1142,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(50d31c8, "unique remote\n"),
                     ],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -1403,10 +1168,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -1444,22 +1206,6 @@ fn single_commit_but_two_branches_one_in_ws_commit() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(7f3248ecc611d6181c218e105599bb82e35d24d4),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -1478,7 +1224,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -1501,7 +1246,6 @@ RefInfo {
                         LocalCommit(93d7eac, "change 2\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -1524,7 +1268,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -1551,10 +1294,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -1604,71 +1344,10 @@ fn single_commit_but_two_branches_one_in_ws_commit_with_virtual_segments() -> an
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(cbc6713ccfc78aa9a3c9cf8305a6fadce0bbe1a4),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
     stacks: [
-        Stack {
-            id: Some(
-                00000000-0000-0000-0000-000000000000,
-            ),
-            base: Some(
-                Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-            ),
-            segments: [
-                👉ref_info::ui::Segment {
-                    id: NodeIndex(0),
-                    ref_name: "►lane",
-                    remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(cbc6713, "change\n", local),
-                    ],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(7),
-                    ref_name: "►lane-segment-01",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(8),
-                    ref_name: "►lane-segment-02",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "fafd9d0",
-                },
-            ],
-        },
         Stack {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
@@ -1678,34 +1357,13 @@ RefInfo {
             ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►lane-2",
+                    id: NodeIndex(0),
+                    ref_name: "►lane",
                     remote_tracking_ref_name: "None",
-                    commits: [],
+                    commits: [
+                        LocalCommit(cbc6713, "change\n", local),
+                    ],
                     commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(5),
-                    ref_name: "►lane-2-segment-01",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(6),
-                    ref_name: "►lane-2-segment-02",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -1732,10 +1390,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: false,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -1768,69 +1423,10 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(cbc6713ccfc78aa9a3c9cf8305a6fadce0bbe1a4),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
     stacks: [
-        Stack {
-            id: Some(
-                00000000-0000-0000-0000-000000000000,
-            ),
-            base: Some(
-                Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-            ),
-            segments: [
-                ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►lane-2",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(5),
-                    ref_name: "►lane-2-segment-01",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(6),
-                    ref_name: "►lane-2-segment-02",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "fafd9d0",
-                },
-            ],
-        },
         Stack {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
@@ -1839,7 +1435,7 @@ RefInfo {
                 Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►lane",
                     remote_tracking_ref_name: "None",
@@ -1847,29 +1443,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(7),
-                    ref_name: "►lane-segment-01",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "None",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(8),
-                    ref_name: "►lane-segment-02",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -1896,10 +1469,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: false,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -1933,22 +1503,6 @@ fn single_commit_but_two_branches_both_in_ws_commit() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(335d6f2a960f387b039bd77476ae3d2d6649ed70),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -1969,7 +1523,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -1990,7 +1543,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -2017,10 +1569,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2054,22 +1603,6 @@ fn single_commit_pushed_but_two_branches_both_in_ws_commit() -> anyhow::Result<(
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(335d6f2a960f387b039bd77476ae3d2d6649ed70),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2088,7 +1621,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: NothingToPush,
                     base: "fafd9d0",
@@ -2115,10 +1647,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2158,22 +1687,6 @@ fn single_commit_pushed_but_two_branches_both_in_ws_commit_empty_dependent() -> 
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(335d6f2a960f387b039bd77476ae3d2d6649ed70),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2192,7 +1705,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "cbc6713",
@@ -2205,7 +1717,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "fafd9d0",
@@ -2232,10 +1743,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2258,22 +1766,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(335d6f2a960f387b039bd77476ae3d2d6649ed70),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2292,7 +1784,6 @@ RefInfo {
                     remote_tracking_ref_name: "refs/remotes/origin/advanced-lane",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "cbc6713",
@@ -2305,7 +1796,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -2332,10 +1822,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2372,22 +1859,6 @@ fn single_commit_pushed_ws_commit_empty_dependent() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(f8f33a7e66ad836cf09ab249941dfae175fcfc60),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2406,7 +1877,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "None",
@@ -2417,7 +1887,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "cbc6713",
@@ -2430,7 +1899,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "fafd9d0",
@@ -2457,10 +1925,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2481,22 +1946,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(f8f33a7e66ad836cf09ab249941dfae175fcfc60),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2515,7 +1964,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "None",
@@ -2526,7 +1974,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "cbc6713",
@@ -2539,7 +1986,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "fafd9d0",
@@ -2566,10 +2012,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2605,22 +2048,6 @@ fn two_branches_stacked_with_remotes() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(9b3cfd4456acdb1868ea982800025bdd50cbf5c8),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2641,7 +2068,6 @@ RefInfo {
                         LocalCommit(788ad06, "change on top\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "cbc6713",
@@ -2654,7 +2080,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local/remote(identity)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: NothingToPush,
                     base: "fafd9d0",
@@ -2681,10 +2106,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2770,22 +2192,6 @@ fn two_branches_stacked_with_interesting_remote_setup() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(a221221cec2713c3434087ce9da57431f2b41d84),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2798,7 +2204,7 @@ RefInfo {
                 Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►A",
                     remote_tracking_ref_name: "refs/remotes/origin/A",
@@ -2807,7 +2213,6 @@ RefInfo {
                         LocalCommit(96a2408, "another unrelated\n", integrated(96a2408)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: UnpushedCommitsRequiringForce,
                     base: "f15ca75",
@@ -2821,7 +2226,6 @@ RefInfo {
                         LocalCommit(9456d79, "integrated in target\n", integrated(9456d79)),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -2848,10 +2252,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -2882,22 +2283,6 @@ fn single_commit_but_two_branches_stack_on_top_of_ws_commit() -> anyhow::Result<
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(cbc6713ccfc78aa9a3c9cf8305a6fadce0bbe1a4),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -2918,7 +2303,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -2939,7 +2323,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -2966,10 +2349,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: false,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -2987,49 +2367,10 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(cbc6713ccfc78aa9a3c9cf8305a6fadce0bbe1a4),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
     stacks: [
-        Stack {
-            id: Some(
-                00000000-0000-0000-0000-000000000000,
-            ),
-            base: Some(
-                Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-            ),
-            segments: [
-                👉ref_info::ui::Segment {
-                    id: NodeIndex(0),
-                    ref_name: "►advanced-lane",
-                    remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(cbc6713, "change\n", local),
-                    ],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "fafd9d0",
-                },
-            ],
-        },
         Stack {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
@@ -3039,12 +2380,13 @@ RefInfo {
             ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►lane",
+                    id: NodeIndex(0),
+                    ref_name: "►advanced-lane",
                     remote_tracking_ref_name: "None",
-                    commits: [],
+                    commits: [
+                        LocalCommit(cbc6713, "change\n", local),
+                    ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3071,10 +2413,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: false,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -3112,22 +2451,6 @@ fn two_branches_one_advanced_two_parent_ws_commit_diverged_remote_tracking_branc
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(873d0566081b0c92d2ff06331e3455dcc3e4df29),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {},
     stacks: [
         Stack {
@@ -3144,7 +2467,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3167,7 +2489,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3194,10 +2515,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -3215,45 +2533,8 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(873d0566081b0c92d2ff06331e3455dcc3e4df29),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {},
     stacks: [
-        Stack {
-            id: Some(
-                00000000-0000-0000-0000-000000000000,
-            ),
-            base: Some(
-                Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-            ),
-            segments: [
-                ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►lane",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "fafd9d0",
-                },
-            ],
-        },
         Stack {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
@@ -3262,7 +2543,7 @@ RefInfo {
                 Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►advanced-lane",
                     remote_tracking_ref_name: "None",
@@ -3270,7 +2551,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3297,10 +2577,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -3317,45 +2594,8 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(873d0566081b0c92d2ff06331e3455dcc3e4df29),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {},
     stacks: [
-        Stack {
-            id: Some(
-                00000000-0000-0000-0000-000000000000,
-            ),
-            base: Some(
-                Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-            ),
-            segments: [
-                👉ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►lane",
-                    remote_tracking_ref_name: "None",
-                    commits: [],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "fafd9d0",
-                },
-            ],
-        },
         Stack {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
@@ -3365,14 +2605,11 @@ RefInfo {
             ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(3),
-                    ref_name: "►advanced-lane",
+                    id: NodeIndex(0),
+                    ref_name: "►lane",
                     remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(cbc6713, "change\n", local),
-                    ],
+                    commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3399,10 +2636,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(0),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -3420,22 +2654,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(873d0566081b0c92d2ff06331e3455dcc3e4df29),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {},
     stacks: [
         Stack {
@@ -3454,7 +2672,6 @@ RefInfo {
                         LocalCommit(cbc6713, "change\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3475,7 +2692,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "fafd9d0",
@@ -3502,10 +2718,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -3534,22 +2747,6 @@ fn disjoint() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/disjoint",
-            ),
-            commit_id: Some(
-                Sha1(32791d22e276ec0ed87d14f906321137356bc6d6),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -3558,20 +2755,19 @@ RefInfo {
             id: Some(
                 00000000-0000-0000-0000-000000000001,
             ),
-            base: Some(
-                Sha1(32791d22e276ec0ed87d14f906321137356bc6d6),
-            ),
+            base: None,
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex([..]),
+                    id: NodeIndex(0),
                     ref_name: "►disjoint[🌳]",
                     remote_tracking_ref_name: "None",
-                    commits: [],
+                    commits: [
+                        LocalCommit(32791d2, "disjoint init/n", local),
+                    ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
-                    base: "32791d2",
+                    base: "None",
                 },
             ],
         },
@@ -3582,7 +2778,7 @@ RefInfo {
                 "refs/remotes/origin/main",
             ),
             segment_index: NodeIndex([..]),
-            commits_ahead: 0,
+            commits_ahead: 1,
         },
     ),
     target_commit: Some(
@@ -3592,13 +2788,8 @@ RefInfo {
         },
     ),
     is_target_current: true,
-    lower_bound: Some(
-        NodeIndex([..]),
-    ),
-    is_managed_ref: false,
-    is_managed_commit: false,
+    lower_bound: None,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -3636,22 +2827,6 @@ fn multiple_branches_with_shared_segment() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(820f2b3c5007e15ba4558556a81d241fcee06856),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -3672,7 +2847,6 @@ RefInfo {
                         LocalCommit(5f37dbf, "add new file in C-on-A\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "d79bba9",
@@ -3687,7 +2861,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -3708,7 +2881,6 @@ RefInfo {
                         LocalCommit(4e5484a, "add new file in B-on-A\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: CompletelyUnpushed,
                     base: "d79bba9",
@@ -3723,7 +2895,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -3750,10 +2921,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -3772,22 +2940,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(820f2b3c5007e15ba4558556a81d241fcee06856),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -3800,7 +2952,7 @@ RefInfo {
                 Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
             ),
             segments: [
-                👉ref_info::ui::Segment {
+                ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►C-on-A",
                     remote_tracking_ref_name: "None",
@@ -3808,7 +2960,6 @@ RefInfo {
                         LocalCommit(5f37dbf, "add new file in C-on-A\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "d79bba9",
@@ -3823,43 +2974,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
-                    metadata: "None",
-                    push_status: UnpushedCommitsRequiringForce,
-                    base: "c166d42",
-                },
-            ],
-        },
-        Stack {
-            id: None,
-            base: Some(
-                Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
-            ),
-            segments: [
-                ref_info::ui::Segment {
-                    id: NodeIndex(6),
-                    ref_name: "►B-on-A",
-                    remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(4e5484a, "add new file in B-on-A\n", local),
-                    ],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: "None",
-                    push_status: CompletelyUnpushed,
-                    base: "d79bba9",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►A",
-                    remote_tracking_ref_name: "refs/remotes/origin/A",
-                    commits: [
-                        LocalCommit(d79bba9, "new file in A\n", local/remote(identity)),
-                    ],
-                    commits_on_remote: [
-                        Commit(89cc2d3, "change in A\n"),
-                    ],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -3886,10 +3000,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -3908,22 +3019,6 @@ RefInfo {
         b_info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(820f2b3c5007e15ba4558556a81d241fcee06856),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -3937,42 +3032,6 @@ RefInfo {
             ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►C-on-A",
-                    remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(5f37dbf, "add new file in C-on-A\n", local),
-                    ],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "d79bba9",
-                },
-                ref_info::ui::Segment {
-                    id: NodeIndex(5),
-                    ref_name: "►A",
-                    remote_tracking_ref_name: "refs/remotes/origin/A",
-                    commits: [
-                        LocalCommit(d79bba9, "new file in A\n", local/remote(identity)),
-                    ],
-                    commits_on_remote: [
-                        Commit(89cc2d3, "change in A\n"),
-                    ],
-                    commits_outside: None,
-                    metadata: "None",
-                    push_status: UnpushedCommitsRequiringForce,
-                    base: "c166d42",
-                },
-            ],
-        },
-        Stack {
-            id: None,
-            base: Some(
-                Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
-            ),
-            segments: [
-                👉ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►B-on-A",
                     remote_tracking_ref_name: "None",
@@ -3980,7 +3039,6 @@ RefInfo {
                         LocalCommit(4e5484a, "add new file in B-on-A\n", local),
                     ],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: CompletelyUnpushed,
                     base: "d79bba9",
@@ -3995,7 +3053,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -4022,10 +3079,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -4045,22 +3099,6 @@ RefInfo {
         a_info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(820f2b3c5007e15ba4558556a81d241fcee06856),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -4074,19 +3112,6 @@ RefInfo {
             ),
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(4),
-                    ref_name: "►C-on-A",
-                    remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(5f37dbf, "add new file in C-on-A\n", local),
-                    ],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: Branch,
-                    push_status: CompletelyUnpushed,
-                    base: "d79bba9",
-                },
-                👉ref_info::ui::Segment {
                     id: NodeIndex(0),
                     ref_name: "►A",
                     remote_tracking_ref_name: "refs/remotes/origin/A",
@@ -4096,43 +3121,6 @@ RefInfo {
                     commits_on_remote: [
                         Commit(89cc2d3, "change in A\n"),
                     ],
-                    commits_outside: None,
-                    metadata: "None",
-                    push_status: UnpushedCommitsRequiringForce,
-                    base: "c166d42",
-                },
-            ],
-        },
-        Stack {
-            id: None,
-            base: Some(
-                Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
-            ),
-            segments: [
-                ref_info::ui::Segment {
-                    id: NodeIndex(6),
-                    ref_name: "►B-on-A",
-                    remote_tracking_ref_name: "None",
-                    commits: [
-                        LocalCommit(4e5484a, "add new file in B-on-A\n", local),
-                    ],
-                    commits_on_remote: [],
-                    commits_outside: None,
-                    metadata: "None",
-                    push_status: CompletelyUnpushed,
-                    base: "d79bba9",
-                },
-                👉ref_info::ui::Segment {
-                    id: NodeIndex(0),
-                    ref_name: "►A",
-                    remote_tracking_ref_name: "refs/remotes/origin/A",
-                    commits: [
-                        LocalCommit(d79bba9, "new file in A\n", local/remote(identity)),
-                    ],
-                    commits_on_remote: [
-                        Commit(89cc2d3, "change in A\n"),
-                    ],
-                    commits_outside: None,
                     metadata: "None",
                     push_status: UnpushedCommitsRequiringForce,
                     base: "c166d42",
@@ -4159,10 +3147,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(3),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -4192,22 +3177,6 @@ fn empty_workspace_with_branch_below() -> anyhow::Result<()> {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(c7276fa4ef234bed041b4293f46615a99afc7f50),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -4226,7 +3195,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "c166d42",
@@ -4253,10 +3221,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -4273,22 +3238,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(c7276fa4ef234bed041b4293f46615a99afc7f50),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -4301,13 +3250,12 @@ RefInfo {
                 Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
             ),
             segments: [
-                👉ref_info::ui::Segment {
-                    id: NodeIndex(3),
+                ref_info::ui::Segment {
+                    id: NodeIndex(0),
                     ref_name: "►unrelated",
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "c166d42",
@@ -4334,10 +3282,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(0),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: false,
 }
 
 "#]]
@@ -4352,22 +3297,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/gitbutler/workspace",
-            ),
-            commit_id: Some(
-                Sha1(c7276fa4ef234bed041b4293f46615a99afc7f50),
-            ),
-            worktree: Some(
-                Worktree {
-                    kind: Main,
-                    owned_by_repo: true,
-                },
-            ),
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -4391,10 +3320,7 @@ RefInfo {
     lower_bound: Some(
         NodeIndex(2),
     ),
-    is_managed_ref: true,
-    is_managed_commit: true,
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -4412,17 +3338,6 @@ RefInfo {
         info.to_debug(),
         snapbox::str![[r#"
 RefInfo {
-    workspace_ref_info: Some(
-        RefInfo {
-            ref_name: FullName(
-                "refs/heads/unrelated",
-            ),
-            commit_id: Some(
-                Sha1(c166d42d4ef2e5e742d33554d03805cfb0b24d11),
-            ),
-            worktree: None,
-        },
-    ),
     symbolic_remote_names: {
         "origin",
     },
@@ -4441,7 +3356,6 @@ RefInfo {
                     remote_tracking_ref_name: "None",
                     commits: [],
                     commits_on_remote: [],
-                    commits_outside: None,
                     metadata: Branch,
                     push_status: CompletelyUnpushed,
                     base: "c166d42",
@@ -4465,11 +3379,10 @@ RefInfo {
         },
     ),
     is_target_current: true,
-    lower_bound: None,
-    is_managed_ref: false,
-    is_managed_commit: false,
+    lower_bound: Some(
+        NodeIndex(0),
+    ),
     ancestor_workspace_commit: None,
-    is_entrypoint: true,
 }
 
 "#]]
@@ -4623,6 +3536,17 @@ pub(crate) mod utils {
         })
     }
 
+    /// Like [`project_meta()`], but with the target commit at `spec`.
+    pub fn project_meta_with_target_at(
+        repo: &gix::Repository,
+        spec: &str,
+    ) -> anyhow::Result<ProjectMeta> {
+        Ok(ProjectMeta {
+            target_commit_id: Some(repo.rev_parse_single(spec)?.detach()),
+            ..project_meta(repo)?
+        })
+    }
+
     pub fn named_writable_scenario_with_description(
         name: &str,
     ) -> anyhow::Result<(
@@ -4692,16 +3616,8 @@ pub(crate) mod utils {
 
         init_meta(&mut meta);
         let project_meta = project_meta(&repo)?;
-        let graph = but_graph::Graph::from_head(
-            &repo,
-            &meta,
-            project_meta,
-            &mut db,
-            Options {
-                extra_target_commit_id: repo.rev_parse_single("main").ok().map(|id| id.detach()),
-                ..Options::limited()
-            },
-        )?;
+        let graph =
+            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
         Ok((tmp, graph, repo, meta, desc, db))
     }
 

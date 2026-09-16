@@ -648,19 +648,8 @@ fn move_empty_branch_on_top_of_empty_branch_in_same_stack() -> anyhow::Result<()
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &["A"]);
 
     let project_meta = project_meta(&repo)?;
-    let graph = but_graph::Graph::from_head(
-        &repo,
-        &meta,
-        project_meta,
-        &mut db,
-        Options {
-            extra_target_commit_id: repo
-                .rev_parse_single("gitbutler/target")
-                .ok()
-                .map(|id| id.detach()),
-            ..Options::limited()
-        },
-    )?;
+    let graph =
+        but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
 
     let mut ws = graph.into_workspace()?;
     snapbox::assert_data_eq!(
@@ -713,19 +702,8 @@ fn move_empty_branch_on_top_of_empty_branch_across_stacks() -> anyhow::Result<()
     add_stack_with_segments(&mut meta, 2, "B", StackState::InWorkspace, &[]);
 
     let project_meta = project_meta(&repo)?;
-    let graph = but_graph::Graph::from_head(
-        &repo,
-        &meta,
-        project_meta,
-        &mut db,
-        Options {
-            extra_target_commit_id: repo
-                .rev_parse_single("gitbutler/target")
-                .ok()
-                .map(|id| id.detach()),
-            ..Options::limited()
-        },
-    )?;
+    let graph =
+        but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
 
     let mut ws = graph.into_workspace()?;
     snapbox::assert_data_eq!(
@@ -1421,8 +1399,9 @@ mod single_branch_mode {
         }
     }
 
-    /// Build a single-branch (ad-hoc) workspace on `main` (3 commits) with two empty dependent
-    /// branches `empty-top` and `empty-bottom` stacked above the commit-owning base branch.
+    /// Build a single-branch (ad-hoc) workspace on `main` (2 commits above the target) with two
+    /// empty dependent branches `empty-top` and `empty-bottom` stacked above the commit-owning
+    /// base branch.
     ///
     /// The tip-to-base branch order ends up as `[main, empty-top, empty-bottom, base]`, so both
     /// `empty-top` and `empty-bottom` are empty segments that can be reordered by metadata alone.
@@ -1435,7 +1414,10 @@ mod single_branch_mode {
     )> {
         let (tmp, repo, _legacy_meta, mut db) =
             named_writable_scenario("single-branch-with-3-commits")?;
-        let project_meta = crate::ref_info::with_workspace_commit::utils::project_meta(&repo)?;
+        let project_meta =
+            crate::ref_info::with_workspace_commit::utils::project_meta_with_target_at(
+                &repo, "main~2",
+            )?;
         let mut meta = branch_order_meta(&repo)?;
 
         let main_ref = r("refs/heads/main");
@@ -1566,15 +1548,14 @@ mod single_branch_mode {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     ├── :main[🌳]
     ├── 📙:empty-top
     ├── 📙:empty-bottom
     └── 📙:base
-        ├── ·281da94 (✓)
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );
@@ -1626,15 +1607,14 @@ mod single_branch_mode {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     ├── :main[🌳]
     ├── 📙:empty-bottom
     ├── 📙:empty-top
     └── 📙:base
-        ├── ·281da94 (✓)
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );
@@ -1931,15 +1911,14 @@ mod single_branch_mode {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     ├── :main[🌳]
     ├── 📙:empty-top
     ├── 📙:empty-bottom
     └── 📙:base
-        ├── ·281da94 (✓) ►x, ►y
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94 ►x, ►y
+        └── ·12995d7
 
 "#]]
         );

@@ -23,6 +23,7 @@ mod diff;
 #[cfg(feature = "legacy")]
 mod discard;
 #[cfg(feature = "legacy")]
+#[cfg(feature = "nightly")]
 mod expand;
 #[cfg(unix)]
 mod external;
@@ -30,11 +31,12 @@ mod format;
 mod gui;
 mod help;
 #[cfg(feature = "legacy")]
-mod land;
+mod merge;
 #[cfg(feature = "legacy")]
 mod r#move;
 mod onboarding;
 #[cfg(feature = "legacy")]
+#[cfg(feature = "nightly")]
 mod open;
 #[cfg(feature = "legacy")]
 mod pick;

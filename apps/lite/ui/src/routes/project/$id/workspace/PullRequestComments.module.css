@@ -8,8 +8,16 @@
 	border-block-start: 1px solid var(--border-section);
 }
 
-.commentsEmpty {
+.commentsLoading {
 	color: var(--text-3);
+}
+
+.activityHeader {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-block-end: 16px;
+	gap: 12px;
 }
 
 /* Spacing is per-pair rather than one uniform gap: comments cluster tightly,
@@ -244,8 +252,8 @@
 
 /* ---- Composer ---------------------------------------------------------- */
 
-/* Toolbar, source, and action footer share one card surface, so the focus
-   ring belongs to the card. */
+/* Source and action footer share one card surface, so the focus ring
+   belongs to the card. */
 .composer {
 	display: flex;
 	flex-direction: column;
@@ -290,17 +298,6 @@
 
 .composerPrompt {
 	color: var(--text-3);
-}
-
-.composerToolbar {
-	padding: 8px 8px 2px;
-	/* Transparent until the body scrolls, so revealing it shifts no layout. */
-	border-bottom: 1px solid transparent;
-	transition: border-color var(--transition-fast);
-
-	[data-body-scrolled] > & {
-		border-bottom-color: var(--border-3);
-	}
 }
 
 .composerBody {
@@ -473,22 +470,28 @@
 	color: var(--text-1);
 }
 
-/* A card by an agent (any bot author): tinted so automated feedback reads
-   apart from human conversation at a glance. */
-.cardAgent {
-	border-color: color-mix(in srgb, var(--fill-purple-bg) 35%, var(--border-3));
-	background-color: color-mix(in srgb, var(--fill-purple-bg) 4%, var(--bg-1));
+.compactComment {
+	gap: 4px;
+
+	& .authorLogin {
+		color: var(--text-2);
+		font-weight: normal;
+		font-size: 12px;
+	}
+
+	& .avatar {
+		width: 14px;
+		height: 14px;
+	}
 }
 
-/* The Activity section's reveal, in the app's designed link treatment. */
-.timelineMore {
-	align-self: flex-start;
-	margin-block-start: 4px;
-	padding: 0;
-	border: none;
-	background: none;
-	color: var(--text-2);
-	text-decoration: underline dotted;
-	text-underline-position: from-font;
-	cursor: pointer;
+.threadActions {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+
+	> div {
+		flex: 1;
+		min-width: 0;
+	}
 }

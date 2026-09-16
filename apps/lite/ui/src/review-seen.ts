@@ -19,7 +19,7 @@ import { createContext, useEffect, useEffectEvent, useState, useSyncExternalStor
 
 /**
  * The PR-notifications dial: loud files activity into the bell, quiet
- * keeps only the unread dots, off hides the tracking UI entirely.
+ * tracks what was seen without showing it, off hides the tracking UI entirely.
  */
 export const usePrNotificationsLevel = (): "loud" | "quiet" | "off" => {
 	const { data: level } = useQuery({
@@ -27,6 +27,15 @@ export const usePrNotificationsLevel = (): "loud" | "quiet" | "off" => {
 		select: (settings) => settings.prNotifications ?? defaultSettings.prNotifications,
 	});
 	return level ?? defaultSettings.prNotifications;
+};
+
+/** Whether loud activity also reaches the desktop while the window is unfocused. */
+export const useDesktopNotifications = (): boolean => {
+	const { data: enabled } = useQuery({
+		...guiSettingsQueryOptions,
+		select: (settings) => settings.desktopNotifications ?? defaultSettings.desktopNotifications,
+	});
+	return enabled ?? defaultSettings.desktopNotifications;
 };
 
 /** Watermark by review number, as the ISO stamps the forge reports. */
@@ -267,7 +276,7 @@ const isUnread = (
  * Whether one review has unread activity — a boolean, so a watermark moving
  * on another review leaves this subscriber alone.
  */
-export const useReviewUnread = (
+const useReviewUnread = (
 	projectId: string,
 	review: { number: number; modifiedAt: string | null },
 	enabled: boolean,
@@ -277,19 +286,6 @@ export const useReviewUnread = (
 		enabled ? isUnread(projectId, number, modifiedAt, readMarks(projectId)) : false,
 	);
 };
-
-/** How many of `reviews` have unread activity — again a primitive. */
-export const useUnreadReviewCount = (
-	projectId: string,
-	reviews: Array<{ number: number; modifiedAt: string | null }>,
-	enabled: boolean,
-): number =>
-	useSyncExternalStore(enabled ? subscribeMarks : subscribeNothing, () => {
-		if (!enabled) return 0;
-		const marks = readMarks(projectId);
-		return reviews.filter((review) => isUnread(projectId, review.number, review.modifiedAt, marks))
-			.length;
-	});
 
 /**
  * Stamp reviews seen when first listed and prune marks for delisted ones.
@@ -402,6 +398,43 @@ export const markReviewSeen = (projectId: string, number: number, modifiedAt: st
 	// One notify for both writes: each fans out to a snapshot per row.
 	setUnseen(projectId, nextUnseen);
 	writeMarks(projectId, { ...readMarks(projectId), [number]: modifiedAt });
+};
+
+/**
+ * Declare activity read up to `latest`, one or more stamps per review:
+ * each watermark advances to the newest given — never backwards, a dwell
+ * may already have moved it further — and the review's skips at or before
+ * that newest stamp are dropped. A skip after it is still unread.
+ */
+export const markReviewsSeenUpTo = (
+	projectId: string,
+	latest: Iterable<readonly [number, string]>,
+): void => {
+	const marks = { ...readMarks(projectId) };
+	const unseen = { ...readUnseen(projectId) };
+	let marksChanged = false;
+	let unseenChanged = false;
+	// Order-free: the advance is monotonic and the skip filters compose, so
+	// repeated stamps for a review settle on the newest whichever comes first.
+	for (const [number, at] of latest) {
+		const atMs = Date.parse(at);
+		const seen = marks[number];
+		if (seen === undefined || atMs > Date.parse(seen)) {
+			marks[number] = at;
+			marksChanged = true;
+		}
+		const skipped = unseen[number];
+		if (skipped === undefined) continue;
+		const kept = skipped.filter(([, skippedAt]) => Date.parse(skippedAt) > atMs);
+		if (kept.length === skipped.length) continue;
+		if (kept.length > 0) unseen[number] = kept;
+		else delete unseen[number];
+		unseenChanged = true;
+	}
+	// One notify for both writes, as in `markReviewSeen`.
+	if (unseenChanged) setUnseen(projectId, unseen);
+	if (marksChanged) writeMarks(projectId, marks);
+	else if (unseenChanged) notify();
 };
 
 /** A beat, so flicking past a review does not eat its unread state. */

@@ -47,9 +47,7 @@ export const fixtureSegment = ({
 	remoteTrackingRefName: null,
 	commits,
 	commitsOnRemote: [],
-	commitsOutside: null,
 	metadata: null,
-	isEntrypoint: false,
 	pushStatus: "completelyUnpushed",
 	base: "0".repeat(40),
 });
@@ -62,15 +60,8 @@ const fixtureStack = (segments: Array<Segment>, index: number): Stack => ({
 });
 
 export const fixtureHeadInfo = (stacks: Array<Array<Segment>>): RefInfo => ({
-	workspaceRef: {
-		fullNameBytes: encode("refs/heads/gitbutler/workspace"),
-		displayName: "gitbutler/workspace",
-	},
 	stacks: stacks.map(fixtureStack),
 	target: null,
-	isManagedRef: true,
-	isManagedCommit: true,
-	isEntrypoint: true,
 	worktrees: [],
 });
 
@@ -125,6 +116,7 @@ const fixtureAiConfiguration: AiConfiguration = {
 	lmstudioEndpoint: "",
 	lmstudioModel: "",
 	isConfigured: false,
+	isDefault: false,
 };
 
 /**
@@ -185,4 +177,6 @@ export const globalHandlers = (projectId: string): FakeHandlers => ({
 	// "No patch": good enough until a test renders a diff.
 	treeChangeDiffs: () => null,
 	branchCannedName: () => "canned-branch-name",
+	// The host decides focus; here nothing is ever shown.
+	showNotification: () => undefined,
 });

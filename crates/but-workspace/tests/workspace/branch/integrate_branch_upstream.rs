@@ -219,7 +219,11 @@ fn integration_graph_for_branch(
                 but_graph::init::Tip::integrated(target_id, Some(target_ref_name.to_owned())),
             ],
             meta,
-            Default::default(),
+            but_core::ref_metadata::ProjectMeta {
+                target_ref: Some(target_ref_name.to_owned()),
+                target_commit_id: Some(target_id),
+                ..Default::default()
+            },
             &mut db,
             Options::limited(),
         )
@@ -290,6 +294,50 @@ fn errors_when_branch_has_no_tracking_branch() -> Result<()> {
         "unexpected error: {err:#}"
     );
 
+    Ok(())
+}
+
+#[test]
+fn unrelated_tracking_history_is_an_actionable_precondition_failure() -> Result<()> {
+    // A writable copy: the unrelated root and the retargeted remote ref are written to disk
+    // and must not leak into the shared read-only fixture.
+    let tmp = but_testsupport::gix_testtools::scripted_fixture_writable(
+        "scenario/with-remotes-no-workspace.sh",
+    )
+    .map_err(anyhow::Error::from_boxed)?;
+    let mut repo = but_testsupport::open_repo(&tmp.path().join("remote-diverged"))?;
+    configure_tracking_for_branch_a(&mut repo)?;
+    let unrelated = repo.commit(
+        "refs/heads/unrelated",
+        "unrelated root",
+        repo.object_hash().empty_tree(),
+        std::iter::empty::<gix::ObjectId>(),
+    )?;
+    repo.reference(
+        "refs/remotes/origin/A",
+        unrelated,
+        gix::refs::transaction::PreviousValue::Any,
+        "test",
+    )?;
+
+    let err = initial_integration_for_branch(
+        r("refs/heads/A"),
+        &repo,
+        Some(r("refs/remotes/origin/main")),
+    )
+    .expect_err("unrelated tracking history must fail before integration");
+
+    assert_eq!(
+        err.custom_context().map(|context| context.code),
+        Some(Code::PreconditionFailed),
+        "the caller needs a typed, recoverable precondition failure: {err:#}"
+    );
+    assert!(
+        err.to_string().contains(
+            "Fetch the missing history or choose a branch with shared first-parent history"
+        ),
+        "the error must name the missing first-parent boundary and how to recover: {err:#}"
+    );
     Ok(())
 }
 
@@ -2754,8 +2802,7 @@ fn integrate_upstream_commits_into_local_with_merge_remote_into_local_conflicts_
             expensive_commit_info: true,
             ..Default::default()
         },
-    )?
-    .pruned_to_entrypoint();
+    )?;
 
     assert!(
         !ref_info.stacks.is_empty(),
@@ -2925,7 +2972,7 @@ pick local-commit-2
 #[test]
 fn initial_steps_example_1_keep_integrated_target_history_out_of_divergence() -> Result<()> {
     let (_tmp, mut repo) = build_branch_integration_example_repo(
-        ExampleScenario::ExtraTargetHistoryExcludedFromDivergence,
+        ExampleScenario::TargetHistoryExcludedFromDivergence,
     )?;
     configure_tracking_for_branch_a(&mut repo)?;
 
@@ -3374,7 +3421,7 @@ fn add_local_ref_at_ref(repo: &gix::Repository, new_branch: &str, target: &str) 
 
 #[derive(Clone, Copy)]
 enum ExampleScenario {
-    ExtraTargetHistoryExcludedFromDivergence,
+    TargetHistoryExcludedFromDivergence,
     LocalCommitHistoricallyIntegratedOnTarget,
     UpstreamCommitHistoricallyIntegratedOnTarget,
     LocalMergeContainsUpstreamCommit { target_contains_merge: bool },
@@ -3397,7 +3444,7 @@ fn build_branch_integration_example_repo(
     let a = git_rev_parse(&repo_dir, "HEAD")?;
 
     match scenario {
-        ExampleScenario::ExtraTargetHistoryExcludedFromDivergence => {
+        ExampleScenario::TargetHistoryExcludedFromDivergence => {
             append_and_commit(&repo_dir, "story.txt", "B\n", "B")?;
             let b = git_rev_parse(&repo_dir, "HEAD")?;
 

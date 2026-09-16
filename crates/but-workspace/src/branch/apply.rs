@@ -1,7 +1,6 @@
 use anyhow::{Context as _, bail};
-use bstr::ByteSlice as _;
 use but_core::{
-    ObjectStorageExt, RefMetadata, RepositoryExt, extract_remote_name_and_short_name, ref_metadata,
+    ObjectStorageExt, RefMetadata, RepositoryExt, ref_metadata,
     ref_metadata::{
         Workspace,
         WorkspaceCommitRelation::{Merged, Outside},
@@ -17,12 +16,14 @@ use gix::{
     reference::Category,
     refs::{
         FullNameRef, Target,
-        transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog},
+        transaction::{PreviousValue, RefEdit},
     },
 };
 use tracing::instrument;
 
-use crate::branch::{OnWorkspaceMergeConflict, try_find_validated_ref};
+use crate::branch::{
+    OnWorkspaceMergeConflict, setup_local_tracking_configuration, try_find_validated_ref,
+};
 use crate::{
     WorkspaceCommit,
     branch::{anon_stacks, ensure_no_missing_stacks},
@@ -277,8 +278,9 @@ pub fn apply(
     };
     let branch_has_applied_metadata =
         branch_has_applied_workspace_metadata(branch.as_ref(), &ws, meta)?;
-    let branch_already_applied =
-        ws.is_reachable_from_entrypoint(branch.as_ref()) && branch_has_applied_metadata;
+    let branch_already_applied = (ws.ref_name() == Some(branch.as_ref())
+        || ws.refname_is_segment(branch.as_ref()))
+        && branch_has_applied_metadata;
     if branch_already_applied
         && (!allow_applying_already_applied_branch_when_outside_workspace
             || head_on_managed_workspace_ref)
@@ -419,10 +421,20 @@ pub fn apply(
                 )?;
             (tip, false)
         }
-        Some(mut existing_workspace_reference) => {
-            let id = existing_workspace_reference.peel_to_id()?;
-            (id.detach(), true)
-        }
+        Some(mut existing_workspace_reference) => match &ws.kind {
+            WorkspaceKind::Managed { .. } | WorkspaceKind::ManagedMissingWorkspaceCommit { .. } => {
+                let id = existing_workspace_reference.peel_to_id()?;
+                (id.detach(), true)
+            }
+            // If starting from an adhoc workspace, re-create the managed workspace from the current
+            // HEAD and not from the old workspace. Branches that were previously applied might have
+            // moved and thus the old workspace will contain out of date commits that'll become
+            // anonymous segments.
+            WorkspaceKind::AdHoc => {
+                let tip = repo.head_id()?;
+                (tip.detach(), true)
+            }
+        },
     };
 
     let mut ws_md = meta.workspace(workspace_ref_name_to_update.as_ref())?;
@@ -468,9 +480,9 @@ pub fn apply(
 
     let (local_tracking_config_and_ref_info, commit_to_create_branch_at) =
         if incoming_branch_is_remote_tracking_without_local_tracking {
-            setup_local_tracking_configuration(repo, branch.as_ref(), branch_orig)?
-                .map(|(config, lock, commit)| (Some((config, lock)), Some(commit)))
-                .unwrap_or_default()
+            let (config, commit) =
+                setup_local_tracking_configuration(repo, branch.as_ref(), branch_orig)?;
+            (Some(config), Some(commit))
         } else {
             (None, None)
         };
@@ -499,17 +511,15 @@ pub fn apply(
         .redo_traversal_with_overlay(repo, meta, overlay.clone())?
         .into_workspace()?;
 
-    let all_applied_branches_are_already_visible = branches_to_apply.iter().all(|rn| {
-        ws.find_segment_and_stack_by_refname(rn.as_ref())
-            .is_some_and(|(_stack, segment)| !segment.is_projected_from_outside(&ws.graph))
-    });
+    let all_applied_branches_are_already_visible = branches_to_apply
+        .iter()
+        .all(|rn| ws.find_segment_and_stack_by_refname(rn.as_ref()).is_some());
     let needs_ws_ref_creation = !ws_ref_exists;
-    let local_tracking_config_and_ref_info = local_tracking_config_and_ref_info
-        .zip(commit_to_create_branch_at.map({
+    let local_tracking_config_and_ref_info =
+        local_tracking_config_and_ref_info.zip(commit_to_create_branch_at.map({
             let branch = branch.clone();
             |commit| (branch, branch_orig, commit.attach(repo))
-        }))
-        .map(|((config, lock), ref_info)| (config, lock, ref_info));
+        }));
     let applied_branches = branches_to_apply
         .iter()
         .map(|rn| (*rn).to_owned())
@@ -855,8 +865,7 @@ fn branch_has_applied_workspace_metadata(
     let Some(ws_md) = meta.workspace_opt(ws_ref_name)? else {
         return Ok(true);
     };
-    Ok(ws_md.find_branch(branch, StackKind::Applied).is_some()
-        || (ws.is_entrypoint() && ws_ref_name == branch))
+    Ok(ws_md.find_branch(branch, StackKind::Applied).is_some() || ws_ref_name == branch)
 }
 
 fn filter_superseded_metadata_stacks<'a>(
@@ -967,43 +976,6 @@ fn find_superseded_stacks(
     superseded
 }
 
-/// Setup `local_tracking_ref` to track `remote_tracking_ref` using the typical pattern, and prepare the configuration file
-/// so that it can replace `.git/config` of `repo` when written back, with everything the same but the branch configuration added.
-/// We also return the commit at which `local_tracking_ref` should be placed, which is assumed to not exist.
-fn setup_local_tracking_configuration(
-    repo: &gix::Repository,
-    local_tracking_ref: &FullNameRef,
-    remote_tracking_ref: &FullNameRef,
-) -> anyhow::Result<Option<(gix::config::File, gix::lock::File, gix::ObjectId)>> {
-    let remote_tracking_commit_id = repo
-        .find_reference(remote_tracking_ref)?
-        .peel_to_commit()?
-        .id();
-
-    // TODO(gix): Make config refreshes possible, and use the higher level API, and add a way
-    //       to only write back what changed and of course to add local sections more obviously.
-    //       Make it way easier to work with sections.
-    let (mut config, lock) = repo.local_common_config_for_editing()?;
-    let mut section =
-        config.section_mut_or_create_new("branch", Some(local_tracking_ref.shorten()))?;
-    // Only edit the configuration if truly empty, let's not overwrite user data.
-    if section.num_values() == 0
-        && let Some((remote_name, _short_name)) =
-            extract_remote_name_and_short_name(remote_tracking_ref, &repo.remote_names())
-    {
-        section
-            .push(
-                gix::config::tree::Branch::REMOTE.name,
-                Some(remote_name.as_bytes().as_bstr()),
-            )?
-            .push(
-                gix::config::tree::Branch::MERGE.name,
-                Some(local_tracking_ref.as_bstr()),
-            )?;
-    }
-    Ok(Some((config, lock, remote_tracking_commit_id.into())))
-}
-
 #[expect(clippy::indexing_slicing)]
 fn add_branch_as_stack_forcefully(
     ws_md: &mut Workspace,
@@ -1035,8 +1007,7 @@ fn persist_metadata_and_gitconfig<T: RefMetadata>(
     branches_to_apply: &[gix::refs::FullName],
     ws_md: &T::Handle<Workspace>,
     config_and_ref: Option<(
-        gix::config::File,
-        gix::lock::File,
+        gix::config::FileTransaction,
         (gix::refs::FullName, &gix::refs::FullNameRef, gix::Id),
     )>,
 ) -> anyhow::Result<()> {
@@ -1050,18 +1021,16 @@ fn persist_metadata_and_gitconfig<T: RefMetadata>(
         meta.set_branch(&md)?;
     }
 
-    if let Some((config, lock, (ref_to_create, remote_tracking_ref, ref_target_id))) =
-        config_and_ref
-    {
+    if let Some((config, (ref_to_create, remote_tracking_ref, ref_target_id))) = config_and_ref {
         let repo = ref_target_id.repo;
-        repo.write_locked_config(&config, lock)?;
-
+        // The reference first, as git does: should it fail, the config transaction drops unwritten.
         repo.reference(
             ref_to_create,
             ref_target_id,
             PreviousValue::MustNotExist,
             format!("GitButler creates local tracking for {remote_tracking_ref}"),
         )?;
+        config.commit()?;
     }
     Ok(())
 }
@@ -1073,52 +1042,30 @@ fn set_head_to_reference(
     new_ref: Option<&gix::refs::FullNameRef>,
 ) -> anyhow::Result<()> {
     let edits = match new_ref {
-        None => {
-            let head_message = "GitButler checkout workspace during apply-branch".into();
-            vec![RefEdit {
-                change: Change::Update {
-                    log: LogChange {
-                        mode: RefLog::AndReference,
-                        force_create_reflog: false,
-                        message: head_message,
-                    },
-                    expected: PreviousValue::Any,
-                    new: Target::Object(new_ref_target),
-                },
-                name: "HEAD".try_into().expect("well-formed root ref"),
-                deref: true,
-            }]
-        }
+        None => vec![
+            RefEdit::update(
+                "HEAD".try_into().expect("well-formed root ref"),
+                new_ref_target,
+                PreviousValue::Any,
+                "GitButler checkout workspace during apply-branch",
+            )
+            .with_deref(true),
+        ],
         Some(new_ref) => {
             // This also means we want HEAD to point to it.
-            let head_message = "GitButler switch to workspace during apply-branch".into();
             vec![
-                RefEdit {
-                    change: Change::Update {
-                        log: LogChange {
-                            mode: RefLog::AndReference,
-                            force_create_reflog: false,
-                            message: head_message,
-                        },
-                        expected: PreviousValue::Any,
-                        new: Target::Symbolic(new_ref.to_owned()),
-                    },
-                    name: "HEAD".try_into().expect("well-formed root ref"),
-                    deref: false,
-                },
-                RefEdit {
-                    change: Change::Update {
-                        log: LogChange {
-                            mode: RefLog::AndReference,
-                            force_create_reflog: false,
-                            message: "created by GitButler during apply-branch".into(),
-                        },
-                        expected: PreviousValue::Any,
-                        new: Target::Object(new_ref_target),
-                    },
-                    name: new_ref.to_owned(),
-                    deref: false,
-                },
+                RefEdit::update(
+                    "HEAD".try_into().expect("well-formed root ref"),
+                    new_ref.to_owned(),
+                    PreviousValue::Any,
+                    "GitButler switch to workspace during apply-branch",
+                ),
+                RefEdit::update(
+                    new_ref.to_owned(),
+                    new_ref_target,
+                    PreviousValue::Any,
+                    "created by GitButler during apply-branch",
+                ),
             ]
         }
     };

@@ -4,6 +4,7 @@ use but_core::{
 };
 use but_ctx::Context;
 use gix::refs::FullName;
+use itertools::Itertools as _;
 use serde::Serialize;
 
 use crate::{
@@ -81,12 +82,20 @@ pub fn run(
                 repo.try_find_reference(WORKSPACE_REF_NAME)?.is_some()
             };
             if workspace_exists {
-                but_api::branch::workspace_checkout_with_perm(ctx, perm)?;
+                let result = but_api::workspace::workspace_recreate_with_perm(ctx, perm)?;
+                if result.already_on_workspace {
+                    Ok(SwitchOutcome::AlreadyOnWorkspace)
+                } else {
+                    Ok(SwitchOutcome::Workspace {
+                        conflicting_stacks: result.conflicting_stacks,
+                    })
+                }
             } else {
                 but_api::legacy::virtual_branches::switch_back_to_workspace_with_perm(ctx, perm)?;
+                Ok(SwitchOutcome::Workspace {
+                    conflicting_stacks: Default::default(),
+                })
             }
-
-            Ok(SwitchOutcome::Workspace)
         }
         SwitchOperation::Branch { branch } => {
             but_api::branch::branch_checkout_with_perm(ctx, branch.clone(), perm)?;
@@ -120,7 +129,8 @@ pub enum SwitchOperation {
 
 #[must_use]
 pub enum SwitchOutcome {
-    Workspace,
+    Workspace { conflicting_stacks: Vec<FullName> },
+    AlreadyOnWorkspace,
     Branch { branch: FullName },
     CreatedBranch { branch: FullName },
 }
@@ -130,10 +140,30 @@ impl CliOutputHuman for SwitchOutcome {
         self,
         out: &mut dyn WriteWithUtils,
         _agent: bool,
-        _theme: &'static Theme,
+        theme: &'static Theme,
     ) -> anyhow::Result<()> {
         match self {
-            SwitchOutcome::Workspace => writeln!(out, "Switched to workspace")?,
+            SwitchOutcome::Workspace { conflicting_stacks } => {
+                writeln!(out, "Switched to workspace")?;
+
+                if !conflicting_stacks.is_empty() {
+                    writeln!(out)?;
+                    writeln!(
+                        out,
+                        "{} Failed to apply {} due to conflicts with existing {}",
+                        theme.sym().warning,
+                        conflicting_stacks.iter().map(theme::Branch).join(", "),
+                        if conflicting_stacks.len() == 1 {
+                            "stack"
+                        } else {
+                            "stacks"
+                        },
+                    )?;
+                }
+            }
+            SwitchOutcome::AlreadyOnWorkspace => {
+                writeln!(out, "Already on workspace")?;
+            }
             SwitchOutcome::Branch { branch } => {
                 writeln!(out, "Switched to branch {}", theme::Branch(branch))?
             }
@@ -149,13 +179,28 @@ impl CliOutputHuman for SwitchOutcome {
 impl CliOutput for SwitchOutcome {
     fn on_json(self) -> impl Serialize {
         #[derive(Serialize)]
-        struct Output {
-            branch: String,
+        #[serde(
+            tag = "type",
+            rename_all = "camelCase",
+            rename_all_fields = "camelCase"
+        )]
+        enum Output {
+            CreatedBranch { branch: String },
+            SwitchedToWorkspace { conflicting_branches: Vec<String> },
         }
 
         match self {
-            SwitchOutcome::Workspace | SwitchOutcome::Branch { .. } => None,
-            SwitchOutcome::CreatedBranch { branch } => Some(Output {
+            SwitchOutcome::Workspace { conflicting_stacks } => Some(Output::SwitchedToWorkspace {
+                conflicting_branches: conflicting_stacks
+                    .into_iter()
+                    .map(|b| b.shorten().to_string())
+                    .collect(),
+            }),
+            SwitchOutcome::AlreadyOnWorkspace => Some(Output::SwitchedToWorkspace {
+                conflicting_branches: Default::default(),
+            }),
+            SwitchOutcome::Branch { .. } => None,
+            SwitchOutcome::CreatedBranch { branch } => Some(Output::CreatedBranch {
                 branch: branch.shorten().to_string(),
             }),
         }

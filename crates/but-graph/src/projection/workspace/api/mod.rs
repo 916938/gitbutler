@@ -19,8 +19,6 @@ use crate::{
 pub type CommitOwnerIndexes = (usize, usize, CommitIndex);
 
 mod queries;
-#[cfg(feature = "legacy")]
-pub use queries::legacy::HeadStatus;
 
 /// Lifecycle
 impl Workspace {
@@ -66,11 +64,6 @@ impl Workspace {
         self.graph[self.id].ref_name()
     }
 
-    /// Like [Self::ref_name()], but returns reference and worktree information instead.
-    pub fn ref_info(&self) -> Option<&crate::RefInfo> {
-        self.graph[self.id].ref_info.as_ref()
-    }
-
     /// Like [`Self::ref_name()`], but return a generic `<anonymous>` name for unnamed workspaces.
     pub fn ref_name_display(&self) -> &BStr {
         self.ref_name()
@@ -86,15 +79,34 @@ impl Workspace {
         &self,
         metadata: &mut but_core::ref_metadata::Workspace,
     ) -> anyhow::Result<()> {
+        // Lanes share the history they converge on, so a branch can show in several stacks.
+        // It belongs to the stack it heads, or else to the first stack showing it.
+        let mut owner = std::collections::HashMap::new();
+        for (idx, stack) in self.stacks.iter().enumerate() {
+            for (pos, segment) in stack.segments.iter().enumerate() {
+                let Some(name) = segment.ref_name() else {
+                    continue;
+                };
+                let entry = owner.entry(name).or_insert((pos != 0, idx));
+                if entry.0 && pos == 0 {
+                    *entry = (false, idx);
+                }
+            }
+        }
         metadata.reconcile_projected_stacks(
-            self.stacks.iter().map(|stack| ProjectedWorkspaceStack {
-                id: stack.id,
-                branches: stack
-                    .segments
-                    .iter()
-                    .filter_map(|segment| segment.ref_name().map(ToOwned::to_owned))
-                    .collect(),
-            }),
+            self.stacks
+                .iter()
+                .enumerate()
+                .map(|(idx, stack)| ProjectedWorkspaceStack {
+                    id: stack.id,
+                    branches: stack
+                        .segments
+                        .iter()
+                        .filter_map(|segment| segment.ref_name())
+                        .filter(|name| owner[name].1 == idx)
+                        .map(ToOwned::to_owned)
+                        .collect(),
+                }),
             |_| StackId::generate(),
         )
     }
@@ -159,50 +171,28 @@ impl Workspace {
         Ok(Some(metadata))
     }
 
-    /// Return the name of the remote most closely associated with this workspace.
-    /// In order, we try:
-    /// - The remote name of the [Self::target_ref].
-    /// - The remote name configured in [workspace metadata](Self::metadata).
+    /// Return the name of the remote to push workspace branches to: the configured
+    /// push remote, or else the remote of the [`Self::target_ref`].
     ///
     /// The caller *may* consider falling back to [`gix::Repository::remote_default_name()`],
     /// but beware that one should handle ambiguity if there are more than one remotes.
-    pub fn remote_name(&self) -> Option<String> {
-        if let Some(tr) = self.target_ref.as_ref() {
-            // TODO: should we rather get remote configuration from the repository?
+    pub fn push_remote_name(&self) -> Option<String> {
+        self.graph.project_meta.push_remote.clone().or_else(|| {
             let remote_names = self
                 .graph
                 .symbolic_remote_names
                 .iter()
                 .map(|name| name.as_str().into())
                 .collect();
-            extract_remote_name_and_short_name(tr.ref_name.as_ref(), &remote_names)
+            let target_ref_name = self.target_ref.as_ref()?.ref_name.as_ref();
+            extract_remote_name_and_short_name(target_ref_name, &remote_names)
                 .map(|(remote_name, _)| remote_name)
-        } else {
-            self.graph.project_meta.push_remote.clone()
-        }
-    }
-
-    /// Return the resolved target commit ID for use as a base for new branches.
-    ///
-    /// Prefers the stored [`Self::target_commit`] (the last-synced target SHA),
-    /// falling back to the tip of [`Self::target_ref`] (the remote tracking branch).
-    /// Does not consider additional traversal tips.
-    ///
-    /// Use [`Self::stored_target_commit_id()`] instead when callers need only the explicit
-    /// stored target commit without falling back to the target ref tip.
-    ///
-    /// Returns `None` if neither `target_commit` nor `target_ref` is configured.
-    pub fn resolved_target_commit_id(&self) -> Option<gix::ObjectId> {
-        self.stored_target_commit_id().or_else(|| {
-            self.target_ref
-                .as_ref()
-                .and_then(|t| self.tip_commit_by_segment_id(t.segment_index).map(|c| c.id))
         })
     }
 
     /// Return the `(merge-base, target-commit-id)` of the merge-base between the `commit_to_merge`
-    /// and the effective target side, see [Self::effective_target_segment_index()].
-    /// Return `None` when none of these is set, or if there was no merge-base.
+    /// and the tip of [`Self::target_ref`].
+    /// Return `None` without a target ref, or if there was no merge-base.
     ///
     /// Use this to get the merge-base for test-merges between `commit_to_merge` and the target,
     /// whose commit is also returned as `target-commit-id`.
@@ -218,7 +208,7 @@ impl Workspace {
                 .then_some(s.id)
         })?;
 
-        let target_segment_index = self.effective_target_segment_index()?;
+        let target_segment_index = self.target_ref.as_ref()?.segment_index;
 
         let merge_base_segment_index = self
             .graph
@@ -230,14 +220,6 @@ impl Workspace {
                 self.tip_commit_by_segment_id(target_segment_index)
                     .map(|c| c.id),
             )
-    }
-
-    /// Return `true` if the workspace itself is where `HEAD` is pointing to.
-    /// If `false`, one of the stack-segments is checked out instead.
-    pub fn is_entrypoint(&self) -> bool {
-        self.stacks
-            .iter()
-            .all(|s| s.segments.iter().all(|s| !s.is_entrypoint))
     }
 
     /// Return an iterator over all commits in the workspace,
@@ -347,37 +329,6 @@ impl Workspace {
         self.find_segment_and_stack_by_refname(name).is_some()
     }
 
-    /// Return `true` if `name` is in the ancestry of the workspace entrypoint, and is IN the workspace as well.
-    pub fn is_reachable_from_entrypoint(&self, name: &gix::refs::FullNameRef) -> bool {
-        if self.ref_name().filter(|_| self.is_entrypoint()) == Some(name) {
-            return true;
-        }
-        if self.is_entrypoint() {
-            self.refname_is_segment(name)
-        } else {
-            let Some((entrypoint_stack, entrypoint_segment_idx)) =
-                self.stacks.iter().find_map(|stack| {
-                    stack
-                        .segments
-                        .iter()
-                        .enumerate()
-                        .find_map(|(idx, segment)| segment.is_entrypoint.then_some((stack, idx)))
-                })
-            else {
-                return false;
-            };
-            entrypoint_stack
-                .segments
-                .get(entrypoint_segment_idx..)
-                .into_iter()
-                .any(|segments| {
-                    segments
-                        .iter()
-                        .any(|s| s.ref_name().is_some_and(|rn| rn == name))
-                })
-        }
-    }
-
     /// Try to find `name` in any named [`StackSegment`] and return it along with the stack containing it.
     pub fn find_segment_and_stack_by_refname(
         &self,
@@ -390,46 +341,6 @@ impl Workspace {
                     .then_some((stack, seg))
             })
         })
-    }
-
-    /// Try to find a commit in the workspace and return it along with the segment and stack containing it.
-    pub fn find_commit_and_containers(
-        &self,
-        commit_id: gix::ObjectId,
-    ) -> Option<(&Stack, &StackSegment, &StackCommit)> {
-        self.stacks.iter().find_map(|stack| {
-            stack.segments.iter().find_map(|seg| {
-                seg.commits
-                    .iter()
-                    .find(|commit| commit.id == commit_id)
-                    .map(|commit| (stack, seg, commit))
-            })
-        })
-    }
-
-    /// Try to find the owning graph segment of `commit_id` in the workspace.
-    ///
-    /// This uses the stack segment's `commits_by_segment` offsets to map a projected
-    /// commit back to its source graph segment.
-    pub fn find_commit_segment_index(&self, commit_id: gix::ObjectId) -> Option<SegmentIndex> {
-        let (stack_segment, commit_offset) = self.stacks.iter().find_map(|stack| {
-            stack.segments.iter().find_map(|seg| {
-                seg.commits
-                    .iter()
-                    .enumerate()
-                    .find_map(|(offset, commit)| (commit.id == commit_id).then_some((seg, offset)))
-            })
-        })?;
-
-        let mut owning_segment = stack_segment.id;
-        for (segment_id, offset) in &stack_segment.commits_by_segment {
-            if *offset > commit_offset {
-                break;
-            }
-            owning_segment = *segment_id;
-        }
-
-        Some(owning_segment)
     }
 
     /// Like [`Self::find_segment_and_stack_by_refname`], but fails with an error.
@@ -537,13 +448,16 @@ impl TargetRef {
 
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct(&format!("Workspace({})", self.debug_string()))
-            .field("id", &self.id.index())
+        let mut s = f.debug_struct(&format!("Workspace({})", self.debug_string()));
+        s.field("id", &self.id.index())
             .field("kind", &self.kind)
             .field("stacks", &self.stacks)
             .field("metadata", &self.metadata)
             .field("target_ref", &self.target_ref)
-            .field("target_commit", &self.target_commit)
-            .finish()
+            .field("target_commit", &self.target_commit);
+        if !self.worktrees.is_empty() {
+            s.field("worktrees", &self.worktrees);
+        }
+        s.finish()
     }
 }

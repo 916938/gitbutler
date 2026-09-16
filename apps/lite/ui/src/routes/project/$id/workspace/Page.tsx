@@ -10,11 +10,12 @@ import {
 	absorptionPlanQueryOptions,
 	changesInWorktreeQueryOptions,
 	guiSettingsQueryOptions,
-	headInfoQueryOptions,
 	listProjectsQueryOptions,
 	operatingModeQueryOptions,
-	treeChangesDiffsQueryOptions,
+	worktreeChangesQueryOptions,
 } from "#ui/api/queries.ts";
+import { compareFilePaths } from "#ui/file-order.ts";
+import type { WorktreeChanges } from "@gitbutler/but-sdk";
 import { EditModePage } from "./EditModePage.tsx";
 import { useRestoreSnapshot } from "#ui/api/mutations.ts";
 import {
@@ -35,6 +36,7 @@ import {
 	QueryErrorResetBoundary,
 	useQueries,
 	useQuery,
+	useQueryClient,
 	useSuspenseQuery,
 } from "@tanstack/react-query";
 import { monitorForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
@@ -48,13 +50,20 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	type ReactNode,
 } from "react";
 import { Group, Panel, useDefaultLayout } from "react-resizable-panels";
-import { branchAddress, type BranchAddress, uncommittedChangesFileParent } from "#ui/addresses.ts";
-import type { DiffLineSelection } from "#ui/cursors.ts";
+import {
+	branchAddress,
+	type BranchAddress,
+	type FileAddress,
+	uncommittedChangesFileParent,
+	weakFileIdentityKey,
+} from "#ui/addresses.ts";
 import { Details, type DiffViewerHandle, UncommittedFilesDetails } from "./Details.tsx";
 import { buildAppliedAddressSpace } from "./applied-address-space.ts";
-import { getDiffFileNavigation } from "./diff-view.ts";
+import { targetCommitReview } from "./Graph/layout.ts";
+import { usePlan } from "./Graph/usePlan.ts";
 import { buildUncommittedFileRows } from "./file-row.ts";
 import { fileTreeAddressSpace, selectedFilePath } from "./file-tree.ts";
 import { useFileDisplayMode } from "./useFileDisplayMode.ts";
@@ -68,8 +77,8 @@ import { Sidebar } from "./Sidebar.tsx";
 import { OperationControls } from "#ui/routes/project/$id/workspace/OperationControls.tsx";
 import { ErrorBoundary } from "#ui/components/ErrorBoundary.tsx";
 import { Settings } from "./Settings/Settings.tsx";
+import { BranchUpdateDialog } from "./BranchUpdatePanel.tsx";
 import { useBranchesList } from "./useBranchesList.ts";
-import { upstreamCommitReview, useUpstreamList } from "./useUpstreamList.ts";
 import { useStateReconciler as useReconcileState } from "#ui/reconcile.ts";
 import { useReviewActivityInbox } from "#ui/review-notifications.ts";
 import { useStampReviewsSeen } from "#ui/review-seen.ts";
@@ -83,7 +92,7 @@ import {
 	useSelection,
 	useActiveList,
 } from "#ui/use-cursor.ts";
-import type { ActiveList } from "#ui/projects/project.ts";
+import { activeLists, type ActiveList } from "#ui/projects/project.ts";
 import { defaultSettings } from "#ui/settings.ts";
 import { parseDragData } from "./DragData.ts";
 
@@ -91,7 +100,12 @@ import { parseDragData } from "./DragData.ts";
 // stored in local storage.
 type PanelId = "sidebar-panel" | "details-panel";
 
+/** A worktree's changed paths as its lane lists them; a stable function, so the query memoises the selection. */
+const changedPaths = (changes: WorktreeChanges): Array<string> =>
+	changes.changes.map((change) => change.path).sort(compareFilePaths);
+
 const useWorkspaceHotkeys = (projectId: string) => {
+	const queryClient = useQueryClient();
 	const dispatch = useAppDispatch();
 	const store = useAppStore();
 	const detailsFullWindow = useAppSelector(interfaceSlice.selectors.selectDetailsFullWindow);
@@ -112,7 +126,12 @@ const useWorkspaceHotkeys = (projectId: string) => {
 	// Shared by the arrow keys and their h/l aliases so the pairs cannot diverge.
 	const focusPane = (offset: -1 | 1) => {
 		focusHorizontalScope({
-			filesVisible: getFilesVisible(),
+			filesPanelSide: !getFilesVisible()
+				? null
+				: (queryClient.getQueryData(guiSettingsQueryOptions.queryKey)?.filesPanelRight ??
+					  defaultSettings.filesPanelRight)
+					? "right"
+					: "left",
 			offset,
 			sidebarFocusScope,
 			detailsFullWindow,
@@ -211,15 +230,6 @@ const useWorkspaceHotkeys = (projectId: string) => {
 					},
 				},
 			]),
-			Match.when("upstream", () => [
-				{
-					hotkey: "1",
-					callback: () => focusScope("sidebar"),
-					options: {
-						enabled: !detailsFullWindow,
-					},
-				},
-			]),
 			Match.exhaustive,
 		),
 		{
@@ -288,19 +298,25 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 	// to bypass that latter file selection. We could alternatively attempt to pad the scroll
 	// container, but that comes with other complexities and tradeoffs.
 	const didScrollToViaFileRef = useRef(false);
+	// A selected file the viewer has no item for yet; Details scrolls to it once its diff streams in.
+	const pendingFileRef = useRef<FileAddress | null>(null);
 
 	// useCallback, not compiler memoisation: the deferred details element below
 	// keys on this identity, so it must be stable by construction.
 	const onActiveFileSelection = useCallback(
-		(itemId: string, firstSelection: DiffLineSelection | null) => {
-			setCursor("diff", firstSelection);
+		(file: FileAddress) => {
+			setCursor("diff", { file, range: null });
+			pendingFileRef.current = null;
 
 			if (renderAllFiles) {
-				didScrollToViaFileRef.current = true;
+				const itemId = weakFileIdentityKey(file);
 				const viewer = viewerRef.current?.getInstance();
 				// Details selection is deferred, so the ref may still point at a viewer without this file.
-				if (!viewer?.getItem(itemId)) return;
-
+				if (!viewer?.getItem(itemId)) {
+					pendingFileRef.current = file;
+					return;
+				}
+				didScrollToViaFileRef.current = true;
 				viewer.scrollTo({
 					type: "item",
 					id: itemId,
@@ -392,10 +408,21 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 	// between `new Set(...)` and `buildAppliedAddressSpace(...)` left both
 	// unmemoized: every render rebuilt the address space and re-rendered every
 	// row that reads it through context.
-	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
+	const graph = usePlan(projectId);
 	const foldedSegments = useAppSelector((state) =>
 		projectSlice.selectors.selectFoldedSegments(state, projectId),
 	);
+	// Captured by name: the graph object is new every render, its worktrees are
+	// not, so the compiler keeps the `combine` callback below stable on them.
+	const graphWorktrees = graph.worktrees;
+	const worktreeFiles = useQueries({
+		queries: graphWorktrees.map((worktree) => ({
+			...worktreeChangesQueryOptions(projectId, worktree.name),
+			select: changedPaths,
+		})),
+		combine: (results) =>
+			new Map(graphWorktrees.map((worktree, index) => [worktree.name, results[index]?.data ?? []])),
+	});
 	const absorptionPlanTarget = Match.value(pendingOperation).pipe(
 		Match.tags({ Absorb: ({ sourceTarget }) => sourceTarget }),
 		Match.orElse(() => null),
@@ -410,7 +437,9 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 	);
 
 	const appliedAddressSpace = buildAppliedAddressSpace({
-		headInfo,
+		stacks: graph.stacks,
+		plan: graph.plan,
+		worktreeFiles,
 		pendingOperation,
 		absorptionTargetCommitIds,
 		foldedSegments,
@@ -423,11 +452,9 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 		isPending: branchesPending,
 		isError: branchesError,
 	} = useBranchesList(projectId);
-	const upstreamList = useUpstreamList(projectId);
 
 	const appliedSelection = useSelection("applied", appliedAddressSpace);
 	const branchesSelection = useSelection("unapplied", branches?.addressSpace);
-	const upstreamSelection = useSelection("upstream", upstreamList.addressSpace);
 
 	const { data: worktreeChanges } = useQuery(changesInWorktreeQueryOptions(projectId));
 	const uncommittedFilesFilter = useAppSelector((state) =>
@@ -450,102 +477,67 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 	// Directories take the cursor as files do, so the index follows the layout the
 	// list renders — and a collapsed directory takes its files out of it too.
 	const uncommittedAddressSpace = fileTreeAddressSpace(uncommittedFileRows);
-	const { data: uncommittedTreeChangeDiffs } = useQuery({
-		...treeChangesDiffsQueryOptions({
-			projectId,
-			changes: worktreeChanges?.changes ?? [],
-		}),
-		enabled: worktreeChanges !== undefined,
-	});
-
 	const onActiveUncommittedFileSelection = (selection: string) => {
 		// A directory row stands for the first file below it, so activating a
 		// folder still gives the details pane somewhere to go.
 		const path = selectedFilePath(uncommittedFileRows, selection);
-		// Indexed against the worktree changes rather than the address space,
-		// which the file filter can narrow out from under them.
-		const index = worktreeChanges?.changes.findIndex((change) => change.path === path) ?? -1;
-		const change = index === -1 ? undefined : worktreeChanges?.changes[index];
-		const treeChangeDiff = index === -1 ? undefined : uncommittedTreeChangeDiffs?.[index];
-		const navigation =
-			change && treeChangeDiff !== undefined
-				? getDiffFileNavigation({
-						fileParent: uncommittedChangesFileParent,
-						change,
-						treeChangeDiff,
-					})
-				: null;
-
 		setCursor("uncommitted", selection);
-		if (navigation) onActiveFileSelection(navigation.itemId, navigation.firstSelection);
+		if (path !== null) onActiveFileSelection({ parent: uncommittedChangesFileParent, path });
 	};
 
 	const uncommittedFilesSelection = useSelection("uncommitted", uncommittedAddressSpace);
 
 	const activeList = useActiveList();
-	// Which list's cursor drives the pane. Normally the active one, but a cursor
-	// is null only when its list is empty, and an empty list has no details to
-	// give: rather than go blank beside a sibling with content in it, the pane
-	// shows the sibling. Only the pane bends — `activeList` still says where the
-	// user is standing, which is what operations and the keyboard act on.
-	const detailsList: ActiveList =
-		activeList === "applied"
-			? appliedSelection === null && uncommittedFilesSelection !== null
-				? "uncommitted"
-				: "applied"
-			: uncommittedFilesSelection === null && appliedSelection !== null
-				? "applied"
-				: "uncommitted";
-	// The page picks only which list's cursor drives the pane; one Details
-	// component then dispatches on the selection itself. The uncommitted arm is
-	// the genuine fork — its cursor is a path, not an address. Memoised because
-	// `useDeferredValue` compares by identity, so a freshly built element every
-	// render would defer every render. Looked up outside the memo so the details
-	// only rebuild when the review itself changes, not on every list rerun.
-	const upstreamReview =
-		upstreamSelection?._tag === "Commit"
-			? upstreamCommitReview(upstreamList, upstreamSelection.commitId)
+	// One Details component dispatches on the selection itself; the uncommitted
+	// list is the genuine fork, its cursor a path, not an address. Memoised
+	// because `useDeferredValue` compares by identity, so a freshly built element
+	// every render would defer every render. Looked up outside the memo so the
+	// details only rebuild when the review itself changes, not on every list rerun.
+	// A commit on the target line, selected anywhere in the graph, carries the review it landed.
+	const appliedReview =
+		appliedSelection?._tag === "Commit"
+			? targetCommitReview(graph.listing, appliedSelection.commitId, graph.plan.history)
 			: null;
 	const details = useMemo(() => {
-		const viewProps = { projectId, onActiveFileSelection, viewerRef, didScrollToViaFileRef };
+		const viewProps = {
+			projectId,
+			onActiveFileSelection,
+			viewerRef,
+			didScrollToViaFileRef,
+			pendingFileRef,
+		};
+
+		// Each workspace list's details, null while its cursor is: a cursor is
+		// null only when its list is empty, and an empty list has nothing to give.
+		const detailsFor: { [L in ActiveList]: ReactNode } = {
+			applied:
+				appliedSelection === null ? null : (
+					<Details selection={appliedSelection} review={appliedReview} {...viewProps} />
+				),
+			uncommitted:
+				uncommittedFilesSelection === null ? null : (
+					<UncommittedFilesDetails path={uncommittedFilesSelection} {...viewProps} />
+				),
+		};
+		// The pane follows the active list, else the first sibling with something
+		// to show, rather than going blank beside content. Only the pane bends:
+		// `activeList` still says where the user stands, which is what operations
+		// and the keyboard act on.
+		const detailsList =
+			[activeList, ...activeLists.filter((list) => list !== activeList)].find(
+				(list) => detailsFor[list] !== null,
+			) ?? activeList;
 
 		return Match.value(page).pipe(
-			Match.when("workspace", () =>
-				Match.value(detailsList).pipe(
-					Match.when("applied", () =>
-						appliedSelection === null ? (
-							// Both lists are empty by now: `detailsList` would have picked the
-							// uncommitted one if it had anything to show.
-							<DetailsPlaceholder
-								title="Nothing to show yet"
-								description="Details of whatever you select appear in this pane"
-							/>
-						) : (
-							<Details selection={appliedSelection} review={null} {...viewProps} />
-						),
+			Match.when(
+				"workspace",
+				() =>
+					detailsFor[detailsList] ?? (
+						<DetailsPlaceholder
+							title="Nothing to show yet"
+							description="Details of whatever you select appear in this pane"
+						/>
 					),
-					Match.when("uncommitted", () =>
-						uncommittedFilesSelection === null ? (
-							<DetailsPlaceholder
-								title="Nothing to show yet"
-								description="Details of whatever you select appear in this pane"
-							/>
-						) : (
-							<UncommittedFilesDetails path={uncommittedFilesSelection} {...viewProps} />
-						),
-					),
-					Match.exhaustive,
-				),
-			),
-			Match.when("upstream", () =>
-				upstreamSelection === null ? (
-					<DetailsPlaceholder
-						title="Upstream commits appear here"
-						description="Whatever lands on your target branch before you bring it in"
-					/>
-				) : (
-					<Details selection={upstreamSelection} review={upstreamReview} {...viewProps} />
-				),
 			),
 			Match.when("branches", () =>
 				branchesSelection === null ? (
@@ -564,11 +556,10 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 		branchesSelection,
 		onActiveFileSelection,
 		appliedSelection,
+		appliedReview,
 		page,
 		uncommittedFilesSelection,
-		upstreamReview,
-		upstreamSelection,
-		detailsList,
+		activeList,
 	]);
 
 	const deferredDetails = useDeferredValue(details);
@@ -640,6 +631,8 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 				{...selectionFocus}
 				id={layoutId}
 				className={styles.page}
+				// The handle's own box is the grab area; see ResizeHandle's grab="after".
+				resizeTargetMinimumSize={{ coarse: 1, fine: 1 }}
 				defaultLayout={workspaceLayout.defaultLayout}
 				onLayoutChanged={workspaceLayout.onLayoutChanged}
 				data-selection-focus-styles={
@@ -663,7 +656,7 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 								branches={branches}
 								branchesPending={branchesPending}
 								branchesError={branchesError}
-								upstreamList={upstreamList}
+								graph={graph}
 								addressSpace={appliedAddressSpace}
 								uncommittedAddressSpace={uncommittedAddressSpace}
 								absorptionTargetCommitIds={absorptionTargetCommitIds}
@@ -671,7 +664,7 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 							/>
 						</ErrorBoundary>
 					</Panel>
-					<ResizeHandle />
+					<ResizeHandle grab="after" />
 				</Activity>
 
 				<Panel
@@ -717,12 +710,23 @@ const PageBody: FC<{ projectId: string }> = ({ projectId }) => {
 					// The picker is an anchored dropdown living with the project name in the header, so
 					// this state only tells it to open — there is nothing for the switch to render.
 					ProjectPicker: () => null,
-					Settings: () => (
+					Settings: ({ page }) => (
 						<Settings
+							page={page}
 							open
 							projectId={projectId}
 							projectName={projectName}
 							onOpenChange={setSettingsOpen}
+						/>
+					),
+					UpdateFromRemote: ({ branchRef }) => (
+						<BranchUpdateDialog
+							open
+							projectId={projectId}
+							branchRef={branchRef}
+							onOpenChange={(open) => {
+								if (!open) dispatch(interfaceSlice.actions.closeDialog());
+							}}
 						/>
 					),
 				}),

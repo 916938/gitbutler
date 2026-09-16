@@ -15,10 +15,8 @@ export const treeItemId = (address: Address): string =>
  * stored cursor aligned with the resolved selection via
  * `useCursorWriteBack`.
  */
-export const useIsSelected = (
-	address: Address,
-	name: "applied" | "unapplied" | "upstream",
-): boolean => useCursorMatches(name, address);
+export const useIsSelected = (address: Address, name: "applied" | "unapplied"): boolean =>
+	useCursorMatches(name, address);
 
 export const getRowButtonClassName = ({
 	variant = "ghost",
@@ -45,3 +43,6 @@ export const getRowButtonClassName = ({
 			Match.exhaustive,
 		),
 	);
+
+/** One title line plus a metadata line; shared by both commit list virtualizers. */
+export const COMMIT_ROW_HEIGHT = 54;

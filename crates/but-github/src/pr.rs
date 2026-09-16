@@ -2,7 +2,13 @@ use anyhow::{Context as _, Result};
 
 use crate::client::{GitHubClient, HttpStatusError};
 
+const GITHUB_RATE_LIMIT_MESSAGE: &str = "GitHub's API rate limit was exceeded. Automatic refreshes are paused; the limit usually resets within an hour.";
 const GITHUB_ORG_SAML_RESTRICTION_MESSAGE: &str = "This GitHub organization requires SAML SSO. Authorize the GitButler OAuth app on the organization's SSO page, or authorize your personal access token in GitHub's token SSO settings, then try again.";
+/// The wording shared by GitHub's classic and fine-grained token-lifetime
+/// refusals; the surrounding sentence names the organization and a token URL,
+/// which never reach the user.
+const GITHUB_TOKEN_LIFETIME_PHRASE: &str = "if the token's lifetime is greater than";
+const GITHUB_TOKEN_LIFETIME_RESTRICTION_MESSAGE: &str = "A GitHub organization limits how long personal access tokens may stay valid. Create a token with a shorter expiration that meets the organization's policy, then reconnect GitHub with it.";
 pub async fn list(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     owner: &str,
@@ -90,10 +96,19 @@ pub(crate) fn classify_forge_error(err: anyhow::Error) -> anyhow::Error {
                 "GitHub authentication failed.",
             ));
         }
+        // `ensure_success` keeps GitHub's response body in the chain.
+        let contains = |needle: &str| err.chain().any(|cause| cause.to_string().contains(needle));
+        // Primary limits answer 403 "API rate limit exceeded for …"; secondary
+        // limits answer 403 or 429 "You have exceeded a secondary rate limit".
+        if http_err.status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || (http_err.status == reqwest::StatusCode::FORBIDDEN && contains("rate limit"))
+        {
+            return err.context(but_error::Context::new_static(
+                but_error::Code::GitHubRateLimited,
+                GITHUB_RATE_LIMIT_MESSAGE,
+            ));
+        }
         if http_err.status == reqwest::StatusCode::FORBIDDEN {
-            // `ensure_success` keeps GitHub's response body in the chain.
-            let contains =
-                |needle: &str| err.chain().any(|cause| cause.to_string().contains(needle));
             let context = if contains("OAuth App access restrictions") {
                 Some(but_error::Context::new_static(
                     but_error::Code::GitHubOrgOAuthRestricted,
@@ -103,6 +118,11 @@ pub(crate) fn classify_forge_error(err: anyhow::Error) -> anyhow::Error {
                 Some(but_error::Context::new_static(
                     but_error::Code::GitHubOrgSamlRestricted,
                     GITHUB_ORG_SAML_RESTRICTION_MESSAGE,
+                ))
+            } else if contains(GITHUB_TOKEN_LIFETIME_PHRASE) {
+                Some(but_error::Context::new_static(
+                    but_error::Code::GitHubTokenLifetimeRestricted,
+                    GITHUB_TOKEN_LIFETIME_RESTRICTION_MESSAGE,
                 ))
             } else if contains("Resource not accessible by personal access token") {
                 Some(but_error::Context::new_static(
@@ -252,6 +272,40 @@ pub async fn remove_review_reaction(
         .context("Failed to remove pull request reaction")
 }
 
+pub async fn add_pr_review_reaction(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    review_id: i64,
+    content: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<crate::client::Reaction> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .add_pull_request_review_reaction(owner, repo, pr_number, review_id, content)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to add review reaction")
+}
+
+pub async fn remove_pr_review_reaction(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    owner: &str,
+    repo: &str,
+    pr_number: usize,
+    review_id: i64,
+    content: &str,
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    let pr_number = pr_number.try_into().context("PR number is too large")?;
+    GitHubClient::from_storage(storage, preferred_account)?
+        .remove_pull_request_review_reaction(owner, repo, pr_number, review_id, content)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to remove review reaction")
+}
+
 pub async fn add_comment_reaction(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
     owner: &str,
@@ -329,11 +383,18 @@ pub async fn list_reviewer_candidates(
     repo: &str,
     storage: &but_forge_storage::Controller,
 ) -> Result<Vec<crate::client::GitHubUser>> {
-    GitHubClient::from_storage(storage, preferred_account)?
+    let client = GitHubClient::from_storage(storage, preferred_account)?;
+    let mut users = client
         .list_assignable_users(owner, repo)
         .await
         .map_err(classify_forge_error)
-        .context("Failed to list reviewer candidates")
+        .context("Failed to list reviewer candidates")?;
+    // Best effort: a failed profile lookup must not take the collaborators with it.
+    match client.get_copilot_reviewer().await {
+        Ok(copilot) => users.extend(copilot),
+        Err(err) => tracing::warn!("Skipping Copilot as a reviewer candidate: {err:#}"),
+    }
+    Ok(users)
 }
 
 pub async fn request_reviewers(
@@ -408,6 +469,20 @@ pub async fn list_pr_reviews(
         .context("Failed to list pull request reviews")
 }
 
+/// Set the resolution state of a review conversation.
+pub async fn set_review_thread_resolved(
+    preferred_account: Option<&crate::GithubAccountIdentifier>,
+    thread_id: &str,
+    resolved: bool,
+    storage: &but_forge_storage::Controller,
+) -> Result<()> {
+    GitHubClient::from_storage(storage, preferred_account)?
+        .set_review_thread_resolved(thread_id, resolved)
+        .await
+        .map_err(classify_forge_error)
+        .context("Failed to change review thread resolution")
+}
+
 /// Reply into an existing review thread, returning the comment it made.
 pub async fn create_review_thread_reply(
     preferred_account: Option<&crate::GithubAccountIdentifier>,
@@ -473,7 +548,6 @@ pub async fn merge(
     GitHubClient::from_storage(storage, preferred_account)?
         .merge_pull_request(&params)
         .await
-        .context("Failed to merge PR")
 }
 
 pub async fn set_draft_state(
@@ -618,12 +692,112 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_responses_get_dedicated_code_and_static_message() {
+        let cases = [
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                r#"403 Forbidden: {"message":"API rate limit exceeded for user ID 1. If you reach out to GitHub Support for help, please include the request ID ABCD:1234."}"#,
+            ),
+            (
+                reqwest::StatusCode::FORBIDDEN,
+                r#"403 Forbidden: {"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}"#,
+            ),
+            (
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                r#"429 Too Many Requests: {"message":"You have exceeded a secondary rate limit."}"#,
+            ),
+        ];
+        for (status, body) in cases {
+            let err = classify_forge_error(http_error(status, body));
+            let ctx = err.downcast_ref::<but_error::Context>().unwrap_or_else(|| {
+                panic!("a rate-limit response needs a frontend context: {body}")
+            });
+            assert_eq!(
+                (ctx.code, ctx.message.as_deref()),
+                (
+                    but_error::Code::GitHubRateLimited,
+                    Some(GITHUB_RATE_LIMIT_MESSAGE)
+                ),
+                "rate limits need a dedicated code and guidance without user or request ids"
+            );
+        }
+    }
+
+    #[test]
+    fn token_lifetime_policy_403_gets_dedicated_code_and_static_message() {
+        let bodies = [
+            // Reported classic-PAT wording with the organization and token id replaced.
+            r#"403 Forbidden: {"message":"The 'example-org' organization forbids access via a personal access tokens (classic) if the token's lifetime is greater than 180 days. Please adjust your token's lifetime at the following URL: https://github.com/settings/tokens/123456"}"#,
+            // Synthetic fine-grained fixture sharing the same policy phrase; not observed in production.
+            r#"403 Forbidden: {"message":"The 'example-org' organization forbids access via a fine-grained personal access token if the token's lifetime is greater than 90 days. Please adjust your token's lifetime at the following URL: https://github.com/settings/personal-access-tokens/123456"}"#,
+        ];
+        for body in bodies {
+            let err = classify_forge_error(http_error(reqwest::StatusCode::FORBIDDEN, body));
+            let ctx = err
+                .downcast_ref::<but_error::Context>()
+                .expect("a token-lifetime 403 needs a frontend context");
+            assert_eq!(
+                (ctx.code, ctx.message.as_deref()),
+                (
+                    but_error::Code::GitHubTokenLifetimeRestricted,
+                    Some(GITHUB_TOKEN_LIFETIME_RESTRICTION_MESSAGE)
+                ),
+                "lifetime refusals need a dedicated code and static guidance"
+            );
+            let message = ctx
+                .message
+                .as_deref()
+                .expect("lifetime guidance is present");
+            assert!(
+                ![
+                    "example-org",
+                    "settings/tokens",
+                    "settings/personal-access-tokens"
+                ]
+                .iter()
+                .any(|detail| message.contains(detail)),
+                "the classifier must discard the organization name and token URL"
+            );
+        }
+    }
+
+    #[test]
+    fn token_lifetime_phrase_requires_403_and_yields_to_rate_limits() {
+        let code = |status, body: &str| {
+            classify_forge_error(http_error(status, body))
+                .downcast_ref::<but_error::Context>()
+                .map(|ctx| ctx.code)
+        };
+        let lifetime = r#"{"message":"The organization forbids access if the token's lifetime is greater than 30 days."}"#;
+        assert_eq!(
+            code(reqwest::StatusCode::UNAUTHORIZED, lifetime),
+            Some(but_error::Code::GitHubTokenExpired),
+            "401 retains its authentication classification"
+        );
+        assert_eq!(
+            code(
+                reqwest::StatusCode::FORBIDDEN,
+                r#"{"message":"API rate limit exceeded for user ID 1 if the token's lifetime is greater than 1 day."}"#
+            ),
+            Some(but_error::Code::GitHubRateLimited),
+            "rate limits keep precedence over the lifetime phrase"
+        );
+        assert_eq!(
+            code(
+                reqwest::StatusCode::FORBIDDEN,
+                r#"{"message":"This token's lifetime cannot be extended."}"#
+            ),
+            None,
+            "an unrelated lifetime phrase stays unclassified"
+        );
+    }
+
+    #[test]
     fn other_403s_stay_unclassified() {
         // Only production-observed wordings are classified; the rest keep
         // their raw message and stay visible in telemetry as `Unknown`.
         for body in [
             r#"403 Forbidden: {"message":"Resource not accessible by integration"}"#,
-            r#"403 Forbidden: {"message":"API rate limit exceeded for user ID 1."}"#,
             r#"403 Forbidden: {"message":"See the SAML setup guide","documentation_url":"https://example.invalid/docs/saml-enforcement"}"#,
             r#"403 Forbidden: {"message":"Repository access blocked"}"#,
         ] {

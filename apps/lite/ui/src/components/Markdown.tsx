@@ -1,25 +1,29 @@
+import { reportError } from "#ui/error-reporting.ts";
 import { guiSettingsQueryOptions } from "#ui/api/queries.ts";
 import { classes } from "#ui/components/classes.ts";
 import { Icon } from "#ui/components/Icon.tsx";
 import { defaultSettings } from "#ui/settings.ts";
 import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, FC, MouseEvent } from "react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGemoji from "remark-gemoji";
 import remarkGfm from "remark-gfm";
-import type { BundledLanguage, ThemedToken } from "shiki";
+import { codeToTokens, type BundledLanguage } from "shiki";
 import styles from "./Markdown.module.css";
+
+/** The links that leave the app — the only ones that open at all. */
+const isExternalUrl = (url: string | undefined): url is string =>
+	url !== undefined && (url.startsWith("http://") || url.startsWith("https://"));
 
 const openExternally = (evt: MouseEvent<HTMLAnchorElement>): void => {
 	evt.preventDefault();
 	const url = evt.currentTarget.href;
-	if (url.startsWith("http://") || url.startsWith("https://")) {
+	if (isExternalUrl(url)) {
 		window.lite.openInWebBrowser(url).catch((error: unknown) => {
-			// oxlint-disable-next-line no-console
-			console.error(error);
+			reportError(error);
 		});
 	}
 };
@@ -101,39 +105,23 @@ const CodeBlock: FC<{ language: string; code: string }> = ({ language, code }) =
 	const light = themeCfg?.light ?? defaultSettings.syntaxHighlighting.light;
 	const dark = themeCfg?.dark ?? defaultSettings.syntaxHighlighting.dark;
 
-	const [tokens, setTokens] = useState<Array<Array<ThemedToken>> | null>(null);
+	const { data: tokensResult } = useQuery({
+		queryKey: ["markdownTokens", code, language, light, dark],
+		queryFn: () =>
+			codeToTokens(code, {
+				// Invalid names reject and we keep the plain fallback.
+				lang: language as BundledLanguage,
+				themes: { light, dark },
+				defaultColor: false,
+				cssVariablePrefix: "--shiki-",
+			}),
+	});
 
-	useEffect(() => {
-		const effect = { cancelled: false };
-		void (async () => {
-			try {
-				const { codeToTokens } = await import("shiki");
-				const result = await codeToTokens(code, {
-					// Invalid names reject and we keep the plain fallback.
-					lang: language as BundledLanguage,
-					themes: { light, dark },
-					defaultColor: false,
-					cssVariablePrefix: "--shiki-",
-				});
-				if (!effect.cancelled) setTokens(result.tokens);
-			} catch (error) {
-				// Plain rendering is the deliberate fallback for unknown
-				// languages, but the failure should still be visible.
-				// oxlint-disable-next-line no-console
-				console.error(error);
-				if (!effect.cancelled) setTokens(null);
-			}
-		})();
-		return () => {
-			effect.cancelled = true;
-		};
-	}, [code, language, light, dark]);
-
-	if (tokens === null) return <code>{code}</code>;
+	if (tokensResult === undefined) return <code>{code}</code>;
 
 	return (
 		<code className={styles.highlighted}>
-			{tokens.map((line, lineIdx) => (
+			{tokensResult.tokens.map((line, lineIdx) => (
 				// Lines are positional; there is no stable identity to key on.
 				// oxlint-disable-next-line react/no-array-index-key
 				<span key={lineIdx}>
@@ -153,6 +141,41 @@ const CodeBlock: FC<{ language: string; code: string }> = ({ language, code }) =
 const fencedLanguage = (className: string | undefined): string | undefined =>
 	/language-([\w+#-]+)/.exec(className ?? "")?.[1];
 
+type MarkdownNode = {
+	type: string;
+	value?: string;
+	children?: Array<MarkdownNode>;
+};
+
+// Review prose sometimes mentions a tag without backticks. Preserve a lone
+// tag inside a paragraph before the HTML parser can split the sentence around it.
+const remarkLiteralTags = () => {
+	const visit = (node: MarkdownNode): void => {
+		if (["paragraph", "emphasis", "strong", "delete", "link"].includes(node.type)) {
+			const html = node.children?.filter((child) => child.type === "html") ?? [];
+			const markup = html.map((child) => child.value).join("");
+			for (const child of html) {
+				const match = /^<(\/?)([a-z][a-z0-9-]*)>$/i.exec(child.value ?? "");
+				if (!match) continue;
+				const [, closing, tag] = match;
+				if (
+					tag === undefined ||
+					/^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/i.test(tag)
+				)
+					continue;
+
+				const counterpart = new RegExp(
+					closing === "/" ? `<${tag}(?:\\s[^>]*|)>` : `</${tag}\\s*>`,
+					"i",
+				);
+				if (!counterpart.test(markup)) child.type = "inlineCode";
+			}
+		}
+		for (const child of node.children ?? []) visit(child);
+	};
+	return visit;
+};
+
 /**
  * Renders forge-flavored markdown with GitHub-parity restrictions:
  *
@@ -169,11 +192,18 @@ const fencedLanguage = (className: string | undefined): string | undefined =>
 export const Markdown: FC<{ children: string }> = ({ children }) => (
 	<div className={classes("text-13", "text-body", styles.markdown)}>
 		<ReactMarkdown
-			remarkPlugins={[remarkGfm, remarkGemoji]}
+			remarkPlugins={[remarkGfm, remarkGemoji, remarkLiteralTags]}
 			rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
 			components={{
-				// oxlint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- href and children arrive via the spread; it stays a real anchor.
-				a: ({ node: _node, ...props }) => <a {...props} onClick={openExternally} />,
+				a: ({ node: _node, children, ...props }) => (
+					// oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- href arrives via the spread; it stays a real anchor.
+					<a {...props} onClick={openExternally}>
+						{children}
+						{isExternalUrl(props.href) && (
+							<Icon name="arrow-up-right" size={12} className={styles.externalIcon} />
+						)}
+					</a>
+				),
 				code: ({ node: _node, className, children, ...props }) => {
 					const language = fencedLanguage(className);
 					return language !== undefined && typeof children === "string" ? (

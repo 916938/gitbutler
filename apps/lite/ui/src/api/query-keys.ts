@@ -12,20 +12,28 @@ export const projectQueryKeys = Object.keys(apiProvides) as ReadonlyArray<Projec
 
 /** Keyed without a project id, so no project event can invalidate them. */
 export type GlobalQueryKey =
+	| "updateCheck"
+	| "updateStatus"
 	| "aiConfiguration"
+	| "appSettings"
 	| "editors"
 	| "terminals"
 	| "forgeAccounts"
 	| "userProfile"
 	| "projects"
-	| "guiSettings";
+	| "guiSettings"
+	| "isPackaged"
+	| "markdownTokens"
+	| "version";
 
 /**
  * Client state kept in the query cache, so nothing declares for them. `dryRun`
  * memoizes an imperative preview: its key carries the operation and changes it
- * was measured against, and nothing refreshes it in place.
+ * was measured against, and nothing refreshes it in place. `branchIntegration`
+ * is the update flow's plan and preview, refetched each time the flow asks.
  */
 type LocalQueryKey =
+	| "branchIntegration"
 	| "commitMessageDraft"
 	| "dryRun"
 	| "prMergeMethod"

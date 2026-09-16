@@ -1,11 +1,12 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use but_secret::Sensitive;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 
 use crate::graphql::{
-    GQL_ADD_REVIEW_THREAD_REPLY, GQL_DISABLE_PR_AUTO_MERGE, GQL_ENABLE_PR_AUTO_MERGE,
-    GQL_GET_PR_NODE_ID, GQL_LIST_PR_REVIEW_THREADS, GQL_LIST_PR_TIMELINE, GQL_SET_PR_DRAFT,
+    GQL_ADD_REACTION, GQL_ADD_REVIEW_THREAD_REPLY, GQL_DISABLE_PR_AUTO_MERGE,
+    GQL_ENABLE_PR_AUTO_MERGE, GQL_GET_PR, GQL_GET_PR_NODE_ID, GQL_LIST_PR_REVIEW_THREADS,
+    GQL_LIST_PR_REVIEWS, GQL_LIST_PR_TIMELINE, GQL_REMOVE_REACTION, GQL_SET_PR_DRAFT,
     GQL_SET_PR_READY_FOR_REVIEW,
 };
 
@@ -485,16 +486,39 @@ impl GitHubClient {
         repo: &str,
         pr_number: i64,
     ) -> Result<PullRequest> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/{}",
-            self.base_url, owner, repo, pr_number
-        );
+        #[derive(Serialize)]
+        struct Variables<'a> {
+            owner: &'a str,
+            repo: &'a str,
+            number: i64,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Data {
+            repository: Option<Repository>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Repository {
+            pull_request: Option<GraphQlPullRequest>,
+        }
 
-        let response = self.client.get(&url).send().await?;
-
-        let response = ensure_success(response).await?;
-
-        let pr: GitHubPullRequest = response.json().await?;
+        let data: Data = self
+            .graphql_query(
+                GQL_GET_PR,
+                &Variables {
+                    owner,
+                    repo,
+                    number: pr_number,
+                },
+            )
+            .await?;
+        let Some(pr) = data
+            .repository
+            .and_then(|repository| repository.pull_request)
+        else {
+            bail!("GitHub GraphQL pull request {owner}/{repo}#{pr_number} not found");
+        };
         Ok(pr.into())
     }
 
@@ -812,6 +836,33 @@ impl GitHubClient {
             .collect())
     }
 
+    /// Copilot's reviewer account, or `None` where the forge has none. It can
+    /// be asked to review like a collaborator, but being an app it is never
+    /// among the assignees.
+    pub async fn get_copilot_reviewer(&self) -> Result<Option<GitHubUser>> {
+        let url = format!(
+            "{}/users/copilot-pull-request-reviewer%5Bbot%5D",
+            self.base_url
+        );
+
+        let response = self.client.get(&url).send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let profile: GitHubApiUser = ensure_success(response).await?.json().await?;
+
+        // The profile spells the login `Copilot`, but a review request only
+        // resolves the bot login, so the login moves to the display name
+        // unless the profile already carries one.
+        let mut copilot = GitHubUser::from(profile);
+        if copilot.name.is_none() {
+            copilot.name = Some(copilot.login.clone());
+        }
+        copilot.login = "copilot-pull-request-reviewer[bot]".to_string();
+        copilot.is_bot = true;
+        Ok(Some(copilot))
+    }
+
     pub async fn request_reviewers(
         &self,
         owner: &str,
@@ -931,24 +982,255 @@ impl GitHubClient {
     }
 
     /// List the submitted reviews on a pull request (approvals, change
-    /// requests, review comments), oldest first. Paginated.
+    /// requests, review comments), oldest first, each with its reactions.
+    ///
+    /// GraphQL rather than REST: a review is only reactable through
+    /// GraphQL, and `/pulls/{n}/reviews` reports neither its reactions nor
+    /// the node id the reaction mutations address.
     pub async fn list_pull_request_reviews(
         &self,
         owner: &str,
         repo: &str,
         pr_number: i64,
     ) -> Result<Vec<PullRequestReview>> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/{}/reviews",
-            self.base_url, owner, repo, pr_number
-        );
-
         Ok(self
-            .get_all_pages::<GitHubPullRequestReviewApi>(&url, 50)
+            .list_pull_request_review_nodes(owner, repo, pr_number)
             .await?
             .into_iter()
-            .map(PullRequestReview::from)
+            .filter_map(GraphQlReview::into_review)
             .collect())
+    }
+
+    async fn list_pull_request_review_nodes(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<Vec<GraphQlReview>> {
+        #[derive(Serialize)]
+        struct Variables<'a> {
+            owner: &'a str,
+            repo: &'a str,
+            number: i64,
+            cursor: Option<&'a str>,
+        }
+
+        #[derive(Deserialize)]
+        struct QueryData {
+            repository: Option<Repository>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Repository {
+            pull_request: Option<GraphQlPullRequest>,
+        }
+
+        #[derive(Deserialize)]
+        struct GraphQlPullRequest {
+            reviews: GraphQlReviews,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GraphQlReviews {
+            page_info: GraphQlPageInfo,
+            nodes: Vec<GraphQlReview>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GraphQlPageInfo {
+            has_next_page: bool,
+            end_cursor: Option<String>,
+        }
+
+        let mut reviews = Vec::new();
+        let mut cursor: Option<String> = None;
+        // As many pages as the REST listing fetched; the cap only stops a stuck cursor.
+        const PAGE_CAP: usize = 50;
+        for _ in 0..PAGE_CAP {
+            let data: QueryData = self
+                .graphql_query(
+                    GQL_LIST_PR_REVIEWS,
+                    &Variables {
+                        owner,
+                        repo,
+                        number: pr_number,
+                        cursor: cursor.as_deref(),
+                    },
+                )
+                .await?;
+
+            let Some(page) = data
+                .repository
+                .and_then(|repository| repository.pull_request)
+                .map(|pull_request| pull_request.reviews)
+            else {
+                bail!("GitHub GraphQL pull request {owner}/{repo}#{pr_number} not found");
+            };
+
+            reviews.extend(page.nodes);
+            match page.page_info.end_cursor {
+                Some(next) if page.page_info.has_next_page => cursor = Some(next),
+                _ => {
+                    cursor = None;
+                    break;
+                }
+            }
+        }
+        if cursor.is_some() {
+            tracing::warn!(
+                "{owner}/{repo}#{pr_number} has more than {} reviews; further pages were not fetched",
+                PAGE_CAP * 100
+            );
+        }
+
+        Ok(reviews)
+    }
+
+    /// The node id of one submitted review, which is what the reaction
+    /// mutations address; REST ids are all a caller holds. One REST call: the
+    /// single-review endpoint reports it, where listing would page through all.
+    async fn get_pull_request_review_node_id(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        review_id: i64,
+    ) -> Result<String> {
+        #[derive(Deserialize)]
+        struct ReviewNodeId {
+            node_id: String,
+        }
+
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews/{}",
+            self.base_url, owner, repo, pr_number, review_id
+        );
+        let response = self.client.get(&url).send().await?;
+        let response = ensure_success(response).await?;
+        let review: ReviewNodeId = response.json().await?;
+        Ok(review.node_id)
+    }
+
+    /// Add a reaction to one submitted review. Idempotent per kind on
+    /// GitHub's side.
+    pub async fn add_pull_request_review_reaction(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        review_id: i64,
+        content: &str,
+    ) -> Result<Reaction> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct QueryData {
+            add_reaction: Option<ReactionPayload>,
+        }
+
+        #[derive(Deserialize)]
+        struct ReactionPayload {
+            reaction: Option<GraphQlReaction>,
+        }
+
+        let subject_id = self
+            .get_pull_request_review_node_id(owner, repo, pr_number, review_id)
+            .await?;
+        let data: QueryData = self
+            .graphql_query(
+                GQL_ADD_REACTION,
+                &ReactionVariables {
+                    subject_id: &subject_id,
+                    content: graphql_reaction_content(content)?,
+                },
+            )
+            .await?;
+
+        let Some(reaction) = data
+            .add_reaction
+            .and_then(|payload| payload.reaction)
+            .and_then(GraphQlReaction::into_reaction)
+        else {
+            bail!("GitHub GraphQL addReaction returned no reaction");
+        };
+        Ok(reaction)
+    }
+
+    /// Remove the caller's reaction of one kind from one submitted review.
+    pub async fn remove_pull_request_review_reaction(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        review_id: i64,
+        content: &str,
+    ) -> Result<()> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct QueryData {
+            remove_reaction: Option<serde::de::IgnoredAny>,
+        }
+
+        let subject_id = self
+            .get_pull_request_review_node_id(owner, repo, pr_number, review_id)
+            .await?;
+        let data: QueryData = self
+            .graphql_query(
+                GQL_REMOVE_REACTION,
+                &ReactionVariables {
+                    subject_id: &subject_id,
+                    content: graphql_reaction_content(content)?,
+                },
+            )
+            .await?;
+
+        if data.remove_reaction.is_none() {
+            bail!("GitHub GraphQL removeReaction returned nothing");
+        }
+        Ok(())
+    }
+
+    /// Set the resolution state of a review conversation on GitHub.
+    pub async fn set_review_thread_resolved(&self, thread_id: &str, resolved: bool) -> Result<()> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Variables<'a> {
+            thread_id: &'a str,
+        }
+
+        #[derive(Deserialize)]
+        struct QueryData {
+            result: Option<Payload>,
+        }
+
+        #[derive(Deserialize)]
+        struct Payload {
+            thread: Option<Thread>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Thread {
+            is_resolved: bool,
+        }
+
+        let query = if resolved {
+            "mutation($threadId: ID!) { result: resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } } }"
+        } else {
+            "mutation($threadId: ID!) { result: unresolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } } }"
+        };
+        let data: QueryData = self.graphql_query(query, &Variables { thread_id }).await?;
+        let thread = data
+            .result
+            .and_then(|payload| payload.thread)
+            .context("GitHub returned no review thread after changing its resolution")?;
+        anyhow::ensure!(
+            thread.is_resolved == resolved,
+            "GitHub did not change the review thread resolution"
+        );
+        Ok(())
     }
 
     /// Reply into an existing review thread, returning the comment it made.
@@ -1194,8 +1476,20 @@ impl GitHubClient {
 
         let response = self.client.put(&url).json(&body).send().await?;
 
-        if !response.status().is_success() {
-            bail!("Failed to merge pull request: {}", response.status());
+        let status = response.status();
+        if !status.is_success() {
+            // The body carries GitHub's reason. Only its `message` reads well in
+            // a toast; the raw envelope drags a documentation URL along.
+            let body = response.text().await.unwrap_or_default();
+            let reason = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("message")
+                        .and_then(|m| m.as_str().map(String::from))
+                })
+                .unwrap_or(body);
+            bail!("GitHub refused the merge ({status}): {reason}");
         }
 
         Ok(())
@@ -1993,7 +2287,7 @@ fn label_removal_url(
     Ok(url)
 }
 
-/// A submitted review on a pull request, from `GET /pulls/{n}/reviews`.
+/// A submitted review on a pull request, with the reactions left on it.
 #[derive(Debug, Serialize)]
 pub struct PullRequestReview {
     pub id: i64,
@@ -2004,28 +2298,120 @@ pub struct PullRequestReview {
     pub body: Option<String>,
     pub submitted_at: Option<String>,
     pub html_url: String,
+    pub reactions: Vec<Reaction>,
 }
 
 #[derive(Debug, Deserialize)]
-struct GitHubPullRequestReviewApi {
-    id: i64,
-    user: Option<GitHubApiUser>,
+#[serde(rename_all = "camelCase")]
+struct GraphQlReview {
+    id: String,
+    database_id: Option<i64>,
+    author: Option<GraphQlActor>,
     state: String,
-    body: Option<String>,
+    body: String,
     submitted_at: Option<String>,
-    html_url: String,
+    url: String,
+    reactions: GraphQlReactions,
 }
 
-impl From<GitHubPullRequestReviewApi> for PullRequestReview {
-    fn from(review: GitHubPullRequestReviewApi) -> Self {
-        PullRequestReview {
-            id: review.id,
-            author: review.user.map(Into::into),
-            state: review.state,
-            body: review.body,
-            submitted_at: review.submitted_at,
-            html_url: review.html_url,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReactions {
+    page_info: GraphQlReactionsPageInfo,
+    nodes: Vec<GraphQlReaction>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReactionsPageInfo {
+    has_next_page: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReaction {
+    database_id: Option<i64>,
+    content: String,
+    user: Option<GraphQlActor>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReactionVariables<'a> {
+    subject_id: &'a str,
+    content: &'static str,
+}
+
+/// GraphQL's `ReactionContent` enum against the REST kind strings the rest
+/// of the crate speaks, so both APIs report one vocabulary.
+const REACTION_CONTENTS: [(&str, &str); 8] = [
+    ("THUMBS_UP", "+1"),
+    ("THUMBS_DOWN", "-1"),
+    ("LAUGH", "laugh"),
+    ("HOORAY", "hooray"),
+    ("CONFUSED", "confused"),
+    ("HEART", "heart"),
+    ("ROCKET", "rocket"),
+    ("EYES", "eyes"),
+];
+
+fn graphql_reaction_content(kind: &str) -> Result<&'static str> {
+    REACTION_CONTENTS
+        .iter()
+        .find(|(_, rest)| *rest == kind)
+        .map(|(graphql, _)| *graphql)
+        .ok_or_else(|| anyhow::anyhow!("Unknown reaction kind: {kind}"))
+}
+
+fn rest_reaction_kind(content: String) -> String {
+    REACTION_CONTENTS
+        .iter()
+        .find(|(graphql, _)| *graphql == content)
+        .map_or(content, |(_, rest)| (*rest).to_owned())
+}
+
+impl GraphQlReaction {
+    /// `None` without a database id, which is what callers hold; a made-up 0 would collide.
+    fn into_reaction(self) -> Option<Reaction> {
+        let Some(id) = self.database_id else {
+            tracing::warn!("a reaction without a database id was skipped");
+            return None;
+        };
+        Some(Reaction {
+            id,
+            content: rest_reaction_kind(self.content),
+            user: self.user.map(Into::into),
+        })
+    }
+}
+
+impl GraphQlReview {
+    /// `None` without a database id, which is what callers hold; a made-up 0 would collide.
+    fn into_review(self) -> Option<PullRequestReview> {
+        let Some(id) = self.database_id else {
+            tracing::warn!("review {} has no database id; skipped", self.id);
+            return None;
+        };
+        if self.reactions.page_info.has_next_page {
+            tracing::warn!(
+                "review {} has more than 100 reactions; later ones were not fetched",
+                self.id
+            );
         }
+        Some(PullRequestReview {
+            id,
+            author: self.author.map(Into::into),
+            state: self.state,
+            body: Some(self.body),
+            submitted_at: self.submitted_at,
+            html_url: self.url,
+            reactions: self
+                .reactions
+                .nodes
+                .into_iter()
+                .filter_map(GraphQlReaction::into_reaction)
+                .collect(),
+        })
     }
 }
 
@@ -2281,6 +2667,20 @@ struct GraphQlRequestedReviewer {
     name: Option<String>,
 }
 
+impl GraphQlRequestedReviewer {
+    /// The reviewer as a user; a team has no login and is dropped.
+    fn into_user(self) -> Option<GitHubUser> {
+        Some(GitHubUser {
+            id: self.database_id.unwrap_or_default(),
+            login: self.login?,
+            name: self.name,
+            email: None,
+            avatar_url: self.avatar_url,
+            is_bot: self.typename.as_deref() == Some("Bot"),
+        })
+    }
+}
+
 impl GraphQlTimelineItem {
     fn into_event(self) -> Option<PullRequestTimelineEvent> {
         match self.typename.as_str() {
@@ -2303,16 +2703,9 @@ impl GraphQlTimelineItem {
             "ReviewRequestedEvent" => Some(PullRequestTimelineEvent {
                 kind: PullRequestTimelineEventKind::ReviewRequested,
                 actor: self.actor.map(Into::into),
-                requested_reviewer: self.requested_reviewer.and_then(|reviewer| {
-                    Some(GitHubUser {
-                        id: reviewer.database_id.unwrap_or_default(),
-                        login: reviewer.login?,
-                        name: reviewer.name,
-                        email: None,
-                        avatar_url: reviewer.avatar_url,
-                        is_bot: reviewer.typename.as_deref() == Some("Bot"),
-                    })
-                }),
+                requested_reviewer: self
+                    .requested_reviewer
+                    .and_then(GraphQlRequestedReviewer::into_user),
                 commit_sha: None,
                 commit_summary: None,
                 commit_author_name: None,
@@ -2424,6 +2817,134 @@ impl From<GitHubPullRequest> for PullRequest {
     }
 }
 
+/// The single-review fetch's shape; see `GQL_GET_PR`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlPullRequest {
+    url: String,
+    number: i64,
+    title: String,
+    body: String,
+    is_draft: bool,
+    head_ref_name: String,
+    base_ref_name: String,
+    head_ref_oid: String,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+    merged_at: Option<String>,
+    closed_at: Option<String>,
+    merge_commit: Option<GraphQlCommitRef>,
+    author: Option<GraphQlActor>,
+    labels: GraphQlNodes<GraphQlLabel>,
+    head_repository: Option<GraphQlRepository>,
+    review_requests: GraphQlNodes<GraphQlReviewRequest>,
+    auto_merge_request: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlNodes<T> {
+    nodes: Vec<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlCommitRef {
+    oid: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlLabel {
+    name: String,
+    color: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlRepository {
+    ssh_url: Option<String>,
+    url: Option<String>,
+    is_fork: bool,
+    owner: Option<GraphQlRepositoryOwner>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlRepositoryOwner {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlReviewRequest {
+    requested_reviewer: Option<GraphQlRequestedReviewer>,
+}
+
+impl From<GraphQlPullRequest> for PullRequest {
+    fn from(pr: GraphQlPullRequest) -> Self {
+        let repo = pr.head_repository.as_ref();
+        PullRequest {
+            html_url: pr.url,
+            number: pr.number,
+            title: pr.title,
+            // REST reports a missing description as null; GraphQL as "".
+            body: Some(pr.body).filter(|body| !body.is_empty()),
+            author: pr.author.map(Into::into),
+            labels: pr
+                .labels
+                .nodes
+                .into_iter()
+                .map(|label| GitHubPrLabel {
+                    // GraphQL labels carry no numeric id, and nothing reads it.
+                    id: 0,
+                    name: label.name,
+                    description: label.description,
+                    color: label.color,
+                })
+                .collect(),
+            draft: pr.is_draft,
+            source_branch: pr.head_ref_name,
+            target_branch: pr.base_ref_name,
+            sha: pr.head_ref_oid,
+            // Only a merged pull request's merge commit counts, never the
+            // test merge GitHub keeps for an open one.
+            integration_commit_shas: if pr.merged_at.is_some() {
+                pr.merge_commit
+                    .into_iter()
+                    .map(|commit| commit.oid)
+                    .collect()
+            } else {
+                vec![]
+            },
+            created_at: pr.created_at,
+            modified_at: pr.updated_at,
+            merged_at: pr.merged_at,
+            closed_at: pr.closed_at,
+            repository_ssh_url: repo.and_then(|repo| repo.ssh_url.clone()),
+            repository_https_url: repo.and_then(|repo| repo.url.as_deref().map(clone_url)),
+            repo_owner: repo.and_then(|repo| repo.owner.as_ref().map(|owner| owner.login.clone())),
+            head_repo_is_fork: repo.is_some_and(|repo| repo.is_fork),
+            requested_reviewers: pr
+                .review_requests
+                .nodes
+                .into_iter()
+                .filter_map(|request| request.requested_reviewer)
+                .filter_map(GraphQlRequestedReviewer::into_user)
+                .collect(),
+            auto_merge_enabled: pr.auto_merge_request.is_some(),
+        }
+    }
+}
+
+/// REST's clone URL is the web URL with `.git` on the end; a forge that
+/// hands out anything but a web URL, as the e2e fake does with paths, is
+/// left alone.
+fn clone_url(url: &str) -> String {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        format!("{url}.git")
+    } else {
+        url.to_string()
+    }
+}
+
 /// Marks credential lookups that came up empty, so consumers can tell "the
 /// user is not authenticated" apart from a failing forge and e.g. keep
 /// serving cached data instead of surfacing an error.
@@ -2516,6 +3037,93 @@ mod tests {
     #[derive(Debug, Deserialize)]
     struct PullRequestRef {
         id: String,
+    }
+
+    #[tokio::test]
+    async fn review_thread_resolution_calls_github_and_checks_the_result() {
+        use std::io::{Read, Write};
+        for (resolved, response, succeeds) in [
+            (
+                true,
+                r#"{"data":{"result":{"thread":{"isResolved":true}}}}"#,
+                true,
+            ),
+            (
+                false,
+                r#"{"data":{"result":{"thread":{"isResolved":false}}}}"#,
+                true,
+            ),
+            (true, r#"{"data":{"result":null}}"#, false),
+            (
+                true,
+                r#"{"data":{"result":{"thread":{"isResolved":false}}}}"#,
+                false,
+            ),
+            (
+                true,
+                r#"{"errors":[{"message":"Forbidden"}],"data":null}"#,
+                false,
+            ),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let n = stream.read(&mut buffer).unwrap();
+                    assert!(n > 0, "the client must send a complete GraphQL request");
+                    request.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            let body: serde_json::Value =
+                                serde_json::from_slice(&request[end + 4..]).unwrap();
+                            assert_eq!(
+                                body["variables"]["threadId"], "thread-1",
+                                "the selected thread is addressed by its forge id"
+                            );
+                            let operation = if resolved {
+                                "resolveReviewThread("
+                            } else {
+                                "unresolveReviewThread("
+                            };
+                            assert!(
+                                body["query"].as_str().unwrap().contains(operation),
+                                "the requested state chooses the mutation"
+                            );
+                            break;
+                        }
+                    }
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+            });
+            let client = GitHubClient {
+                client: reqwest::Client::new(),
+                base_url: format!("http://{address}"),
+            };
+            let result = client
+                .set_review_thread_resolved("thread-1", resolved)
+                .await;
+            server.join().unwrap();
+            assert_eq!(
+                result.is_ok(),
+                succeeds,
+                "missing, refused, or unchanged resolution must fail"
+            );
+        }
     }
 
     #[test]
@@ -2787,6 +3395,92 @@ mod tests {
             pull.merged_at.as_deref(),
             Some("2026-06-24T12:00:00Z"),
             "associated-commit lookup must preserve merge state for filtering"
+        );
+    }
+
+    #[test]
+    fn graphql_pull_request_decodes_into_the_review_shape() {
+        let pr: PullRequest = serde_json::from_value::<GraphQlPullRequest>(json!({
+            "url": "https://github.com/upstream/widgets/pull/42",
+            "number": 42,
+            "title": "Integrate fork feature",
+            "body": "",
+            "isDraft": false,
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "headRefOid": "1234567890abcdef1234567890abcdef12345678",
+            "createdAt": "2026-09-09T10:00:00Z",
+            "updatedAt": "2026-09-09T11:00:00Z",
+            "mergedAt": "2026-09-09T12:00:00Z",
+            "closedAt": "2026-09-09T12:00:00Z",
+            "mergeCommit": { "oid": "abcdef1234567890abcdef1234567890abcdef12" },
+            "author": {
+                "__typename": "Bot",
+                "login": "release-please[bot]",
+                "avatarUrl": null,
+                "databaseId": 7
+            },
+            "labels": { "nodes": [{ "name": "rust", "color": "b60205", "description": null }] },
+            "headRepository": {
+                "sshUrl": "git@github.com:alice/widgets.git",
+                "url": "https://github.com/alice/widgets",
+                "isFork": true,
+                "owner": { "login": "alice" }
+            },
+            "reviewRequests": { "nodes": [
+                { "requestedReviewer": {
+                    "__typename": "Bot",
+                    "databaseId": 175728472,
+                    "login": "copilot-pull-request-reviewer",
+                    "avatarUrl": "https://avatars.githubusercontent.com/in/946600?v=4"
+                } },
+                { "requestedReviewer": { "__typename": "Team" } },
+                { "requestedReviewer": null }
+            ] },
+            "autoMergeRequest": { "enabledAt": "2026-09-09T11:30:00Z" }
+        }))
+        .expect("fixture matches the query")
+        .into();
+
+        assert_eq!(pr.body, None, "an empty GraphQL body is a missing one");
+        let author = pr.author.expect("author");
+        assert!(author.is_bot);
+        assert_eq!(author.id, 7);
+        assert_eq!(pr.labels.len(), 1);
+        assert_eq!(pr.labels[0].name, "rust");
+        assert_eq!(pr.sha, "1234567890abcdef1234567890abcdef12345678");
+        assert_eq!(
+            pr.integration_commit_shas,
+            vec!["abcdef1234567890abcdef1234567890abcdef12"]
+        );
+        assert_eq!(
+            pr.repository_ssh_url.as_deref(),
+            Some("git@github.com:alice/widgets.git")
+        );
+        assert_eq!(
+            pr.repository_https_url.as_deref(),
+            Some("https://github.com/alice/widgets.git")
+        );
+        assert_eq!(pr.repo_owner.as_deref(), Some("alice"));
+        assert!(pr.head_repo_is_fork);
+        assert_eq!(pr.requested_reviewers.len(), 1, "a team has no login");
+        assert_eq!(
+            pr.requested_reviewers[0].login,
+            "copilot-pull-request-reviewer"
+        );
+        assert!(pr.requested_reviewers[0].is_bot);
+        assert!(pr.auto_merge_enabled);
+    }
+
+    #[test]
+    fn clone_url_suffixes_web_urls_only() {
+        assert_eq!(
+            clone_url("https://github.com/o/r"),
+            "https://github.com/o/r.git"
+        );
+        assert_eq!(
+            clone_url("/tmp/fixtures/fork-project-bare"),
+            "/tmp/fixtures/fork-project-bare"
         );
     }
 

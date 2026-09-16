@@ -40,6 +40,24 @@ but skill install
 
 This will overwrite the existing skill files with the latest version.
 
+## Printing the skill from the CLI
+
+The same content is embedded in the binary and can be read without installing anything:
+
+```bash
+but skill                # SKILL.md body
+but skill --full         # plus every reference document
+but skill reference      # command reference, rendered from the CLI's own command tree
+but skill concepts       # references/concepts.md
+but skill examples       # references/examples.md
+```
+
+`but skill reference` is generated from clap (`crates/but/src/command/skill/reference.rs`)
+and always matches the binary; the installed `references/reference.md` is the hand-written
+file it is replacing and the two are expected to differ.
+
+Pointers inside the skill files use these commands rather than file paths, so they resolve whether the agent loaded an installed copy or read the CLI output.
+
 ## Skill Structure
 
 The skill directory contains both distributable skill files and development documentation:

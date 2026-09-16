@@ -6,7 +6,10 @@ use temp_env::with_var;
 use crate::command::legacy::status::tui::tests::utils::{
     TestTuiOptions, test_status_tui_with_options,
 };
-use crate::command::legacy::status::{TuiLaunchOptions, tui::App};
+use crate::command::legacy::status::{
+    TuiLaunchOptions,
+    tui::{App, BackstackEntry},
+};
 use crate::tui::test_utils::TestTui;
 
 const TEST_EDITOR_MESSAGE: &str = "commit from worktree";
@@ -529,4 +532,190 @@ fn uncommit_a_worktree_commit_into_its_own_area() {
 "#]]
         .raw()
     );
+}
+
+#[test]
+fn discard_worktree() {
+    let (mut tui, _editor) = worktree_tui();
+
+    tui.input('j');
+    tui.input('j');
+    tui.input('j');
+    tui.input('j')
+        .assert_rendered_term_svg_eq(file!["snapshots/discard_worktree_001.svg"]);
+    tui.input('x')
+        .assert_rendered_term_svg_eq(file!["snapshots/discard_worktree_002.svg"]);
+    tui.input('y')
+        .assert_rendered_term_svg_eq(file!["snapshots/discard_worktree_003.svg"]);
+}
+
+#[test]
+fn cannot_enter_worktree_mode_from_commit_file_list() {
+    let (mut tui, _editor) = worktree_tui();
+
+    tui.input("jjjjj")
+        .assert_current_line_eq(str!["┊┊●   nll add W"]);
+    tui.input('f')
+        .assert_backstack_eq([BackstackEntry::ShowFileList]);
+    tui.input('w')
+        .assert_backstack_eq([BackstackEntry::ShowFileList])
+        .assert_rendered_term_svg_eq(file![
+            "snapshots/cannot_enter_worktree_mode_from_commit_file_list_001.svg"
+        ]);
+
+    // Closing the file list allows entering worktree mode again.
+    tui.input(KeyCode::Esc)
+        .assert_current_line_eq(str!["┊┊●   nll add W"]);
+    tui.input('w')
+        .assert_current_line_eq(str!["┊┊●   << worktree >> nll add W"])
+        .assert_rendered_term_svg_eq(file![
+            "snapshots/cannot_enter_worktree_mode_from_commit_file_list_002.svg"
+        ]);
+}
+
+#[test]
+fn archive_worktree() {
+    let (mut tui, _editor) = worktree_tui();
+
+    tui.input("jjjj");
+    tui.input('w')
+        .assert_current_line_eq(str!["┊┊├┄ << worktree >> wt {wt-branch}"])
+        .assert_rendered_term_svg_eq(file!["snapshots/archive_worktree_001.svg"]);
+    tui.input('a')
+        .assert_rendered_term_svg_eq(file!["snapshots/archive_worktree_002.svg"]);
+    tui.input('y')
+        .assert_rendered_term_svg_eq(file!["snapshots/archive_worktree_003.svg"]);
+    tui.reload()
+        .assert_rendered_term_svg_eq(file!["snapshots/archive_worktree_004.svg"]);
+}
+
+#[test]
+fn unarchive_worktree() {
+    let (mut tui, _editor) = worktree_tui();
+
+    tui.input("jjjj");
+    tui.input('w');
+    tui.input('a');
+    tui.input('y')
+        .assert_rendered_term_svg_eq(file!["snapshots/unarchive_worktree_001.svg"]);
+
+    tui.input('w');
+    tui.input('u')
+        .assert_rendered_term_svg_eq(file!["snapshots/unarchive_worktree_002.svg"]);
+    tui.input(KeyCode::Enter)
+        .assert_current_line_eq(str!["┊┊├┄ wt {wt-branch}"])
+        .assert_rendered_term_svg_eq(file!["snapshots/unarchive_worktree_003.svg"]);
+    tui.reload()
+        .assert_rendered_term_svg_eq(file!["snapshots/unarchive_worktree_004.svg"]);
+}
+
+#[test]
+fn unarchive_worktree_picker_filters_archived_worktrees() {
+    let (mut tui, _editor) = worktree_tui();
+    // Keep the fixture's original worktree active; create and archive two more through the TUI.
+    for _ in 0..2 {
+        tui.input((KeyModifiers::SHIFT, 'G'));
+        tui.input('w');
+        tui.input('n');
+        tui.input('w');
+        tui.input('a');
+        tui.input('y');
+    }
+    tui.reload().assert_rendered_term_svg_eq(file![
+        "snapshots/unarchive_worktree_picker_filters_archived_worktrees_001.svg"
+    ]);
+
+    tui.input('w');
+    tui.input('u').assert_rendered_term_svg_eq(file![
+        "snapshots/unarchive_worktree_picker_filters_archived_worktrees_002.svg"
+    ]);
+    tui.input("2").assert_rendered_term_svg_eq(file![
+        "snapshots/unarchive_worktree_picker_filters_archived_worktrees_003.svg"
+    ]);
+    tui.input(KeyCode::Enter).assert_rendered_term_svg_eq(file![
+        "snapshots/unarchive_worktree_picker_filters_archived_worktrees_004.svg"
+    ]);
+    // Only the chosen worktree was restored; the other remains available to unarchive.
+    tui.input('w');
+    tui.input('u').assert_rendered_term_svg_eq(file![
+        "snapshots/unarchive_worktree_picker_filters_archived_worktrees_005.svg"
+    ]);
+}
+
+#[test]
+fn creating_new_worktrees() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings_slow("one-stack");
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui_with_options(
+        env,
+        TestTuiOptions {
+            worktree_manipulation: true,
+            ..Default::default()
+        },
+    );
+
+    // create a new worktree at the base
+    tui.input('w')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_001.svg"]);
+    tui.input('j')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_002.svg"]);
+    tui.input('n')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_003.svg"]);
+
+    // create worktree at commit
+    tui.input('g');
+    tui.input('w')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_004.svg"]);
+    tui.input('n')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_005.svg"]);
+
+    // discard both worktrees
+    tui.input('g');
+    tui.input('w');
+    tui.input('x')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_006.svg"]);
+    tui.input('y')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_007.svg"]);
+    tui.input('w');
+    tui.input('j')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_008.svg"]);
+    tui.input('x')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_009.svg"]);
+    tui.input('y')
+        .assert_rendered_term_svg_eq(file!["snapshots/creating_new_worktrees_010.svg"]);
+}
+
+#[test]
+fn cannot_create_worktrees_on_conflicted_commits() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings_slow(
+        "one-stack-two-dependent-commits",
+    );
+    env.setup_metadata(&["A"]);
+
+    let mut tui = test_status_tui_with_options(
+        env,
+        TestTuiOptions {
+            worktree_manipulation: true,
+            ..Default::default()
+        },
+    );
+
+    // create a conflicted commit
+    tui.input('j');
+    tui.input('j');
+    tui.input('m');
+    tui.input('j');
+    tui.input('a');
+    tui.input(KeyCode::Enter).assert_rendered_term_svg_eq(file![
+        "snapshots/cannot_create_worktrees_on_conflicted_commits_001.svg"
+    ]);
+
+    // attempt to create a worktree on that commit
+    tui.input('w').assert_rendered_term_svg_eq(file![
+        "snapshots/cannot_create_worktrees_on_conflicted_commits_002.svg"
+    ]);
+    tui.input('n').assert_rendered_term_svg_eq(file![
+        "snapshots/cannot_create_worktrees_on_conflicted_commits_003.svg"
+    ]);
 }

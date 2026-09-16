@@ -56,6 +56,9 @@ pub struct AiConfiguration {
     pub lmstudio_model: String,
     /// Whether the active provider has everything it needs to answer.
     pub is_configured: bool,
+    /// Whether nothing has been changed from the defaults and no key is stored, so a reset
+    /// would change nothing.
+    pub is_default: bool,
 }
 
 /// One complete AI configuration to save, with any newly entered API keys.
@@ -101,7 +104,7 @@ fn has_secret(handle: &str, namespace: secret::Namespace) -> Result<bool> {
 }
 
 fn get_configuration() -> Result<AiConfiguration> {
-    let config = gix::config::File::from_globals()?;
+    let config = gix::config(None, &gix::open::Options::default())?;
     let configuration = DomainConfiguration::from_git_config(&config)?;
 
     let openai_has_api_key = has_secret(AI_OPENAI_SECRET_HANDLE, secret::Namespace::Global)?;
@@ -113,6 +116,9 @@ fn get_configuration() -> Result<AiConfiguration> {
         anthropic_has_api_key,
         has_gitbutler_token,
     );
+    let is_default = configuration == DomainConfiguration::default()
+        && !openai_has_api_key
+        && !anthropic_has_api_key;
 
     Ok(AiConfiguration {
         provider: configuration.provider.as_git_config_value().into(),
@@ -132,6 +138,7 @@ fn get_configuration() -> Result<AiConfiguration> {
         lmstudio_endpoint: configuration.lmstudio.endpoint,
         lmstudio_model: configuration.lmstudio.model,
         is_configured,
+        is_default,
     })
 }
 
@@ -237,7 +244,7 @@ pub fn update_ai_configuration(update: AiConfigurationUpdate) -> Result<AiConfig
         )?;
     }
 
-    let config = gix::config::File::from_globals()?;
+    let config = gix::config(None, &gix::open::Options::default())?;
     let configuration =
         domain_configuration(&update, DomainConfiguration::from_git_config(&config)?)?;
     edit_config(None, gix::config::Source::User, |config| {

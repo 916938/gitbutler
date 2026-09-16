@@ -5,6 +5,32 @@ an on-brand choice without opening Figma. Rules here are about how the UI
 should look and read. The tooling that enforces them — scripts, generated
 files, commands — lives in `apps/lite/AGENTS.md`.
 
+## Components
+
+**Build from the library.** Every control users touch — a button, a switch, a
+segmented toggle, a popup — already has a component in `ui/src/components/`,
+with a spec in the ⚛️ Lite Core Figma library or a Storybook story. Reach for
+those first, even when hand-styling a primitive in the feature's own CSS module
+would be quicker. The point of a library is that the app reads as one thing;
+each control styled locally is one that will drift, and one more that has to
+be found and reconciled when the design moves.
+
+**If the library lacks it, think twice, then ask.** A missing component is a
+design question before it is an engineering one. Check whether an existing one
+fits with a variant or a prop — a small size, an icon-only mode — and if
+nothing does, ask the designer before building. The answer may be a new
+library component with a spec, or it may be that the surface should use
+something we already have.
+
+**A custom control needs a reason.** Sometimes a one-off is right. When it is,
+the code should say why: what the library could not do, and why that mattered
+here. A custom control with no motivation in the commit or a comment is a bug
+waiting for a redesign, not a decision.
+
+**New components are documented.** Anything that graduates into
+`ui/src/components/` gets a story and, once the designer has drawn it, a
+Figma spec. A component that lives only in code is half a component.
+
 ## Emphasis
 
 **Gray highlights, pop points.** Gray is the workhorse: when a control needs to
@@ -53,6 +79,181 @@ fill flips and the text turns to `--text-1-invert`. They are not a dark-mode
 thing; dark mode is handled by the tokens. Note that selected rows reach these
 styles through CSS in `Row.module.css` rather than by passing the variant, so
 selection can restyle without a re-render.
+
+## States
+
+**Every interactive component has a hover and a focus state.** A button, a
+row, a tab, a field, a menu item, a clickable badge: if it responds to a click
+or a key, it shows that it can be hovered and that it holds focus. Hover says
+"this reacts"; focus says "the keyboard is here". A control with neither reads
+as static text, and a control with hover only is invisible to anyone not on a
+mouse. Neither is optional, and neither is a separate ticket.
+
+**Hover is a ground, not a cursor.** The cursor never changes to say a thing is
+clickable (see Cursors), so the hover state carries that alone. Controls take
+it from the shared tokens: `Button` from its variant's `--button-hover-bg`,
+a list row from `--list-item-hover-bg`, and anything else from a gray wash at
+`--opacity-bg-hover` so hover reads the same weight everywhere. A disabled
+control shows no hover.
+
+**Focus is the one ring.** `--focus-ring` is the only focus outline in the app,
+and `global.css` already puts it on every `button` and `a` under
+`:focus-visible`, so a plain control gets it for free. A component that draws
+its own — a field, a switch, a segmented toggle — uses the same token, never a
+literal or the browser's accent ring. Buttons and rows use `:focus-visible`,
+so a click doesn't leave a ring behind; a text field uses `:focus`, since a
+field being edited should look edited however it got there.
+
+**The ring can move, but not vanish.** `outline: none` is allowed only when
+the focus is shown somewhere else — a tree item that highlights its row, a
+popup that hands focus straight to its first control — and the rule says so in
+a comment beside it. A bare `outline: none` with nothing taking over is a
+removed focus state, and a bug.
+
+**Hover and focus transition; they don't snap.** A state change on a control
+is a fade, not a cut, and it rides the fast tier (see Motion). A control whose
+ground and text change takes `--transition-button` — one token so a button, a
+row and a badge that opens a menu all settle at the same speed. A control
+whose ring changes transitions `outline-color var(--transition-fast)`, as a
+field does; one that dims transitions `opacity var(--transition-fast)`. Name
+the property that changes, not `all`: a transition on `all` picks up layout
+and reads as lag. Nothing hover- or focus-related uses the medium tier — the
+one exception is an icon giving way to another icon, which crossfades on the
+medium tier whatever triggers it (see Motion) — and nothing writes a duration
+by hand.
+
+## Radius
+
+**Nested corners are concentric.** A thing inside a rounded thing takes a
+radius that follows the same centre: outer radius equals inner radius plus the
+padding between them. A card at `--radius-card` with 4px of padding holds a
+control at `--radius-card` minus 4px, not at the same radius, and not at a
+different token picked for the control alone. Two nested radii that share a
+value but not a centre are the most common way an otherwise on-spec surface
+reads as slightly wrong. The radius tokens come from ⚛️ Lite Core; when the
+subtraction doesn't land on one, compute it with `calc()` from the outer token
+and say so, rather than eyeballing a literal.
+
+## Minimums
+
+**A hit area is never under 16px.** A control can draw smaller than that — a
+chevron, a close cross, a diff line number — but what it responds to is at
+least 16px on each side. Extend the target with padding or a pseudo-element
+rather than growing the glyph, and don't let two extended targets overlap:
+the click goes to one control, not to whichever painted last.
+
+**Text is never under 12px.** No label, count, caption, tag or keycap sets a
+size below 12px, however small the space. If a token from ⚛️ Lite Core is
+smaller than that, the token is wrong, not the rule. Something that only
+works at 11px is something that should be a tooltip, an icon, or left out.
+
+## Line breaks
+
+**No runts, no widows.** A line ends where the sentence lets it, not where
+the box ran out. A full line with a word or two hanging under it reads as an
+accident, and the eye stops on it. That is the rule; how it is met is not.
+Cutting the copy, `text-wrap: pretty`, `text-wrap: balance` — any of them is
+fine, and the right one depends on the text and the room around it.
+
+**Judge by the gap.** Look at what sits beside and below the text. A hint
+that overruns its measure by two words wanted to be one line: cut it. A hint
+that runs well into a second line can stay two lines, and `balance` evens
+them out. But balance is not free: it can turn one long line into two short
+ones, leaving a wide gap to the control beside them or the row below, and two
+short lines against empty space read as wrong as a widow does. When neither
+the copy nor the wrap mode gives lines that fill their space, the text is the
+wrong length for the spot — reword it, or move it.
+
+**Where the wrap is set.** Row hints set `pretty`, which keeps a single word
+off its own line; empty states set `balance`, because centred text always
+wraps and reads best as two even lines. Change the mode for a surface when its
+text calls for it. It is a per-surface call, not a global one.
+
+## Cursors
+
+**The arrow is the default; the hand is a setting.** Lite is a desktop app,
+and desktop apps keep the arrow over buttons, menus and rows; the hand is a
+web convention for links out to a page. So the app ships with the arrow, and
+the _Hand cursor_ switch in Appearance turns the hand on for whoever wants it.
+The harness panel takes the hand always, being part of a web page.
+
+**One property carries the choice.** The host sets `--control-cursor` on its
+root — the app flips `data-hand-cursor` on the document from the setting and
+`global.css` maps it to `pointer`, the panel sets it outright — and
+`control-cursor.css` puts that property on every control in one rule:
+buttons, links, `summary`, `select`, a `label` that owns a control, and the
+roles Base UI renders when it draws a control as a span or a div: button,
+checkbox, switch, radio, tab, option and the menu items. The same stylesheet
+gives a disabled control `not-allowed`, so no component does.
+
+**Components don't choose a cursor.** Don't set `cursor: pointer` on a
+control, and don't pin `cursor: default` on one either — both defeat the
+setting. Don't reintroduce the hand by resetting a `<button>`: the browser
+default for buttons is already the arrow. A clickable that is none of the
+elements above (a list row, a folded card, a minimap badge, a diff line
+number) takes `cursor: var(--control-cursor)` itself, so it follows the
+setting too. Interactivity is shown by the hover state (see States), not by
+the cursor.
+
+**Gesture cursors are the exception.** The cursors that do change regardless
+of the setting are the ones that describe a gesture: `text` over editable
+text, `grab` and `grabbing` while dragging, and the resize cursors on a
+splitter.
+
+## Motion
+
+**Two speeds, both tokens.** Every transition takes its duration from
+design-core. `--transition-fast` (80ms) is for a state change on a control that
+stays where it is: hover and press on a button, the outline of a focused field,
+a small opacity fade. `--transition-medium` (150ms) is for something that moves
+or changes shape: a switch thumb, a chevron turning, a section folding, the
+minimap fading in. A move on the fast tier reads as a jump with a flicker on
+it; a hover on the medium tier feels laggy. Don't write a duration by hand. If
+neither tier fits, the answer is a new tier in Figma, not a literal here.
+
+**Popups are the medium tier with a curve.** `--transition-popup` is an alias
+of medium, and `--easing-popup` is the one curve in the app that is a decision
+rather than a keyword: a hard ease-out that lands quickly and settles without
+overshoot, so a modal, a dropdown or the toolbox arrives rather than drifts in.
+The two always go together — `transform var(--transition-popup)
+var(--easing-popup)` — and the backdrop behind a modal takes the same pair,
+since it is rendered as a sibling and can't inherit it. Popups close the way
+they open; the exit is not tuned separately.
+
+**Easings are keywords.** Outside popups nothing names a curve. The fast and
+medium tiers ride on the browser's default `ease`, and the one place that wants
+a different shape says `ease-out` after the duration. Don't tokenise `ease`:
+the token would export as a cubic-bezier that is longer and says less. Figma
+has no preset for it, so a prototype that wants parity uses a custom bezier of
+0.25, 0.1, 0.25, 1; its Ease in, Ease out and Ease in and out are the CSS
+keywords of the same name.
+
+**Feel comes from the curve before the tier.** A medium transition that seems
+slow wants `ease-out`, which spends the motion early, before it wants to be
+fast.
+
+**Loops and holds are not transitions.** The spinner and the fresh-change pulse
+are keyframe animations with their own timing, and the pause before a "Copied"
+label reverts is a delay in code. Neither takes a token: a token says how a
+change feels, not how long something waits.
+
+**Anything that moves respects reduced motion.** A fold that changes height
+turns its transition off under `prefers-reduced-motion: reduce`, as the graph
+section does. A hover color needs no such rule.
+
+**An icon that becomes another icon crossfades.** Whenever one glyph gives
+way to another — copy becoming a tick, plus becoming a check, a placeholder
+becoming a camera under the pointer — the old one doesn't cut to the new one.
+Both icons stay in the DOM, one laid over the other (a shared grid cell or an
+absolutely positioned wrapper), and each transitions `opacity, scale, filter`
+on the medium tier: the one leaving shrinks to `scale(0.25)`, fades to `0` and
+blurs to `4px`, the one arriving does the reverse. The easing is the keyword
+`ease-out`, as everywhere else. This is a transition, not a keyframe, so a
+second click or a pointer leaving mid-swap reverses it cleanly. The same
+recipe serves a result swap and a hover swap alike; only the trigger differs.
+
+**The rules live in two places.** The token descriptions in ⚛️ Lite Core carry
+the same tiers and pairings as this section; change one and change the other.
 
 ## Icons
 
@@ -106,7 +307,10 @@ turns back on only when the button collapses to an icon.
 - **Saying why something is disabled.** A disabled control can't explain
   itself, so its tooltip does: "No changes to commit", "Set up AI in Settings →
   Application → AI". Swap the hint in for the normal tooltip while the reason
-  applies.
+  applies. This needs the control to stay hoverable while disabled
+  (`focusableWhenDisabled`), and it is for a reason that is one detail of the
+  surface; when the reason is the surface's whole story, it goes in the label
+  instead — see Empty states.
 
 **Shortcuts go in the `kbd` slot, not the text.** Don't write "Fetch (⌘R)" —
 pass the hotkey and let `TooltipPopup` render the keycaps. Pass `kbdScope`
@@ -129,11 +333,32 @@ same wording as the menu item or button elsewhere that does the same thing.
 title, a body line, and an actions slot. Its description in Figma carries the
 same rules as this section; change one and change the other.
 
-**It is for a surface that is genuinely empty, at rest.** Not a loading state —
-"not loaded" is not the same as "nothing to report", and a panel that claims an
-emptiness it hasn't checked yet will flash the wrong words on every open. Not a
-filter that matched nothing either: that belongs in a line where the list would
-be, next to the filter that caused it.
+**It is for a surface that is empty, once the app knows it is.** Not a loading
+state — "not loaded" is not the same as "nothing to report", and a panel that
+claims an emptiness it hasn't checked yet will flash the wrong words on every
+open.
+
+**A filter that matched nothing is empty too, and says so.** In a panel with
+room for it — the branches tab — it takes the block, with the title naming the
+miss and the body quoting what missed: the search, the filters, or both. The
+one action shows everything again, because the filters live in a native menu
+the block cannot point at. A short strip keeps the line where its rows would
+be, next to the filter that caused it. A picker's list takes a smaller block,
+`PopupEmpty`: the shrugging character over the one line that reports the miss,
+with no title above it, the line closer under the illustration, and no
+counterweight, because a line has no weight to lift. The same rule as the
+branches tab picks the drawing and the line: a list with nothing in it before
+anything was typed gets the cactus and says what that means — "Nothing left to
+apply" — since nothing was searched for and "found" would be the wrong word. A
+dropdown no wider than its trigger keeps the plain line: the commit target
+combobox is too narrow for the drawing.
+
+**Never a stand-in that looks like content.** Gray avatar circles and text
+bars where the reviewers would go are what every app draws while it is still
+loading, so a section that draws them at rest reads as stuck, not empty. The PR
+panel's Reviewers and Labels used to do this, and lost the shapes for an "Add
+reviewers" button: the empty section says what fills it, and a control is the
+one thing a skeleton never shows.
 
 **Centred, and only in a panel with room for it.** A short strip — the
 uncommitted list above its commit form — takes a single muted line inset to the
@@ -176,6 +401,40 @@ same place stay in the panel header's controls rather than crowding the block.
 committing with no branches creates one — the button is a shortcut and should
 read as one, and a body line promising the automatic path shouldn't sit under a
 highlighted button arguing the opposite.
+
+**An empty state is not the answer to a missing step.** Before designing a
+state for "can't do this yet", ask whether the app should take the step itself.
+The PR form used to disable its button on a branch that had never been pushed,
+when desktop and the CLI simply push and then create; removing the condition
+beat designing a state for it. Design the state only when the step is
+genuinely the user's — committing, say.
+
+**Blocked is not empty.** The block is for a surface with nothing in it. A
+surface that has content but cannot act yet keeps its content, because the
+block would throw away work the surface still supports: the PR form on a
+branch with no commits still takes a title, a description and a draft toggle,
+and Lite keeps that draft per branch, so the form stays and only its action
+waits. Three cases, three treatments — nothing here gets the block, not yet
+gets a held control that says why, not loaded gets neither.
+
+**A held control says why, and where depends on what else is on the surface.**
+When the reason is the whole story of the surface it goes in the label, visible
+without hover, in place of the action it replaces: the branch tabs' "No pull
+request", the form's "No commits yet" — "No X" or "No X yet", and short. When
+the surface already shows the situation and the reason is one detail of it, a
+tooltip is enough (see Tooltips): the merge button blocked by checks, with the
+checks listed right above it. A tooltip only works on a control that stays
+hoverable while disabled — `Button`'s `focusableWhenDisabled`, which
+`DropdownButton` relies on — which is the other reason a plain disabled button
+says it in the label.
+
+**Whether the reason will pass decides the entry point.** Keep a surface
+reachable when its block clears with the user's next ordinary action: an empty
+branch is one commit from a PR, so its tab stays live and the form explains
+itself. Disable the entry point only when the reason is permanent for that
+view — an unapplied branch cannot open a PR at all, so its tab segment is the
+thing that says so. Otherwise a fresh branch would have both tabs dead, its
+diff being empty too.
 
 ## Toasts and snackbars
 
@@ -239,3 +498,50 @@ thought across the two.
 and interrupts. Toasts get theirs from the toast viewport. Neither is the only
 way to know something: a state the user must act on belongs in the UI itself,
 not in a surface that leaves.
+
+## Markdown
+
+**One kit, in ⚛️ Lite Core: the `Markdown/` components.** A component per
+block — Heading with its three levels, Paragraph, List and List item, Link,
+Inline code, and Block, which wraps a code block, blockquote, table, image or
+rule chosen by its swap — and "Markdown / slot", whose default content is a
+sample description built from them. `Markdown.stories.tsx` renders the same
+document, so compare the two when either side changes. Each component's
+description in Figma names the CSS selector it stands for; change one and
+change the other.
+
+**The rhythm is 12, 16, 4.** 12px between text blocks. 16px around anything
+with an edge — a table, a code block, a quote bar, an image, a rule — because
+text carries its own leading and a box doesn't. 4px between the items of a
+list, and a nested list keeps the item rhythm rather than the block one. A
+heading takes twice the text gap above it, 24px, and a little less for h3 and
+below, 20px, so a section reads as a section rather than as one more
+paragraph; 8px below, which collapses into the next block's own margin. In
+Figma the same numbers are the slot's 12px gap plus each block's own padding:
+4 on Block, 12 on H2, 8 on H3. Margins collapse in CSS, so a box next to a
+paragraph gets 16, not 28.
+
+**Type.** Body/13 on a 160% line. H1 is 18, H2 16, H3 14, all semibold.
+Levels four to six stay at the body size and only go semibold; Figma has no
+component for them, and a description that needs a fourth level needs fewer
+levels.
+
+**Every link leaves the app, and the arrow says so.** Links open in the
+browser, never in Lite, and each carries `arrow-up-right` at 12px after its
+text, hung off the anchor without a space so the underline stops at the word.
+Figma writes ↗.
+
+**A box gets an edge.** Code blocks and inline code sit on `--bg-2`, at
+`--radius-card` and `--radius-button` respectively, in mono 12. A blockquote
+is a 3px `--border-2` bar with `--text-2` text. An image takes a 1px
+`--card-border` ring inset inside `--radius-card` corners, so a white
+screenshot has an edge on a white panel, and opens externally on click. A
+table's cells are bordered in `--border-3` under a `--bg-2` header row.
+
+**Inline pieces Figma can't run.** Inline code, keycaps and folds sit inside a
+text line in the app. Figma has no way to flow a chip through text, so the
+kit's sample puts the chip between two text nodes in a row. That is a limit of
+the mockup, not a layout: don't design around where the chip breaks.
+
+**The measure is 480.** A description is set at the details pane's width, the
+story sets the same, and every block component in the kit is 480 wide.

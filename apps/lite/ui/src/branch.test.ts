@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	activeBranchFilterCount,
 	branchDetailsParams,
 	branchIsEmpty,
 	branchOwnCommits,
@@ -37,6 +38,14 @@ const names = (stacks: Array<ListedStack>): Array<Array<string>> =>
 	stacks.map((s) => s.branches.map((b) => b.displayName));
 
 const allFilters = { showEmpty: false, onlyLocal: false, onlyStacks: false };
+
+describe("activeBranchFilterCount", () => {
+	it("counts the options switched on", () => {
+		expect(activeBranchFilterCount(allFilters)).toBe(0);
+		expect(activeBranchFilterCount({ ...allFilters, onlyLocal: true })).toBe(1);
+		expect(activeBranchFilterCount({ showEmpty: true, onlyLocal: true, onlyStacks: true })).toBe(3);
+	});
+});
 
 describe("branchIsEmpty", () => {
 	it("is empty only at exactly zero commits", () => {
@@ -147,10 +156,13 @@ describe("searchStacks", () => {
 			branch({
 				displayName: "unrelated",
 				review: {
-					number: 7,
+					number: 42,
 					title: "Speed up the parser",
-					htmlUrl: "https://example.com/7",
+					htmlUrl: "https://example.com/42",
 					unitSymbol: "#",
+					labels: [{ name: "performance", color: "00ff00", description: null }],
+					author: { login: "octocat", name: "Grace Hopper" },
+					createdAt: null,
 				},
 			}),
 		]),
@@ -172,6 +184,23 @@ describe("searchStacks", () => {
 
 	it("matches on review title", () => {
 		expect(names(searchStacks(stacks, "parser"))).toEqual([["unrelated"]]);
+	});
+
+	it("matches labels and the review author independently of the last commit author", () => {
+		expect(names(searchStacks(stacks, "performance"))).toEqual([["unrelated"]]);
+		expect(names(searchStacks(stacks, "octocat"))).toEqual([["unrelated"]]);
+		expect(names(searchStacks(stacks, "Hopper"))).toEqual([["unrelated"]]);
+	});
+
+	it("matches exact review numbers with a forge symbol", () => {
+		expect(names(searchStacks(stacks, "#42"))).toEqual([["unrelated"]]);
+		expect(searchStacks(stacks, "#17")).toEqual([]);
+		expect(searchStacks(stacks, "!42")).toEqual([]);
+	});
+
+	it("still searches branch names when a number has no forge symbol", () => {
+		const withNumberedBranch = [...stacks, stack([branch({ displayName: "release-42" })])];
+		expect(names(searchStacks(withNumberedBranch, "42"))).toEqual([["unrelated"], ["release-42"]]);
 	});
 
 	it("keeps a matched stack whole, including its non-matching branches", () => {

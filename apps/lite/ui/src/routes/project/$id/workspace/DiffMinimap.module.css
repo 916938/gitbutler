@@ -100,7 +100,7 @@
 	opacity: 1;
 	pointer-events: auto;
 	/* The awake state's duration governs the fade in. */
-	transition-duration: 0.15s;
+	transition-duration: var(--transition-medium);
 }
 
 /* Nothing worth mapping: no files, or the diff is barely taller than the pane. */
@@ -159,7 +159,7 @@
 	/* Clear the rule itself, so it runs unbroken behind the badge. */
 	margin-top: 1px;
 	background: var(--bg-1);
-	cursor: pointer;
+	cursor: var(--control-cursor);
 
 	& > svg {
 		width: 12px;

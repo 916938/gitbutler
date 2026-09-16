@@ -19,7 +19,8 @@ import { projectSlice } from "#ui/projects/state.ts";
 import { interfaceSlice } from "#ui/interface/state.ts";
 import { focusScope, useAddressSpaceHotkeys } from "#ui/focus-scopes.ts";
 import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
-import type { AddressSpace } from "#ui/workspace/address-space.ts";
+import { getAdjacent, type AddressSpace } from "#ui/workspace/address-space.ts";
+import { selectionAfterChecking } from "#ui/checking.ts";
 import { prForgeUrl } from "#ui/pr.ts";
 import { stackBottomRelativeTo } from "#ui/api/stack.ts";
 import type {
@@ -32,7 +33,7 @@ import type {
 import { type UseHotkeyDefinition, useHotkeys } from "@tanstack/react-hotkeys";
 import { useQuery } from "@tanstack/react-query";
 import { Match } from "effect";
-import type { RefObject } from "react";
+import { useRef, type RefObject } from "react";
 import { toggleFoldedSegment } from "./fold.ts";
 import { selectAfterDiscardedCommits } from "./selectAfterDiscardedCommit.ts";
 import {
@@ -72,6 +73,7 @@ export const useActiveListsHotkeys = ({
 	focusCommitMessageInput,
 	onEdgeSpill,
 	pendingPushBranches,
+	sectionToggle,
 }: {
 	addressSpace: AddressSpace<Address>;
 	projectId: string;
@@ -80,6 +82,8 @@ export const useActiveListsHotkeys = ({
 	focusCommitMessageInput: () => void;
 	onEdgeSpill?: (offset: -1 | 1) => void;
 	pendingPushBranches: Set<string>;
+	/** The action that toggles the fold the selection sits in; null when it sits in none. */
+	sectionToggle?: (() => void) | null;
 }) => {
 	const { data: headInfoIndex } = useQuery({
 		...headInfoQueryOptions(projectId),
@@ -191,40 +195,86 @@ export const useActiveListsHotkeys = ({
 		);
 	};
 
-	const toggleSelectedCommitChecked = (event: KeyboardEvent) => {
-		if (!selection || selection._tag !== "Commit") return;
+	// Repeats must follow the pending cursor before React renders it. Null ends the held-key run
+	// so it cannot reverse and undo the checks; a fresh keypress starts from the selected row.
+	const nextCheckedRow = useRef<Address>(null);
+	const moveAfterChecking = (selection: Address): Address | null => {
+		const checked = projectSlice.selectors.selectCheckedCommitIds(store.getState(), projectId);
+		const next = selectionAfterChecking({
+			selection,
+			getAdjacent: (offset) =>
+				getAdjacent({
+					addressSpace,
+					selection,
+					offset,
+					getKey: addressIdentityKey,
+					predicate:
+						selection._tag === "Branch"
+							? (address) =>
+									address._tag === "Branch" &&
+									(headInfoIndex?.branchContextByRefBytes(address.branchRef)?.segment.commits
+										.length ?? 0) > 0
+							: undefined,
+				}),
+			getChecked: (address) => {
+				if (address._tag === "Commit") {
+					const context = headInfoIndex?.commitContextByCommitId(address.commitId);
+					if (
+						!context ||
+						(selection._tag === "Commit" &&
+							context.segment !==
+								headInfoIndex?.commitContextByCommitId(selection.commitId)?.segment)
+					)
+						return null;
+					return checked.has(address.commitId);
+				}
+				if (address._tag !== "Branch" || selection._tag !== "Branch") return null;
+				const commits = headInfoIndex?.branchContextByRefBytes(address.branchRef)?.segment.commits;
+				return commits && commits.length > 0
+					? commits.every((commit) => checked.has(commit.id))
+					: null;
+			},
+		});
+		if (next) setCursor("applied", next);
+		return next;
+	};
+
+	const toggleSelectedChecked = (event: KeyboardEvent) => {
+		if (!selection) return;
 		// Leave activation of a directly focused checkbox to the checkbox itself.
 		if (event.target !== ref.current) return;
 
 		event.preventDefault();
 		event.stopPropagation();
-		checkCommit({
-			commitId: selection.commitId,
-			shiftKey: event.shiftKey,
-		});
-	};
-
-	const toggleSelectedBranchChecked = () => {
-		if (!selectedBranchSegment) return;
-
-		const selectedBranchCommitsChecked =
-			selectedBranchSegment.commits.length > 0
-				? selectedBranchSegment.commits.every((commit) =>
-						projectSlice.selectors
-							.selectCheckedCommitIds(store.getState(), projectId)
-							.has(commit.id),
-					)
-				: false;
-
-		dispatch(
-			projectSlice.actions.checkAddresses({
-				projectId,
-				addresses: selectedBranchSegment.commits.map((commit) =>
-					commitAddress({ commitId: commit.id, changeId: commit.changeId }),
-				),
-				checked: !selectedBranchCommitsChecked,
-			}),
-		);
+		if (event.shiftKey) {
+			nextCheckedRow.current = null;
+			if (selection._tag === "Commit")
+				checkCommit({ commitId: selection.commitId, shiftKey: true });
+			return;
+		}
+		const item = event.repeat ? nextCheckedRow.current : selection;
+		nextCheckedRow.current = null;
+		if (item === null) return;
+		if (!addressSpace.indexByKey.has(addressIdentityKey(item))) return;
+		if (item._tag === "Commit") {
+			checkCommit({ commitId: item.commitId, shiftKey: false });
+		} else if (item._tag === "Branch") {
+			const commits = headInfoIndex?.branchContextByRefBytes(item.branchRef)?.segment.commits;
+			if (!commits || commits.length === 0) return;
+			const checked = projectSlice.selectors.selectCheckedCommitIds(store.getState(), projectId);
+			dispatch(
+				projectSlice.actions.checkAddresses({
+					projectId,
+					addresses: commits.map((commit) =>
+						commitAddress({ commitId: commit.id, changeId: commit.changeId }),
+					),
+					checked: !commits.every((commit) => checked.has(commit.id)),
+				}),
+			);
+		} else {
+			return;
+		}
+		nextCheckedRow.current = moveAfterChecking(item);
 	};
 
 	const moveSelectedCommit = (offset: -1 | 1) => {
@@ -243,10 +293,15 @@ export const useActiveListsHotkeys = ({
 
 		let nextItemIndex = selectionIdx;
 		let nextItem: Address | undefined;
+		// Past the commits being moved, and past a worktree lane's file rows, which
+		// are not places a commit can go.
 		do {
 			nextItemIndex += offset;
 			nextItem = addressSpace.items[nextItemIndex];
-		} while (nextItem?._tag === "Commit" && subjectCommitIds.has(nextItem.commitId));
+		} while (
+			nextItem?._tag === "File" ||
+			(nextItem?._tag === "Commit" && subjectCommitIds.has(nextItem.commitId))
+		);
 		if (!nextItem) return;
 
 		let relativeTo: RelativeTo;
@@ -404,7 +459,9 @@ export const useActiveListsHotkeys = ({
 	};
 
 	const defaultSidebarHotkeysEnabled = noOperationPending;
-	const isSelectedCommit = selection?._tag === "Commit";
+	// A commit the workspace does not hold (a remote leg's, the target's) is
+	// selectable to look at, not to act on.
+	const isSelectedCommit = selectedCommit !== null;
 	const isSelectedBranch = selection?._tag === "Branch";
 	const isSelectedStackPushPending =
 		selectionStack?.segments.some(
@@ -448,6 +505,30 @@ export const useActiveListsHotkeys = ({
 	});
 
 	useHotkeys([
+		{
+			hotkey: sidebarHotkeys.checkAll.hotkey,
+			callback: () => {
+				const commits = selectionContext?.segment.commits;
+				if (!commits || commits.length === 0) return;
+
+				dispatch(
+					projectSlice.actions.checkAddresses({
+						projectId,
+						addresses: commits.map((commit) =>
+							commitAddress({ commitId: commit.id, changeId: commit.changeId }),
+						),
+						checked: true,
+					}),
+				);
+			},
+			options: {
+				conflictBehavior: "allow",
+				enabled: defaultSidebarHotkeysEnabled && selectionContext !== undefined && canCheckCommits,
+				ignoreInputs: true,
+				target: ref,
+				meta: sidebarHotkeys.checkAll.meta,
+			},
+		},
 		{
 			hotkey: sidebarHotkeys.selectBranch.hotkey,
 			callback: openBranchPicker,
@@ -544,7 +625,7 @@ export const useActiveListsHotkeys = ({
 		),
 		{
 			hotkey: sidebarHotkeys.checkCommit.hotkey,
-			callback: toggleSelectedCommitChecked,
+			callback: toggleSelectedChecked,
 			options: {
 				conflictBehavior: "allow",
 				enabled: defaultSidebarHotkeysEnabled && isSelectedCommit && canCheckCommits,
@@ -556,7 +637,7 @@ export const useActiveListsHotkeys = ({
 		},
 		{
 			hotkey: "Shift+Space",
-			callback: toggleSelectedCommitChecked,
+			callback: toggleSelectedChecked,
 			options: {
 				conflictBehavior: "allow",
 				enabled: defaultSidebarHotkeysEnabled && isSelectedCommit && canCheckCommits,
@@ -567,10 +648,12 @@ export const useActiveListsHotkeys = ({
 		},
 		{
 			hotkey: sidebarHotkeys.checkBranchCommits.hotkey,
-			callback: toggleSelectedBranchChecked,
+			callback: toggleSelectedChecked,
 			options: {
 				conflictBehavior: "allow",
 				enabled: defaultSidebarHotkeysEnabled && isSelectedBranch && canCheckCommits,
+				preventDefault: false,
+				stopPropagation: false,
 				target: ref,
 				meta: sidebarHotkeys.checkBranchCommits.meta,
 			},
@@ -607,10 +690,14 @@ export const useActiveListsHotkeys = ({
 		},
 		{
 			hotkey: sidebarHotkeys.toggleFoldBranch.hotkey,
-			callback: toggleFoldSelected,
+			callback: () => {
+				if (sectionToggle) sectionToggle();
+				else toggleFoldSelected();
+			},
 			options: {
 				conflictBehavior: "allow",
-				enabled: defaultSidebarHotkeysEnabled && foldableSegmentRef !== null,
+				enabled:
+					defaultSidebarHotkeysEnabled && (foldableSegmentRef !== null || sectionToggle != null),
 				target: ref,
 				meta: sidebarHotkeys.toggleFoldBranch.meta,
 			},

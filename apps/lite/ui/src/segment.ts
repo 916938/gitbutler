@@ -12,6 +12,14 @@ export const canRemoveBranchReference = (stack: Stack, segmentIndex: number): bo
 	return segmentIndex !== topBranchIndex;
 };
 
+/**
+ * Whether the update-from-remote flow has anything to do: an upstream with
+ * commits the branch lacks, or rewritten history it still holds.
+ */
+export const canIntegrateUpstream = (segment: Segment): boolean =>
+	segment.remoteTrackingRefName !== null &&
+	(segment.commitsOnRemote.length > 0 || segment.pushStatus === "unpushedCommitsRequiringForce");
+
 export type DownstackPushStatus = {
 	anyRequiresPush: boolean;
 	anyPushRequiresForce: boolean;
@@ -19,7 +27,7 @@ export type DownstackPushStatus = {
 	downstackBranches: number;
 };
 
-const emptyDownstackPushStatus: DownstackPushStatus = {
+export const emptyDownstackPushStatus: DownstackPushStatus = {
 	anyRequiresPush: false,
 	anyPushRequiresForce: false,
 	anyHasConflicts: false,
@@ -41,12 +49,16 @@ const concatDownstackPushStatus = (
 	downstackBranches: x.downstackBranches + y.downstackBranches,
 });
 
-const toDownstackPushStatus = (segment: Segment): DownstackPushStatus => ({
-	anyRequiresPush: pushStatusRequiresPush(segment.pushStatus),
-	anyPushRequiresForce: segment.pushStatus === "unpushedCommitsRequiringForce",
-	anyHasConflicts: segment.commits.some((commit) => commit.hasConflicts),
-	downstackBranches: segment.refName ? 1 : 0,
-});
+// Nothing pushes a segment without a branch, so it adds nothing to what rests on it.
+const toDownstackPushStatus = (segment: Segment): DownstackPushStatus =>
+	segment.refName === null
+		? emptyDownstackPushStatus
+		: {
+				anyRequiresPush: pushStatusRequiresPush(segment.pushStatus),
+				anyPushRequiresForce: segment.pushStatus === "unpushedCommitsRequiringForce",
+				anyHasConflicts: segment.commits.some((commit) => commit.hasConflicts),
+				downstackBranches: 1,
+			};
 
 export const downstackPushStatusDisabled = (dps: DownstackPushStatus): boolean =>
 	!dps.anyRequiresPush || dps.anyHasConflicts;
@@ -58,50 +70,24 @@ export const downstackPushStatusFromSegments = (segments: Array<Segment>): Downs
 	);
 
 /**
- * What a folded stacks panel is standing in for: how many branches it holds,
- * how many of those still have commits to push, and whether any of them is
- * conflicted.
- *
- * Branch-wise rather than stack-wise, because a branch is what the folded rows
- * would have shown one of, and a stack of five branches with one unpushed is
- * not "one unpushed stack" to anybody reading the number.
+ * Per segment, what a push from it covers: itself, the segments below, and
+ * `beneath`, which is what the last segment rests on. A stack rests on the
+ * target, a worktree lane on a commit of another lane whose push it also makes.
  */
-type WorkspaceStacksSummary = {
-	branches: number;
-	unpushedBranches: number;
-	hasConflicts: boolean;
-};
-
-export const workspaceStacksSummary = (stacks: Array<Stack>): WorkspaceStacksSummary => {
-	const summary: WorkspaceStacksSummary = {
-		branches: 0,
-		unpushedBranches: 0,
-		hasConflicts: false,
-	};
-
-	for (const stack of stacks) {
-		for (const segment of stack.segments) {
-			// Branchless segments are not rows of their own, so they are not counted
-			// — but their commits still belong to the branch below them, and a
-			// conflict in one is still a conflict this panel is hiding.
-			if (segment.refName) {
-				summary.branches += 1;
-				if (pushStatusRequiresPush(segment.pushStatus)) summary.unpushedBranches += 1;
-			}
-			if (segment.commits.some((commit) => commit.hasConflicts)) summary.hasConflicts = true;
-		}
-	}
-
-	return summary;
-};
-
 export const downstackPushStatusesFromSegments = (
 	segments: Array<Segment>,
+	beneath: DownstackPushStatus = emptyDownstackPushStatus,
 ): Array<DownstackPushStatus> =>
 	segments.reduceRight((acc, segment, idx) => {
-		acc[idx] = concatDownstackPushStatus(
-			acc[idx + 1] ?? emptyDownstackPushStatus,
-			toDownstackPushStatus(segment),
-		);
+		acc[idx] = concatDownstackPushStatus(acc[idx + 1] ?? beneath, toDownstackPushStatus(segment));
 		return acc;
 	}, [] as Array<DownstackPushStatus>);
+
+export const downstackPushLabel = (dps: DownstackPushStatus): string =>
+	dps.downstackBranches > 1
+		? dps.anyPushRequiresForce
+			? "Force Push With Branches Below"
+			: "Push With Branches Below"
+		: dps.anyPushRequiresForce
+			? "Force Push Branch"
+			: "Push Branch";

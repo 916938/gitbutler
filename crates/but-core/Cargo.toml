@@ -24,12 +24,12 @@ but-serde.workspace = true
 git2.workspace = true
 but-oxidize.workspace = true
 
+nonempty.workspace = true
 serde.workspace = true
 bstr.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 unicode-segmentation.workspace = true
-tempfile.workspace = true
 gix = { workspace = true, features = [
     "dirwalk",
     "credentials",

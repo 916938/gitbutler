@@ -5,13 +5,7 @@
 
 use anyhow::Context;
 
-use crate::{RefInfo, SegmentIndex, Workspace, segment, workspace::TargetRef};
-
-/// Legacy query helpers kept for callers that still depend on compatibility
-/// semantics.
-#[cfg(feature = "legacy")]
-#[path = "legacy.rs"]
-pub mod legacy;
+use crate::{SegmentIndex, Workspace, segment, workspace::TargetRef};
 
 /// # Points of Interest
 impl Workspace {
@@ -50,62 +44,6 @@ impl Workspace {
                 .commit_by_id(commit_id)
         })
     }
-
-    /// Return the stored target commit id.
-    ///
-    /// This is the previous target position remembered in workspace metadata.
-    /// It is normally the base the workspace last integrated with, and
-    /// intentionally differs from [`Self::target_ref_tip_commit_id()`], which
-    /// returns the current tip of the target reference.
-    pub fn stored_target_commit_id(&self) -> Option<gix::ObjectId> {
-        self.target_commit.as_ref().map(|target| target.commit_id)
-    }
-
-    /// Return the current tip commit id of the target reference if it is
-    /// present in the workspace graph.
-    pub fn target_ref_tip_commit_id(&self) -> Option<gix::ObjectId> {
-        self.target_ref
-            .as_ref()
-            .and_then(|target| self.tip_commit_by_segment_id(target.segment_index))
-            .map(|commit| commit.id)
-    }
-
-    /// Return the commit id that currently acts as the workspace target.
-    ///
-    /// This follows the same precedence as operations that need a concrete
-    /// target side: target ref tip, then stored target commit, then the first
-    /// integrated traversal tip.
-    pub fn effective_target_commit_id(&self) -> Option<gix::ObjectId> {
-        self.target_ref
-            .as_ref()
-            .and_then(|target| self.tip_commit_by_segment_id(target.segment_index))
-            .map(|commit| commit.id)
-            .or_else(|| self.target_commit.as_ref().map(|target| target.commit_id))
-            .or_else(|| {
-                self.graph
-                    .integrated_tip_segments()
-                    .into_iter()
-                    .find_map(|segment_index| {
-                        self.tip_commit_by_segment_id(segment_index)
-                            .map(|commit| commit.id)
-                    })
-            })
-    }
-
-    /// Return the segment that currently acts as the workspace target.
-    ///
-    /// This follows target ref, then stored target commit, then the first
-    /// integrated traversal tip in that order.
-    pub fn effective_target_segment_index(&self) -> Option<SegmentIndex> {
-        self.target_ref
-            .as_ref()
-            .map(|target| target.segment_index)
-            .or(self
-                .target_commit
-                .as_ref()
-                .map(|target| target.segment_index))
-            .or_else(|| self.graph.integrated_tip_segments().into_iter().next())
-    }
 }
 
 /// # Refs of Interest
@@ -119,24 +57,13 @@ impl Workspace {
             .as_ref()
             .map(|target| target.ref_name.as_ref())
     }
-
-    /// Return the local tracking branch reference information with the configured
-    ///  [target reference](Self::target_ref). This is available as long as a target
-    /// ref exists (i.e. `refs/remotes/origin/main`) and a local tracking ref for it
-    /// was configured or inferred.
-    pub fn target_local_tracking_ref_info(&self) -> Option<&RefInfo> {
-        self.target_ref
-            .as_ref()
-            .and_then(|target_ref| self.graph[target_ref.segment_index].sibling_segment_id)
-            .and_then(|local_target_ref_sidx| self.graph[local_target_ref_sidx].ref_info.as_ref())
-    }
 }
 
 /// # Sets of Interest
 impl Workspace {
     /// Return all target-reference commits that are ahead of the workspace base,
     /// which is the commits counted with
-    /// [workspace::TargetRef::commits_ahead](crate::workspace::TargetRef::commits_ahead)
+    /// [`field@crate::workspace::TargetRef::commits_ahead`]
     ///
     /// The traversal starts at the resolved target reference and stops at the
     /// workspace lower bound or at commits already marked as belonging to the
@@ -161,5 +88,31 @@ impl Workspace {
             },
         );
         Ok(commit_ids)
+    }
+}
+
+/// # Bases of Interest
+impl Workspace {
+    /// Return the child-most commit any stack rests on, which is where a new
+    /// independent branch belongs.
+    ///
+    /// Stacks rest on the target's history, so among their bases the one that
+    /// descends from all others wins; unrelated bases keep stack order. Without
+    /// stacks this is the target commit itself, and without a target there is no
+    /// base to return.
+    pub fn highest_base(&self) -> Option<gix::ObjectId> {
+        let target = self.target_commit.as_ref()?;
+        self.stacks
+            .iter()
+            .filter_map(|stack| stack.base().zip(stack.base_segment_id()))
+            .reduce(|best, other| {
+                if self.graph.find_merge_base(best.1, other.1) == Some(best.1) {
+                    other
+                } else {
+                    best
+                }
+            })
+            .map(|(base, _)| base)
+            .or(Some(target.commit_id))
     }
 }

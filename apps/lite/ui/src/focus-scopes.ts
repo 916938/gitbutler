@@ -66,7 +66,9 @@ const findFocusTarget = (parent: ParentNode, scope: FocusScope): HTMLElement | n
 };
 
 export const focusScope = (scope: FocusScope) => {
-	findFocusTarget(document, scope)?.focus({ focusVisible: false });
+	// A scope is a whole list, taller than its scroller: the browser would
+	// scroll to its top, out from under the row the list then scrolls to.
+	findFocusTarget(document, scope)?.focus({ preventScroll: true, focusVisible: false });
 };
 
 /**
@@ -131,12 +133,12 @@ export const useCommittedSelectionFocus = (onFocusScope: (scope: FocusScope) => 
 };
 
 export const focusHorizontalScope = ({
-	filesVisible,
+	filesPanelSide,
 	offset,
 	sidebarFocusScope,
 	detailsFullWindow,
 }: {
-	filesVisible: boolean;
+	filesPanelSide: "left" | "right" | null;
 	offset: -1 | 1;
 	sidebarFocusScope: Extract<FocusScope, "uncommitted-files" | "sidebar"> | null;
 	detailsFullWindow: boolean;
@@ -149,24 +151,27 @@ export const focusHorizontalScope = ({
 			? currentFocusScope
 			: sidebarFocusScope;
 
-	// "details" resolves to whichever of its child scopes is mounted (diff or
-	// pr tab), so the rightmost slot works on both tabs.
+	// "details" resolves to whichever of its child scopes is mounted (diff or PR tab).
 	const orderedFocusScopes: Array<FocusScope> = [
 		...(detailsFullWindow ? [] : [currentSidebarFocusScope ?? "sidebar"]),
-		...(filesVisible ? (["files"] satisfies Array<FocusScope>) : []),
+		...(filesPanelSide === "left" ? (["files"] as const) : []),
 		"details",
+		...(filesPanelSide === "right" ? (["files"] as const) : []),
 	];
+	const visibleFocusScopes = orderedFocusScopes.filter(
+		(scope) => findFocusTarget(document, scope) !== null,
+	);
 	const positionScope =
 		currentFocusScope === "diff" || currentFocusScope === "pr" ? "details" : currentFocusScope;
 
-	if (positionScope === null || !orderedFocusScopes.includes(positionScope)) {
+	if (positionScope === null || !visibleFocusScopes.includes(positionScope)) {
 		const nextFocusScope: FocusScope | undefined =
-			offset === 1 ? orderedFocusScopes.at(0) : orderedFocusScopes.at(-1);
+			offset === 1 ? visibleFocusScopes.at(0) : visibleFocusScopes.at(-1);
 
 		if (nextFocusScope !== undefined) focusScope(nextFocusScope);
 	} else {
-		const nextIndex = orderedFocusScopes.indexOf(positionScope) + offset;
-		const nextFocusScope = nextIndex < 0 ? undefined : orderedFocusScopes.at(nextIndex);
+		const nextIndex = visibleFocusScopes.indexOf(positionScope) + offset;
+		const nextFocusScope = nextIndex < 0 ? undefined : visibleFocusScopes.at(nextIndex);
 		if (nextFocusScope !== undefined) focusScope(nextFocusScope);
 	}
 };

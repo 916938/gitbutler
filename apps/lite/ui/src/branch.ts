@@ -1,5 +1,5 @@
 import type { PayloadFor } from "#electron/ipc.ts";
-import type { ListedBranch, ListedStack } from "@gitbutler/but-sdk";
+import type { ListedBranch, ListedStack, RemoteTrackingReference } from "@gitbutler/but-sdk";
 import Fuse from "fuse.js";
 
 /**
@@ -12,6 +12,10 @@ import Fuse from "fuse.js";
  * is unknown rather than empty.
  */
 export const branchIsEmpty = (branch: ListedBranch): boolean => branch.commitCount === 0;
+
+/** A remote-tracking ref as shown: `origin/main`. */
+export const remoteTrackingLabel = (ref: RemoteTrackingReference): string =>
+	`${ref.remoteName}/${ref.displayName}`;
 
 /**
  * The commits the branch contributes itself, taken from a branch-details commit
@@ -33,6 +37,13 @@ export type BranchFilters = {
 	/** Keep only stacks that still have more than one branch. */
 	onlyStacks: boolean;
 };
+
+/**
+ * How many filter options are switched on. Every option is off at rest, so
+ * this is what the header's badge shows and what "any filter active" means.
+ */
+export const activeBranchFilterCount = (filters: BranchFilters): number =>
+	Object.values(filters).filter(Boolean).length;
 
 /**
  * The stacks from the branch listing that are not applied to the workspace,
@@ -64,12 +75,31 @@ const MIN_SEARCH_LENGTH = 2;
  */
 export const searchStacks = (stacks: Array<ListedStack>, query: string): Array<ListedStack> => {
 	const trimmed = query.trim();
+	const reviewNumber = /^([#!])(\d+)$/.exec(trimmed);
+	if (reviewNumber) {
+		const [, symbol, number] = reviewNumber;
+		return stacks.filter((stack) =>
+			stack.branches.some(
+				({ review }) =>
+					review !== null && String(review.number) === number && review.unitSymbol === symbol,
+			),
+		);
+	}
 	if (trimmed.length < MIN_SEARCH_LENGTH) return stacks;
 
 	const fuse = new Fuse(
 		stacks.flatMap((stack) => stack.branches),
 		{
-			keys: ["displayName", "lastAuthor.name", "lastAuthor.email", "review.title"],
+			keys: [
+				"displayName",
+				"lastAuthor.name",
+				"lastAuthor.email",
+				"review.title",
+				"review.number",
+				"review.labels.name",
+				"review.author.login",
+				"review.author.name",
+			],
 			// Desktop's branch-search calibration: forgiving of typos without
 			// returning half the list; ignoreLocation matches anywhere in the string.
 			threshold: 0.3,

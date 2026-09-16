@@ -51,12 +51,15 @@ const defaultAiConfiguration = () => ({
 
 const hostOverrides = {
 	getVersion: () => "gitbutler-harness",
+	isPackaged: () => false,
 	// The harness cannot open the user's browser; the panel degrades silently.
 	openInWebBrowser: () => undefined,
 	pickDirectory: () => null,
 	clipboardWriteText: () => undefined,
 	// No file manager to reveal into from the harness.
 	showItemInFolder: () => undefined,
+	// Nor a desktop to notify; the bell still fills.
+	showNotification: () => undefined,
 	getAiConfiguration: () => defaultAiConfiguration(),
 	updateAiConfiguration: () => defaultAiConfiguration(),
 	resetAiConfiguration: () => defaultAiConfiguration(),

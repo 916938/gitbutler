@@ -1,6 +1,6 @@
 import { decodeBytes } from "#ui/api/bytes.ts";
 import type { CursorItem, CursorName } from "#ui/cursors.ts";
-import type { PageId } from "#ui/projects/project.ts";
+import type { ActiveList, PageId } from "#ui/projects/project.ts";
 import type { Address } from "#ui/addresses.ts";
 
 /**
@@ -14,11 +14,10 @@ import type { Address } from "#ui/addresses.ts";
  */
 export type UrlQueryParams = {
 	page?: Exclude<PageId, "workspace">;
-	active?: "uncommitted";
+	active?: Exclude<ActiveList, "applied">;
 	applied?: string;
 	uncommitted?: string;
 	unapplied?: string;
-	upstream?: string;
 	files?: string;
 };
 
@@ -29,9 +28,11 @@ export const isUrlCursor = (list: CursorName): list is UrlCursorName => list !==
 
 /**
  * Address codec: `branch:<full-ref>`, `change:<change-id>` (first choice — a
- * change id survives amend and reword, so the URL needs no repair) and
- * `commit:<commit-id>` only for a commit that has no change id. Other addresses
- * are not addressable places.
+ * change id survives amend and reword, so the URL needs no repair),
+ * `commit:<commit-id>` only for a commit that has no change id, and
+ * `worktree-file:<worktree>:<path>` for a linked worktree's uncommitted file,
+ * which lives in the applied list rather than a path-keyed one. Other
+ * addresses are not addressable places.
  */
 const encodeAddress = (address: Address): string | null => {
 	switch (address._tag) {
@@ -39,6 +40,10 @@ const encodeAddress = (address: Address): string | null => {
 			return `branch:${decodeBytes(address.branchRef)}`;
 		case "Commit":
 			return address.changeId !== "" ? `change:${address.changeId}` : `commit:${address.commitId}`;
+		case "File":
+			return address.parent._tag === "UncommittedChanges" && address.parent.worktree !== undefined
+				? `worktree-file:${address.parent.worktree}:${address.path}`
+				: null;
 		default:
 			return null;
 	}
@@ -53,7 +58,6 @@ const encodePath = (path: string): string => path;
 const cursorParam: { [L in UrlCursorName]: (item: CursorItem[L]) => string | null } = {
 	applied: encodeAddress,
 	unapplied: encodeAddress,
-	upstream: encodeAddress,
 	uncommitted: encodePath,
 	files: encodePath,
 };

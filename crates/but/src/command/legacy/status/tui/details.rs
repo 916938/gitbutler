@@ -382,7 +382,7 @@ impl Details {
                 )
             }
             CliId::Worktree { .. } => {
-                self.diff_not_supported("(a worktree reference has no diff of its own)");
+                self.diff_not_supported("(viewing diffs for worktrees is not supported)");
                 Ok(true)
             }
             CliId::AnonymousSegment(..) => {
@@ -1591,11 +1591,12 @@ fn select_pending_cli_id_in_latest_section(
     else {
         return false;
     };
-    if !section
-        .cli_id
-        .as_ref()
-        .is_some_and(|cli_id| target == &**cli_id)
-    {
+    if !section.cli_id.as_ref().is_some_and(|cli_id| {
+        target == &**cli_id
+            // required to maintain the selection on watcher events since `CliId::eq` doesn't
+            // compare short ids
+            || target.short_string() == cli_id.short_string()
+    }) {
         return false;
     }
 
@@ -2067,6 +2068,7 @@ mod tests {
             id: id.into(),
             hunks: NonEmpty::new(IdAndHunk {
                 id: id.into(),
+                tree_status: but_core::TreeStatusKind::Modification,
                 hunk: but_core::SingleHunk {
                     hunk_header: Some(HunkHeader {
                         old_start,

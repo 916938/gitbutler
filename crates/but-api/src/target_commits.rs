@@ -47,7 +47,18 @@ pub fn workspace_target_commits(
     from: Option<HexHash>,
     limit: Option<u32>,
 ) -> anyhow::Result<TargetCommitPage> {
-    let (_guard, repo, ws, db) = ctx.workspace_and_db()?;
+    let guard = ctx.shared_worktree_access();
+    workspace_target_commits_with_perm(ctx, from, limit, guard.read_permission())
+}
+
+/// List target commits while reusing the caller's repository access permission.
+pub(crate) fn workspace_target_commits_with_perm(
+    ctx: &but_ctx::Context,
+    from: Option<HexHash>,
+    limit: Option<u32>,
+    perm: &but_core::sync::RepoShared,
+) -> anyhow::Result<TargetCommitPage> {
+    let (repo, ws, db) = ctx.workspace_and_db_with_perm(perm)?;
     let Some(target_ref) = ws.target_ref.as_ref() else {
         return Ok(TargetCommitPage::default());
     };
@@ -186,7 +197,7 @@ fn natural_end_of_line(
 }
 
 /// One bounded page of target commits and the state needed to continue it.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TargetCommitPage {
@@ -201,7 +212,7 @@ but_schemars::register_sdk_type!(TargetCommitPage);
 
 /// A commit on the target branch's first-parent line, its relation to the
 /// workspace, and the merged review it landed, if known.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TargetCommit {
@@ -222,7 +233,7 @@ but_schemars::register_sdk_type!(TargetCommit);
 /// available from the per-review APIs. The source branch lets clients match
 /// workspace branches to the commit that landed them; it is empty when
 /// unknown.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct TargetCommitReview {
@@ -238,6 +249,8 @@ pub struct TargetCommitReview {
     pub unit_symbol: String,
     /// The short name of the branch the review proposed, e.g. `feature-branch`.
     pub source_branch: String,
+    /// Labels attached to the review, when available in the forge cache.
+    pub labels: Vec<but_forge::ForgeReviewLabel>,
 }
 
 #[cfg(feature = "export-schema")]
@@ -251,6 +264,7 @@ impl From<ForgeReview> for TargetCommitReview {
             html_url: value.html_url,
             unit_symbol: value.unit_symbol,
             source_branch: value.source_branch,
+            labels: value.labels,
         }
     }
 }
@@ -273,6 +287,7 @@ impl TargetCommitReview {
             ),
             unit_symbol: forge_info.unit.symbol.clone(),
             source_branch: review.source_branch.unwrap_or_default().to_owned(),
+            labels: Vec::new(),
         })
     }
 }

@@ -16,9 +16,7 @@
 	white-space: nowrap;
 
 	&:not(.disableTransition) {
-		transition:
-			background-color var(--transition-fast),
-			color var(--transition-fast);
+		transition: var(--transition-button);
 	}
 
 	&[data-pressed] {
@@ -34,7 +32,7 @@
 
 	& [data-icon] {
 		opacity: var(--button-icon-opacity, 0.7);
-		transition: opacity 0.08s ease;
+		transition: opacity var(--transition-fast);
 	}
 
 	&:not(:disabled, [data-disabled]):hover {
@@ -60,7 +58,7 @@
 
 :where(.small) {
 	--button-gap: 4px;
-	--button-height: 20px;
+	--button-height: var(--size-tag);
 	--button-padding-inline: 6px;
 	--icon-size: 14px;
 
@@ -111,7 +109,7 @@
 	--button-bg: transparent;
 	--button-fg: color-mix(in srgb, var(--text-1) 90%, transparent);
 	--button-hover-fg: var(--text-1);
-	--button-hover-bg: color-mix(in srgb, var(--scale-gray-0) 5%, transparent);
+	--button-hover-bg: color-mix(in srgb, var(--fill-gray-bg) 5%, transparent);
 }
 
 :where(.outline-inverted) {
@@ -135,5 +133,5 @@
 	--button-bg: transparent;
 	--button-fg: color-mix(in srgb, var(--text-1) 90%, transparent);
 	--button-hover-fg: var(--text-1);
-	--button-hover-bg: color-mix(in srgb, var(--scale-gray-0) 5%, transparent);
+	--button-hover-bg: color-mix(in srgb, var(--fill-gray-bg) 5%, transparent);
 }

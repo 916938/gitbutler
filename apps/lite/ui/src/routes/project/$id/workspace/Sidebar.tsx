@@ -1,17 +1,8 @@
 import { useWorkspaceIntegrateUpstream } from "#ui/api/mutations.ts";
 import { setPage, usePage } from "#ui/use-cursor.ts";
-import {
-	forgeInfoOptions,
-	guiSettingsQueryOptions,
-	headInfoQueryOptions,
-	listReviewsQueryOptions,
-	workspaceFetchQueryOptions,
-	workspaceFetchStatusQueryOptions,
-} from "#ui/api/queries.ts";
+import { headInfoQueryOptions } from "#ui/api/queries.ts";
 import { NotificationBell } from "#ui/review-inbox-bell.tsx";
-import { usePrNotificationsLevel, useUnreadReviewCount } from "#ui/review-seen.ts";
 import { stackBottomRelativeTo } from "#ui/api/stack.ts";
-import { errorMessageForToast } from "#ui/errors.ts";
 import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { workspaceHotkeys } from "#ui/hotkeys.ts";
@@ -20,19 +11,18 @@ import { projectSlice } from "#ui/projects/state.ts";
 import { interfaceSlice } from "#ui/interface/state.ts";
 import { useAppDispatch, useAppSelector } from "#ui/store.ts";
 import type { AddressSpace } from "#ui/workspace/address-space.ts";
-import { Button, Toast, Toggle, ToggleGroup, Tooltip } from "@base-ui/react";
+import { Button, Toggle, ToggleGroup, Tooltip } from "@base-ui/react";
 import type { BottomUpdate, ProjectForFrontend } from "@gitbutler/but-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import { Activity, type FC, useRef } from "react";
 import { ToggleGroupStyles, ToggleStyles } from "#ui/components/ToggleGroup.tsx";
 import { WorkspaceLists } from "#ui/routes/project/$id/workspace/WorkspaceLists/WorkspaceLists.tsx";
+import type { Graph } from "#ui/routes/project/$id/workspace/Graph/usePlan.ts";
 import { BranchesList } from "#ui/routes/project/$id/workspace/BranchesList.tsx";
 import type { BranchesListContent } from "#ui/routes/project/$id/workspace/useBranchesList.ts";
-import { UpstreamList } from "#ui/routes/project/$id/workspace/UpstreamList.tsx";
-import type { UpstreamListData } from "#ui/routes/project/$id/workspace/useUpstreamList.ts";
+import { useFetchFromRemotes } from "#ui/routes/project/$id/workspace/useFetchFromRemotes.ts";
 import { assert } from "#ui/assert.ts";
-import { Badge } from "#ui/components/Badge.tsx";
 import type { PageId } from "#ui/projects/project.ts";
 import styles from "./Sidebar.module.css";
 import { SidebarHeader } from "#ui/routes/project/$id/workspace/SidebarHeader.tsx";
@@ -42,51 +32,11 @@ import { RowToolbar } from "#ui/routes/project/$id/workspace/Row.tsx";
 import { getRowButtonClassName } from "#ui/routes/project/$id/workspace/Row-utils.ts";
 
 /** The tabs in the order they are shown, for cycling with `[` and `]`. */
-const pageOrder: Array<PageId> = ["workspace", "upstream", "branches"];
+const pageOrder: Array<PageId> = ["workspace", "branches"];
 
 const adjacentPage = (tab: PageId, offset: -1 | 1): PageId => {
 	const index = pageOrder.indexOf(tab);
 	return assert(pageOrder[(index + offset + pageOrder.length) % pageOrder.length]);
-};
-
-/**
- * Counts past this are shown as `99+`: the badge sits inside a tab, where a
- * third digit takes width from the tab labels, and at that size the number is
- * a rough sense of how far behind the workspace is rather than a figure to
- * read. The upstream page states the exact count.
- */
-const maxBadgeCount = 99;
-
-/**
- * How many applied-branch pull requests have unread activity. Its own
- * component so its subscriptions wake only this badge, not the sidebar.
- */
-const WorkspaceActivityBadge: FC<{ projectId: string }> = ({ projectId }) => {
-	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
-	const notificationsLevel = usePrNotificationsLevel();
-	const prService = !!forgeInfo?.capabilities.prService && notificationsLevel !== "off";
-	const { data: appliedBranches } = useQuery({
-		...headInfoQueryOptions(projectId),
-		enabled: prService,
-		select: (headInfo) =>
-			new Set(
-				headInfo.stacks.flatMap((stack) =>
-					stack.segments.flatMap((segment) => segment.refName?.displayName ?? []),
-				),
-			),
-	});
-	const { data: appliedReviews } = useQuery({
-		...listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }),
-		enabled: prService,
-		select: (reviews) =>
-			reviews
-				.filter((review) => appliedBranches?.has(review.sourceBranch) === true)
-				.map((review) => ({ number: review.number, modifiedAt: review.modifiedAt })),
-	});
-	const count = useUnreadReviewCount(projectId, appliedReviews ?? [], prService);
-	if (count === 0) return null;
-
-	return <Badge variant="fillGray">{count > maxBadgeCount ? `${maxBadgeCount}+` : count}</Badge>;
 };
 
 export const Sidebar: FC<{
@@ -94,7 +44,7 @@ export const Sidebar: FC<{
 	branches: BranchesListContent | undefined;
 	branchesPending: boolean;
 	branchesError: boolean;
-	upstreamList: UpstreamListData;
+	graph: Graph;
 	addressSpace: AddressSpace<Address>;
 	uncommittedAddressSpace: AddressSpace<string>;
 	onActiveFileSelection: (selection: string) => void;
@@ -105,7 +55,7 @@ export const Sidebar: FC<{
 	branches,
 	branchesPending,
 	branchesError,
-	upstreamList,
+	graph,
 	addressSpace,
 	uncommittedAddressSpace,
 	onActiveFileSelection,
@@ -113,7 +63,6 @@ export const Sidebar: FC<{
 	projectId,
 }) => {
 	const dispatch = useAppDispatch();
-	const toastManager = Toast.useToastManager();
 	const noOperationPending = useAppSelector(
 		(state) => projectSlice.selectors.selectPendingOperation(state, projectId)._tag === "None",
 	);
@@ -130,6 +79,10 @@ export const Sidebar: FC<{
 		dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "ApplyBranchPicker" } }));
 	};
 
+	const openOperationsLog = () => {
+		dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "OperationsLogPicker" } }));
+	};
+
 	const openSettings = () => {
 		dispatch(interfaceSlice.actions.openDialog({ dialog: { _tag: "Settings" } }));
 	};
@@ -137,29 +90,9 @@ export const Sidebar: FC<{
 	const newBranch = useNewBranch(projectId);
 
 	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
-	const { data: autoFetchFrequency } = useQuery({
-		...guiSettingsQueryOptions,
-		select: (cfg) => cfg.autoFetchFrequency,
-	});
-	const { data: workspaceFetchStatus } = useQuery(workspaceFetchStatusQueryOptions(projectId));
 	const { isPending: isWorkspaceIntegrateUpstreamPending, mutate: workspaceIntegrateUpstream } =
 		useWorkspaceIntegrateUpstream();
-	const { isFetching: isWorkspaceFetchFromRemotesPending, refetch: workspaceFetchFromRemotes } =
-		useQuery(workspaceFetchQueryOptions(projectId, autoFetchFrequency));
-	const fetchFromRemotes = () => {
-		void workspaceFetchFromRemotes().then(({ error }) => {
-			if (!error) return;
-
-			// oxlint-disable-next-line no-console
-			console.error(error);
-			toastManager.add({
-				type: "error",
-				title: "Failed to fetch",
-				description: errorMessageForToast(error),
-				priority: "high",
-			});
-		});
-	};
+	const fetchFromRemotes = useFetchFromRemotes(projectId);
 	const updateWorkspace = () => {
 		const rebaseUpdates = (headInfo?.stacks ?? [])
 			.values()
@@ -177,8 +110,6 @@ export const Sidebar: FC<{
 		noOperationPending &&
 		headInfo?.target?.isCurrent === false &&
 		!isWorkspaceIntegrateUpstreamPending;
-	const canFetchFromRemotes = noOperationPending && !isWorkspaceFetchFromRemotesPending;
-
 	const canCreateBranch = newBranch.enabled;
 
 	const ref = useRef<HTMLDivElement>(null);
@@ -218,9 +149,9 @@ export const Sidebar: FC<{
 		},
 		{
 			hotkey: workspaceHotkeys.fetchFromRemotes.hotkey,
-			callback: fetchFromRemotes,
+			callback: fetchFromRemotes.fetch,
 			options: {
-				enabled: canFetchFromRemotes,
+				enabled: fetchFromRemotes.enabled,
 				meta: workspaceHotkeys.fetchFromRemotes.meta,
 			},
 		},
@@ -261,10 +192,9 @@ export const Sidebar: FC<{
 				<SidebarHeader
 					bell={<NotificationBell projectId={projectId} />}
 					project={project}
-					canFetch={canFetchFromRemotes}
-					isFetchPending={isWorkspaceFetchFromRemotesPending}
-					lastSuccessfulFetchMs={workspaceFetchStatus?.lastSuccessfulMs}
-					onFetch={fetchFromRemotes}
+					isFetchPending={fetchFromRemotes.isPending}
+					canOpenOperationsLog={noOperationPending}
+					onOpenOperationsLog={openOperationsLog}
 					canOpenSettings={noOperationPending}
 					onOpenSettings={openSettings}
 				/>
@@ -282,22 +212,6 @@ export const Sidebar: FC<{
 					>
 						<Icon name="workbench" />
 						<span className={styles.tabLabel}>Workspace</span>
-						<WorkspaceActivityBadge projectId={projectId} />
-					</Toggle>
-					<Toggle
-						render={<ToggleStyles />}
-						value={"upstream" satisfies PageId}
-						aria-label="Upstream"
-					>
-						<Icon name="inbox" />
-						<span className={styles.tabLabel}>Upstream</span>
-						{upstreamList.incomingCount > 0 && (
-							<Badge variant="fillGray">
-								{upstreamList.incomingCount > maxBadgeCount
-									? `${maxBadgeCount}+`
-									: upstreamList.incomingCount}
-							</Badge>
-						)}
 					</Toggle>
 					<Toggle
 						render={<ToggleStyles />}
@@ -321,20 +235,10 @@ export const Sidebar: FC<{
 				/>
 			</Activity>
 
-			<Activity mode={page === "upstream" ? "visible" : "hidden"}>
-				<UpstreamList
-					className={styles.page}
-					projectId={projectId}
-					list={upstreamList}
-					canUpdateWorkspace={canUpdateWorkspace}
-					isUpdatePending={isWorkspaceIntegrateUpstreamPending}
-					onUpdateWorkspace={updateWorkspace}
-				/>
-			</Activity>
-
 			<Activity mode={page === "workspace" ? "visible" : "hidden"}>
 				<WorkspaceLists
 					className={styles.page}
+					graph={graph}
 					addressSpace={addressSpace}
 					uncommittedAddressSpace={uncommittedAddressSpace}
 					absorptionTargetCommitIds={absorptionTargetCommitIds}

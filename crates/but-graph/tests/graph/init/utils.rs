@@ -76,17 +76,29 @@ pub fn add_workspace_with_target(
     );
     ProjectMeta {
         target_commit_id: Some(target_commit.into()),
-        ..default_project_meta()
+        target_ref: Some(target_ref_name()),
+        ..Default::default()
     }
 }
 
-pub fn default_project_meta() -> ProjectMeta {
+fn target_ref_name() -> gix::refs::FullName {
+    "refs/remotes/origin/main"
+        .try_into()
+        .expect("statically known to be valid")
+}
+
+/// The target is `origin/main`, with its current tip as the stored target commit, like a
+/// project set up by GitButler.
+pub fn default_project_meta(repo: &gix::Repository) -> ProjectMeta {
+    let target_ref = target_ref_name();
     ProjectMeta {
-        target_ref: Some(
-            "refs/remotes/origin/main"
-                .try_into()
-                .expect("statically known to be valid"),
-        ),
+        target_commit_id: repo
+            .try_find_reference(target_ref.as_ref())
+            .ok()
+            .flatten()
+            .and_then(|mut r| r.peel_to_id().ok())
+            .map(|id| id.detach()),
+        target_ref: Some(target_ref),
         ..Default::default()
     }
 }
@@ -141,19 +153,8 @@ pub fn standard_options() -> but_graph::init::Options {
         commits_limit_hint: None,
         commits_limit_recharge_location: vec![],
         hard_limit: None,
-        extra_target_commit_id: None,
         dangerously_skip_postprocessing_for_debugging: false,
         worktrees: false,
-    }
-}
-
-pub fn standard_options_with_extra_target(
-    repo: &gix::Repository,
-    name: &str,
-) -> but_graph::init::Options {
-    but_graph::init::Options {
-        extra_target_commit_id: Some(repo.rev_parse_single(name).expect("present").detach()),
-        ..standard_options()
     }
 }
 

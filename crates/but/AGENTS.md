@@ -12,6 +12,24 @@ changes, also read `crates/WORKSPACE_MODEL.md`.
 - Some commands define `ERROR_EXAMPLES` in `crates/but/src/args/` that are
   shown on parse errors; keep them accurate when changing a command's
   arguments or behavior.
+- Doc comments are read by agents through `but skill reference`, which prints
+  each command's first paragraph and its flag help. Say what the command does
+  first; when omitting an argument behaves differently in a terminal and in a
+  non-interactive run, state both. Flags that only make sense in a terminal
+  (a TUI or an editor) take `help_heading = "Interactive"`, which the reference
+  omits.
+
+## Experimental Commands
+
+- Gate experimental commands and their implementations with
+  `#[cfg(feature = "nightly")]`; never enable this feature by default.
+- Keep experimental command names prefixed with `_` and set `hide = true`.
+  Hidden commands can still appear in shell completions; hiding is not a
+  substitute for the feature gate.
+- Gate command-specific integration tests too, and run them with
+  `cargo test -p but --features nightly`.
+- Nightly release builds enable this feature for both bundled and standalone
+  CLIs. Stable releases must leave it disabled.
 
 ## Worktree Guards And Deadlocks
 

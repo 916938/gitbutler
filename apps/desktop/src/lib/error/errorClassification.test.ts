@@ -160,6 +160,34 @@ describe("classify", () => {
 			expect(result.userMessage).toContain("permission");
 		});
 
+		test("GitHubTokenLifetimeRestricted is terminal with token-expiration guidance", () => {
+			const error = new IpcError(
+				{
+					message: "A GitHub organization limits how long personal access tokens may stay valid.",
+					code: "GitHubTokenLifetimeRestricted",
+				},
+				"list_reviews",
+			);
+			const result = classify(error);
+			expect(result.severity).toBe("error");
+			expect(result.terminal).toBe(true);
+			expect(result.title).toBe("GitHub Token Lifetime Restricted");
+			expect(result.userMessage).toContain("shorter expiration");
+			expect(result.userMessage).not.toContain("permission");
+		});
+
+		test("GitHubRateLimited is a terminal warning so pollers stop and telemetry dedups", () => {
+			const error = new IpcError(
+				{ message: "GitHub's API rate limit was exceeded.", code: "GitHubRateLimited" },
+				"get_review",
+			);
+			const result = classify(error);
+			expect(result.severity).toBe("warning");
+			expect(result.terminal).toBe(true);
+			expect(result.title).toBe("GitHub Rate Limit Exceeded");
+			expect(result.userMessage).toContain("rate limit");
+		});
+
 		test("GitHubOrgSamlRestricted is terminal with credential-neutral SSO guidance", () => {
 			const error = new IpcError(
 				{
@@ -177,6 +205,25 @@ describe("classify", () => {
 			expect(result.userMessage).toContain("OAuth app");
 			expect(result.userMessage).toContain("personal access token");
 			expect(result.userMessage).toContain("then try again");
+		});
+
+		test.each<[Code, RegExp]>([
+			["GitLabUnauthorized", /new personal access token/],
+			["GitLabForbidden", /token scopes.*account permissions/],
+		])("%s is terminal with static reauthentication guidance", (code, guidance) => {
+			// `get_gl_user` tags a stored-token 401/403; the raw message carries
+			// no useful detail, so the static copy must say what to change.
+			const error = new IpcError(
+				{ message: "Failed to get authenticated user", code },
+				"get_gl_user",
+			);
+			const result = classify(error);
+			expect(result.code).toBe(code);
+			expect(result.severity).toBe("error");
+			// Terminal: telemetry captures it once per session (see the
+			// terminal-code dedup test in error.test.ts).
+			expect(result.terminal).toBe(true);
+			expect(result.userMessage).toMatch(guidance);
 		});
 	});
 

@@ -1,3 +1,6 @@
+/* oxlint-disable typescript/strict-boolean-expressions */
+
+import posthogRollupPlugin from "@posthog/rollup-plugin";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import path from "node:path";
@@ -8,7 +11,33 @@ const currentDirPath = path.dirname(currentFilePath);
 
 export default defineConfig(({ command }) => ({
 	root: currentDirPath,
+	define: {
+		"process.env.CHANNEL": JSON.stringify(process.env.CHANNEL ?? "dev"),
+	},
 	plugins: [
+		{
+			name: "posthog-sourcemap-warning",
+			apply: "build",
+			buildStart() {
+				if (!process.env.POSTHOG_PERSONAL_API_KEY)
+					this.warn("Missing $POSTHOG_PERSONAL_API_KEY, PostHog sourcemap uploads disabled.");
+
+				if (!process.env.VERSION)
+					this.warn('Missing $VERSION, PostHog release version defaults to "dev".');
+			},
+		},
+		command === "build" &&
+			!!process.env.POSTHOG_PERSONAL_API_KEY &&
+			posthogRollupPlugin({
+				personalApiKey: process.env.POSTHOG_PERSONAL_API_KEY,
+				projectId: "2812",
+				host: "https://eu.posthog.com",
+				sourcemaps: {
+					releaseName: "gitbutler-next",
+					releaseVersion: process.env.VERSION || "dev",
+					deleteAfterUpload: true,
+				},
+			}),
 		react({
 			babel: {
 				plugins: ["babel-plugin-react-compiler"],

@@ -7,9 +7,9 @@ Agent-focused reference for useful `but` commands.
 - [Inspection](#inspection-understanding-state) - `status`, `show`, `diff`, `open`
 - [Branching](#branching) - `branch new`, `apply`, `unapply`, `branch delete`, `pick`
 - [Committing](#committing) - `commit`
-- [Editing History](#editing-history) - `squash`, `amend`, `move`, `uncommit`, `reword`, `discard`
+- [Editing History](#editing-history) - `squash`, `amend`, `move`, `split`, `uncommit`, `reword`, `discard`
 - [Conflict Resolution](#conflict-resolution) - `resolve`
-- [Remote Operations](#remote-operations) - `push`, `pull`, `pr`, `land`
+- [Remote Operations](#remote-operations) - `push`, `pull`, `pr`, `merge`
 - [Workspace Maintenance](#workspace-maintenance) - `clean`, `worktree`
 - [History & Undo](#history--undo) - `undo`, `oplog`
 - [Setup & Configuration](#setup--configuration) - `setup`, `teardown`, `config`, `update`, `skill`
@@ -61,7 +61,7 @@ but diff <commit-id>    # Diff for specific commit
 inspect committed files or other entities one target at a time. Unlike `commit`,
 `amend`, and `discard`, it does not accept several positional IDs.
 
-**Hunk IDs:** For uncommitted changes, bare `but diff` shows each hunk with an ID (e.g., `qs:5`, `uo:d`). Pass these IDs to `but commit` for fine-grained, hunk-level commits.
+**Hunk IDs:** For uncommitted changes, bare `but diff` shows each hunk with an ID (e.g., `uvw:2e4`, `uvw:e2c`). Pass these IDs to `but commit` for fine-grained, hunk-level commits.
 
 `but diff <commit-id>` also shows committed hunk IDs in the form `<commit-id>:<file-id>:<hunk-id>`. A committed file ID uses the shorter `<commit-id>:<file-id>` form. When passing several committed changes to an operation, select them from the same commit.
 
@@ -108,12 +108,12 @@ Create a new branch.
 ```bash
 but branch new                      # Generated branch name
 but branch new feature              # Independent branch (parallel work)
-but branch new feature -a <anchor>  # Stacked branch (dependent work)
+but branch new feature --above <parent>  # Stacked branch (dependent work)
 ```
 
 Use parallel branches for independent tasks. Use stacked branches when work depends on another branch.
 
-In single-branch mode (no managed workspace), `but branch new` stacks the new branch above the checked-out branch (or the `-a` anchor). When the new branch lands above the checked-out branch — always the case without an anchor — it is checked out and `HEAD` moves to it.
+In single-branch mode (no managed workspace), `but branch new` stacks the new branch above the checked-out branch (or the `--above` target). When the new branch lands above the checked-out branch — always the case without `--above` — it is checked out and `HEAD` moves to it.
 
 For "commit these selected changes on a new branch", prefer `but commit -b <branch> -m "message" <ids>` instead of a separate `but branch new` or preflight `but status -fv` — `-b` creates the branch when it does not exist.
 
@@ -204,7 +204,7 @@ Running `but commit` from inside a worktree acts on the main workspace, exactly 
 
 **Placing commits:** Use `--above <target>` or `--below <target>` when the new commit should be inserted at a specific position in existing history. Change-ID refs of existing commits remain valid after an insertion; sha and `#N`-suffixed refs may go stale — add `--status-after` when subsequent history edits need fresh refs.
 
-**Several commits from one diff:** Chain `but commit` calls with `&&` to split a broad uncommitted change into several semantic commits: `but commit -b <branch> -m "msg1" a1 b2 && but commit -b <branch> -m "msg2" c3 d4`. Mutation output is concise by default. Add `--status-after` only when the next step needs workspace IDs or details that the mutation result does not provide. The commits stack in the order you write them — the first `but commit` is the oldest of the new commits and each later one goes on top (newest). File/hunk IDs copied from the original output generally remain usable across commits; if an ID stops resolving, re-read the diff and continue. History edits (`amend`, `squash`, `move`, `uncommit`, `reword`) may run in sequence off one status read when every commit ref involved is a change-ID ref; run them one at a time with `--status-after` when a ref is sha-based or `#N`-suffixed, or when the next command needs freshly issued IDs. Bare `but diff` needs no ID from the preceding command, so `but uncommit <id> && but diff` is safe. If commits from that branch must stay *above* the new ones, see "Split an existing commit" in SKILL.md: commit the replacements, then move the preserved block together with `but move <preserved-id> [<preserved-id>...] -b <branch>` so its internal order stays intact.
+**Several commits from one diff:** Chain `but commit` calls with `&&` to split a broad uncommitted change into several semantic commits: `but commit -b <branch> -m "msg1" a1 b2 && but commit -b <branch> -m "msg2" c3 d4`. Mutation output is concise by default. Add `--status-after` only when the next step needs workspace IDs or details that the mutation result does not provide. The commits stack in the order you write them — the first `but commit` is the oldest of the new commits and each later one goes on top (newest). File/hunk IDs copied from the original output generally remain usable across commits; if an ID stops resolving, re-read the diff and continue. History edits (`amend`, `squash`, `move`, `uncommit`, `reword`) may run in sequence off one status read when every commit ref involved is a change-ID ref; run them one at a time with `--status-after` when a ref is sha-based or `#N`-suffixed, or when the next command needs freshly issued IDs. Bare `but diff` needs no ID from the preceding command, so `but uncommit <id> && but diff` is safe. If commits from that branch must stay *above* the new ones, see "Split an existing commit" in `but skill`: commit the replacements, then move the preserved block together with `but move <preserved-id> [<preserved-id>...] -b <branch>` so its internal order stays intact.
 
 Example: `but commit -b my-branch -m "Fix bug" ab cd` commits files/hunks `ab` and `cd`.
 
@@ -243,8 +243,9 @@ committed changes). Committed files and hunks may be mixed, but must come from o
 must be exactly one branch, which squashes that branch's commits together.
 
 Message flags (mutually exclusive). Commit and branch sources compose a new message unless the
-target is `@`, so without a flag they open an editor and block — always pass one. Uncommitted and
-committed-change sources reuse the target's message and need no flag:
+target is `@` — always pass a flag. Without one an agent run keeps the joined source messages and a
+terminal opens an editor. Uncommitted and committed-change sources reuse the target's message and
+need no flag:
 
 ```bash
 -m "msg"                # New message; repeat -m to append paragraphs
@@ -252,6 +253,9 @@ committed-change sources reuse the target's message and need no flag:
 -u, --use-target-message  # Keep the target's message, drop the sources'
 --use-source-message      # Keep the sources' message, drop the target's
 ```
+
+With branch sources, `--use-source-message` combines messages newest first within each
+branch and includes each source commit only once.
 
 None of the message flags may be used when the target is `@`.
 
@@ -296,6 +300,18 @@ with no value is equivalent to `--unstack`. With the experimental worktree flag 
 accepts a worktree or the branch checked out in it, moving commit or committed-change
 sources onto that branch's tip (nothing is created); a branch source is refused there.
 
+### `but split <SOURCES>...`
+
+Move selected committed files/hunks into a new commit immediately above their source.
+Files and hunks may be mixed, but must come from one commit. The new commit has no message;
+unselected changes stay in the source.
+
+```bash
+but diff <commit-id>                              # Read committed file/hunk IDs
+but split <commit-id>:<file-id>                    # Split a file
+but split <commit-id>:<file-id>:<hunk-id>           # Split a hunk
+```
+
 ### `but uncommit <SOURCES>...`
 
 Move commits, branches, or committed changes back to the uncommitted area.
@@ -321,8 +337,11 @@ Reword commit message or rename branch.
 ```bash
 but reword <id> -m "new"          # Always pass -m; without it an editor opens and blocks
 but reword <branch> -m "new-name" # Rename a branch (applied branches only)
+but reword <anonymous-id> -m "new-name" # Name an anonymous branch
 but reword <id> --fix-formatting  # Format to 72-char wrapping
 ```
+
+Retry other operations using the new name; the short ID may change.
 
 ### `but discard <CHANGES>...`
 
@@ -334,6 +353,7 @@ but discard <hunk-id>              # Discard a single hunk
 but discard @                      # Discard all uncommitted changes
 but discard <commit-id>            # Drop a commit
 but discard <commit-id>:<file-id>  # Drop one file's changes from its commit
+but discard <commit-id>:<file-id>:<hunk-id> # Drop one hunk from its commit
 but discard <branch>               # Drop a branch and its commits
 ```
 
@@ -469,18 +489,18 @@ requests API when the repository is enrolled in GitHub's private preview; otherw
 description footers. `but config forge github-stacks disable` opts out. The setting is
 project-local and shared with Desktop.
 
-### `but land <branch>`
+### `but merge <branch>`
 
-Land a branch directly onto the target (e.g. `origin/master`), skipping a pull request. Fast-forwards
+Merge a branch directly onto the target (e.g. `origin/master`), skipping a pull request. Fast-forwards
 when possible, otherwise makes a signed merge commit; for a `gb-local` target it moves the refs
 locally. Then reconciles the remaining branches like `but pull`, and deletes each landed branch's
 copy on the push remote (only when fully contained in the landed target), reported as
 `Deleted <remote>/<branch> (landed)`.
 
 ```bash
-but land <branch-selector> --yes                  # Land onto the target (--yes required non-interactively)
-but land <branch-selector> --no-ff --yes          # Force a merge commit instead of fast-forwarding
-but land <top-branch> --whole-stack --yes   # Land an entire stack by naming its top segment
+but merge <branch-selector> --yes                  # Merge onto the target (--yes required non-interactively)
+but merge <branch-selector> --no-ff --yes          # Force a merge commit instead of fast-forwarding
+but merge <top-branch> --whole-stack --yes   # Merge an entire stack by naming its top segment
 ```
 
 Direct target updates are hard to reverse, so confirmation is required (agents must pass `--yes`).
@@ -517,6 +537,8 @@ but worktree remove [-f] <id|name> # Like `git worktree remove`; `-f` for uncomm
 ```
 
 Worktrees are listed most recently updated first, as `id name (refs/heads/branch) - path`, with the branch shown only when it differs from the worktree name. Archiving is a GitButler-only state; none of these take part in `but undo`.
+
+Archiving and unarchiving notify open apps to refresh the worktree listing and workspace.
 
 ## History & Undo
 
@@ -608,9 +630,14 @@ but update install [nightly|release|0.18.7]
 
 ### `but skill`
 
-Manage installed GitButler skill files.
+Print this skill from the CLI, or manage installed skill files.
 
 ```bash
+but skill                     # Core guide (this skill's SKILL.md body)
+but skill --full              # Core guide plus every reference
+but skill reference           # Command syntax and flags
+but skill concepts            # Workspace model
+but skill examples            # Workflow examples
 but skill check
 but skill check --update
 but skill install --detect

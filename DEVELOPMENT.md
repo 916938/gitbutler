@@ -139,7 +139,7 @@ $ curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf | sh
 
 3. Node
 
-Next, ensure you've got at least Node 20 installed. If you're on Mac OS or Linux and you're missing `node`, you can use your favorite package manager like `brew` or `apt`.
+Next, ensure you've got at least Node 24 installed. If you're on Mac OS or Linux and you're missing `node`, you can use your favorite package manager like `brew` or `apt`.
 
 Alternatively, you can use the following Node installer from Vercel to get the latest version.
 
@@ -357,7 +357,7 @@ If none of these solutions work, please check our [GitHub Issues](https://github
 To build the app in production mode, run:
 
 ```bash
-$ pnpm tauri build --features devtools,builtin-but,disable-auto-updates --config crates/gitbutler-tauri/tauri.conf.nightly-local.json
+$ pnpm tauri build --features devtools,builtin-but,disable-auto-updates,nightly --config crates/gitbutler-tauri/tauri.conf.nightly-local.json
 ```
 
 This will make an asset similar to our nightly build.
@@ -439,7 +439,7 @@ export OPENSSL_SRC_PERL="c:/Strawberry/perl/bin/perl.exe"
 Here is how to produce a nightly release build:
 
 ```
-pnpm tauri build --features windows,devtools --config  crates/gitbutler-tauri/tauri.conf.nightly.json
+pnpm tauri build --features windows,devtools,nightly --config  crates/gitbutler-tauri/tauri.conf.nightly.json
 ```
 
 And this is how to get a local developer debug build:

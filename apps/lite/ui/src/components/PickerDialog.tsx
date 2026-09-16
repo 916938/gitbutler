@@ -3,7 +3,7 @@
  */
 
 import { Autocomplete, Dialog } from "@base-ui/react";
-import { Modal, PopupSearch } from "#ui/components/Popup.tsx";
+import { Modal, PopupEmpty, PopupSearch, PopupSectionLabel } from "#ui/components/Popup.tsx";
 import { getRangeExtractorWithIndices } from "#ui/virtual.ts";
 import { type Range, useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -42,7 +42,10 @@ type VirtualizerHandle = {
 };
 
 type VirtualizedListAreaProps<T> = {
-	emptyLabel: string;
+	nothingFoundLabel: string;
+	nothingToListLabel: string;
+	/** What the rows are filtered on, so the empty state can say whether anything was searched for. */
+	query: string;
 	getItemKey: (item: T) => string;
 	getItemLabel: (item: T) => string;
 	getItemType: (item: T, group: PickerDialogGroup<T>) => ReactNode;
@@ -53,12 +56,14 @@ type VirtualizedListAreaProps<T> = {
 };
 
 const VirtualizedListArea = <T,>({
-	emptyLabel,
+	nothingFoundLabel,
+	nothingToListLabel,
 	getItemKey,
 	getItemLabel,
 	getItemType,
 	highlightedItemIndex,
 	onSelectItem,
+	query,
 	statusLabel,
 	virtualizerRef,
 }: VirtualizedListAreaProps<T>) => {
@@ -114,7 +119,9 @@ const VirtualizedListArea = <T,>({
 		directDomUpdatesMode: "transform",
 		count: virtualRows.length,
 		getScrollElement: () => scrollElementRef.current,
-		estimateSize: () => 28,
+		// A heading is its 8px and 4px around one line of 12px type; a divided one adds the 5px
+		// of divider and inset above. Measured after the first paint, so close is enough.
+		estimateSize: (index) => (virtualRows[index]?._tag === "Group" ? (index > 0 ? 31 : 26) : 28),
 		getItemKey: getVirtualRowKey,
 		rangeExtractor: rangeExtractorWithHighlighted,
 		// The list opens on a section heading, which carries the 8px a section puts above its
@@ -189,10 +196,16 @@ const VirtualizedListArea = <T,>({
 		<div ref={scrollElementRef} className={classes(uiStyles.scroller, styles.listArea)}>
 			<div className={styles.listContent}>
 				<Autocomplete.Status>
-					{statusLabel !== undefined ? <div className={styles.empty}>{statusLabel}</div> : null}
+					{statusLabel !== undefined ? <div className={styles.status}>{statusLabel}</div> : null}
 				</Autocomplete.Status>
 				<Autocomplete.Empty>
-					{statusLabel === undefined ? <div className={styles.empty}>{emptyLabel}</div> : null}
+					{statusLabel === undefined ? (
+						<PopupEmpty
+							query={query}
+							nothingFound={nothingFoundLabel}
+							nothingToList={nothingToListLabel}
+						/>
+					) : null}
 				</Autocomplete.Empty>
 
 				<Autocomplete.List className={styles.list}>
@@ -206,31 +219,29 @@ const VirtualizedListArea = <T,>({
 								const row = virtualRows[virtualItem.index];
 								if (row === undefined) return null;
 
-								// Only what the virtualizer decides. A row spans the list, and how far it
-								// insets itself from the edge is the row's own styling.
+								// Only where the row sits. A row spans the list, insets itself as its own
+								// styling says, and is as tall as its content: the virtualizer measures the
+								// rendered box, so pinning a height here would only hand its own estimate
+								// back to it.
 								const style: CSSProperties = {
 									position: "absolute",
 									top: 0,
 									left: 0,
 									right: 0,
-									height: virtualItem.size,
 								};
 
 								if (row._tag === "Group") {
 									return (
-										<div
+										<PopupSectionLabel
 											key={virtualItem.key}
 											ref={virtualizer.measureElement}
 											data-index={virtualItem.index}
 											role="presentation"
-											className={classes(
-												styles.groupLabel,
-												virtualItem.index > 0 && styles.groupLabelDivided,
-											)}
+											divided={virtualItem.index > 0}
 											style={style}
 										>
 											{row.group.value}
-										</div>
+										</PopupSectionLabel>
 									);
 								}
 
@@ -265,7 +276,13 @@ const VirtualizedListArea = <T,>({
 type Props<T> = {
 	ariaLabel: string;
 	closeLabel: string;
-	emptyLabel: string;
+	/** What the list says when a search matched nothing — "No hotkeys found". */
+	nothingFoundLabel: string;
+	/**
+	 * What the list says when it had nothing in it before anything was typed — "Nothing to restore
+	 * yet". Nothing was searched for, so this is not a "found" line.
+	 */
+	nothingToListLabel: string;
 	footerAction?: ReactNode;
 	getItemKey: (item: T) => string;
 	getItemLabel: (item: T) => string;
@@ -285,7 +302,8 @@ type Props<T> = {
 export const PickerDialog = <T,>({
 	ariaLabel,
 	closeLabel,
-	emptyLabel,
+	nothingFoundLabel,
+	nothingToListLabel,
 	footerAction,
 	getItemKey,
 	getItemLabel,
@@ -394,12 +412,14 @@ export const PickerDialog = <T,>({
 				<Dialog.Close className={styles.visuallyHiddenClose}>{closeLabel}</Dialog.Close>
 
 				<VirtualizedListArea
-					emptyLabel={emptyLabel}
+					nothingFoundLabel={nothingFoundLabel}
+					nothingToListLabel={nothingToListLabel}
 					getItemKey={getItemKey}
 					getItemLabel={getItemLabel}
 					getItemType={getItemType}
 					highlightedItemIndex={highlightedItemIndex}
 					onSelectItem={onSelectItem}
+					query={deferredInputValue}
 					statusLabel={statusLabel}
 					virtualizerRef={virtualizerRef}
 				/>

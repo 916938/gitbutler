@@ -35,11 +35,17 @@ const settle = { timeout: 15_000 } as const;
  * is cleared either way.
  */
 /** The inbox as the detector wrote it, straight from the store's key. */
-const inboxEntries = (): Array<{ kind: string; review: number; author: string | null }> =>
+const inboxEntries = (): Array<{
+	kind: string;
+	review: number;
+	author: string | null;
+	seen: boolean;
+}> =>
 	JSON.parse(localStorage.getItem(`pr_activity_inbox:v1:${PROJECT_ID}`) ?? "[]") as Array<{
 		kind: string;
 		review: number;
 		author: string | null;
+		seen: boolean;
 	}>;
 
 const mountPanel = (handlers: FakeHandlers, seenMarks?: Record<number, string>) => {
@@ -133,10 +139,9 @@ test("a watcher event refreshes the uncommitted files", async () => {
 		changesInWorktree: () => worktree,
 	});
 
-	await vi.waitFor(
-		() => expect(panel.container.textContent).toContain("Nothing to commit"),
-		settle,
-	);
+	// The header carries the clean state; the empty file tree under it is
+	// hidden, so its own text is not what a user sees.
+	await vi.waitFor(() => expect(panel.container.textContent).toContain("no changes"), settle);
 
 	// The mount armed exactly one subscription with the host.
 	expect(panel.watcher.channels).toHaveLength(1);
@@ -147,7 +152,10 @@ test("a watcher event refreshes the uncommitted files", async () => {
 	worktree = fixtureWorktreeChanges([fixtureFileChange("src/new-file.ts")]);
 	const event: WatcherEvent = {
 		name: "worktreeChanges",
-		payload: { type: "worktreeChanges", subject: { changes: worktree } },
+		payload: {
+			type: "worktreeChanges",
+			subject: { changes: worktree, changedPaths: ["src/new-file.ts"] },
+		},
 	};
 	panel.push(eventChannel, event);
 
@@ -175,10 +183,10 @@ test("someone else's review activity files one coalesced inbox entry and the unr
 		listReviewTimelineEvents: () => [],
 	});
 
-	// The PR chip proves the baseline listing landed, and that nothing is
-	// unread yet — history must never replay as notifications.
-	await vi.waitFor(() => expect(panel.container.textContent).toContain("PR"), settle);
-	expect(document.querySelector('[title="New activity on this pull request"]')).toBeNull();
+	// The review title proves the baseline listing landed; nothing is filed yet —
+	// history must never replay as notifications.
+	await vi.waitFor(() => expect(panel.container.textContent).toContain(review.title), settle);
+	expect(inboxEntries()).toHaveLength(0);
 
 	// Someone comments; the forge bumps the review and a fetch notices.
 	review = { ...review, modifiedAt: "2026-01-01T11:00:00Z" };
@@ -198,14 +206,9 @@ test("someone else's review activity files one coalesced inbox entry and the unr
 	const event: WatcherEvent = { name: "gitFetch", payload: { type: "gitFetch", subject: null } };
 	panel.push(eventChannel, event);
 
-	// One coalesced, attributed inbox entry — and the unread dot alongside it.
+	// One coalesced, attributed inbox entry.
 	await vi.waitFor(() => expect(inboxEntries()).toHaveLength(1), settle);
 	expect(inboxEntries()[0]).toMatchObject({ kind: "comment", review: 7, author: "alice" });
-	await vi.waitFor(
-		() =>
-			expect(document.querySelector('[title="New activity on this pull request"]')).not.toBeNull(),
-		settle,
-	);
 
 	panel.unmount();
 });
@@ -230,7 +233,7 @@ test("a mention left on a diff line is filed like any other", async () => {
 		listReviewTimelineEvents: () => [],
 	});
 
-	await vi.waitFor(() => expect(panel.container.textContent).toContain("PR"), settle);
+	await vi.waitFor(() => expect(panel.container.textContent).toContain(review.title), settle);
 
 	review = { ...review, modifiedAt: "2026-01-01T11:00:00Z" };
 	threads = [
@@ -294,7 +297,7 @@ test("a mention toasts even when the review's branch is not in the workspace", a
 		listReviewTimelineEvents: () => [],
 	});
 
-	await vi.waitFor(() => expect(panel.container.textContent).toContain("PR"), settle);
+	await vi.waitFor(() => expect(panel.container.textContent).toContain(mine.title), settle);
 
 	outside = { ...outside, modifiedAt: "2026-01-01T11:00:00Z" };
 	comments = [
@@ -320,6 +323,64 @@ test("a mention toasts even when the review's branch is not in the workspace", a
 			expect(inboxEntries().find((entry) => entry.review === 8)).toMatchObject({ kind: "mention" }),
 		settle,
 	);
+
+	panel.unmount();
+});
+
+test("loud activity is offered to the desktop, and its click lands on the entry", async () => {
+	let review = fixtureForgeReview({ modifiedAt: "2026-01-01T10:00:00Z" });
+	let comments: Array<unknown> = [];
+	const shown: Array<{ id: string; title: string; body: string }> = [];
+
+	const panel = mountPanel({
+		headInfo: () =>
+			fixtureHeadInfo([[fixtureSegment({ branch: review.sourceBranch, commits: [] })]]),
+		changesInWorktree: () => fixtureWorktreeChanges([]),
+		forgeInfo: () => fixtureForgeInfo(),
+		listReviews: () => [review],
+		currentForgeLogin: () => "me",
+		listReviewComments: () => comments,
+		listReviewSubmissions: () => [],
+		listReviewThreads: () => [],
+		listReviewTimelineEvents: () => [],
+		showNotification: (notice: { id: string; title: string; body: string }) => {
+			shown.push(notice);
+		},
+	});
+	await vi.waitFor(() => expect(panel.container.textContent).toContain(review.title), settle);
+
+	review = { ...review, modifiedAt: "2026-01-01T12:00:00Z" };
+	// Its own minute: entry ids carry the time, and the inbox module keeps an
+	// in-memory copy across tests that would file a repeat id as old news.
+	comments = [
+		{
+			id: 3,
+			body: "Could this retry loop leak the handle?",
+			author: { id: 2, login: "alice", name: null, email: null, avatarUrl: null, isBot: false },
+			createdAt: "2026-01-01T11:45:00Z",
+			modifiedAt: null,
+			htmlUrl: "",
+			reactions: [],
+		},
+	];
+	const eventChannel = panel.watcher.channels.at(0);
+	if (eventChannel === undefined) throw new Error("no watcher subscription armed");
+	panel.push(eventChannel, {
+		name: "gitFetch",
+		payload: { type: "gitFetch", subject: null },
+	} satisfies WatcherEvent);
+
+	await vi.waitFor(() => expect(shown).toHaveLength(1), settle);
+	expect(shown[0]).toMatchObject({
+		title: "Comment from alice",
+		body: `${review.sourceBranch} #7\nCould this retry loop leak the handle?`,
+	});
+
+	// The click comes back by id and marks the entry seen on its way in.
+	const [notice] = shown;
+	if (notice === undefined) throw new Error("no notice shown");
+	panel.push("notificationClick", notice.id);
+	await vi.waitFor(() => expect(inboxEntries()[0]).toMatchObject({ seen: true }), settle);
 
 	panel.unmount();
 });

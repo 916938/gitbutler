@@ -1,4 +1,5 @@
 import {
+	type PushBeforePublish,
 	useAddReviewReaction,
 	useGeneratePrDescription,
 	useMergeReview,
@@ -7,18 +8,20 @@ import {
 	useSetReviewAutoMerge,
 	useSetReviewDraftiness,
 	useUpdateReview,
+	useWorkspaceBranchAndAncestorsPush,
 } from "#ui/api/mutations.ts";
 import {
 	aiConfigurationQueryOptions,
 	branchDetailsQueryOptions,
 	currentForgeLoginQueryOptions,
+	forgeInfoOptions,
 	getReviewMergeStatusQueryOptions,
 	listReviewReactionsQueryOptions,
+	listReviewTimelineEventsQueryOptions,
 } from "#ui/api/queries.ts";
 import {
-	groupReactors,
 	Reactions,
-	type ReactorsByKind,
+	tallyReactions,
 } from "#ui/routes/project/$id/workspace/PullRequestReactions.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Clamped } from "#ui/components/Clamped.tsx";
@@ -27,6 +30,8 @@ import { DropdownButton } from "#ui/components/DropdownButton.tsx";
 import { FieldControlStyles, FieldRootStyles } from "#ui/components/Field.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
 import { Markdown } from "#ui/components/Markdown.tsx";
+import { ReviewUser } from "#ui/routes/project/$id/workspace/PullRequestPanel.tsx";
+import { formatAbsoluteTime, formatRelativeTime } from "#ui/time.ts";
 import { branchDetailsParams } from "#ui/branch.ts";
 import { MarkdownAttachments } from "#ui/components/MarkdownAttachments.tsx";
 import { MarkdownToolbar } from "#ui/components/MarkdownToolbar.tsx";
@@ -48,17 +53,21 @@ import {
 	usePersistMergeMethod,
 } from "#ui/pr.ts";
 import { type FocusScope, useAutofocusScope } from "#ui/focus-scopes.ts";
-import { Field, Tooltip } from "@base-ui/react";
-import type {
-	ForgeReview,
-	ForgeReviewReaction,
-	ForgeReviewReactionCount,
-	ReviewMergeMethod,
-	ReviewMergeStatus,
-} from "@gitbutler/but-sdk";
+import { Button, Field, Tooltip } from "@base-ui/react";
+import type { ForgeReview, ReviewMergeMethod, ReviewMergeStatus } from "@gitbutler/but-sdk";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { useHotkey } from "@tanstack/react-hotkeys";
-import { type FC, type SubmitEventHandler, Suspense, useEffect, useRef, useState } from "react";
+import { useMergedRefs } from "@base-ui/utils/useMergedRefs";
+import {
+	type FC,
+	type ReactNode,
+	type RefCallback,
+	type SubmitEvent,
+	Suspense,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import styles from "./PullRequestForm.module.css";
 
 /**
@@ -92,6 +101,11 @@ export const PullRequestForm: FC<{
 	title: string | null;
 	body: string | null;
 	canSubmit: boolean;
+	/**
+	 * For a new PR, the push it has to wait for, or null when the branch is
+	 * already on the remote. Never read when editing an existing PR.
+	 */
+	pushFirst?: PushBeforePublish | null;
 	onAfterSubmit?: () => void;
 	/** Adds a Cancel button that discards edits and calls this. */
 	onCancel?: () => void;
@@ -101,6 +115,11 @@ export const PullRequestForm: FC<{
 	 * auto-merge). Never called when editing an existing PR.
 	 */
 	afterPublish?: (reviewId: number) => void;
+	/**
+	 * Which field takes focus when the form mounts: the title by default, the
+	 * description when the user came here to add one.
+	 */
+	autofocus?: "title" | "body";
 }> = ({
 	projectId,
 	sourceBranch,
@@ -108,16 +127,21 @@ export const PullRequestForm: FC<{
 	title,
 	body,
 	canSubmit,
+	pushFirst = null,
 	onAfterSubmit,
 	onCancel,
 	afterPublish,
+	autofocus = "title",
 }) => {
+	const { isPending: isPushPending, mutateAsync: pushBranchAndAncestors } =
+		useWorkspaceBranchAndAncestorsPush(projectId);
 	const { isPending: isPublishReviewPending, mutate: publishReview } = usePublishReview(projectId);
 	const { isPending: isUpdateReviewPending, mutate: updateReview } = useUpdateReview(projectId);
 	const formRef = useRef<HTMLFormElement | null>(null);
 	const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 	/** Drives the rule under the toolbar, so text never slides under it bare. */
 	const [bodyScrolled, setBodyScrolled] = useState(false);
+	const [submitLabelHidden, setSubmitLabelHidden] = useState(false);
 
 	const remoteOrEmptyDocument = {
 		title: title ?? "",
@@ -156,7 +180,13 @@ export const PullRequestForm: FC<{
 	const { mutate: deleteDraftPR } = useDeleteDraftPR();
 
 	const isNew = reviewId === null;
-	const isAnyPending = isPublishReviewPending || isUpdateReviewPending;
+	const isAnyPending = isPushPending || isPublishReviewPending || isUpdateReviewPending;
+	// A forge refuses a PR whose head adds nothing to its base, so an empty
+	// branch cannot open one — and pushing it first would only leave an empty
+	// branch on the remote. The form stays live for drafting ahead of the
+	// commits; only the button waits. Unknown while the details load: not
+	// loaded is not the same as empty.
+	const noCommits = isNew && branchDetails !== undefined && branchDetails.commits.length === 0;
 	const hasChanges =
 		localDocument.title !== remoteOrEmptyDocument.title ||
 		localDocument.body !== remoteOrEmptyDocument.body ||
@@ -255,11 +285,45 @@ export const PullRequestForm: FC<{
 		);
 	};
 
-	const handleSubmit: SubmitEventHandler<HTMLFormElement> = (evt) => {
+	// Tracks whether the container query has collapsed the submit button to its
+	// icons, so the label can move into a tooltip. A ref callback rather than a
+	// mount effect: the label is a flex item, so `display: none` zeroes its box
+	// and observing it is enough to tell.
+	const observeSubmitLabel: RefCallback<HTMLSpanElement> = (label) => {
+		if (label === null) return;
+		setSubmitLabelHidden(label.offsetWidth === 0);
+		const observer = new ResizeObserver((entries) => {
+			for (const entry of entries) setSubmitLabelHidden(entry.contentRect.width === 0);
+		});
+		observer.observe(label);
+		return () => observer.disconnect();
+	};
+
+	const handleSubmit = async (evt: SubmitEvent<HTMLFormElement>): Promise<void> => {
 		evt.preventDefault();
-		if (!canSubmit || isAnyPending || localDocument.title.trim() === "") return;
+		if (!canSubmit || noCommits || isAnyPending || localDocument.title.trim() === "") return;
 
 		if (reviewId === null) {
+			// A forge only opens a review on a branch it has, so the branch and
+			// its ancestors go up first when any still has something to push.
+			// The PR's source is then the name the branch landed under on the
+			// remote, which differs from the local one when the branch tracks
+			// another remote.
+			let remoteSourceBranch = sourceBranch;
+			if (pushFirst !== null) {
+				// The push hook already toasts its own failure.
+				const pushed = await pushBranchAndAncestors({
+					projectId,
+					branch: pushFirst.branch,
+					withForce: pushFirst.withForce,
+					skipForcePushProtection: false,
+					runHooks: true,
+					pushOpts: [],
+				}).catch(() => null);
+				if (pushed === null) return;
+				remoteSourceBranch =
+					pushed.branchToRemote.find(([branch]) => branch === sourceBranch)?.[2] ?? sourceBranch;
+			}
 			publishReview(
 				{
 					projectId,
@@ -268,7 +332,7 @@ export const PullRequestForm: FC<{
 						body: localDocument.body,
 						draft: localDocument.isDraft,
 						localBranch: sourceBranch,
-						sourceBranch,
+						sourceBranch: remoteSourceBranch,
 					},
 				},
 				{
@@ -304,9 +368,22 @@ export const PullRequestForm: FC<{
 		target: formRef,
 	});
 
+	const submitLabel = !isNew
+		? "Save changes"
+		: noCommits
+			? "No commits yet"
+			: pushFirst !== null
+				? "Push and create a PR"
+				: "Create a PR";
+
 	return (
 		// oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Used for persistence, not UI per se.
-		<form ref={formRef} className={styles.prForm} onBlur={handleBlur} onSubmit={handleSubmit}>
+		<form
+			ref={formRef}
+			className={styles.prForm}
+			onBlur={handleBlur}
+			onSubmit={(evt) => void handleSubmit(evt)}
+		>
 			{/* Both fields name themselves in the placeholder, as designed, so
 			    they carry an aria-label instead of a visible one. */}
 			<Field.Root render={<FieldRootStyles />}>
@@ -314,7 +391,7 @@ export const PullRequestForm: FC<{
 					render={<FieldControlStyles />}
 					aria-label="Pull request title"
 					data-focus-scope={"pr" satisfies FocusScope}
-					ref={useAutofocusScope()}
+					ref={useAutofocusScope(autofocus === "title")}
 					name="title"
 					onChange={(evt) => setLocalDocument({ ...localDocument, title: evt.currentTarget.value })}
 					placeholder="PR title"
@@ -339,7 +416,7 @@ export const PullRequestForm: FC<{
 					// Only the flip re-renders: React bails out of an unchanged state.
 					onScroll={(evt) => setBodyScrolled(evt.currentTarget.scrollTop > 0)}
 					placeholder="PR description"
-					ref={bodyRef}
+					ref={useMergedRefs(bodyRef, useAutofocusScope(autofocus === "body"))}
 					value={localDocument.body}
 				/>
 
@@ -409,15 +486,41 @@ export const PullRequestForm: FC<{
 									</button>
 								)}
 
-								<button
-									className={getButtonClassName({ variant: "gray" })}
-									disabled={!canSubmit || isAnyPending || !hasChanges}
-									type="submit"
-								>
-									{isNew ? "Create a PR" : "Save changes"}
-									{/* Creating opens a PR; saving only confirms an edit. */}
-									<Icon name={isAnyPending ? "spinner" : isNew ? "pr" : "tick"} />
-								</button>
+								{/* The reason rides in the label, not a tooltip: it is the
+								    form's whole story, so it has to be readable without hover
+								    (DESIGN.md → Empty states). Only once the editor is too
+								    narrow for the label does the tooltip take it over. */}
+								<Tooltip.Root disabled={!submitLabelHidden || !isNew}>
+									<Tooltip.Trigger
+										aria-label={submitLabel}
+										className={getButtonClassName({ variant: "gray" })}
+										render={
+											<Button
+												disabled={!canSubmit || noCommits || isAnyPending || !hasChanges}
+												focusableWhenDisabled
+												type="submit"
+											/>
+										}
+									>
+										<span ref={observeSubmitLabel} className={styles.submitLabel}>
+											{submitLabel}
+										</span>
+										{/* An edit keeps a word when collapsed: "Save" beside Cancel
+										    reads on its own, where a bare tick would not. */}
+										{!isNew && <span className={styles.submitShortLabel}>Save</span>}
+										{/* Creating opens a PR; saving only confirms an edit. */}
+										<Icon name={isAnyPending ? "spinner" : isNew ? "pr" : "tick"} />
+										{/* Collapsed, the arrow stands in for the "push" half of the label. */}
+										{isNew && pushFirst !== null && !noCommits && (
+											<Icon name="arrow-up" className={styles.submitPushIcon} />
+										)}
+									</Tooltip.Trigger>
+									<Tooltip.Portal>
+										<Tooltip.Positioner sideOffset={4}>
+											<Tooltip.Popup render={<TooltipPopup />}>{submitLabel}</Tooltip.Popup>
+										</Tooltip.Positioner>
+									</Tooltip.Portal>
+								</Tooltip.Root>
 							</div>
 						</div>
 					</div>
@@ -428,16 +531,50 @@ export const PullRequestForm: FC<{
 };
 
 /** A designed action whose backing feature does not exist yet. */
-/** Fold the raw reaction list into chip tallies plus who-reacted names. */
-const reviewReactionsSelect = (
-	reactions: Array<ForgeReviewReaction>,
-): { counts: Array<ForgeReviewReactionCount>; reactors: ReactorsByKind } => {
-	const tally = new Map<string, number>();
-	for (const reaction of reactions) tally.set(reaction.kind, (tally.get(reaction.kind) ?? 0) + 1);
-	return {
-		counts: [...tally].map(([kind, count]) => ({ kind, count })),
-		reactors: groupReactors(reactions),
-	};
+/**
+ * The line under the title: who opened the review, how many commits it
+ * carries and, once it has moved on from opening, when it last did. The side
+ * panel keeps the opening time.
+ */
+export const PullRequestMeta: FC<{ projectId: string; review: ForgeReview }> = ({
+	projectId,
+	review,
+}) => {
+	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
+	// The review itself does not say how many commits it holds; the forge's
+	// timeline, one event per commit currently on the review, does. It is the
+	// same query the side panel's Activity section reads, so the count costs
+	// nothing extra — and, like that section, only forges with a conversation
+	// serve it.
+	const { data: commitCount } = useQuery({
+		...listReviewTimelineEventsQueryOptions({ projectId, reviewId: review.number }),
+		enabled: forgeInfo?.capabilities.reviewComments !== false,
+		select: (events) => events.filter((event) => event.kind === "committed").length,
+	});
+	const createdAtMs = review.createdAt === null ? null : Date.parse(review.createdAt);
+	const modifiedAtMs = review.modifiedAt === null ? null : Date.parse(review.modifiedAt);
+	// The forge stamps modified_at on any activity, so creation itself can
+	// leave the two a moment apart; only a real gap is worth mentioning.
+	const updated =
+		modifiedAtMs !== null && (createdAtMs === null || modifiedAtMs - createdAtMs > 60_000)
+			? modifiedAtMs
+			: null;
+	const commits = commitCount !== undefined && commitCount > 0 ? commitCount : null;
+	if (review.author === null && commits === null && updated === null) return null;
+
+	return (
+		<div className={classes("text-13", styles.prViewMeta)}>
+			{review.author !== null && <ReviewUser user={review.author} />}
+			{commits !== null && (
+				<span>
+					{commits} commit{commits === 1 ? "" : "s"}
+				</span>
+			)}
+			{updated !== null && (
+				<span title={formatAbsoluteTime(updated)}>updated {formatRelativeTime(updated)}</span>
+			)}
+		</div>
+	);
 };
 
 /** Rendered PR title and body; the header's Edit button flips to the form. */
@@ -447,13 +584,28 @@ export const PullRequestDescription: FC<{
 	reviewId: number;
 	title: string;
 	body: string | null;
+	/** Sits between the title and the body while not editing. */
+	meta?: ReactNode;
 	canSubmit: boolean;
 	editing: boolean;
 	onDoneEditing: () => void;
-}> = ({ projectId, sourceBranch, reviewId, title, body, canSubmit, editing, onDoneEditing }) => {
+	/** Absent where the review is read-only, so the empty body offers no edit. */
+	onStartEditing?: () => void;
+}> = ({
+	projectId,
+	sourceBranch,
+	reviewId,
+	title,
+	body,
+	meta,
+	canSubmit,
+	editing,
+	onDoneEditing,
+	onStartEditing,
+}) => {
 	const { data: reviewReactions } = useQuery({
 		...listReviewReactionsQueryOptions({ projectId, reviewId }),
-		select: reviewReactionsSelect,
+		select: tallyReactions,
 	});
 	const { data: currentLogin } = useQuery(currentForgeLoginQueryOptions(projectId));
 	const { mutate: addReviewReaction } = useAddReviewReaction(projectId);
@@ -461,6 +613,13 @@ export const PullRequestDescription: FC<{
 	const toggleReaction = (kind: string, myReactionId: number | null) => {
 		if (myReactionId === null) addReviewReaction({ projectId, reviewId, kind });
 		else removeReviewReaction({ projectId, reviewId, reactionId: myReactionId });
+	};
+	// "Add one" and the header's Edit button share one edit mode, but the
+	// former was clicked to write a description, so the form opens on it.
+	const [autofocus, setAutofocus] = useState<"title" | "body">("title");
+	const doneEditing = () => {
+		setAutofocus("title");
+		onDoneEditing();
 	};
 
 	if (editing) {
@@ -475,8 +634,9 @@ export const PullRequestDescription: FC<{
 					sourceBranch={sourceBranch}
 					title={title}
 					canSubmit={canSubmit}
-					onAfterSubmit={onDoneEditing}
-					onCancel={onDoneEditing}
+					autofocus={autofocus}
+					onAfterSubmit={doneEditing}
+					onCancel={doneEditing}
 				/>
 			</Suspense>
 		);
@@ -484,15 +644,37 @@ export const PullRequestDescription: FC<{
 
 	return (
 		<div className={styles.prView}>
-			<h3 className={classes("text-15", "text-semibold")}>{title}</h3>
+			<h3 className={styles.prViewTitle}>{title}</h3>
+
+			{meta}
 
 			{body !== null && body.trim() !== "" ? (
-				// Taller ceiling than comments: only truly huge descriptions fold.
-				<Clamped maxHeight="80vh" skipWhenViewportFits>
+				// A long description opens as a four-line card so the conversation
+				// below is in reach: four rather than three because a body that opens
+				// with a heading spends a line and a half on it. The slack means a
+				// fold always hides at least a few lines, never just one.
+				<Clamped maxHeight="4lh" foldOver="6lh" variant="card">
 					<Markdown>{body}</Markdown>
 				</Clamped>
 			) : (
-				<p className={classes("text-13", styles.prViewEmptyBody)}>No description provided.</p>
+				<p className={classes("text-14", "text-body", styles.prViewEmptyBody)}>
+					No description
+					{onStartEditing !== undefined && (
+						<>
+							{" — "}
+							<button
+								className={styles.prViewAddDescription}
+								type="button"
+								onClick={() => {
+									setAutofocus("body");
+									onStartEditing();
+								}}
+							>
+								Add one
+							</button>
+						</>
+					)}
+				</p>
 			)}
 
 			{reviewReactions !== undefined && (
@@ -522,6 +704,7 @@ const mergeBlockedReason = (mergeStatus: ReviewMergeStatus | undefined): string 
 		case "draft":
 			return "Draft pull requests cannot be merged";
 		case "unknown":
+		case "checking":
 		case null:
 			return "Mergeability not yet determined by the forge";
 		default:

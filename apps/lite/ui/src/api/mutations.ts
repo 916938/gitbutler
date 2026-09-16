@@ -1,7 +1,10 @@
+import { reportError } from "#ui/error-reporting.ts";
+import { forgeAuthTags } from "#ui/forge.ts";
 import { decodeBytes, encodeBytes } from "#ui/api/bytes.ts";
 import { remapSearchBranch, remapSearchCommits, setCursor } from "#ui/use-cursor.ts";
 import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
 import {
+	appSettingsQueryOptions,
 	branchDetailsQueryOptions,
 	currentForgeLoginQueryOptions,
 	getReviewQueryOptions,
@@ -9,10 +12,13 @@ import {
 	guiSettingsQueryOptions,
 	listCommentReactionsQueryOptions,
 	listReviewCommentsQueryOptions,
+	listReviewSubmissionsQueryOptions,
 	listReviewThreadsQueryOptions,
 	listReviewReactionsQueryOptions,
+	reviewerCandidatesQueryOptions,
 	treeChangeDiffsQueryOptions,
 	workspaceFetchQueryOptions,
+	workspaceTargetCommitsQueryOptions,
 } from "#ui/api/queries.ts";
 import { shortCommitId } from "#ui/commit.ts";
 import {
@@ -45,16 +51,20 @@ import type {
 	DiffSpec,
 	ForgeReview,
 	ForgeReviewComment,
+	ForgeReviewSubmission,
 	ForgeReviewThreadComment,
 	ForgeReviewReaction,
 	ForgeReviewUser,
+	FeatureFlagsUpdate,
 	Snapshot,
 	TreeChange,
 } from "@gitbutler/but-sdk";
 import { type QueryClient, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { GUISettings } from "#electron/settings.ts";
 import { moveDraftPR } from "#ui/pr.ts";
+import { invalidateTags } from "#ui/api/tags.ts";
 import { presentableOperation } from "#ui/snapshot.ts";
+import { sameLogin } from "#ui/review-users.ts";
 
 declare module "@tanstack/react-query" {
 	interface Register {
@@ -169,8 +179,7 @@ export const useApply = () => {
 								syncCoreCaches(mutation.client, dispatch, input.projectId, checkoutResponse);
 								toastManager.close(toastId);
 							})().catch((error) => {
-								// oxlint-disable-next-line no-console
-								console.error(error);
+								reportError(error);
 
 								toastManager.add({
 									type: "error",
@@ -185,6 +194,17 @@ export const useApply = () => {
 			}
 		},
 		meta: { failureTitle: "Failed to apply branch" },
+	});
+};
+
+export const useApplyBranchIntegration = () => {
+	const dispatch = useAppDispatch();
+	return useMutation({
+		mutationFn: window.lite.applyBranchIntegration,
+		onSuccess: async (response, input, _context, mutation) => {
+			syncCoreCaches(mutation.client, dispatch, input.projectId, response);
+		},
+		meta: { failureTitle: "Failed to update the branch" },
 	});
 };
 
@@ -214,6 +234,9 @@ export const useBranchCheckoutNew = () => {
 		meta: { failureTitle: "Failed to create and switch to branch" },
 	});
 };
+
+/** The push a new pull request has to wait for: the branch, and whether it needs force. */
+export type PushBeforePublish = { branch: string; withForce: boolean };
 
 export const usePublishReview = (projectId: string) =>
 	useMutation({
@@ -528,11 +551,129 @@ export const useRemoveCommentReaction = ({
 		},
 	});
 
+/** Rewrite one submission's reactions in the listing. */
+const withSubmissionReactions = (
+	submissions: Array<ForgeReviewSubmission> | undefined,
+	submissionId: number,
+	update: (reactions: Array<ForgeReviewReaction>) => Array<ForgeReviewReaction>,
+): Array<ForgeReviewSubmission> | undefined =>
+	submissions?.map((submission) =>
+		submission.id === submissionId
+			? { ...submission, reactions: update(submission.reactions) }
+			: submission,
+	);
+
+/**
+ * A submission's reactions ride on the submissions listing, so that is the
+ * one cache the optimistic write and its rollback patch.
+ */
+export const useAddSubmissionReaction = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "addSubmissionReaction"],
+		mutationFn: window.lite.addSubmissionReaction,
+		meta: { failureTitle: "Failed to add reaction" },
+		onMutate: async (input, ctx) => {
+			const key = listReviewSubmissionsQueryOptions(input).queryKey;
+			await ctx.client.cancelQueries({ queryKey: key });
+
+			const prev = ctx.client.getQueryData(key);
+			const login = ctx.client.getQueryData(
+				currentForgeLoginQueryOptions(input.projectId).queryKey,
+			);
+			if (login != null) {
+				ctx.client.setQueryData(key, (submissions) =>
+					withSubmissionReactions(submissions, input.submissionId, (reactions) =>
+						reactions.concat(ghostReaction(input.kind, login)),
+					),
+				);
+			}
+
+			return prev;
+		},
+		onError: (error, input, prev, ctx) => {
+			// Roll the optimistic write back, then refetch: the rollback snapshot
+			// may itself be stale by now.
+			const key = listReviewSubmissionsQueryOptions(input).queryKey;
+			if (prev) ctx.client.setQueryData(key, prev);
+			void ctx.client.invalidateQueries({ queryKey: key });
+		},
+	});
+
+export const useRemoveSubmissionReaction = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "removeSubmissionReaction"],
+		mutationFn: window.lite.removeSubmissionReaction,
+		meta: { failureTitle: "Failed to remove reaction" },
+		onMutate: async (input, ctx) => {
+			const key = listReviewSubmissionsQueryOptions(input).queryKey;
+			await ctx.client.cancelQueries({ queryKey: key });
+
+			const prev = ctx.client.getQueryData(key);
+			const login = ctx.client.getQueryData(
+				currentForgeLoginQueryOptions(input.projectId).queryKey,
+			);
+			// The forge removes by kind; the caller's own entry of it goes. Only with the
+			// login known: without it, entries with no user would match, and the rewrite
+			// would re-render the list for nothing.
+			if (login != null) {
+				ctx.client.setQueryData(key, (submissions) =>
+					withSubmissionReactions(submissions, input.submissionId, (reactions) =>
+						reactions.filter(
+							(reaction) => !(reaction.kind === input.kind && reaction.user?.login === login),
+						),
+					),
+				);
+			}
+
+			return prev;
+		},
+		onError: (error, input, prev, ctx) => {
+			// Roll the optimistic write back, then refetch: the rollback snapshot
+			// may itself be stale by now.
+			const key = listReviewSubmissionsQueryOptions(input).queryKey;
+			if (prev) ctx.client.setQueryData(key, prev);
+			void ctx.client.invalidateQueries({ queryKey: key });
+		},
+	});
+
+/**
+ * The requested reviewer joins the single-review cache the panel renders
+ * from. The candidate listing the picker was built from supplies the full
+ * user, so the row carries the real id and avatar before the forge answers.
+ */
 export const useRequestReview = (projectId: string) =>
 	useMutation({
 		mutationKey: [projectId, "requestReview"],
 		mutationFn: window.lite.requestReview,
 		meta: { failureTitle: "Failed to request review" },
+		onMutate: async (input, ctx) => {
+			const key = getReviewQueryOptions(input).queryKey;
+			await ctx.client.cancelQueries({ queryKey: key });
+
+			const prev = ctx.client.getQueryData(key);
+			const candidates =
+				ctx.client.getQueryData(reviewerCandidatesQueryOptions(input.projectId).queryKey) ?? [];
+			ctx.client.setQueryData(key, (review) => {
+				if (review === undefined) return undefined;
+				const added = [...new Set(input.logins)]
+					.filter((login) => !review.reviewers.some((reviewer) => sameLogin(reviewer.login, login)))
+					.map(
+						(login) =>
+							candidates.find((candidate) => sameLogin(candidate.login, login)) ??
+							ghostForgeUser(login),
+					);
+				return { ...review, reviewers: review.reviewers.concat(added) };
+			});
+
+			return prev;
+		},
+		onError: (error, input, prev, ctx) => {
+			// Roll the optimistic write back, then refetch: the rollback snapshot
+			// may itself be stale by now.
+			const key = getReviewQueryOptions(input).queryKey;
+			if (prev) ctx.client.setQueryData(key, prev);
+			void ctx.client.invalidateQueries({ queryKey: key });
+		},
 	});
 
 export const useWithdrawReviewRequest = (projectId: string) =>
@@ -540,6 +681,31 @@ export const useWithdrawReviewRequest = (projectId: string) =>
 		mutationKey: [projectId, "withdrawReviewRequest"],
 		mutationFn: window.lite.withdrawReviewRequest,
 		meta: { failureTitle: "Failed to withdraw review request" },
+		onMutate: async (input, ctx) => {
+			const key = getReviewQueryOptions(input).queryKey;
+			await ctx.client.cancelQueries({ queryKey: key });
+
+			const prev = ctx.client.getQueryData(key);
+			ctx.client.setQueryData(key, (review) =>
+				review === undefined
+					? undefined
+					: {
+							...review,
+							reviewers: review.reviewers.filter(
+								(reviewer) => !input.logins.includes(reviewer.login),
+							),
+						},
+			);
+
+			return prev;
+		},
+		onError: (error, input, prev, ctx) => {
+			// Roll the optimistic write back, then refetch: the rollback snapshot
+			// may itself be stale by now.
+			const key = getReviewQueryOptions(input).queryKey;
+			if (prev) ctx.client.setQueryData(key, prev);
+			void ctx.client.invalidateQueries({ queryKey: key });
+		},
 	});
 
 export const useCreateReviewComment = (projectId: string) =>
@@ -758,6 +924,7 @@ export const useForgetGithubAccount = () =>
 		mutationKey: ["forgetGithubAccount"],
 		mutationFn: window.lite.forgetGithubAccount,
 		meta: { failureTitle: "Failed to forget account" },
+		onSuccess: (_data, _variables, _context, { client }) => invalidateTags(client, forgeAuthTags),
 	});
 
 export const useForgetGitlabAccount = () =>
@@ -765,6 +932,7 @@ export const useForgetGitlabAccount = () =>
 		mutationKey: ["forgetGitlabAccount"],
 		mutationFn: window.lite.forgetGitlabAccount,
 		meta: { failureTitle: "Failed to forget account" },
+		onSuccess: (_data, _variables, _context, { client }) => invalidateTags(client, forgeAuthTags),
 	});
 
 export const useForgetBitbucketAccount = () =>
@@ -772,6 +940,7 @@ export const useForgetBitbucketAccount = () =>
 		mutationKey: ["forgetBitbucketAccount"],
 		mutationFn: window.lite.forgetBitbucketAccount,
 		meta: { failureTitle: "Failed to forget account" },
+		onSuccess: (_data, _variables, _context, { client }) => invalidateTags(client, forgeAuthTags),
 	});
 
 export const useStoreGithubPat = () =>
@@ -779,6 +948,7 @@ export const useStoreGithubPat = () =>
 		mutationKey: ["storeGithubPat"],
 		mutationFn: window.lite.storeGithubPat,
 		meta: { failureTitle: "Failed to add GitHub account" },
+		onSuccess: (_data, _variables, _context, { client }) => invalidateTags(client, forgeAuthTags),
 	});
 
 export const useStoreGitlabPat = () =>
@@ -786,6 +956,7 @@ export const useStoreGitlabPat = () =>
 		mutationKey: ["storeGitlabPat"],
 		mutationFn: window.lite.storeGitlabPat,
 		meta: { failureTitle: "Failed to add GitLab account" },
+		onSuccess: (_data, _variables, _context, { client }) => invalidateTags(client, forgeAuthTags),
 	});
 
 export const useStoreBitbucketApiToken = () =>
@@ -793,6 +964,7 @@ export const useStoreBitbucketApiToken = () =>
 		mutationKey: ["storeBitbucketApiToken"],
 		mutationFn: window.lite.storeBitbucketApiToken,
 		meta: { failureTitle: "Failed to add Bitbucket account" },
+		onSuccess: (_data, _variables, _context, { client }) => invalidateTags(client, forgeAuthTags),
 	});
 
 export const useDeleteProject = (projectId: string) =>
@@ -1027,8 +1199,7 @@ export const useDiscardFileChanges = ({
 			// uncheck it — and discarding the subject instead is not what was asked for.
 			if (changes) runDiscard(changes);
 		} catch (error) {
-			// oxlint-disable-next-line no-console
-			console.error(error);
+			reportError(error);
 
 			toastManager.add({
 				type: "error",
@@ -1171,7 +1342,12 @@ export const useWorkspaceIntegrateUpstream = () => {
 	return useMutation({
 		mutationFn: window.lite.workspaceIntegrateUpstream,
 		onSuccess: (response, input, _context, mutation) => {
+			if (input.dryRun) return;
 			syncCoreCaches(mutation.client, dispatch, input.projectId, response);
+			const queryKey = workspaceTargetCommitsQueryOptions(input.projectId).queryKey;
+			if (response.targetCommits != null)
+				mutation.client.setQueryData(queryKey, response.targetCommits);
+			else void mutation.client.invalidateQueries({ queryKey });
 		},
 		onError: (error, input) => {
 			toastManager.add({
@@ -1316,6 +1492,35 @@ export const useBranchRename = (projectId: string) => {
 };
 
 /**
+ * The worktree flag decides whether graph traversal seeds linked worktrees,
+ * so every project's workspace is stale once it flips.
+ */
+export const useUpdateFeatureFlags = () =>
+	useMutation({
+		scope: { id: "appSettings" },
+		mutationFn: async (update: FeatureFlagsUpdate, ctx) => {
+			await window.lite.updateFeatureFlags(update);
+			await ctx.client.invalidateQueries({ queryKey: appSettingsQueryOptions.queryKey });
+			await invalidateTags(ctx.client, ["Workspace", "Worktrees"]);
+		},
+		meta: { failureTitle: "Failed to save the feature flag" },
+	});
+
+export const useWorktreeSetArchived = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "worktreeSetArchived"],
+		mutationFn: window.lite.worktreeSetArchived,
+		meta: { failureTitle: "Failed to change the worktree's archived state" },
+	});
+
+export const useWorktreeRemove = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "worktreeRemove"],
+		mutationFn: window.lite.worktreeRemove,
+		meta: { failureTitle: "Failed to remove the worktree" },
+	});
+
+/**
  * Save GUI settings mutation with partial keys. Settings are spread (shallow).
  */
 export const useSaveGUISettings = () =>
@@ -1336,4 +1541,11 @@ export const useSaveGUISettings = () =>
 			return await window.lite.writeGUISettings(next);
 		},
 		meta: { failureTitle: "Failed to save settings" },
+	});
+
+export const useSetReviewThreadResolved = (projectId: string) =>
+	useMutation({
+		mutationKey: [projectId, "setReviewThreadResolved"],
+		mutationFn: window.lite.setReviewThreadResolved,
+		meta: { failureTitle: "Failed to change conversation resolution" },
 	});
