@@ -213,7 +213,8 @@
 
 <p class="text-13 text-body ai-settings__about-text">
 	GitButler supports multiple AI providers: OpenAI and Anthropic (via API or your own key),
-	OpenRouter for access to hundreds of models, DeepSeek, plus local models through Ollama and LM Studio.
+	OpenRouter for access to hundreds of models, DeepSeek, plus local models through Ollama and LM
+	Studio.
 </p>
 
 <CardGroup>

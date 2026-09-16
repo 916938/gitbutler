@@ -30,7 +30,7 @@
 			const dest =
 				targetPath && targetPath.length > 0
 					? targetPath
-					: '$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\but.exe';
+					: "$env:LOCALAPPDATA\\Microsoft\\WindowsApps\\but.exe";
 			return 'copy "' + sourcePath + '" "' + dest + '"';
 		} else {
 			// Unix-like systems (macOS, Linux)
