@@ -4,7 +4,11 @@ import { BASE_BRANCH_SERVICE } from "$lib/baseBranch/baseBranchService.svelte";
 import { buildBranchEndpoints } from "$lib/branches/branchEndpoints";
 import { BRANCH_SERVICE } from "$lib/branches/branchService.svelte";
 import { FORGE_INFO_SERVICE } from "$lib/forge/forgeInfo.svelte";
-import { GITLAB_USER_SERVICE } from "$lib/forge/gitlab/gitlabUserService.svelte";
+import { GitHubUserService } from "$lib/forge/github/githubUserService.svelte";
+import {
+	GITLAB_USER_SERVICE,
+	injectBackendEndpoints as injectGitLabEndpoints,
+} from "$lib/forge/gitlab/gitlabUserService.svelte";
 import { LISTING_SERVICE, ListingService } from "$lib/forge/listingService.svelte";
 import { GIT_SERVICE } from "$lib/git/gitService";
 import { MODE_SERVICE } from "$lib/mode/modeService";
@@ -74,6 +78,33 @@ const terminalError = {
 		code: "GitHubInsufficientPermissions" as const,
 	},
 };
+// What `list_reviews` returns when GitHub answers 401.
+const expiredTokenError = {
+	error: {
+		origin: "ipc" as const,
+		name: "API error: (list_reviews)",
+		message: "GitHub authentication failed.",
+		code: "GitHubTokenExpired" as const,
+	},
+};
+// What `list_reviews` returns when an organization refuses the token's lifetime.
+const lifetimeError = {
+	error: {
+		origin: "ipc" as const,
+		name: "API error: (list_reviews)",
+		message: "A GitHub organization limits how long personal access tokens may stay valid.",
+		code: "GitHubTokenLifetimeRestricted" as const,
+	},
+};
+// What `list_reviews` returns when GitLab answers 401 on a read.
+const rejectedGitLabTokenError = {
+	error: {
+		origin: "ipc" as const,
+		name: "API error: (list_reviews)",
+		message: "GitLab did not accept the token.",
+		code: "GitLabUnauthorized" as const,
+	},
+};
 const nonterminalError = {
 	error: {
 		origin: "ipc" as const,
@@ -81,6 +112,18 @@ const nonterminalError = {
 		message: "Temporary forge failure.",
 		code: "Unknown" as const,
 	},
+};
+// What `store_gitlab_selfhosted_pat` returns for a rejected and an accepted token.
+const rejectedTokenStore = {
+	error: {
+		origin: "ipc" as const,
+		name: "API error: (store_gitlab_selfhosted_pat)",
+		message: "GitLab did not accept the token.",
+		code: "GitLabUnauthorized" as const,
+	},
+};
+const acceptedTokenStore = {
+	data: { username: "alice", name: null, email: null, host: "https://gitlab.example" },
 };
 // What `list_reviews` returns when the target remote maps to no supported forge.
 const unrecognizedForgeError = {
@@ -115,12 +158,16 @@ function query(response?: unknown) {
 type Response =
 	| typeof success
 	| typeof terminalError
+	| typeof expiredTokenError
+	| typeof lifetimeError
+	| typeof rejectedGitLabTokenError
 	| typeof nonterminalError
 	| typeof unrecognizedForgeError;
 
 function setup(
 	responses: Array<Response | Promise<Response>>,
 	listingServiceOverride?: Pick<ListingService, "list">,
+	tokenStores: Array<typeof rejectedTokenStore | typeof acceptedTokenStore> = [],
 ) {
 	let calls = 0;
 	const storeRef = {} as {
@@ -137,12 +184,17 @@ function setup(
 	)({
 		reducerPath: "backend",
 		tagTypes: Object.values(ReduxTag),
-		// Only `list_reviews` consumes scripted responses; other commands
-		// (e.g. `set_base_branch`) succeed without counting as a call.
-		baseQuery: async (_args: unknown, _api: unknown, extra: any) =>
-			extra?.command === "list_reviews"
-				? await responses[Math.min(calls++, responses.length - 1)]!
-				: { data: null },
+		// Only `list_reviews` and the token store consume scripted responses;
+		// other commands (e.g. `set_base_branch`) succeed without counting as a call.
+		baseQuery: async (_args: unknown, _api: unknown, extra: any) => {
+			if (extra?.command === "list_reviews") {
+				return await responses[Math.min(calls++, responses.length - 1)]!;
+			}
+			if (extra?.command === "store_gitlab_selfhosted_pat") {
+				return tokenStores.shift() ?? { data: null };
+			}
+			return { data: null };
+		},
 		endpoints: () => ({}),
 	});
 	const store = configureStore({
@@ -155,6 +207,7 @@ function setup(
 	const listingService =
 		listingServiceOverride ?? new ListingService(api as never, store.dispatch as never);
 	api.injectEndpoints({ endpoints: (build) => buildBranchEndpoints(build as never) });
+	const gitlab = injectGitLabEndpoints(api as never);
 	const forgeInfo = { capabilities: { listService: true } };
 	function noop() {}
 	async function asyncNoop() {}
@@ -205,6 +258,7 @@ function setup(
 
 	return {
 		api,
+		gitlab,
 		store,
 		storeState,
 		rendered,
@@ -226,38 +280,120 @@ afterEach(() => {
 });
 
 describe("project review-list polling", () => {
-	test("keeps cached reviews, stops terminal polling, and recovers through explicit retries", async () => {
+	test.each([
+		["GitHubInsufficientPermissions", terminalError],
+		["GitHubTokenExpired", expiredTokenError],
+	])(
+		"keeps cached reviews, stops terminal polling, and recovers through explicit retries (%s)",
+		async (_code, terminal) => {
+			vi.useFakeTimers();
+			const harness = setup([success, terminal, terminal, success, success]);
+			await settle();
+			expect(harness.calls).toBe(1);
+
+			await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
+			const failed = (harness.api.endpoints as any).listPrs.select(PROJECT_ID)(
+				harness.store.getState(),
+			);
+			expect(failed.data.ids).toEqual(["topic"]);
+			expect(failed.isError).toBe(true);
+
+			await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
+			expect(harness.calls, "terminal failure scheduled another interval request").toBe(2);
+
+			harness.store.dispatch(harness.api.internalActions.onFocusLost());
+			harness.store.dispatch(harness.api.internalActions.onFocus());
+			await settle();
+			expect(harness.calls).toBe(3);
+			await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
+			expect(harness.calls).toBe(3);
+
+			harness.store.dispatch(harness.api.internalActions.onFocusLost());
+			harness.store.dispatch(harness.api.internalActions.onFocus());
+			await settle();
+			expect(harness.calls).toBe(4);
+
+			await vi.advanceTimersByTimeAsync(POLL_INTERVAL - 1);
+			expect(harness.calls).toBe(4);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(harness.calls).toBe(5);
+
+			harness.rendered.unmount();
+			harness.storeState.unsubscribe();
+		},
+	);
+
+	test("stops polling on a token-lifetime refusal until a replacement credential succeeds", async () => {
 		vi.useFakeTimers();
-		const harness = setup([success, terminalError, terminalError, success, success]);
+		const harness = setup([success, lifetimeError, success, success]);
+		// The real credential mutations invalidate the review list.
+		new GitHubUserService(harness.api as never);
 		await settle();
 		expect(harness.calls).toBe(1);
 
 		await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
-		const failed = (harness.api.endpoints as any).listPrs.select(PROJECT_ID)(
+		const refused = (harness.api.endpoints as any).listPrs.select(PROJECT_ID)(
 			harness.store.getState(),
 		);
-		expect(failed.data.ids).toEqual(["topic"]);
-		expect(failed.isError).toBe(true);
+		expect(refused.data.ids, "refusal dropped the cached reviews").toEqual(["topic"]);
+		expect(refused.error).toMatchObject({ code: "GitHubTokenLifetimeRestricted" });
+		await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
+		expect(harness.calls, "lifetime refusal scheduled another interval request").toBe(2);
+
+		await (harness.api.endpoints as any).storeGitHubPat.mutate({ accessToken: "replacement" });
+		await settle();
+		expect(harness.calls, "storing a token did not refetch the reviews").toBe(3);
+		await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
+		expect(harness.calls, "polling did not resume after the credential was replaced").toBe(4);
+
+		harness.rendered.unmount();
+		harness.storeState.unsubscribe();
+	});
+
+	test("resumes polling a rejected GitLab token only once a replacement is stored", async () => {
+		vi.useFakeTimers();
+		const harness = setup([success, rejectedGitLabTokenError, success], undefined, [
+			rejectedTokenStore,
+			acceptedTokenStore,
+		]);
+		await settle();
+		expect(harness.calls).toBe(1);
 
 		await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
-		expect(harness.calls, "terminal failure scheduled another interval request").toBe(2);
-
-		harness.store.dispatch(harness.api.internalActions.onFocusLost());
-		harness.store.dispatch(harness.api.internalActions.onFocus());
-		await settle();
-		expect(harness.calls).toBe(3);
+		const rejected = (harness.api.endpoints as any).listPrs.select(PROJECT_ID)(
+			harness.store.getState(),
+		);
+		expect(rejected.data.ids, "a rejected token dropped the cached reviews").toEqual(["topic"]);
+		expect(rejected.error?.code).toBe("GitLabUnauthorized");
 		await vi.advanceTimersByTimeAsync(POLL_INTERVAL);
-		expect(harness.calls).toBe(3);
+		expect(harness.calls, "a rejected token scheduled another interval request").toBe(2);
 
-		harness.store.dispatch(harness.api.internalActions.onFocusLost());
-		harness.store.dispatch(harness.api.internalActions.onFocus());
+		// Storing a token GitLab also rejects invalidates nothing: the listing
+		// would only fail the same way again.
+		async function store() {
+			await harness.store.dispatch(
+				harness.gitlab.endpoints.storeGitLabEnterprisePat.initiate({
+					host: "https://gitlab.example",
+					accessToken: "synthetic",
+				}),
+			);
+		}
+		await store();
 		await settle();
-		expect(harness.calls).toBe(4);
+		expect(harness.calls, "a failed token store refetched the listing").toBe(2);
+
+		await store();
+		await settle();
+		expect(harness.calls, "an accepted token did not refetch the listing").toBe(3);
+		const recovered = (harness.api.endpoints as any).listPrs.select(PROJECT_ID)(
+			harness.store.getState(),
+		);
+		expect(recovered.isError).toBe(false);
 
 		await vi.advanceTimersByTimeAsync(POLL_INTERVAL - 1);
-		expect(harness.calls).toBe(4);
+		expect(harness.calls).toBe(3);
 		await vi.advanceTimersByTimeAsync(1);
-		expect(harness.calls).toBe(5);
+		expect(harness.calls, "polling did not resume after the token was replaced").toBe(4);
 
 		harness.rendered.unmount();
 		harness.storeState.unsubscribe();
@@ -304,11 +440,13 @@ describe("project review-list polling", () => {
 		});
 		const intervals: Array<[string, number | undefined]> = [];
 		const listingService = {
-			list(projectId: string, pollingInterval?: number) {
-				intervals.push([projectId, pollingInterval]);
+			list(projectId: string) {
 				return {
 					get result() {
 						return result;
+					},
+					updateSubscriptionOptions({ pollingInterval }: { pollingInterval?: number }) {
+						intervals.push([projectId, pollingInterval]);
 					},
 				} as never;
 			},

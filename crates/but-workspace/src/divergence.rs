@@ -2,6 +2,7 @@
 
 use anyhow::{Context as _, Result};
 use but_core::RefMetadata;
+use but_error::bail_precondition;
 use but_rebase::graph_rebase::{Editor, LookupStep, Pick, Selector, Step, ToSelector};
 use std::{
     borrow::Cow,
@@ -64,12 +65,12 @@ pub(crate) fn get_commits_until_merge_base<'a, M: RefMetadata>(
             format!("Could not determine tip commit for upstream '{upstream_ref_name}'")
         })?;
     let upstream_ancestor_ids = traverse_pick_ancestor_ids(editor, upstream_tip)?;
-    let merge_base = find_first_parent_merge_base(editor, local_tip, &upstream_ancestor_ids)?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No merge-base found between '{ref_name}' and its tracking branch '{upstream_ref_name}'"
-            )
-        })?;
+    let Some(merge_base) = find_first_parent_merge_base(editor, local_tip, &upstream_ancestor_ids)?
+    else {
+        bail_precondition!(
+            "'{ref_name}' has no first-parent history shared with its tracking branch '{upstream_ref_name}'. Fetch the missing history or choose a branch with shared first-parent history."
+        );
+    };
     let merge_base_selector = editor.select_commit(merge_base)?;
     let local_commits = first_parent_path_until(editor, local_tip, |selector| {
         editor.lookup_pick(*selector).ok() == Some(merge_base)

@@ -1,14 +1,23 @@
+import { forgeAuthFailure } from "#ui/forge.ts";
 import type { PayloadFor } from "#electron/ipc.ts";
-import { aggregateCIChecks } from "#ui/ci.ts";
-import { clampAutoFetch, defaultSettings } from "#ui/settings.ts";
-import type { ForgeReview, TreeChange, UnifiedPatch } from "@gitbutler/but-sdk";
+import { type AggregateCIChecks, aggregateCIChecks } from "#ui/ci.ts";
+import { clampAutoFetch, defaultSettings, parseAutoFetch } from "#ui/settings.ts";
+import type {
+	CiCheck,
+	ForgeName,
+	ForgeReview,
+	ReviewMergeStatus,
+	TreeChange,
+	UnifiedPatch,
+} from "@gitbutler/but-sdk";
 import {
+	type QueryClient,
 	experimental_streamedQuery,
 	hashKey,
 	infiniteQueryOptions,
 	queryOptions,
+	skipToken,
 } from "@tanstack/react-query";
-import * as ms from "ms";
 import pMap from "p-map";
 
 /**
@@ -71,6 +80,22 @@ export const changesInWorktreeQueryOptions = (projectId: string) =>
 			}),
 	});
 
+/**
+ * The uncommitted changes of a linked worktree, keyed under the main
+ * worktree's endpoint so the same tags refresh both. Nothing watches a
+ * linked checkout, so this is as fresh as the last workspace activity.
+ */
+export const worktreeChangesQueryOptions = (projectId: string, worktree: string) =>
+	queryOptions({
+		queryKey: [projectId, "changesInWorktree", { worktree }],
+		queryFn: () =>
+			window.lite.changesInWorktree({
+				projectId,
+				changesSource: { type: "worktree", subject: worktree },
+				computeDepsAndAssignments: false,
+			}),
+	});
+
 export const commentsQueryOptions = (projectId: string) =>
 	queryOptions({
 		queryKey: [projectId, "commentsList"],
@@ -79,12 +104,26 @@ export const commentsQueryOptions = (projectId: string) =>
 
 export const workspaceFileQueryOptions = ({
 	projectId,
+	relativePath,
 	version,
-	...params
-}: PayloadFor<"getWorkspaceFile"> & { version: number }) =>
+	worktree,
+}: {
+	projectId: string;
+	relativePath: string;
+	version: number;
+	/** The linked worktree the file lives in; the project's own checkout when unset. */
+	worktree?: string;
+}) =>
 	queryOptions({
-		queryKey: [projectId, "getWorkspaceFile", params, version],
-		queryFn: () => window.lite.getWorkspaceFile({ projectId, ...params }),
+		queryKey: [projectId, "getWorkspaceFile", { relativePath, worktree }, version],
+		queryFn: () =>
+			worktree === undefined
+				? window.lite.getWorkspaceFile({ projectId, relativePath })
+				: window.lite.getWorkspaceFileFromSource({
+						projectId,
+						changesSource: { type: "worktree", subject: worktree },
+						relativePath,
+					}),
 	});
 
 export const blobFileQueryOptions = ({ projectId, ...params }: PayloadFor<"getBlobFile">) =>
@@ -169,44 +208,26 @@ export const getReviewQueryOptions = ({ projectId, reviewId }: PayloadFor<"getRe
 		queryFn: () => window.lite.getReview({ projectId, reviewId }),
 	});
 
+export const worktreesListQueryOptions = (projectId: string) =>
+	queryOptions({
+		queryKey: [projectId, "worktreesList"],
+		queryFn: () => window.lite.worktreesList(projectId),
+	});
+
 export const workspaceTargetCommitsQueryOptions = (projectId: string) =>
 	queryOptions({
 		queryKey: [projectId, "workspaceTargetCommits"],
 		queryFn: () => window.lite.workspaceTargetCommits({ projectId, from: null, limit: null }),
 	});
 
-/**
- * What each "load older commits" adds. Asking is deliberate, so a page should
- * cover ground rather than need pressing repeatedly.
- */
-const olderTargetCommitsPageSize = 25;
-
-/**
- * Target history continuing below where the base listing stops, walked from a
- * commit-id cursor. `from` is exclusive: the backend starts at that commit's
- * first parent, so passing the base listing's last commit continues the line
- * without repeating it.
- *
- * Fetched only on demand: consumers keep it disabled and call `fetchNextPage`
- * when the user asks, so nothing below the workspace's fork points loads
- * unbidden.
- *
- * Keyed under the base listing's own root, so whatever invalidates the target
- * line — a fetch, a workspace update — reaches the pages hanging off it too.
- */
+/** The cursor is exclusive. Sharing the listing's key prefix also shares its invalidation. */
 export const olderTargetCommitsInfiniteQueryOptions = (projectId: string, from: string) =>
 	infiniteQueryOptions({
 		queryKey: [projectId, "workspaceTargetCommits", { olderThan: from }],
 		queryFn: ({ pageParam }) =>
-			window.lite.workspaceTargetCommits({
-				projectId,
-				from: pageParam,
-				limit: olderTargetCommitsPageSize,
-			}),
-		enabled: false,
+			window.lite.workspaceTargetCommits({ projectId, from: pageParam, limit: 25 }),
 		initialPageParam: from,
-		getNextPageParam: (lastPage) =>
-			lastPage.hasMore ? lastPage.commits.at(-1)?.commit.id : undefined,
+		getNextPageParam: (page) => (page.hasMore ? page.commits.at(-1)?.commit.id : undefined),
 	});
 
 export const workspaceFetchStatusQueryOptions = (projectId: string) =>
@@ -219,13 +240,7 @@ export const workspaceFetchQueryOptions = (
 	projectId: string,
 	autoFetchFrequency = defaultSettings.autoFetchFrequency,
 ) => {
-	// Throws on empty and large strings.
-	let autoFetchFrequencyMs: number;
-	try {
-		autoFetchFrequencyMs = ms.parse(autoFetchFrequency);
-	} catch {
-		autoFetchFrequencyMs = Number.NaN;
-	}
+	const autoFetchFrequencyMs = parseAutoFetch(autoFetchFrequency);
 
 	return queryOptions({
 		queryKey: [projectId, "workspaceFetchFromRemotes"],
@@ -362,6 +377,10 @@ export const listCommentReactionsQueryOptions = ({
 		staleTime: 60_000,
 	});
 
+/** The forge has not settled the merge state yet: GitHub's `unknown`, GitLab's `checking`, or nothing at all. */
+const stillComputing = (mergeableState: string | null): boolean =>
+	mergeableState === null || mergeableState === "unknown" || mergeableState === "checking";
+
 export const getReviewMergeStatusQueryOptions = ({
 	projectId,
 	reviewId,
@@ -371,10 +390,12 @@ export const getReviewMergeStatusQueryOptions = ({
 		queryFn: () => window.lite.getReviewMergeStatus({ projectId, reviewId }),
 		staleTime: ({ state: { data } }) => (data?.isMergeable ? 30_000 : 10_000),
 		// Mergeability flips from the forge side (checks finish, approvals
-		// land); poll while the tab is open. Pauses when the app is unfocused
+		// land); poll while the tab is open, and briskly while the forge says
+		// it is still working the answer out. Pauses when the app is unfocused
 		// (refetchIntervalInBackground defaults off), and the focusManager
 		// wiring in main.tsx catches up on refocus.
-		refetchInterval: 60_000,
+		refetchInterval: ({ state: { data } }) =>
+			data !== undefined && stillComputing(data.mergeableState) ? 10_000 : 60_000,
 	});
 
 /** This query should be gated by PR capability lest it fail. */
@@ -391,12 +412,7 @@ export const listReviewsQueryOptions = ({ projectId, ...params }: PayloadFor<"li
 			};
 		},
 		staleTime: 60_000,
-		// Review state changes on the forge side too (closed/reopened/merged
-		// on the website, labels, review requests). Poll while the app is
-		// focused; refetchIntervalInBackground defaults off, so an
-		// unfocused app goes quiet and the focusManager wiring in main.tsx
-		// refetches on return instead.
-		refetchInterval: 60_000,
+		refetchInterval: (query) => (forgeAuthFailure(query.state.error) === null ? 60_000 : false),
 	});
 
 /**
@@ -438,6 +454,31 @@ export const bitbucketAccountsQueryOptions = queryOptions({
 	queryFn: () => window.lite.listKnownBitbucketAccounts(),
 });
 
+// Conditional queries are very awkward, hence the duplication and oddities. This retains maximum
+// downstream flexibility e.g. with select.
+export const forgeAccountsQueryOptions = (provider: ForgeName | null | undefined) => {
+	let queryFn;
+	switch (provider) {
+		case "github":
+			queryFn = () => window.lite.listKnownGithubAccounts();
+			break;
+		case "gitlab":
+			queryFn = () => window.lite.listKnownGitlabAccounts();
+			break;
+		case "bitbucket":
+			queryFn = () => window.lite.listKnownBitbucketAccounts();
+			break;
+		default:
+			queryFn = skipToken;
+			break;
+	}
+
+	return queryOptions({
+		queryKey: ["forgeAccounts", queryFn === skipToken ? "unsupported" : provider],
+		queryFn: queryFn === skipToken ? skipToken : async () => queryFn(),
+	});
+};
+
 export const listProjectsQueryOptions = queryOptions({
 	queryKey: ["projects"],
 	queryFn: () => window.lite.listProjectsStateless(),
@@ -463,6 +504,36 @@ export const listEditorsQueryOptions = queryOptions({
 	queryFn: () => window.lite.listEditors(),
 });
 
+type CIChecksQueryData = { data: Array<CiCheck>; aggregate: AggregateCIChecks | null };
+
+/**
+ * Refetch the merge status until the forge reports it mergeable: at once,
+ * then after waits of 3, 8 and 20 seconds, half a minute in all. The forge
+ * recomputes mergeability some seconds after the last check lands, so the
+ * refetch a finished check triggers can still read the old answer. One
+ * burst per project at a time: every branch's checks poll can start one,
+ * and they would all ask after the same status on screen.
+ */
+const settling = new Map<string, Promise<void>>();
+const settleMergeStatus = (client: QueryClient, projectId: string): Promise<void> => {
+	let burst = settling.get(projectId);
+	if (burst === undefined) {
+		burst = settleMergeStatusOnce(client, projectId).finally(() => settling.delete(projectId));
+		settling.set(projectId, burst);
+	}
+	return burst;
+};
+
+const settleMergeStatusOnce = async (client: QueryClient, projectId: string): Promise<void> => {
+	const shown = { queryKey: [projectId, "getReviewMergeStatus"], type: "active" } as const;
+	for (const delay of [0, 3_000, 8_000, 20_000]) {
+		await new Promise((resolve) => setTimeout(resolve, delay));
+		await client.refetchQueries(shown);
+		const statuses = client.getQueriesData<ReviewMergeStatus>(shown);
+		if (statuses.every(([, status]) => status?.isMergeable === true)) return;
+	}
+};
+
 /** This query should be gated by checks capability. */
 // There is no watcher event that could invalidate this query.
 export const listCIChecksQueryOptions = ({
@@ -474,10 +545,11 @@ export const listCIChecksQueryOptions = ({
 }) =>
 	queryOptions({
 		queryKey: [projectId, "listCiChecks", reference],
-		queryFn: async () => {
+		queryFn: async ({ client, queryKey }): Promise<CIChecksQueryData> => {
 			// Aggregated data is needed in queryFn to adjust refetching behaviour. Aggregating here, for
 			// use as mentioned and also at call sites, is more efficient.
-			//
+			const previousStatus = client.getQueryData<CIChecksQueryData>(queryKey)?.aggregate?.status;
+			let checks: CIChecksQueryData;
 			// listCiChecks will reject with a message citing HTTP 422 once the branch is merged.
 			try {
 				const data = await window.lite.listCiChecks({
@@ -485,10 +557,19 @@ export const listCIChecksQueryOptions = ({
 					reference,
 					cacheConfig: "noCache",
 				});
-				return { data, aggregate: aggregateCIChecks(data) };
+				checks = { data, aggregate: aggregateCIChecks(data) };
 			} catch {
-				return { data: [], aggregate: null };
+				checks = { data: [], aggregate: null };
 			}
+			// The verdict is what flips the forge's mergeability, and this poll
+			// notices it long before the merge-status poll would.
+			if (
+				previousStatus === "in_progress" &&
+				checks.aggregate !== null &&
+				checks.aggregate.status !== "in_progress"
+			)
+				void settleMergeStatus(client, projectId);
+			return checks;
 		},
 		// Refetch periodically, being mindful of rate limiting. Similarly tweak stale time for
 		// prioritised queries so that fresh data is likely fetched when the user would see/expect it
@@ -528,9 +609,15 @@ export const listCIChecksQueryOptions = ({
 		},
 	});
 
+// This matches but_core::unified_diff::filter_from_state: only a null destination
+// object ID reads file content (and attributes) from disk rather than Git.
+const readsWorktree = ({ status }: TreeChange): boolean =>
+	status.type !== "Deletion" && /^0+$/.test(status.subject.state.id);
+
 export const treeChangeDiffsQueryOptions = ({ projectId, change }: PayloadFor<"treeChangeDiffs">) =>
 	queryOptions({
 		queryKey: [projectId, "treeChangeDiffs", change],
+		meta: { readsWorktree: readsWorktree(change) },
 		queryFn: () => window.lite.treeChangeDiffs({ projectId, change }),
 	});
 
@@ -541,30 +628,38 @@ export const treeChangeDiffsQueryOptions = ({ projectId, change }: PayloadFor<"t
  * Its stable, value-based hasher requires traversing every change. Hashing a ~5k-file query key was
  * benchmarked at ~20ms. This cost is virtually eliminated by reusing a previously-cached hash.
  *
- * The payload has no stable aggregate identifier we could use instead.
+ * The payload has no stable aggregate identifier we could use instead. The hash is kept with the
+ * scope it was computed for, so an array reused under another project or worktree, as a shared
+ * empty one is, hashes again rather than colliding.
  */
-const treeChangeDiffHashes = new WeakMap<Array<TreeChange>, string>();
+const treeChangeDiffHashes = new WeakMap<
+	Array<TreeChange>,
+	{ scope: string; hash: string; readsWorktree: boolean }
+>();
 
 export const treeChangesDiffsQueryOptions = ({
 	projectId,
 	changes,
+	worktree,
 }: {
 	projectId: string;
 	changes: Array<TreeChange>;
+	/** The linked worktree the changes belong to, diffed against its own files; the main worktree when unset. */
+	worktree?: string;
 }) => {
-	const queryKey = [projectId, "treeChangeDiffs", changes] as const;
+	const queryKey = [projectId, "treeChangeDiffs", worktree, changes] as const;
 
-	// We don't expect to ever see the same changes reference across projects.
-	// This can use getOrInsertComputed once our version of Node.js has caught up.
-	let queryHash = treeChangeDiffHashes.get(changes);
-	if (queryHash === undefined) {
-		queryHash = hashKey(queryKey);
-		treeChangeDiffHashes.set(changes, queryHash);
+	const scope = `${projectId}:${worktree ?? ""}`;
+	let cached = treeChangeDiffHashes.get(changes);
+	if (cached?.scope !== scope) {
+		cached = { scope, hash: hashKey(queryKey), readsWorktree: changes.some(readsWorktree) };
+		treeChangeDiffHashes.set(changes, cached);
 	}
 
 	return queryOptions({
 		queryKey,
-		queryHash,
+		queryHash: cached.hash,
+		meta: { readsWorktree: cached.readsWorktree },
 		queryFn: experimental_streamedQuery<Array<UnifiedPatch | null>, Array<UnifiedPatch | null>>({
 			initialValue: [],
 			refetchMode: "replace",
@@ -582,7 +677,14 @@ export const treeChangesDiffsQueryOptions = ({
 				) {
 					yield await pMap(
 						changes.slice(batchStart, batchStart + batchSize),
-						(change) => window.lite.treeChangeDiffs({ projectId, change }),
+						(change) =>
+							worktree === undefined
+								? window.lite.treeChangeDiffs({ projectId, change })
+								: window.lite.treeChangeDiffsFromSource({
+										projectId,
+										changesSource: { type: "worktree", subject: worktree },
+										change,
+									}),
 						{ concurrency, signal },
 					);
 				}
@@ -600,4 +702,20 @@ export const absorptionPlanQueryOptions = ({ projectId, target }: PayloadFor<"ab
 export const guiSettingsQueryOptions = queryOptions({
 	queryKey: ["guiSettings"],
 	queryFn: () => window.lite.readGUISettings(),
+});
+
+/** The settings shared with the other surfaces through the settings file. */
+export const appSettingsQueryOptions = queryOptions({
+	queryKey: ["appSettings"],
+	queryFn: () => window.lite.getAppSettings(),
+});
+
+export const versionQueryOptions = queryOptions({
+	queryKey: ["version"],
+	queryFn: () => window.lite.getVersion(),
+});
+
+export const isPackagedQueryOptions = queryOptions({
+	queryKey: ["isPackaged"],
+	queryFn: () => window.lite.isPackaged(),
 });

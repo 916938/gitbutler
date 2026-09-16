@@ -8,6 +8,7 @@ export declare const apiParamNames: {
 	readonly addProject: readonly ["path"];
 	readonly addReviewLabels: readonly ["projectId", "reviewId", "labels"];
 	readonly addReviewReaction: readonly ["projectId", "reviewId", "kind"];
+	readonly addSubmissionReaction: readonly ["projectId", "reviewId", "submissionId", "kind"];
 	readonly apply: readonly ["projectId", "existingBranch"];
 	readonly applyBranchIntegration: readonly ["projectId", "branch", "integration", "dryRun"];
 	readonly assignHunk: readonly ["projectId", "assignments"];
@@ -79,6 +80,7 @@ export declare const apiParamNames: {
 	readonly getUserProfileLocal: readonly [];
 	readonly getWorkspace: readonly ["projectId"];
 	readonly getWorkspaceFile: readonly ["projectId", "relativePath"];
+	readonly getWorkspaceFileFromSource: readonly ["projectId", "changesSource", "relativePath"];
 	readonly gitTestFetch: readonly ["projectId", "remoteName", "action"];
 	readonly gitTestPush: readonly ["projectId", "remoteName", "branchName"];
 	readonly headInfo: readonly ["projectId"];
@@ -116,6 +118,7 @@ export declare const apiParamNames: {
 	readonly removeCommentReaction: readonly ["projectId", "commentId", "reactionId"];
 	readonly removeReviewLabel: readonly ["projectId", "reviewId", "label"];
 	readonly removeReviewReaction: readonly ["projectId", "reviewId", "reactionId"];
+	readonly removeSubmissionReaction: readonly ["projectId", "reviewId", "submissionId", "kind"];
 	readonly requestReview: readonly ["projectId", "reviewId", "logins"];
 	readonly resetAiConfiguration: readonly [];
 	readonly resolveCommitConflictHunks: readonly ["projectId", "commitId", "specs"];
@@ -129,12 +132,14 @@ export declare const apiParamNames: {
 	readonly setReviewAutoMerge: readonly ["projectId", "reviewId", "enable"];
 	readonly setReviewDraftiness: readonly ["projectId", "reviewId", "draft"];
 	readonly setReviewTemplate: readonly ["projectId", "templatePath"];
+	readonly setReviewThreadResolved: readonly ["projectId", "threadId", "resolved"];
 	readonly setTargetRefAndInitProject: readonly ["projectId", "targetRef", "pushRemote"];
 	readonly storeBitbucketApiToken: readonly ["email", "accessToken"];
 	readonly storeGithubPat: readonly ["accessToken"];
 	readonly storeGitlabPat: readonly ["accessToken"];
 	readonly tearOffBranch: readonly ["projectId", "subjectBranch", "dryRun"];
 	readonly treeChangeDiffs: readonly ["projectId", "change"];
+	readonly treeChangeDiffsFromSource: readonly ["projectId", "changesSource", "change"];
 	readonly unapplyStack: readonly ["projectId", "stackId"];
 	readonly updateAiConfiguration: readonly ["update"];
 	readonly updateProfileAndPersist: readonly ["params"];
@@ -150,7 +155,9 @@ export declare const apiParamNames: {
 	readonly workspaceFetchFromRemotes: readonly ["projectId", "action"];
 	readonly workspaceFetchStatus: readonly ["projectId"];
 	readonly workspaceIntegrateUpstream: readonly ["projectId", "updates", "dryRun"];
+	readonly workspaceRecreate: readonly ["projectId"];
 	readonly workspaceTargetCommits: readonly ["projectId", "from", "limit"];
+	readonly worktreeNew: readonly ["projectId", "newRef"];
 	readonly worktreeRemove: readonly ["projectId", "name", "force"];
 	readonly worktreeSetArchived: readonly ["projectId", "name", "archived"];
 	readonly worktreesList: readonly ["projectId"];

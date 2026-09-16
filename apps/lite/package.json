@@ -1,7 +1,7 @@
 {
 	"name": "@gitbutler/lite",
-	"description": "A Git-compatible version control client - now with fewer calories.",
-	"productName": "GitButler Lite",
+	"description": "A Git-compatible version control client - the next generation.",
+	"productName": "GitButler Next Nightly",
 	"author": "GitButler Inc. <gitbutler@gitbutler.com> (https://gitbutler.com)",
 	"license": "FSL-1.1-MIT",
 	"homepage": "https://gitbutler.com",
@@ -27,8 +27,8 @@
 		"test": "vitest run --config ui/vite.config.ts && vitest run --config harness/vitest.config.ts",
 		"test:e2e": "pnpm prepare-askpass --debug && pnpm build:electron && playwright test --config ./e2e/playwright.config.ts",
 		"bundle": "pnpm build && pnpm prepare-askpass && electron-builder",
-		"bundle-local": "CHANNEL=${CHANNEL:-} pnpm -F @gitbutler/but-sdk build && CHANNEL=${CHANNEL:-} pnpm bundle -c.mac.entitlements=resources/entitlements.mac.local.plist -c.mac.entitlementsInherit=resources/entitlements.mac.local.plist",
-		"bundle-local-nightly": "CHANNEL=nightly pnpm -F @gitbutler/but-sdk build:release && CHANNEL=nightly pnpm bundle -c.mac.entitlements=resources/entitlements.mac.local.plist -c.mac.entitlementsInherit=resources/entitlements.mac.local.plist",
+		"bundle-local": "CHANNEL=${CHANNEL:-} pnpm -F @gitbutler/but-sdk build && CHANNEL=${CHANNEL:-} pnpm bundle -c.mac.identity=- -c.mac.entitlements=resources/entitlements.mac.local.plist -c.mac.entitlementsInherit=resources/entitlements.mac.local.plist",
+		"bundle-local-nightly": "CHANNEL=nightly pnpm -F @gitbutler/but-sdk build:release && CHANNEL=nightly pnpm bundle -c.mac.identity=- -c.mac.entitlements=resources/entitlements.mac.local.plist -c.mac.entitlementsInherit=resources/entitlements.mac.local.plist",
 		"demos": "storybook dev --no-open -p 6007",
 		"optimize-icons": "node scripts/optimize-icons.mjs",
 		"prepare-askpass": "node scripts/prepare-askpass.mjs"
@@ -53,7 +53,8 @@
 			"region": "us-east-1",
 			"bucket": "releases.gitbutler.com",
 			"path": "lite/${os}/${arch}",
-			"channel": "${env.CHANNEL}"
+			"channel": "${env.CHANNEL}",
+			"forcePathStyle": true
 		},
 		"extraResources": [
 			{
@@ -102,12 +103,12 @@
 			],
 			"desktop": {
 				"entry": {
-					"Name": "GitButler Lite",
+					"Name": "GitButler Next Nightly",
 					"Type": "Application",
 					"GenericName": "Version Control System"
 				}
 			},
-			"executableName": "gitbutler-lite"
+			"executableName": "gitbutler-next-nightly"
 		},
 		"win": {
 			"icon": "resources/icons/windows/icon.ico",
@@ -117,7 +118,7 @@
 			"publish": []
 		},
 		"deb": {
-			"packageName": "gitbutler-lite",
+			"packageName": "gitbutler-next-nightly",
 			"artifactName": "${productName}-${version}-${arch}.${ext}",
 			"depends": [
 				"libnotify4",
@@ -136,7 +137,7 @@
 		"@base-ui/react": "^1.6.0",
 		"@base-ui/utils": "^0.3.1",
 		"@gitbutler/but-sdk": "workspace:*",
-		"@gitbutler/design-core": "3.15.2",
+		"@gitbutler/design-core": "4.1.0",
 		"@pierre/diffs": "^1.3.5",
 		"@pierre/theming": "^1.0.1",
 		"@reduxjs/toolkit": "catalog:redux",
@@ -156,6 +157,7 @@
 		"idb-keyval": "^6.3.0",
 		"ms": "^4.0.0-nightly.202508271359",
 		"p-map": "^7.0.7",
+		"posthog-js": "1.417.1",
 		"posthog-node": "5.21.0",
 		"react": "^19.2.4",
 		"react-dom": "^19.2.4",
@@ -166,10 +168,12 @@
 		"rehype-sanitize": "^6.0.0",
 		"remark-gemoji": "^8.0.0",
 		"remark-gfm": "^4.0.1",
+		"semver": "^7.8.5",
 		"shiki": "^4.3.0"
 	},
 	"devDependencies": {
 		"@playwright/test": "catalog:",
+		"@posthog/rollup-plugin": "^1.6.0",
 		"@storybook/addon-designs": "^11.1.3",
 		"@storybook/addon-docs": "^10.3.3",
 		"@storybook/react-vite": "^10.3.6",
@@ -185,7 +189,7 @@
 		"concurrently": "^9.2.1",
 		"cross-env": "^10.1.0",
 		"electron": "^44.0.0",
-		"electron-builder": "^26.9.0",
+		"electron-builder": "^26.16.1",
 		"eslint-plugin-react-you-might-not-need-an-effect": "^1.0.0",
 		"fast-check": "^4.9.0",
 		"jsdom": "28.1.0",

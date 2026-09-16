@@ -34,6 +34,17 @@ fn graph_workspace_inner(
             stack_id_map.as_mut(),
         ));
     }
+    for worktree in &workspace.worktrees {
+        let mut tree = Tree::new(worktree.debug_string());
+        for segment in &worktree.segments {
+            tree.push(tree_for_stack_segment(
+                &workspace.graph,
+                segment,
+                commit_flags,
+            ));
+        }
+        root.push(tree);
+    }
     root
 }
 
@@ -62,11 +73,6 @@ fn tree_for_stack_segment(
     commit_flags: StackCommitDebugFlags,
 ) -> StringTree {
     let mut root = Tree::new(segment.debug_string_with_graph_context(graph));
-    if let Some(outside) = &segment.commits_outside {
-        for commit in outside {
-            root.push(format!("{}*", commit.debug_string(commit_flags)));
-        }
-    }
     for commit in &segment.commits_on_remote {
         root.push(commit.debug_string(commit_flags | StackCommitDebugFlags::RemoteOnly));
     }

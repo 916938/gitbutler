@@ -106,6 +106,7 @@ impl Subcommands {
                 Some(worktree::Subcommands::Archive { .. }) => WorktreeArchive,
                 Some(worktree::Subcommands::Unarchive { .. }) => WorktreeUnarchive,
                 Some(worktree::Subcommands::Remove { .. }) => WorktreeRemove,
+                Some(worktree::Subcommands::New { .. }) => WorktreeNew,
             },
             #[cfg(feature = "legacy")]
             Subcommands::Unapply { .. } => BranchUnapply,
@@ -116,6 +117,7 @@ impl Subcommands {
             #[cfg(feature = "legacy")]
             Subcommands::Switch(..) => Switch,
             Subcommands::Gui { .. } => Gui,
+            #[cfg(feature = "nightly")]
             Subcommands::_Open { .. } => Open,
             #[cfg(feature = "legacy")]
             Subcommands::Commit(..) => Commit,
@@ -168,6 +170,7 @@ impl Subcommands {
                 }) => ForgeListUsers,
                 _ => Config,
             },
+            #[cfg(feature = "nightly")]
             Subcommands::_Expand { .. } => Expand,
             Subcommands::Alias(alias_args::Platform { cmd }) => match cmd {
                 None | Some(alias_args::Subcommands::List) => AliasCheck,
@@ -195,12 +198,14 @@ impl Subcommands {
             #[cfg(feature = "legacy")]
             Subcommands::Split(..) => Split,
             #[cfg(feature = "legacy")]
-            Subcommands::Land { .. } => Land,
+            // Preserve the original event name for metrics continuity, including the `land` alias.
+            Subcommands::Merge { .. } => Land,
             #[cfg(feature = "legacy")]
             Subcommands::Pick(..) => Pick,
-            Subcommands::Skill(skill::Platform { cmd }) => match cmd {
-                skill::Subcommands::Install { .. } => SkillInstall,
-                skill::Subcommands::Check { .. } => SkillCheck,
+            Subcommands::Skill(skill::Platform { cmd, .. }) => match cmd {
+                Some(skill::Subcommands::Install { .. }) => SkillInstall,
+                Some(skill::Subcommands::Check { .. }) => SkillCheck,
+                _ => Skill,
             },
             // Bare `but agent` (None) runs the setup wizard, same as `agent setup`.
             Subcommands::Agent(agent::Platform { cmd }) => match cmd {
@@ -272,9 +277,19 @@ impl Subcommands {
                 push_prop(&mut props, "sourceKind", "commitOrBranch");
                 push_prop(&mut props, "targetKind", "commitOrBranchOrUnassigned");
             }
-            Subcommands::Skill(skill::Platform {
-                cmd: skill::Subcommands::Check { update, .. },
-            }) => push_prop(&mut props, "skillCheckUpdate", *update),
+            Subcommands::Skill(platform) => match (&platform.cmd, platform.doc()) {
+                (_, Some(doc)) => {
+                    push_prop(&mut props, "skillDoc", doc);
+                    push_prop(&mut props, "skillFull", platform.full);
+                }
+                (Some(skill::Subcommands::Check { update, .. }), None) => {
+                    push_prop(&mut props, "skillCheckUpdate", *update)
+                }
+                (Some(skill::Subcommands::Install { stub, .. }), None) => {
+                    push_prop(&mut props, "skillStub", *stub)
+                }
+                (_, None) => {}
+            },
             Subcommands::External(extra) => {
                 if let Some(command_name) = extra.first() {
                     push_prop(

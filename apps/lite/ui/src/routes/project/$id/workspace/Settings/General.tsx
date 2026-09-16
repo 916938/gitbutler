@@ -9,12 +9,22 @@ import {
 	userProfileQueryOptions,
 } from "#ui/api/queries.ts";
 import { useDeleteAllData, useSaveGUISettings } from "#ui/api/mutations.ts";
-import { AccountSection } from "./Account.tsx";
+import { AccountSection, SignOutRow } from "./Account.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
+import { Icon } from "#ui/components/Icon.tsx";
+import { ProgramIcon } from "#ui/components/ProgramIcon.tsx";
+import { Select } from "#ui/components/Select.tsx";
 import { Switch } from "#ui/components/Switch.tsx";
 import { defaultSettings } from "#ui/settings.ts";
+import { CheckForUpdatesButton } from "#ui/CheckForUpdatesButton.tsx";
 import styles from "./General.module.css";
 import { Row, Section } from "./Section.tsx";
+
+const prNotificationLevels = [
+	{ value: "loud", label: "Loud" },
+	{ value: "quiet", label: "Quiet" },
+	{ value: "off", label: "Off" },
+] as const;
 
 export const General: FC = () => {
 	const [
@@ -49,46 +59,47 @@ export const General: FC = () => {
 			<AccountSection profile={profile} />
 
 			<Section>
-				<Row label="Default editor" htmlFor="editor">
-					<select
-						id="editor"
-						value={settings.editorId ?? ""}
-						onChange={(evt) => saveGUISettings({ editorId: evt.currentTarget.value })}
-					>
-						<option value="" disabled>
-							Select an editor...
-						</option>
-						{editors.map((editor) => (
-							<option key={editor.id} value={editor.id}>
-								{editor.name}
-							</option>
-						))}
-					</select>
+				<Row label="Default editor">
+					<Select
+						aria-label="Default editor"
+						className={styles.select}
+						placeholder="Select an editor…"
+						items={editors.map((editor) => ({
+							value: editor.id,
+							label: editor.name,
+							leading: <ProgramIcon program={editor.id} />,
+						}))}
+						value={settings.editorId ?? null}
+						// The placeholder row stands for no choice; the setting has no such value.
+						onValueChange={(editorId) => editorId !== null && saveGUISettings({ editorId })}
+					/>
 				</Row>
 
-				<Row label="Default terminal" htmlFor="terminal">
-					<select
-						id="terminal"
-						value={settings.terminalId ?? ""}
-						onChange={(evt) => saveGUISettings({ terminalId: evt.currentTarget.value })}
-					>
-						<option value="" disabled>
-							Select a terminal...
-						</option>
-						{terminals.map((terminal) => (
-							<option key={terminal.identifier} value={terminal.identifier}>
-								{terminal.displayName}
-							</option>
-						))}
-					</select>
+				<Row label="Default terminal">
+					<Select
+						aria-label="Default terminal"
+						className={styles.select}
+						placeholder="Select a terminal…"
+						items={terminals.map((terminal) => ({
+							value: terminal.identifier,
+							label: terminal.displayName,
+							leading: <ProgramIcon program={terminal.identifier} />,
+						}))}
+						value={settings.terminalId ?? null}
+						onValueChange={(terminalId) => terminalId !== null && saveGUISettings({ terminalId })}
+					/>
 				</Row>
+			</Section>
 
+			<Section>
 				<Row
 					label="Check for updates automatically"
 					labelId="auto-update"
 					hint="An update already downloaded still installs on quit."
+					below={<CheckForUpdatesButton />}
 				>
 					<Switch
+						size="large"
 						aria-labelledby="auto-update"
 						checked={settings.autoUpdate ?? defaultSettings.autoUpdate}
 						onCheckedChange={(autoUpdate) => saveGUISettings({ autoUpdate })}
@@ -96,27 +107,38 @@ export const General: FC = () => {
 				</Row>
 
 				<Row
-					label="Pull request activity"
-					htmlFor="pr-notifications"
-					hint="Loud collects notifications in the bell; quiet keeps just the unread dots."
+					label="Desktop notifications"
+					labelId="desktop-notifications"
+					hint="Loud activity that arrives while GitButler is in the background is also shown by the system."
 				>
-					<select
-						id="pr-notifications"
+					<Switch
+						size="large"
+						aria-labelledby="desktop-notifications"
+						checked={settings.desktopNotifications ?? defaultSettings.desktopNotifications}
+						disabled={(settings.prNotifications ?? defaultSettings.prNotifications) !== "loud"}
+						onCheckedChange={(desktopNotifications) => saveGUISettings({ desktopNotifications })}
+					/>
+				</Row>
+
+				<Row
+					label="Pull request activity"
+					hint="Loud collects notifications in the bell; quiet and off keep it hidden."
+				>
+					<Select
+						aria-label="Pull request activity"
+						className={styles.select}
+						items={prNotificationLevels}
 						value={settings.prNotifications ?? defaultSettings.prNotifications}
-						onChange={(evt) => {
-							const value = evt.currentTarget.value;
-							if (value === "loud" || value === "quiet" || value === "off")
-								saveGUISettings({ prNotifications: value });
-						}}
-					>
-						<option value="loud">Loud</option>
-						<option value="quiet">Quiet</option>
-						<option value="off">Off</option>
-					</select>
+						onValueChange={(prNotifications) =>
+							prNotifications !== null && saveGUISettings({ prNotifications })
+						}
+					/>
 				</Row>
 			</Section>
 
-			<Section heading="Danger zone">
+			<Section>
+				{profile !== null && <SignOutRow />}
+
 				<Row
 					label="Remove all projects"
 					hint={`Forgets all ${projects.length} of them. The repositories on disk are untouched.`}
@@ -125,7 +147,7 @@ export const General: FC = () => {
 						<div className={styles.confirm}>
 							<button
 								type="button"
-								className={getButtonClassName({ variant: "danger", size: "small" })}
+								className={getButtonClassName({ variant: "danger" })}
 								disabled={isRemoving}
 								onClick={removeAllProjects}
 							>
@@ -133,7 +155,7 @@ export const General: FC = () => {
 							</button>
 							<button
 								type="button"
-								className={getButtonClassName({ size: "small" })}
+								className={getButtonClassName({})}
 								disabled={isRemoving}
 								onClick={() => setConfirmingRemoveAll(false)}
 							>
@@ -143,10 +165,11 @@ export const General: FC = () => {
 					) : (
 						<button
 							type="button"
-							className={getButtonClassName({ variant: "danger", size: "small" })}
+							className={getButtonClassName({ variant: "danger" })}
 							disabled={projects.length === 0}
 							onClick={() => setConfirmingRemoveAll(true)}
 						>
+							<Icon name="bin" />
 							Remove all…
 						</button>
 					)}

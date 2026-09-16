@@ -71,6 +71,37 @@ value=foo #value comment
             );
             Ok(())
         }
+
+        #[test]
+        fn does_not_truncate_a_locked_config() -> anyhow::Result<()> {
+            let (mut repo, _tmp, _meta, _db) = fixture_writable("four-commits")?;
+            repo.config_snapshot_mut()
+                .set_raw_value(gix::config::tree::Core::CONFIG_LOCK_TIMEOUT, "0")?;
+            let config_path = repo.path().join("config");
+            let original = br#"# keep this configuration intact
+[special]
+value = original
+"#;
+            std::fs::write(&config_path, original)?;
+            let lock_path = repo.path().join("config.lock");
+            std::fs::write(&lock_path, b"held")?;
+
+            let result = commit::save_author_if_unset_in_repo(
+                &repo,
+                gix::config::Source::Local,
+                "user",
+                "email",
+            );
+            std::fs::remove_file(lock_path)?;
+
+            result.expect_err("the existing config lock must prevent the write");
+            assert_eq!(
+                std::fs::read(config_path)?,
+                original,
+                "a failed transaction leaves the existing configuration untouched"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -943,19 +974,25 @@ pub mod utils {
             commits_limit_hint: None,
             commits_limit_recharge_location: vec![],
             hard_limit: None,
-            extra_target_commit_id: None,
             dangerously_skip_postprocessing_for_debugging: false,
             worktrees: false,
         }
     }
 
-    pub fn target_meta() -> but_core::ref_metadata::ProjectMeta {
+    /// The target is `origin/main` with its tip as the stored target commit, like a project set
+    /// up by GitButler.
+    pub fn target_meta(repo: &gix::Repository) -> but_core::ref_metadata::ProjectMeta {
+        let target_ref: gix::refs::FullName = "refs/remotes/origin/main"
+            .try_into()
+            .expect("valid target ref");
         but_core::ref_metadata::ProjectMeta {
-            target_ref: Some(
-                "refs/remotes/origin/main"
-                    .try_into()
-                    .expect("valid target ref"),
-            ),
+            target_commit_id: repo
+                .try_find_reference(target_ref.as_ref())
+                .ok()
+                .flatten()
+                .and_then(|mut r| r.peel_to_id().ok())
+                .map(|id| id.detach()),
+            target_ref: Some(target_ref),
             ..Default::default()
         }
     }

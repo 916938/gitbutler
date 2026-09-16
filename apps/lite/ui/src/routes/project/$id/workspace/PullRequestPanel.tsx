@@ -1,8 +1,10 @@
+import { reportError } from "#ui/error-reporting.ts";
 import {
 	useAddReviewLabels,
 	useRemoveReviewLabel,
 	useRequestReview,
 	useSetReviewDraftiness,
+	useUpdateReview,
 	useWithdrawReviewRequest,
 } from "#ui/api/mutations.ts";
 import {
@@ -17,23 +19,31 @@ import { Badge, type BadgeVariant } from "#ui/components/Badge.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { Icon } from "#ui/components/Icon.tsx";
+import { ForgeLabel } from "#ui/components/ForgeLabel.tsx";
+import { RelativeTime } from "#ui/components/RelativeTime.tsx";
 import type { IconName } from "#ui/components/iconNames.ts";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
-import { type NativeMenuItem, nativeMenuItem, showNativeMenuFromTrigger } from "#ui/native-menu.ts";
+import {
+	type NativeMenuItem,
+	nativeMenuItem,
+	nativeMenuItemsFromGroups,
+	showNativeMenuFromTrigger,
+} from "#ui/native-menu.ts";
 import { openLinkExternally } from "#ui/external-link.ts";
 import type { DraftPRExtras } from "#ui/pr.ts";
 import { formatAbsoluteTime, formatCompactDuration, formatRelativeTime } from "#ui/time.ts";
+import { useCopied } from "#ui/routes/project/$id/workspace/useCopied.ts";
+import { loginKey, sameLogin } from "#ui/review-users.ts";
 import type {
 	CiCheck,
 	ForgeReview,
-	ForgeReviewLabel,
 	ForgeReviewSubmission,
 	ForgeReviewUser,
 } from "@gitbutler/but-sdk";
 import { Tooltip } from "@base-ui/react";
 import { useQuery } from "@tanstack/react-query";
 import { Match } from "effect";
-import { type FC, type MouseEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type FC, type MouseEvent, type ReactNode, useId, useState } from "react";
 import styles from "./PullRequestPanel.module.css";
 
 type ReviewStatus = "open" | "draft" | "merged" | "closed";
@@ -47,22 +57,56 @@ const reviewStatus = (review: ForgeReview): ReviewStatus =>
 				? "draft"
 				: "open";
 
+const statusBits = (status: ReviewStatus): [string, BadgeVariant, IconName] =>
+	Match.value(status).pipe(
+		Match.withReturnType<[string, BadgeVariant, IconName]>(),
+		Match.when("open", () => ["Open", "safe", "pr"]),
+		Match.when("draft", () => ["Draft", "lightGray", "pr-draft"]),
+		Match.when("merged", () => ["Merged", "purple", "branch-merge"]),
+		Match.when("closed", () => ["Closed", "danger", "pr-close"]),
+		Match.exhaustive,
+	);
+
 const Section: FC<{
 	heading: string;
 	action?: ReactNode;
-	/** Reads as one block with the section above it: no divider, no gap. */
-	joined?: boolean;
-	className?: string;
+	collapsible?: boolean;
+	defaultExpanded?: boolean;
+	summary?: ReactNode;
 	children: ReactNode;
-}> = (p) => (
-	<div className={classes(styles.section, p.joined === true && styles.sectionJoined, p.className)}>
-		<div className={styles.sectionHeader}>
-			<h4 className={classes("text-12", styles.heading)}>{p.heading}</h4>
-			{p.action}
+}> = ({ heading, action, collapsible = false, defaultExpanded = true, summary, children }) => {
+	const [expanded, setExpanded] = useState(defaultExpanded);
+	const contentId = useId();
+	return (
+		<div className={styles.section}>
+			<div className={styles.sectionHeader}>
+				<h4 className={classes("text-12", styles.heading)}>
+					{collapsible && (
+						<button
+							type="button"
+							className={classes(
+								getButtonClassName({ variant: "ghost", size: "small", iconOnly: true }),
+								styles.sectionToggle,
+							)}
+							aria-label={`${expanded ? "Collapse" : "Expand"} ${heading.toLowerCase()}`}
+							aria-expanded={expanded}
+							aria-controls={contentId}
+							onClick={() => setExpanded((current) => !current)}
+						>
+							<Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
+						</button>
+					)}
+					<span>{heading}</span>
+				</h4>
+				{action}
+			</div>
+			{summary}
+			<div id={contentId} className={styles.sectionContent} hidden={collapsible && !expanded}>
+				{(!collapsible || expanded) && children}
+			</div>
 		</div>
-		{p.children}
-	</div>
-);
+	);
+};
 
 /**
  * A native menu with no items opens as an empty rectangle, which reads as a
@@ -71,45 +115,101 @@ const Section: FC<{
 const orEmptyNotice = (items: Array<NativeMenuItem>, notice: string): Array<NativeMenuItem> =>
 	items.length > 0 ? items : [nativeMenuItem({ label: notice, enabled: false })];
 
-const pickerButton = (label: string, onClick: (evt: MouseEvent<HTMLButtonElement>) => void) => (
+/**
+ * The header control for a pickable section. While the section is empty it
+ * spells out what the picker adds so the section doesn't read as a bare
+ * heading; once something is picked, a plus is enough.
+ */
+/** Quiet until its row is hovered, like the comment kebab. */
+const RemoveButton: FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
 	<button
 		aria-label={label}
-		className={getButtonClassName({ variant: "ghost", size: "small", iconOnly: true })}
+		className={classes(
+			getButtonClassName({ variant: "ghost", size: "small", iconOnly: true }),
+			styles.reviewerRemove,
+		)}
 		onClick={onClick}
 		type="button"
 	>
-		<Icon name="plus" />
+		<Icon name="cross" />
 	</button>
 );
 
-/** Muted stand-ins shown while a section has nothing in it yet. */
-const PeoplePlaceholder: FC = () => (
-	<div className={styles.placeholderPeople}>
-		{[100, 160].map((width) => (
-			<div key={width} className={styles.placeholderRow}>
-				<span className={classes(styles.placeholderShape, styles.placeholderAvatar)} />
-				<span
-					className={classes(styles.placeholderShape, styles.placeholderBar)}
-					style={{ width }}
-				/>
-			</div>
-		))}
-	</div>
-);
+/**
+ * A reviewer and their verdict. Only a pending request can be withdrawn, so
+ * its clock is the control: pointed at, or focused, it shows a cross instead,
+ * in the same slot, so the row keeps its shape.
+ */
+const ReviewerRow: FC<{
+	user: ForgeReviewUser;
+	verdict: ReviewerVerdict;
+	onWithdraw: (() => void) | null;
+}> = ({ user, verdict, onWithdraw }) => {
+	const [icon, color, label] = verdictBits(verdict);
+	const [hovered, setHovered] = useState(false);
+	const [focused, setFocused] = useState(false);
+	return (
+		<div
+			className={styles.reviewerRow}
+			onPointerEnter={() => setHovered(true)}
+			onPointerLeave={() => setHovered(false)}
+			title={label}
+		>
+			<ReviewUser user={user} />
+			{onWithdraw === null ? (
+				<span className={styles.verdictSlot}>
+					<Icon name={icon} style={{ color }} size={15} />
+				</span>
+			) : (
+				<button
+					aria-label="Withdraw review request"
+					className={getButtonClassName({ variant: "ghost", size: "small", iconOnly: true })}
+					onBlur={() => setFocused(false)}
+					onClick={onWithdraw}
+					onFocus={() => setFocused(true)}
+					title="Withdraw review request"
+					type="button"
+				>
+					{/* The cross has no ring, so it sits a touch smaller than the
+					    verdicts to read as light. */}
+					{hovered || focused ? (
+						<Icon name="cross" size={13} />
+					) : (
+						<Icon name={icon} style={{ color }} size={15} />
+					)}
+				</button>
+			)}
+		</div>
+	);
+};
 
-const LabelsPlaceholder: FC = () => (
-	<div className={styles.placeholderLabels}>
-		{[70, 50, 90].map((width) => (
-			<span
-				key={width}
-				className={classes(styles.placeholderShape, styles.placeholderLabel)}
-				style={{ width }}
-			/>
-		))}
-	</div>
-);
+const pickerButton = (p: {
+	label: string;
+	icon: IconName;
+	empty: boolean;
+	onClick: (evt: MouseEvent<HTMLButtonElement>) => void;
+}) =>
+	p.empty ? (
+		<button
+			className={getButtonClassName({ variant: "outline", size: "small" })}
+			onClick={p.onClick}
+			type="button"
+		>
+			{p.label}
+			<Icon name={p.icon} />
+		</button>
+	) : (
+		<button
+			aria-label={p.label}
+			className={getButtonClassName({ variant: "ghost", size: "small", iconOnly: true })}
+			onClick={p.onClick}
+			type="button"
+		>
+			<Icon name="plus" />
+		</button>
+	);
 
-const ReviewUser: FC<{ user: ForgeReviewUser }> = ({ user }) => (
+export const ReviewUser: FC<{ user: ForgeReviewUser }> = ({ user }) => (
 	<div className={classes("text-13", styles.user)} title={user.name ?? user.login}>
 		{user.avatarUrl !== null ? (
 			<img src={user.avatarUrl} className={styles.avatar} alt="" />
@@ -120,47 +220,14 @@ const ReviewUser: FC<{ user: ForgeReviewUser }> = ({ user }) => (
 	</div>
 );
 
-const Label: FC<{ label: ForgeReviewLabel }> = ({ label }) => {
-	// GitHub sends bare hex color codes, GitLab prefixes them with `#`.
-	const color =
-		label.color === null ? null : label.color.startsWith("#") ? label.color : `#${label.color}`;
-
-	return (
-		<Badge
-			variant="lightGray"
-			className={color === null ? undefined : styles.label}
-			style={color === null ? undefined : { "--label-color": color }}
-			title={label.description ?? undefined}
-		>
-			{label.name}
-		</Badge>
-	);
-};
-
 const CopyableBranch: FC<{ name: string }> = ({ name }) => {
-	const [copied, setCopied] = useState(false);
-	const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-	const handleCopy = () => {
-		void window.lite.clipboardWriteText(name);
-		setCopied(true);
-
-		if (resetTimeoutRef.current !== null) clearTimeout(resetTimeoutRef.current);
-		resetTimeoutRef.current = setTimeout(() => setCopied(false), 1500);
-	};
-
-	useLayoutEffect(
-		() => () => {
-			if (resetTimeoutRef.current !== null) clearTimeout(resetTimeoutRef.current);
-		},
-		[],
-	);
+	const { copied, copy } = useCopied(name);
 
 	return (
 		<Tooltip.Root>
 			<Tooltip.Trigger
 				className={styles.sourceBranch}
-				onClick={handleCopy}
+				onClick={copy}
 				render={<button type="button" aria-label="Copy branch name" />}
 			>
 				{copied ? "Copied!" : name}
@@ -173,6 +240,16 @@ const CopyableBranch: FC<{ name: string }> = ({ name }) => {
 		</Tooltip.Root>
 	);
 };
+
+/** The arrow and the target branch travel together when the row wraps. */
+const TargetBranch: FC<{ name: string }> = ({ name }) => (
+	<span className={styles.branchTarget}>
+		<span className={styles.branchArrow}>→</span>
+		<span className={styles.targetBranch} title={name}>
+			{name}
+		</span>
+	</span>
+);
 
 /**
  * The side panel while a PR is still being drafted: what the PR would be made
@@ -234,15 +311,18 @@ export const NewPullRequestPanel: FC<{
 			evt.currentTarget,
 			orEmptyNotice(
 				reviewerCandidates
-					// The author can't review their own PR, so a solo repository
-					// leaves nothing to pick.
-					.filter((candidate) => candidate.login !== currentLogin)
+					// The author can't review their own PR, and whoever is picked
+					// already is listed above with a way off.
+					.filter(
+						(candidate) =>
+							!(currentLogin != null && sameLogin(candidate.login, currentLogin)) &&
+							!extras.reviewers.some((login) => sameLogin(login, candidate.login)),
+					)
 					.map((candidate) =>
 						nativeMenuItem({
 							label: candidate.login,
-							checked: extras.reviewers.includes(candidate.login),
 							onSelect: () =>
-								onExtrasChange({ ...extras, reviewers: toggle(extras.reviewers, candidate.login) }),
+								onExtrasChange({ ...extras, reviewers: [...extras.reviewers, candidate.login] }),
 						}),
 					),
 				"No one else can be asked to review",
@@ -252,7 +332,7 @@ export const NewPullRequestPanel: FC<{
 
 	const pickedReviewers = extras.reviewers.map((login) => ({
 		login,
-		user: reviewerCandidates?.find((candidate) => candidate.login === login),
+		user: reviewerCandidates?.find((candidate) => sameLogin(candidate.login, login)),
 	}));
 	const pickedLabels = extras.labels.map(
 		(name) =>
@@ -263,33 +343,53 @@ export const NewPullRequestPanel: FC<{
 		<aside className={styles.panel}>
 			<Section
 				heading="Reviewers"
-				action={canPickReviewers && pickerButton("Request a review", openReviewerMenu)}
+				collapsible={pickedReviewers.length > 0}
+				action={
+					canPickReviewers &&
+					pickerButton({
+						label: "Add reviewers",
+						icon: "user",
+						empty: pickedReviewers.length === 0,
+						onClick: openReviewerMenu,
+					})
+				}
 			>
-				{pickedReviewers.length === 0 ? (
-					<PeoplePlaceholder />
-				) : (
-					pickedReviewers.map(({ login, user }) =>
-						user === undefined ? (
-							<span key={login} className="text-13">
-								{login}
-							</span>
+				{pickedReviewers.map(({ login, user }) => (
+					<div key={login} className={styles.reviewerRow}>
+						{user === undefined ? (
+							<span className={classes("text-13", styles.userLogin)}>{login}</span>
 						) : (
-							<ReviewUser key={login} user={user} />
-						),
-					)
-				)}
+							<ReviewUser user={user} />
+						)}
+						<RemoveButton
+							label={`Remove ${login}`}
+							onClick={() =>
+								onExtrasChange({
+									...extras,
+									reviewers: extras.reviewers.filter((entry) => entry !== login),
+								})
+							}
+						/>
+					</div>
+				))}
 			</Section>
 
 			<Section
 				heading="Labels"
-				action={canPickLabels && pickerButton("Edit labels", openLabelMenu)}
+				action={
+					canPickLabels &&
+					pickerButton({
+						label: "Add labels",
+						icon: "tag",
+						empty: pickedLabels.length === 0,
+						onClick: openLabelMenu,
+					})
+				}
 			>
-				{pickedLabels.length === 0 ? (
-					<LabelsPlaceholder />
-				) : (
+				{pickedLabels.length > 0 && (
 					<div className={styles.labels}>
 						{pickedLabels.map((label) => (
-							<Label key={label.name} label={label} />
+							<ForgeLabel key={label.name} label={label} />
 						))}
 					</div>
 				)}
@@ -298,25 +398,12 @@ export const NewPullRequestPanel: FC<{
 			<Section heading="Branches">
 				<div className={classes("text-13", styles.branches)}>
 					<CopyableBranch name={sourceBranch} />
-					{targetBranch !== undefined && (
-						<>
-							<span className={styles.branchArrow}>→</span>
-							<span className={styles.targetBranch}>{targetBranch}</span>
-						</>
-					)}
+					{targetBranch !== undefined && <TargetBranch name={targetBranch} />}
 				</div>
 			</Section>
 		</aside>
 	);
 };
-
-const reportOpenFailure = (error: unknown) => {
-	// oxlint-disable-next-line no-console
-	console.error(error);
-};
-
-/** A failing check, carrying the dot colour its conclusion earns. */
-type ProblemCheck = { check: CiCheck; tone: "danger" | "warn" | "muted" };
 
 /** Wall time from a check's start to its completion, once both are known. */
 const checkDuration = (check: CiCheck): string | null => {
@@ -326,8 +413,24 @@ const checkDuration = (check: CiCheck): string | null => {
 	return Number.isNaN(ms) || ms < 0 ? null : formatCompactDuration(ms);
 };
 
-const ProblemCheckRow: FC<{ problem: ProblemCheck }> = ({ problem: { check, tone } }) => {
+const CheckRow: FC<{ check: CiCheck }> = ({ check }) => {
+	const status = typeof check.status === "string" ? check.status : check.status.complete.conclusion;
+	const [label, dotClassName] = Match.value(status).pipe(
+		Match.withReturnType<[string, string | undefined]>(),
+		Match.when("failure", () => ["Failed", styles.checkDotDanger]),
+		Match.when("timedOut", () => ["Timed out", styles.checkDotDanger]),
+		Match.when("actionRequired", () => ["Action required", styles.checkDotWarn]),
+		Match.when("inProgress", () => ["In progress", styles.checkDotWarn]),
+		Match.when("queued", () => ["Queued", styles.checkDotMuted]),
+		Match.when("success", () => ["Succeeded", styles.checkDotSafe]),
+		Match.when("neutral", () => ["Neutral", styles.checkDotMuted]),
+		Match.when("skipped", () => ["Skipped", styles.checkDotMuted]),
+		Match.when("cancelled", () => ["Cancelled", styles.checkDotMuted]),
+		Match.when("unknown", () => ["Unknown", styles.checkDotMuted]),
+		Match.exhaustive,
+	);
 	const duration = checkDuration(check);
+	const startedAt = check.startedAt === null ? Number.NaN : Date.parse(check.startedAt);
 
 	return (
 		<a
@@ -335,64 +438,78 @@ const ProblemCheckRow: FC<{ problem: ProblemCheck }> = ({ problem: { check, tone
 			onClick={openLinkExternally}
 			className={classes("text-12", styles.checkRow)}
 		>
-			<span
-				className={classes(
-					styles.checkDot,
-					Match.value(tone).pipe(
-						Match.when("danger", () => styles.checkDotDanger),
-						Match.when("warn", () => styles.checkDotWarn),
-						Match.when("muted", () => styles.checkDotMuted),
-						Match.exhaustive,
-					),
-				)}
-			/>
-			<span className={styles.checkName}>{check.name}</span>
-			<span className={styles.checkMeta}>
-				{duration !== null && (
-					<>
-						{duration}
-						<span>•</span>
-					</>
-				)}
-				<Icon name="arrow-up-right" size={14} />
+			<span className={classes(styles.checkDot, dotClassName)} />
+			<span className={styles.checkBody}>
+				<span className={styles.checkName} title={check.name}>
+					{check.name}
+				</span>
+				<span className={styles.checkMeta}>
+					<span>{label}</span>
+					{status === "inProgress" && Number.isFinite(startedAt) ? (
+						<>
+							<span>·</span>
+							<RelativeTime timestamp={startedAt} compact />
+						</>
+					) : duration !== null ? (
+						<>
+							<span>·</span>
+							<span>{duration}</span>
+						</>
+					) : null}
+				</span>
 			</span>
+			<Icon name="arrow-up-right" size={14} className={styles.checkLinkIcon} />
 		</a>
 	);
 };
 
-/**
- * CI at a glance: a bar apportioned between the checks that passed, are still
- * running and failed, the same three as counts, and a row per failing check.
- */
 const ChecksSection: FC<{ projectId: string; reference: string }> = ({ projectId, reference }) => {
-	const { data } = useQuery(
-		listCIChecksQueryOptions({ projectId, reference, polling: "priority" }),
-	);
+	const { data } = useQuery({
+		...listCIChecksQueryOptions({ projectId, reference, polling: "priority" }),
+		select: ({ aggregate }) =>
+			aggregate === null
+				? null
+				: {
+						aggregate,
+						checks: [
+							...aggregate.failure,
+							...aggregate.timedOut,
+							...aggregate.actionRequired,
+							...aggregate.inProgress,
+							...aggregate.queued,
+							...aggregate.cancelled,
+							...aggregate.unknown,
+							...aggregate.success,
+							...aggregate.neutral,
+							...aggregate.skipped,
+						],
+					},
+	});
 	const aggregate = data?.aggregate ?? null;
 	if (aggregate === null) return null;
 
-	// Cancelled checks didn't pass either, so they join the problem list — with
-	// a muted dot, since nothing went wrong so much as stopped.
-	const problems: Array<ProblemCheck> = [
-		...aggregate.failure.map((check): ProblemCheck => ({ check, tone: "danger" })),
-		...aggregate.timedOut.map((check): ProblemCheck => ({ check, tone: "danger" })),
-		...aggregate.actionRequired.map((check): ProblemCheck => ({ check, tone: "warn" })),
-		...aggregate.cancelled.map((check): ProblemCheck => ({ check, tone: "muted" })),
-	];
+	const failed = aggregate.failure.length + aggregate.timedOut.length;
+	const actionRequired = aggregate.actionRequired.length;
+	const cancelled = aggregate.cancelled.length;
 	// A check of unknown state hasn't resolved, so it waits with the pending.
 	const pending = aggregate.inProgress.length + aggregate.queued.length + aggregate.unknown.length;
 	const passed = aggregate.success.length + aggregate.neutral.length;
 	const skipped = aggregate.skipped.length;
 	// Skipped checks ran nothing, so they're counted but not apportioned.
 	const segments = [
-		{ key: "passed", count: passed, className: styles.barPassed },
+		{ key: "failed", count: failed, className: styles.barFailed },
+		{ key: "actionRequired", count: actionRequired, className: styles.barActionRequired },
 		{ key: "pending", count: pending, className: styles.barPending },
-		{ key: "failed", count: problems.length, className: styles.barFailed },
+		{ key: "cancelled", count: cancelled, className: styles.barPending },
+		{ key: "passed", count: passed, className: styles.barPassed },
 	].filter((segment) => segment.count > 0);
 
 	return (
-		<Section heading="Checks">
-			<div className={styles.checks}>
+		<Section
+			heading="Checks"
+			collapsible
+			defaultExpanded={false}
+			summary={
 				<div className={styles.checksSummary}>
 					<div className={styles.checksBar}>
 						{segments.map((segment) => (
@@ -405,32 +522,33 @@ const ChecksSection: FC<{ projectId: string; reference: string }> = ({ projectId
 					</div>
 
 					<div className={classes("text-12", styles.checksCounts)}>
-						{problems.length > 0 && (
-							<span className={styles.countFailed}>{problems.length} failed</span>
-						)}
+						{failed > 0 && <span className={styles.countFailed}>{failed} failed</span>}
 						{passed > 0 && (
 							<span className={styles.countPassed}>
-								{problems.length === 0 && pending === 0
-									? `All ${passed} passed`
-									: `${passed} passed`}
+								{passed === aggregate.total ? `All ${passed} passed` : `${passed} passed`}
 							</span>
 						)}
 						{pending > 0 && <span className={styles.countPending}>{pending} pending</span>}
+						{actionRequired > 0 && (
+							<span className={styles.countActionRequired}>{actionRequired} action required</span>
+						)}
+						{cancelled > 0 && <span className={styles.countSkipped}>{cancelled} cancelled</span>}
 						{skipped > 0 && <span className={styles.countSkipped}>{skipped} skipped</span>}
 					</div>
 				</div>
-
-				{problems.length > 0 && (
-					<>
-						<div className={styles.checksDivider} />
-						<div className={styles.checksList}>
-							{problems.map((problem) => (
-								<ProblemCheckRow key={problem.check.id} problem={problem} />
-							))}
-						</div>
-					</>
-				)}
-			</div>
+			}
+		>
+			<div className={styles.checksDivider} />
+			<section
+				className={styles.checksList}
+				aria-label="Check jobs"
+				// oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- Let keyboard users focus and scroll the job list.
+				tabIndex={0}
+			>
+				{data?.checks.map((check) => (
+					<CheckRow key={check.id} check={check} />
+				))}
+			</section>
 		</Section>
 	);
 };
@@ -453,7 +571,7 @@ const reviewerRows = (
 	const byLogin = new Map<string, ReviewerRow>();
 	for (const submission of submissions) {
 		if (submission.author === null) continue;
-		const existing = byLogin.get(submission.author.login);
+		const existing = byLogin.get(loginKey(submission.author.login));
 		const verdict = Match.value(submission.state).pipe(
 			Match.withReturnType<ReviewerVerdict>(),
 			Match.when("approved", () => "approved"),
@@ -462,10 +580,12 @@ const reviewerRows = (
 			Match.when("dismissed", () => "commented"),
 			Match.exhaustive,
 		);
-		byLogin.set(submission.author.login, { user: submission.author, verdict });
+		byLogin.set(loginKey(submission.author.login), { user: submission.author, verdict });
 	}
-	for (const user of requested)
-		if (!byLogin.has(user.login)) byLogin.set(user.login, { user, verdict: "awaiting" });
+	for (const user of requested) {
+		const key = loginKey(user.login);
+		if (!byLogin.has(key)) byLogin.set(key, { user, verdict: "awaiting" });
+	}
 	return [...byLogin.values()];
 };
 
@@ -486,9 +606,7 @@ const verdictBits = (verdict: ReviewerVerdict): [IconName, string, string] =>
 export const PullRequestPanel: FC<{
 	projectId: string;
 	review: ForgeReview;
-	/** The review's activity feed, shown as the panel's bottom section. */
-	activity?: ReactNode;
-}> = ({ projectId, review, activity }) => {
+}> = ({ projectId, review }) => {
 	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
 	const { data: reviewers } = useQuery({
 		...listReviewSubmissionsQueryOptions({ projectId, reviewId: review.number }),
@@ -515,9 +633,53 @@ export const PullRequestPanel: FC<{
 	const { mutate: withdrawReviewRequest } = useWithdrawReviewRequest(projectId);
 	const { isPending: isDraftinessPending, mutate: setReviewDraftiness } =
 		useSetReviewDraftiness(projectId);
+	const { isPending: isUpdateReviewPending, mutate: updateReview } = useUpdateReview(projectId);
 
-	// Neither a merged nor a closed review can change draftiness.
-	const canToggleDraft = review.mergedAt === null && review.closedAt === null;
+	const status = reviewStatus(review);
+	// A merged review is final; anything else can move between open, draft and
+	// closed from the status badge.
+	const canSwitchStatus = status !== "merged";
+	const isStatusPending = isDraftinessPending || isUpdateReviewPending;
+
+	const setDraft = (draft: boolean) =>
+		setReviewDraftiness({ projectId, reviewId: review.number, draft });
+	const setState = (state: "open" | "closed", onSuccess?: () => void) =>
+		updateReview(
+			{ projectId, reviewId: review.number, state, title: null, body: null, targetBase: null },
+			{ onSuccess },
+		);
+
+	// Reopening restores the draftiness the review was closed with, so landing
+	// on the other of open/draft takes a second step once it is open again.
+	const switchStatus = (target: Exclude<ReviewStatus, "merged">) =>
+		Match.value(target).pipe(
+			Match.when("closed", () => setState("closed")),
+			Match.when("open", () =>
+				status === "closed"
+					? setState("open", () => review.draft && setDraft(false))
+					: setDraft(false),
+			),
+			Match.when("draft", () =>
+				status === "closed"
+					? setState("open", () => !review.draft && setDraft(true))
+					: setDraft(true),
+			),
+			Match.exhaustive,
+		);
+
+	const openStatusMenu = (evt: MouseEvent<HTMLButtonElement>) =>
+		void showNativeMenuFromTrigger(
+			evt.currentTarget,
+			(["open", "draft", "closed"] as const).map((target) =>
+				nativeMenuItem({
+					label: statusBits(target)[0],
+					checked: status === target,
+					onSelect: () => {
+						if (status !== target) switchStatus(target);
+					},
+				}),
+			),
+		);
 
 	// The queries stop fetching when canManage flips off, but cached data
 	// still reads — gate the pickers on manageability, not cache presence.
@@ -544,52 +706,59 @@ export const PullRequestPanel: FC<{
 
 	const openReviewerMenu = (evt: MouseEvent<HTMLButtonElement>) => {
 		if (!canPickReviewers) return;
+		const awaiting = reviewerList
+			.filter(({ verdict }) => verdict === "awaiting")
+			.map(({ user }) => user);
+		// The author can't review their own PR; a reviewer who answered can be
+		// asked again.
+		const askable = reviewerCandidates.filter(
+			(candidate) =>
+				!(review.author !== null && sameLogin(candidate.login, review.author.login)) &&
+				!awaiting.some((user) => sameLogin(user.login, candidate.login)),
+		);
 		void showNativeMenuFromTrigger(
 			evt.currentTarget,
-			reviewerCandidates
-				// The author can't review their own PR.
-				.filter((candidate) => candidate.login !== review.author?.login)
-				.map((candidate) => {
-					const requested = review.reviewers.some((reviewer) => reviewer.login === candidate.login);
-					return nativeMenuItem({
-						label: candidate.login,
-						checked: requested,
-						onSelect: () =>
-							requested
-								? withdrawReviewRequest({
-										projectId,
-										reviewId: review.number,
-										logins: [candidate.login],
-									})
-								: requestReview({
-										projectId,
-										reviewId: review.number,
-										logins: [candidate.login],
-									}),
-					});
-				}),
+			nativeMenuItemsFromGroups(
+				[
+					// Pending requests lead, checked, so the menu is also where one
+					// is withdrawn — the way the label menu removes a label.
+					awaiting.map((user) =>
+						nativeMenuItem({
+							label: user.login,
+							checked: true,
+							onSelect: () =>
+								withdrawReviewRequest({ projectId, reviewId: review.number, logins: [user.login] }),
+						}),
+					),
+					orEmptyNotice(
+						askable.map((candidate) =>
+							nativeMenuItem({
+								label: candidate.login,
+								onSelect: () =>
+									requestReview({ projectId, reviewId: review.number, logins: [candidate.login] }),
+							}),
+						),
+						"No one else to ask",
+					),
+				].filter((group) => group.length > 0),
+			),
 		);
 	};
 
-	const [statusLabel, statusVariant, statusIcon] = Match.value(reviewStatus(review)).pipe(
-		Match.withReturnType<[string, BadgeVariant, IconName]>(),
-		Match.when("open", () => ["Open", "safe", "pr"]),
-		Match.when("draft", () => ["Draft", "lightGray", "pr-draft"]),
-		Match.when("merged", () => ["Merged", "purple", "branch-merge"]),
-		Match.when("closed", () => ["Closed", "danger", "pr-close"]),
-		Match.exhaustive,
+	const [statusLabel, statusVariant, statusIcon] = statusBits(status);
+	const statusBadge = (
+		<Badge variant={statusVariant} size="large">
+			<Icon name={statusIcon} size={12} />
+			{statusLabel}
+			{canSwitchStatus && <Icon name="chevron-down" size={12} />}
+		</Badge>
 	);
 
 	const createdAtMs = review.createdAt === null ? null : Date.parse(review.createdAt);
-	const modifiedAtMs = review.modifiedAt === null ? null : Date.parse(review.modifiedAt);
-	// The forge stamps modified_at on any activity, so creation itself can
-	// leave the two a moment apart; only a real gap is worth a row.
-	const showUpdated =
-		modifiedAtMs !== null && (createdAtMs === null || modifiedAtMs - createdAtMs > 60_000);
 
 	const handleOpen = (evt: MouseEvent<HTMLAnchorElement>): void => {
 		evt.preventDefault();
-		window.lite.openInWebBrowser(review.htmlUrl).catch(reportOpenFailure);
+		window.lite.openInWebBrowser(review.htmlUrl).catch(reportError);
 	};
 
 	return (
@@ -597,92 +766,98 @@ export const PullRequestPanel: FC<{
 			<Section
 				heading="Status"
 				action={
-					<a
-						href={review.htmlUrl}
-						onClick={handleOpen}
-						className={classes("text-12", styles.link, styles.prLink)}
-					>
-						{review.unitSymbol}
-						{review.number}
-						<Icon name="arrow-up-right" size={12} />
-					</a>
+					<div className={styles.statusActions}>
+						{canSwitchStatus ? (
+							<button
+								aria-label="Change status"
+								className={styles.statusTrigger}
+								disabled={isStatusPending}
+								onClick={openStatusMenu}
+								type="button"
+							>
+								{statusBadge}
+							</button>
+						) : (
+							statusBadge
+						)}
+						<a
+							href={review.htmlUrl}
+							onClick={handleOpen}
+							className={classes("text-12", styles.link, styles.prLink)}
+						>
+							{review.unitSymbol}
+							{review.number}
+							<Icon name="arrow-up-right" size={12} />
+						</a>
+					</div>
 				}
 			>
-				<div className={styles.statusRow}>
-					<Badge variant={statusVariant} size="large">
-						<Icon name={statusIcon} size={12} />
-						{statusLabel}
-					</Badge>
-					{canToggleDraft && (
-						<button
-							className={getButtonClassName({ variant: "outline", size: "small" })}
-							disabled={isDraftinessPending}
-							onClick={() =>
-								setReviewDraftiness({
-									projectId,
-									reviewId: review.number,
-									draft: !review.draft,
-								})
-							}
-							type="button"
-						>
-							{review.draft ? "Mark as ready" : "Convert to draft"}
-						</button>
-					)}
-				</div>
-			</Section>
-
-			<Section
-				heading="Reviewers"
-				action={canPickReviewers && pickerButton("Request a review", openReviewerMenu)}
-			>
-				{reviewerList.length === 0 ? (
-					<PeoplePlaceholder />
-				) : (
-					reviewerList.map(({ user, verdict }) => {
-						const [icon, color, label] = verdictBits(verdict);
-						return (
-							<div key={user.id} className={styles.reviewerRow} title={label}>
-								<ReviewUser user={user} />
-								<Icon name={icon} style={{ color }} size={15} />
-							</div>
-						);
-					})
-				)}
-			</Section>
-
-			<Section
-				heading="Labels"
-				action={canPickLabels && pickerButton("Edit labels", openLabelMenu)}
-			>
-				{review.labels.length === 0 ? (
-					<LabelsPlaceholder />
-				) : (
-					<div className={styles.labels}>
-						{review.labels.map((label) => (
-							<Label key={label.name} label={label} />
-						))}
-					</div>
-				)}
+				{null}
 			</Section>
 
 			{forgeInfo?.capabilities.checks === true && (
 				<ChecksSection projectId={projectId} reference={review.sourceBranch} />
 			)}
 
+			<Section
+				heading="Reviewers"
+				collapsible={reviewerList.length > 0}
+				action={
+					canPickReviewers &&
+					pickerButton({
+						label: "Add reviewers",
+						icon: "user",
+						empty: reviewerList.length === 0,
+						onClick: openReviewerMenu,
+					})
+				}
+			>
+				{reviewerList.map(({ user, verdict }) => (
+					<ReviewerRow
+						key={user.id}
+						user={user}
+						verdict={verdict}
+						onWithdraw={
+							canManage && verdict === "awaiting"
+								? () =>
+										withdrawReviewRequest({
+											projectId,
+											reviewId: review.number,
+											logins: [user.login],
+										})
+								: null
+						}
+					/>
+				))}
+			</Section>
+
+			<Section
+				heading="Labels"
+				action={
+					canPickLabels &&
+					pickerButton({
+						label: "Add labels",
+						icon: "tag",
+						empty: review.labels.length === 0,
+						onClick: openLabelMenu,
+					})
+				}
+			>
+				{review.labels.length > 0 && (
+					<div className={styles.labels}>
+						{review.labels.map((label) => (
+							<ForgeLabel key={label.name} label={label} />
+						))}
+					</div>
+				)}
+			</Section>
+
 			<Section heading="Branches">
 				<div className={classes("text-13", styles.branches)}>
 					<CopyableBranch name={review.sourceBranch} />
-					<span className={styles.branchArrow}>→</span>
-					<span className={styles.targetBranch}>{review.targetBranch}</span>
+					<TargetBranch name={review.targetBranch} />
 				</div>
 			</Section>
-
-			{review.author !== null && (
-				<Section heading="Author">
-					<ReviewUser user={review.author} />
-				</Section>
-			)}
 
 			{createdAtMs !== null && (
 				<Section heading="Created">
@@ -691,16 +866,6 @@ export const PullRequestPanel: FC<{
 					</span>
 				</Section>
 			)}
-
-			{showUpdated && (
-				<Section heading="Updated" joined>
-					<span className={classes("text-13", styles.created)}>
-						{formatRelativeTime(modifiedAtMs)}, {formatAbsoluteTime(modifiedAtMs)}
-					</span>
-				</Section>
-			)}
-
-			{activity !== undefined && <Section heading="Activity">{activity}</Section>}
 		</aside>
 	);
 };

@@ -1,7 +1,11 @@
 import rowStyles from "../Row.module.css";
-import { setCursor, useIsCursorAt, useSelection, useActiveList } from "#ui/use-cursor.ts";
+import { setCursor, useActiveList, useSelection } from "#ui/use-cursor.ts";
 import { useCommitAmend } from "#ui/api/mutations.ts";
-import { changesInWorktreeQueryOptions, headInfoQueryOptions } from "#ui/api/queries.ts";
+import {
+	changesInWorktreeQueryOptions,
+	headInfoQueryOptions,
+	listReviewsQueryOptions,
+} from "#ui/api/queries.ts";
 import { getHeadInfoIndex, recordedPullRequest } from "#ui/api/ref-info.ts";
 import { decodeBytes } from "#ui/api/bytes.ts";
 import { commitIsDiverged, commitTitle } from "#ui/commit.ts";
@@ -11,25 +15,20 @@ import {
 	uncommittedChangesFileParent,
 	commitAddress,
 	addressIdentityKey,
-	type Address,
 	addressEquals,
+	type Address,
 	commitIdentityKey,
 } from "#ui/addresses.ts";
 import { useReviewedPaths } from "#ui/routes/project/$id/workspace/reviewed-paths.ts";
 import { projectSlice } from "#ui/projects/state.ts";
 import { getTransferKind, getTransferTarget } from "#ui/operations/pending-operation.ts";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
-import {
-	OperationTarget as OperationTarget_,
-	type OperationTargetOutline,
-} from "#ui/routes/project/$id/workspace/OperationTarget.tsx";
-import { useOperationDropTarget } from "#ui/routes/project/$id/workspace/useOperationDropTarget.ts";
+import { AddressC, OperationTarget, TreeItem } from "./TreeItem.tsx";
+import { WorktreeCard, WorktreeLane, WorktreeOnTip } from "./WorktreeLane.tsx";
 import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
 import { classes } from "#ui/components/classes.ts";
 import { addressSpaceIncludes, type AddressSpace } from "#ui/workspace/address-space.ts";
-import { mergeProps, Tooltip, useRender } from "@base-ui/react";
 import { useMergedRefs } from "@base-ui/utils/useMergedRefs";
-import { ResizeHandle } from "#ui/components/ResizeHandle.tsx";
 import uiStyles from "#ui/components/ui.module.css";
 import type {
 	BranchReference,
@@ -39,65 +38,79 @@ import type {
 	PushStatus,
 	WorktreeChanges,
 	WorkspaceState,
+	Worktree,
 } from "@gitbutler/but-sdk";
 
-import { useMutationState, useQuery } from "@tanstack/react-query";
+import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Range, useVirtualizer } from "@tanstack/react-virtual";
 import type { PayloadFor } from "#electron/ipc.ts";
 import { Match } from "effect";
 import {
 	Activity,
-	type ComponentProps,
-	createContext,
 	type CSSProperties,
-	type FC,
 	Fragment,
-	type RefObject,
-	type ReactNode,
+	createContext,
 	use,
 	useCallback,
 	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
+	useId,
+	type ComponentProps,
+	type FC,
+	type ReactNode,
+	type RefObject,
 } from "react";
-import { Group, Panel, useDefaultLayout } from "react-resizable-panels";
 import styles from "./WorkspaceLists.module.css";
 import { Row, RowLabel, RowLabelContainer, SectionHeaderRow } from "../Row.tsx";
+import { Section } from "../Graph/Section.tsx";
+import {
+	CARD_GAP,
+	DOCKED_HEIGHT,
+	HEAD_DOCKED_HEIGHT,
+	ROW_INSET,
+	foldAt,
+	foldAddresses,
+	type WorktreePlacement,
+	worktreesOnTip,
+} from "../Graph/layout.ts";
+import type { Graph } from "../Graph/usePlan.ts";
+import { GRAPH_TRUNK_INSET } from "#ui/components/graph-spacing.ts";
 import { StackCard } from "../StackCard.tsx";
 import stackCardStyles from "../StackCard.module.css";
-import { treeItemId } from "../Row-utils.ts";
-import {
-	useAbsorptionTargetCommitIds,
-	useAddressSpace,
-	WorkspaceListsProvider,
-} from "./context.tsx";
-import { getOperation, type Placement, useDryRunOperation } from "#ui/operations/operation.ts";
+import { COMMIT_ROW_HEIGHT, treeItemId } from "../Row-utils.ts";
+import { useAddressSpace, WorkspaceListsProvider } from "./context.tsx";
+import { getOperation, useDryRunOperation } from "#ui/operations/operation.ts";
 import { createDiffSpec } from "#ui/operations/diff-specs.ts";
-import { GraphSegment, type GraphSegmentStatus } from "#ui/components/GraphSegment.tsx";
+import {
+	GraphEdge,
+	GraphGap,
+	GraphSegment,
+	type GraphSegmentStatus,
+} from "#ui/components/GraphSegment.tsx";
 import { useNow } from "#ui/components/useNow.ts";
 import { segmentBottomRelativeTo } from "#ui/api/stack.ts";
 import { assert } from "#ui/assert.ts";
 import { CommitRow } from "./CommitRow.tsx";
+import { IncomingRows } from "./IncomingRows.tsx";
 import { BranchRow, type PushActivity } from "./BranchRow.tsx";
 import { useActiveListsHotkeys } from "./hotkeys.ts";
 import { UncommittedChangesRow } from "./UncommittedChangesRow.tsx";
-import { PanelFoldToggle } from "./PanelFoldToggle.tsx";
 import { LastCommitLine } from "./LastCommitLine.tsx";
 import { NoStacks } from "./NoStacks.tsx";
 import type { NewBranchActions } from "../useNewBranch.ts";
-import { StacksSummary } from "./StacksSummary.tsx";
 import { ListFilterRow } from "../ListFilterRow.tsx";
 import { useListFilter } from "../useListFilter.ts";
 import { buildUncommittedFileRows } from "../file-row.ts";
 import { useFileDisplayMode } from "../useFileDisplayMode.ts";
 import {
+	canIntegrateUpstream,
 	canRemoveBranchReference,
 	downstackPushStatusesFromSegments,
 	type DownstackPushStatus,
 } from "#ui/segment.ts";
 import { checkedRange, addressSpaceRange } from "#ui/checking.ts";
-import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { focusScope, useAutofocusScope, type FocusScope } from "#ui/focus-scopes.ts";
 import { getRangeExtractorWithIndices } from "#ui/virtual.ts";
 import { FilesTree } from "#ui/routes/project/$id/workspace/FilesTree.tsx";
@@ -115,148 +128,25 @@ const uncommittedChangesHeadingId = "uncommitted-changes-heading";
 const DryRunWorkspaceContext = createContext<WorkspaceState | null>(null);
 DryRunWorkspaceContext.displayName = "DryRunWorkspaceContext";
 
-// This must be unique as to not collide with other IDs, and stable because it's
-// stored in local storage.
-type PanelId = "uncommitted-changes-panel" | "stacks-panel";
+/**
+ * An element's height, kept current as it resizes: give the element the ref.
+ * Keyed on the element, not a ref object, so a replaced node (a hot reload
+ * swaps them) is measured afresh rather than watched after it is gone.
+ */
+const noLanes: ReadonlyArray<Worktree> = [];
 
-const TreeItem: FC<
-	{
-		address: Address;
-	} & useRender.ComponentProps<"div">
-> = ({ address, render, ...props }) => {
-	const addressSpace = useAddressSpace();
-	const isSelected = useIsCursorAt("applied", addressSpace, address);
-
-	return useRender({
-		render,
-		defaultTagName: "div",
-		props: mergeProps<"div">(props, {
-			id: treeItemId(address),
-			role: "treeitem",
-			"aria-selected": isSelected,
-		}),
-	});
-};
-
-const OperationTarget: FC<
-	{
-		enabled: boolean;
-		address: Address;
-		projectId: string;
-		outline: OperationTargetOutline;
-	} & useRender.ComponentProps<"button">
-> = ({ enabled, address, projectId, outline, render, ...props }) => {
-	const dropRef = useOperationDropTarget({ enabled, target: address, projectId });
-
-	const absorptionTargetCommitIds = useAbsorptionTargetCommitIds();
-	const addressSpace = useAddressSpace();
-
-	type ActiveOperation = { placement: Placement; tooltip?: string | undefined };
-	// The cursor only picks the target of a keyboard transfer, so follow it only
-	// then: a target that tracks the cursor at all times re-renders, along with
-	// the whole row it wraps, on every cursor move.
-	const keyboardTransferPending = useAppSelector((state) => {
-		const pendingOperation = projectSlice.selectors.selectPendingOperation(state, projectId);
-		return pendingOperation._tag === "Transfer" && pendingOperation.value._tag === "Keyboard";
-	});
-	const selection = useSelection("applied", keyboardTransferPending ? addressSpace : null);
-	const activeList = useActiveList();
-	const activeOperation = useAppSelector((state) => {
-		const pendingOperation = projectSlice.selectors.selectPendingOperation(state, projectId);
-
-		return Match.value(pendingOperation).pipe(
-			Match.tags({
-				Absorb: (): ActiveOperation | null => {
-					const isActive =
-						address._tag === "Commit" && absorptionTargetCommitIds.has(address.commitId);
-					if (!isActive) return null;
-
-					return { placement: "into", tooltip: "Absorb target" };
-				},
-				Transfer: ({ value: mode }): ActiveOperation | null => {
-					if (mode.placement === null) return null;
-
-					const target = getTransferTarget(mode, selection, activeList);
-					const isActive = target !== null && addressEquals(target, address);
-					if (!isActive) return null;
-
-					return {
-						placement: mode.placement,
-						tooltip: getOperation({
-							sources: mode.sources,
-							target: address,
-							placement: mode.placement,
-							kind: getTransferKind(mode),
-						})?.label,
-					};
-				},
-			}),
-			Match.orElse(() => null),
-		);
-	});
-
-	return (
-		<Tooltip.Root
-			open={activeOperation?.tooltip !== undefined}
-			disableHoverablePopup
-			onOpenChange={(_, eventDetails) => {
-				// Allow escape to bubble up from tree so it triggers the cancel
-				// operation shortcut.
-				if (eventDetails.reason === "escape-key") eventDetails.allowPropagation();
-			}}
-		>
-			<Tooltip.Trigger
-				{...props}
-				render={
-					<OperationTarget_
-						ref={(el) => {
-							dropRef.current = el;
-						}}
-						placement={activeOperation?.placement}
-						outline={outline}
-						render={render}
-					/>
-				}
-			/>
-			<Tooltip.Portal>
-				<Tooltip.Positioner sideOffset={8} side="right">
-					<Tooltip.Popup render={<TooltipPopup />}>{activeOperation?.tooltip}</Tooltip.Popup>
-				</Tooltip.Positioner>
-			</Tooltip.Portal>
-		</Tooltip.Root>
-	);
-};
-
-const AddressC: FC<
-	{
-		projectId: string;
-		address: Address;
-		outline: OperationTargetOutline;
-	} & useRender.ComponentProps<"div">
-> = ({ projectId, address, outline, render, ...props }) => {
-	const addressSpace = useAddressSpace();
-
-	return useRender({
-		render: (
-			<OperationSourceC
-				projectId={projectId}
-				sources={[address]}
-				respectChecked={address._tag === "Commit" || address._tag === "File"}
-				outline={outline}
-				render={
-					<OperationTarget
-						enabled={addressSpaceIncludes(addressSpace, address, addressIdentityKey)}
-						projectId={projectId}
-						address={address}
-						outline={outline}
-						render={render}
-					/>
-				}
-			/>
-		),
-		defaultTagName: "div",
-		props,
-	});
+const useHeight = (): [ref: (element: HTMLElement | null) => void, height: number] => {
+	const [element, setElement] = useState<HTMLElement | null>(null);
+	const [height, setHeight] = useState(0);
+	useLayoutEffect(() => {
+		if (element === null) return;
+		const measure = () => setHeight(element.offsetHeight);
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [element]);
+	return [setElement, height];
 };
 
 const UncommittedChanges: FC<
@@ -278,6 +168,13 @@ const UncommittedChanges: FC<
 		selectActiveFile: (selection: string) => void;
 		spillEdge: (offset: -1 | 1) => void;
 		worktreeChanges: WorktreeChanges | undefined;
+		/** The graph's scroller, which the card heads. */
+		scrollElementRef: RefObject<HTMLDivElement | null>;
+		/** The docked target row's height that file navigation must clear, or 0. */
+		footDock: number;
+		/** The card's head, measured by the parent, which docks a stand-in as soon as the head is pushed. */
+		headRef: (element: HTMLElement | null) => void;
+		headHeight: number;
 	} & Omit<ComponentProps<"div">, "children">
 > = ({
 	addressSpace,
@@ -290,6 +187,10 @@ const UncommittedChanges: FC<
 	selectActiveFile,
 	spillEdge,
 	worktreeChanges,
+	scrollElementRef,
+	footDock,
+	headRef,
+	headHeight,
 	...props
 }) => {
 	const dispatch = useAppDispatch();
@@ -321,15 +222,35 @@ const UncommittedChanges: FC<
 
 	const fileSelection = useSelection("uncommitted", addressSpace);
 	const activeList = useActiveList();
-	const collapsed = useAppSelector((state) =>
-		projectSlice.selectors.selectSidebarPanelCollapsed(state, projectId, "uncommitted"),
+	const folded = useAppSelector((state) =>
+		projectSlice.selectors.selectUncommittedFolded(state, projectId),
 	);
+	const toggleFolded = () => dispatch(projectSlice.actions.toggleUncommittedFolded({ projectId }));
 	// Loaded and holding nothing, as opposed to not loaded yet: the header takes
 	// over the empty wording, so it must not say it before the answer is in.
 	const isClean = worktreeChanges !== undefined && worktreeChanges.changes.length === 0;
 
-	const panelRef = useRef<HTMLDivElement>(null);
+	const cardRef = useRef<HTMLDivElement>(null);
 	const fileListRef = useRef<HTMLDivElement>(null);
+	// The list's start in the scroller, which the card heads: the rows above the
+	// list come and go with the filter and the worktree, so the card's size says
+	// when to measure again.
+	const [listOffset, setListOffset] = useState(0);
+	useLayoutEffect(() => {
+		const card = cardRef.current;
+		if (card === null) return;
+		const measure = () => {
+			const list = fileListRef.current;
+			if (list === null) return;
+			setListOffset(
+				Math.max(0, list.getBoundingClientRect().top - card.getBoundingClientRect().top),
+			);
+		};
+		measure();
+		const observer = new ResizeObserver(measure);
+		observer.observe(card);
+		return () => observer.disconnect();
+	}, []);
 	const fileFilter = useListFilter({
 		filter,
 		setFilter: (filter) =>
@@ -342,97 +263,117 @@ const UncommittedChanges: FC<
 		onEnterList: () => {
 			if (fileSelection !== null) selectActiveFile(fileSelection);
 		},
-		panelRef,
+		panelRef: cardRef,
 		listRef: fileListRef,
-		enabled: (worktreeChanges?.changes.length ?? 0) > 0,
+		enabled: !folded && (worktreeChanges?.changes.length ?? 0) > 0,
 	});
+	// The trunk runs down the card as its own line, the rows' rail.
+	const trunk = <GraphEdge glyph="parent" />;
 
 	return (
 		<div
 			{...props}
-			className={classes(props.className, styles.uncommittedChanges)}
-			data-clean={isClean}
-			ref={useMergedRefs(props.ref, panelRef)}
+			className={classes(props.className, styles.uncommittedCard)}
+			ref={useMergedRefs(props.ref, cardRef)}
 		>
-			{fileFilter.rowProps === null || collapsed ? (
-				<UncommittedChangesRow
-					changes={worktreeChanges?.changes ?? []}
-					isClean={isClean}
-					headingId={uncommittedChangesHeadingId}
-					projectId={projectId}
-					onOpenFilter={fileFilter.open}
-				/>
-			) : (
-				<ListFilterRow {...fileFilter.rowProps} />
-			)}
+			<div ref={headRef} className={styles.cardHead}>
+				<div className={styles.cardHeadContent}>
+					<div className={styles.pad} />
+					<UncommittedChangesRow
+						changes={worktreeChanges?.changes ?? []}
+						isClean={isClean}
+						projectId={projectId}
+						mode={{
+							kind: "card",
+							headingId: uncommittedChangesHeadingId,
+							folded,
+							onToggleFolded: toggleFolded,
+							onOpenFilter: fileFilter.open,
+						}}
+					/>
+					<Activity mode={folded ? "hidden" : "visible"}>
+						{fileFilter.rowProps !== null && (
+							<ListFilterRow {...fileFilter.rowProps} rail={trunk} />
+						)}
+					</Activity>
+				</div>
+			</div>
 
-			{/* Collapsed, the header is the whole panel: its file count and line stats
-			    are the only sign left that there is uncommitted work, so they stay
-			    while the list and the commit form go. Hidden rather than unmounted,
-			    as with the sidebar's own pages, so the list comes back scrolled and
-			    filtered the way it was left. */}
-			<Activity mode={collapsed ? "hidden" : "visible"}>
-				{isClean && <LastCommitLine projectId={projectId} />}
+			{/* Folded, the header stands for the card: its file count and line stats
+			    are the only sign left that there is uncommitted work. Hidden rather
+			    than unmounted, as with the sidebar's own pages, so the list comes back
+			    scrolled and filtered the way it was left. */}
+			<Activity mode={folded ? "hidden" : "visible"}>
+				{isClean && (
+					<Row interactive={false}>
+						{trunk}
+						<RowLabelContainer>
+							<LastCommitLine projectId={projectId} />
+						</RowLabelContainer>
+					</Row>
+				)}
 
 				{/* A clean worktree drops the list as well: the header says so now, and
 				    an empty row under it would only say it twice. An unloaded one drops
 				    it too — its rows are empty for want of an answer, not because there
-				    is none, and the empty row would otherwise flash "Nothing to commit"
+				    is none, and the empty row would otherwise flash "No matching files"
 				    under a header still reading "Uncommitted". */}
 				<Activity mode={isClean || worktreeChanges === undefined ? "hidden" : "visible"}>
-					<div
-						className={classes(
-							uiStyles.scroller,
-							uiStyles.scrollerWithSeparator,
-							styles.uncommittedChangesTree,
-						)}
-					>
-						<FilesTree
-							aria-labelledby={uncommittedChangesHeadingId}
-							canUncommit={false}
-							data-preview-source={activeList === "uncommitted"}
-							focusScope="uncommitted-files"
-							emptyLabel={
-								filter !== null && (worktreeChanges?.changes.length ?? 0) > 0
-									? "No matching files."
-									: "Nothing to commit"
-							}
-							fileParent={uncommittedChangesFileParent}
-							reviewedPaths={reviewedUncommittedPaths}
-							rows={fileRows}
-							ageBadgeNow={recentFirst ? ageBadgeNow : null}
-							collapsedDirectories={collapsedDirectories}
-							onToggleDirectoryCollapsed={(path) =>
-								dispatch(
-									projectSlice.actions.toggleUncommittedFilesDirectoryCollapsed({
-										projectId,
-										path,
-									}),
-								)
-							}
-							addressSpace={addressSpace}
-							onRowSelection={selectActiveFile}
-							onEdgeSpill={spillEdge}
-							projectId={projectId}
-							ref={useMergedRefs(fileListRef, useAutofocusScope(activeList === "uncommitted"))}
-							selection={fileSelection}
-						/>
-					</div>
+					<FilesTree
+						className={styles.uncommittedFiles}
+						aria-labelledby={uncommittedChangesHeadingId}
+						canUncommit={false}
+						data-preview-source={activeList === "uncommitted"}
+						focusScope="uncommitted-files"
+						fileParent={uncommittedChangesFileParent}
+						reviewedPaths={reviewedUncommittedPaths}
+						rows={fileRows}
+						ageBadgeNow={recentFirst ? ageBadgeNow : null}
+						collapsedDirectories={collapsedDirectories}
+						onToggleDirectoryCollapsed={(path) =>
+							dispatch(
+								projectSlice.actions.toggleUncommittedFilesDirectoryCollapsed({
+									projectId,
+									path,
+								}),
+							)
+						}
+						addressSpace={addressSpace}
+						onRowSelection={selectActiveFile}
+						onEdgeSpill={spillEdge}
+						projectId={projectId}
+						ref={useMergedRefs(fileListRef, useAutofocusScope(activeList === "uncommitted"))}
+						selection={fileSelection}
+						rail={trunk}
+						scrollElementRef={scrollElementRef}
+						scrollMargin={listOffset}
+						scrollPaddingStart={headHeight}
+						scrollPaddingEnd={footDock}
+						// Override the tree's inset to keep the rows on the uncommitted card's trunk.
+						style={{ "--row-padding-inline-start": "var(--graph-trunk-inset)" }}
+					/>
 				</Activity>
 
-				<CommitForm
-					projectId={projectId}
-					commitTarget={commitTarget}
-					targetComboboxItems={targetComboboxItems}
-					hasNoBranches={hasNoBranches}
-					startCommitButtonId={startCommitButtonId}
-					commitMessageInputId={commitMessageInputId}
-					className={styles.commitForm}
-					onAmendCommit={amendCommit}
-					canAmendCommit={canAmendCommit}
-					worktreeChanges={worktreeChanges}
-				/>
+				<Row interactive={false}>
+					{trunk}
+					<CommitForm
+						projectId={projectId}
+						commitTarget={commitTarget}
+						targetComboboxItems={targetComboboxItems}
+						hasNoBranches={hasNoBranches}
+						startCommitButtonId={startCommitButtonId}
+						commitMessageInputId={commitMessageInputId}
+						className={styles.commitForm}
+						onAmendCommit={amendCommit}
+						canAmendCommit={canAmendCommit}
+						worktreeChanges={worktreeChanges}
+					/>
+				</Row>
 			</Activity>
+
+			<Row interactive={false} className={styles.stub}>
+				{trunk}
+			</Row>
 		</div>
 	);
 };
@@ -451,6 +392,10 @@ const segmentPushStatusToGraphSegmentStatus = (pushStatus: PushStatus): GraphSeg
 	}
 };
 
+/** A commit's glyph colour: its state's, or the diverged one's. */
+const commitGraphStatus = (commit: Commit): GraphSegmentStatus =>
+	commitIsDiverged(commit) ? "Diverged" : commit.state.type;
+
 const BranchSegment: FC<{
 	projectId: string;
 	segment: Segment;
@@ -460,11 +405,14 @@ const BranchSegment: FC<{
 	canRemoveBranch: boolean;
 	downstackPushStatus: DownstackPushStatus;
 	pushActivity: PushActivity;
-	isTopSegment: boolean;
+	startsRail: boolean;
+	behind: number;
+	worktrees: WorktreePlacement;
 	checkCommit: (evt: { commitId: string; shiftKey: boolean }) => void;
 	onAmendCommit: (commitId: string) => void;
 	canAmendCommit: boolean;
 	scrollElementRef: RefObject<HTMLDivElement | null>;
+	scrollPaddingEnd: number;
 	stackScrollStart: number;
 	stackSize: number;
 	segmentIndex: number;
@@ -480,11 +428,14 @@ const BranchSegment: FC<{
 	canRemoveBranch,
 	downstackPushStatus,
 	pushActivity,
-	isTopSegment,
+	startsRail,
+	behind,
+	worktrees,
 	checkCommit,
 	onAmendCommit,
 	canAmendCommit,
 	scrollElementRef,
+	scrollPaddingEnd,
 	stackScrollStart,
 	stackSize,
 	segmentIndex,
@@ -492,7 +443,15 @@ const BranchSegment: FC<{
 	positionInSet,
 	setSize,
 }) => {
+	const descriptionId = useId();
 	const address = branchAddress({ branchRef: refName.fullNameBytes });
+	const isRenaming = useAppSelector((state) => {
+		const pending = projectSlice.selectors.selectPendingOperation(state, projectId);
+		return pending._tag === "InlineEdit" && addressEquals(address, pending.address);
+	});
+	// The rail below the branch's tick is its first commit's; plain when it has none.
+	const firstCommit = segment.commits[0];
+	const railBelow = firstCommit === undefined ? "LocalOnly" : commitGraphStatus(firstCommit);
 	const isFolded = useAppSelector((state) =>
 		projectSlice.selectors.selectSegmentFolded(
 			state,
@@ -505,6 +464,7 @@ const BranchSegment: FC<{
 		<TreeItem
 			address={address}
 			aria-label={refName.displayName}
+			aria-describedby={isRenaming ? undefined : descriptionId}
 			aria-expanded={segment.commits.length > 0 ? !isFolded : undefined}
 			aria-level={1}
 			aria-posinset={positionInSet}
@@ -512,6 +472,7 @@ const BranchSegment: FC<{
 			render={<AddressC projectId={projectId} address={address} outline="outside" />}
 		>
 			<BranchRow
+				descriptionId={descriptionId}
 				projectId={projectId}
 				refName={refName}
 				canTearOffBranch={canTearOffBranch}
@@ -519,16 +480,25 @@ const BranchSegment: FC<{
 				downstackPushStatus={downstackPushStatus}
 				pushActivity={pushActivity}
 				pushStatus={segment.pushStatus}
+				canUpdateFromRemote={canIntegrateUpstream(segment)}
+				remote={segment.remoteTrackingRefName}
+				incoming={segment.commitsOnRemote.length}
 				recordedPullRequest={recordedPullRequest(segment)}
 				graphStatus={segmentPushStatusToGraphSegmentStatus(segment.pushStatus)}
 				bottomRelativeTo={segmentBottomRelativeTo(segment)}
-				isTopSegment={isTopSegment}
+				startsRail={startsRail}
 				commitCount={segment.commits.length}
+				railBelow={railBelow}
+				behind={behind}
 				stack={stack}
 			/>
 
 			{/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- Tree items need ARIA group semantics. */}
 			<div role="group">
+				{/* Gated here so the common case pays no mount; folding hides them with the commits. */}
+				{!isFolded && segment.commitsOnRemote.length > 0 && (
+					<IncomingRows projectId={projectId} segment={segment} refName={refName} behind={behind} />
+				)}
 				<SegmentContent
 					ariaLevel={2}
 					isFolded={isFolded}
@@ -537,10 +507,14 @@ const BranchSegment: FC<{
 					projectId={projectId}
 					segment={segment}
 					stackId={stack.id}
+					downstackPushStatus={downstackPushStatus}
+					behind={behind}
+					worktrees={worktrees}
 					checkCommit={checkCommit}
 					onAmendCommit={onAmendCommit}
 					canAmendCommit={canAmendCommit}
 					scrollElementRef={scrollElementRef}
+					scrollPaddingEnd={scrollPaddingEnd}
 					stackScrollStart={stackScrollStart}
 					stackSize={stackSize}
 					segmentIndex={segmentIndex}
@@ -553,7 +527,8 @@ const BranchSegment: FC<{
 
 const EmptySegmentContent: FC<{
 	segment: Segment;
-}> = ({ segment }) => {
+	behind: number;
+}> = ({ segment, behind }) => {
 	const addressSpace = useAddressSpace();
 
 	const refName = assert(segment.refName);
@@ -569,6 +544,7 @@ const EmptySegmentContent: FC<{
 				<GraphSegment
 					glyph="parent"
 					status={segmentPushStatusToGraphSegmentStatus(segment.pushStatus)}
+					behind={behind}
 				/>
 				<RowLabelContainer>
 					<RowLabel className={rowStyles.fadedText}>No commits.</RowLabel>
@@ -586,6 +562,7 @@ const SegmentContent: FC<{
 	onAmendCommit: (commitId: string) => void;
 	canAmendCommit: boolean;
 	scrollElementRef: RefObject<HTMLDivElement | null>;
+	scrollPaddingEnd: number;
 	stackScrollStart: number;
 	stackSize: number;
 	segmentIndex: number;
@@ -594,6 +571,10 @@ const SegmentContent: FC<{
 	isFolded: boolean;
 	positionOffset: number;
 	setSize: number;
+	behind: number;
+	worktrees: WorktreePlacement;
+	/** What a push from this segment covers, which a worktree resting on one of its commits pushes too. */
+	downstackPushStatus: DownstackPushStatus;
 }> = ({
 	projectId,
 	segment,
@@ -602,6 +583,7 @@ const SegmentContent: FC<{
 	onAmendCommit,
 	canAmendCommit,
 	scrollElementRef,
+	scrollPaddingEnd,
 	stackScrollStart,
 	stackSize,
 	segmentIndex,
@@ -610,6 +592,9 @@ const SegmentContent: FC<{
 	isFolded,
 	positionOffset,
 	setSize,
+	behind,
+	worktrees,
+	downstackPushStatus,
 }) => {
 	const getCommitKey = useCallback(
 		(index: number) => segment.commits[index]?.id ?? index,
@@ -636,14 +621,13 @@ const SegmentContent: FC<{
 		count: isFolded ? 0 : segment.commits.length,
 		getScrollElement: () => scrollElementRef.current,
 		initialOffset: () => scrollElementRef.current?.scrollTop ?? 0,
-		// Keep in sync with --single-line-row-height.
-		estimateSize: () => 28,
+		estimateSize: () => COMMIT_ROW_HEIGHT,
 		getItemKey: getCommitKey,
 		rangeExtractor: rangeExtractorWithSelected,
 		scrollMargin,
-		// Matches --scroll-gradient-height.
+		// Matches --scroll-gradient-height; the foot also clears the docked target row.
 		scrollPaddingStart: 14,
-		scrollPaddingEnd: 14,
+		scrollPaddingEnd,
 	});
 
 	const containerRef = useMergedRefs(rowVirtualizer.containerRef, commitListRef);
@@ -674,10 +658,32 @@ const SegmentContent: FC<{
 		lastRevealedCommitIndexRef.current = selectedCommitIndex;
 	}, [rowVirtualizer, selectedCommitIndex]);
 
-	if (segment.commits.length === 0) return <EmptySegmentContent segment={segment} />;
+	if (segment.commits.length === 0)
+		return <EmptySegmentContent segment={segment} behind={behind} />;
+	// The lanes drawn above a commit row. The worktrees on the top branch's tip
+	// are drawn above that branch by the card instead, see `worktreesOnTip`.
+	const lanesOn = (commit: Commit, index: number): ReadonlyArray<Worktree> =>
+		segmentIndex === 0 && index === 0 && segment.refName !== null
+			? noLanes
+			: (worktrees.on.get(commit.id) ?? noLanes);
+
 	// The branch row stands in for a folded segment: it takes the group glyph
-	// and shows the count of the commits hidden here.
-	if (isFolded) return null;
+	// and shows the count of the commits hidden here. The worktrees resting on
+	// those commits stay, or folding a branch would make a worktree vanish.
+	if (isFolded) {
+		return segment.commits
+			.flatMap((commit, index) => lanesOn(commit, index))
+			.map((worktree) => (
+				<WorktreeLane
+					key={worktree.name}
+					projectId={projectId}
+					worktree={worktree}
+					worktrees={worktrees}
+					behind={behind + 1}
+					beneath={downstackPushStatus}
+				/>
+			));
+	}
 
 	const dryRunWorkspace = use(DryRunWorkspaceContext);
 	const dryRunHeadInfoIndex = dryRunWorkspace ? getHeadInfoIndex(dryRunWorkspace.headInfo) : null;
@@ -687,6 +693,8 @@ const SegmentContent: FC<{
 			{rowVirtualizer.getVirtualItems().map((virtualRow) => {
 				const commit = segment.commits[virtualRow.index];
 				if (commit === undefined) return null;
+				// The rail below the commit is the next one's; plain under the last.
+				const next = segment.commits[virtualRow.index + 1];
 
 				const dryRunCommitId = dryRunWorkspace?.replacedCommits[commit.id];
 				const dryRunCommit =
@@ -699,6 +707,11 @@ const SegmentContent: FC<{
 						index={virtualRow.index}
 						measureElement={rowVirtualizer.measureElement}
 						commit={commit}
+						below={next === undefined ? "LocalOnly" : commitGraphStatus(next)}
+						behind={behind}
+						lanes={lanesOn(commit, virtualRow.index)}
+						beneath={downstackPushStatus}
+						worktrees={worktrees}
 						projectId={projectId}
 						stackId={stackId}
 						checkCommit={checkCommit}
@@ -726,6 +739,13 @@ const CommitItem: FC<{
 	index: number;
 	measureElement: (element: HTMLDivElement | null) => void;
 	commit: Commit;
+	below: GraphSegmentStatus;
+	behind: number;
+	/** The worktree lanes drawn above this commit, resting on it. */
+	lanes: ReadonlyArray<Worktree>;
+	/** What those lanes push beneath themselves: this commit's segment and below. */
+	beneath: DownstackPushStatus;
+	worktrees: WorktreePlacement;
 	projectId: string;
 	stackId: string | null;
 	checkCommit: (evt: { commitId: string; shiftKey: boolean }) => void;
@@ -739,6 +759,11 @@ const CommitItem: FC<{
 	index,
 	measureElement,
 	commit,
+	below,
+	behind,
+	lanes,
+	beneath,
+	worktrees,
 	projectId,
 	stackId,
 	checkCommit,
@@ -763,6 +788,17 @@ const CommitItem: FC<{
 				width: "100%",
 			}}
 		>
+			{/* Inside the measured element: the virtualizer sizes the commit's item, lanes included. */}
+			{lanes.map((worktree) => (
+				<WorktreeLane
+					key={worktree.name}
+					projectId={projectId}
+					worktree={worktree}
+					worktrees={worktrees}
+					behind={behind + 1}
+					beneath={beneath}
+				/>
+			))}
 			<TreeItem
 				address={address}
 				aria-label={commitTitle(commit.message) ?? "(no message)"}
@@ -777,6 +813,8 @@ const CommitItem: FC<{
 						render={
 							<CommitRow
 								commit={commit}
+								below={below}
+								behind={behind}
 								stackId={stackId}
 								checkCommit={checkCommit}
 								amendCommit={() => onAmendCommit(commit.id)}
@@ -808,7 +846,8 @@ const CommitItem: FC<{
 const SegmentRailConnector: FC<{
 	projectId: string;
 	segment: Segment;
-}> = ({ projectId, segment }) => {
+	behind: number;
+}> = ({ projectId, segment, behind }) => {
 	const addressSpace = useAddressSpace();
 
 	// A plain boolean, so this re-renders only when this segment's own fold
@@ -835,16 +874,8 @@ const SegmentRailConnector: FC<{
 			className={stackCardStyles.railConnector}
 			inert={!addressSpaceIncludes(addressSpace, standsFor, addressIdentityKey)}
 		>
-			<GraphSegment
-				glyph="parent"
-				status={
-					lastCommit === undefined
-						? segmentPushStatusToGraphSegmentStatus(segment.pushStatus)
-						: commitIsDiverged(lastCommit)
-							? "Diverged"
-							: lastCommit.state.type
-				}
-			/>
+			{/* Plain: a branch's colour runs from its tick down to its commits, not past them. */}
+			<GraphSegment glyph="parent" status="LocalOnly" behind={behind} />
 		</Row>
 	);
 };
@@ -858,8 +889,12 @@ const StackC: FC<
 		canAmendCommit: boolean;
 		pendingPushBranches: Set<string>;
 		scrollElementRef: RefObject<HTMLDivElement | null>;
+		scrollPaddingEnd: number;
 		stackScrollStart: number;
 		stackSize: number;
+		/** The list's start in the scroller, which the card's own position is from. */
+		scrollMargin: number;
+		worktrees: WorktreePlacement;
 		selectedSegmentIndex: number | undefined;
 		selectedCommitIndex: number | undefined;
 	} & ComponentProps<"div">
@@ -871,8 +906,11 @@ const StackC: FC<
 	canAmendCommit,
 	pendingPushBranches,
 	scrollElementRef,
+	scrollPaddingEnd,
 	stackScrollStart,
 	stackSize,
+	scrollMargin,
+	worktrees,
 	selectedSegmentIndex,
 	selectedCommitIndex,
 	...props
@@ -891,12 +929,17 @@ const StackC: FC<
 		top: 0,
 		left: 0,
 		width: "100%",
-		transform: `translateY(${stackScrollStart}px)`,
+		transform: `translateY(${stackScrollStart - scrollMargin}px)`,
 	};
+	// A card is a lane off the trunk, which runs behind it at the edge.
+	const behind = 1;
 	const topmostPendingPushIndex = stack.segments.findIndex(
 		(segment) =>
 			segment.refName && pendingPushBranches.has(decodeBytes(segment.refName.fullNameBytes)),
 	);
+	// Worktrees on the top branch's tip continue the card's line above it, so the
+	// branch row joins a rail that starts at the worktree rather than starting one.
+	const onTip = worktreesOnTip(worktrees, stack);
 	// Each stack group is a root sibling set. A branch is one root item whose commits are children;
 	// an unbranched segment contributes its commits directly to the root set.
 	const rootPositionOffsets: Array<number> = [];
@@ -907,88 +950,111 @@ const StackC: FC<
 	}
 
 	return (
-		<StackCard
-			{...props}
-			style={style}
-			className={classes(props.className, styles.virtualStack)}
-			// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- This is a group of treeitems.
-			role="group"
-			aria-label="Stack"
-		>
-			{stack.segments.map((segment, index) => {
-				// oxlint-disable-next-line typescript/no-non-null-assertion -- Equivalent iteration above.
-				const segmentPositionOffset = rootPositionOffsets[index]!;
+		<div {...props} style={style} className={classes(props.className, styles.stack)}>
+			<StackCard
+				className={styles.virtualStack}
+				// In the graph the card draws its rails to its edges: see StackCard.module.css.
+				data-graph
+				// oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- This is a group of treeitems.
+				role="group"
+				aria-label="Stack"
+			>
+				<Row interactive={false} className={styles.pad}>
+					<GraphSegment glyph="space" status="LocalOnly" behind={behind} />
+				</Row>
+				{onTip.map((worktree) => (
+					<WorktreeOnTip
+						key={worktree.name}
+						projectId={projectId}
+						worktree={worktree}
+						worktrees={worktrees}
+						behind={behind}
+						beneath={assert(downstackPushStatuses[0])}
+					/>
+				))}
+				{stack.segments.map((segment, index) => {
+					// oxlint-disable-next-line typescript/no-non-null-assertion -- Equivalent iteration above.
+					const segmentPositionOffset = rootPositionOffsets[index]!;
 
-				const key = segment.refName
-					? JSON.stringify(segment.refName.fullNameBytes)
-					: segment.commits[0]?.id;
+					const key = segment.refName
+						? JSON.stringify(segment.refName.fullNameBytes)
+						: segment.commits[0]?.id;
 
-				// A segment is supposed to always either have a branch reference or at least one commit,
-				// however with the current API this may not be the case e.g. detached HEAD.
-				if (key === undefined) return null;
+					// A segment is supposed to always either have a branch reference or at least one commit,
+					// however with the current API this may not be the case e.g. detached HEAD.
+					if (key === undefined) return null;
 
-				const downstackPushStatus = assert(downstackPushStatuses[index]);
-				const pushActivity: PushActivity =
-					topmostPendingPushIndex !== -1
-						? index >= topmostPendingPushIndex
-							? "pushing"
-							: "blocked"
-						: "idle";
+					const downstackPushStatus = assert(downstackPushStatuses[index]);
+					const pushActivity: PushActivity =
+						topmostPendingPushIndex !== -1
+							? index >= topmostPendingPushIndex
+								? "pushing"
+								: "blocked"
+							: "idle";
 
-				return (
-					<Fragment key={key}>
-						<div>
-							{segment.refName ? (
-								<BranchSegment
-									projectId={projectId}
-									segment={segment}
-									stack={stack}
-									refName={segment.refName}
-									canTearOffBranch={canTearOffBranch}
-									canRemoveBranch={canRemoveBranchReference(stack, index)}
-									downstackPushStatus={downstackPushStatus}
-									pushActivity={pushActivity}
-									isTopSegment={index === 0}
-									checkCommit={checkCommit}
-									onAmendCommit={onAmendCommit}
-									canAmendCommit={canAmendCommit}
-									scrollElementRef={scrollElementRef}
-									stackScrollStart={stackScrollStart}
-									stackSize={stackSize}
-									segmentIndex={index}
-									positionInSet={segmentPositionOffset + 1}
-									setSize={rootSetSize}
-									selectedCommitIndex={
-										selectedSegmentIndex === index ? selectedCommitIndex : undefined
-									}
-								/>
-							) : (
-								<SegmentContent
-									ariaLevel={1}
-									isFolded={false}
-									positionOffset={segmentPositionOffset}
-									setSize={rootSetSize}
-									projectId={projectId}
-									segment={segment}
-									stackId={stack.id}
-									checkCommit={checkCommit}
-									onAmendCommit={onAmendCommit}
-									canAmendCommit={canAmendCommit}
-									scrollElementRef={scrollElementRef}
-									stackScrollStart={stackScrollStart}
-									stackSize={stackSize}
-									segmentIndex={index}
-									selectedCommitIndex={
-										selectedSegmentIndex === index ? selectedCommitIndex : undefined
-									}
-								/>
-							)}
-						</div>
-						<SegmentRailConnector projectId={projectId} segment={segment} />
-					</Fragment>
-				);
-			})}
-		</StackCard>
+					return (
+						<Fragment key={key}>
+							<div>
+								{segment.refName ? (
+									<BranchSegment
+										projectId={projectId}
+										segment={segment}
+										stack={stack}
+										refName={segment.refName}
+										canTearOffBranch={canTearOffBranch}
+										canRemoveBranch={canRemoveBranchReference(stack, index)}
+										downstackPushStatus={downstackPushStatus}
+										pushActivity={pushActivity}
+										startsRail={index === 0 && onTip.length === 0}
+										behind={behind}
+										worktrees={worktrees}
+										checkCommit={checkCommit}
+										onAmendCommit={onAmendCommit}
+										canAmendCommit={canAmendCommit}
+										scrollElementRef={scrollElementRef}
+										scrollPaddingEnd={scrollPaddingEnd}
+										stackScrollStart={stackScrollStart}
+										stackSize={stackSize}
+										segmentIndex={index}
+										positionInSet={segmentPositionOffset + 1}
+										setSize={rootSetSize}
+										selectedCommitIndex={
+											selectedSegmentIndex === index ? selectedCommitIndex : undefined
+										}
+									/>
+								) : (
+									<SegmentContent
+										ariaLevel={1}
+										isFolded={false}
+										positionOffset={segmentPositionOffset}
+										setSize={rootSetSize}
+										behind={behind}
+										worktrees={worktrees}
+										projectId={projectId}
+										segment={segment}
+										stackId={stack.id}
+										downstackPushStatus={downstackPushStatus}
+										checkCommit={checkCommit}
+										onAmendCommit={onAmendCommit}
+										canAmendCommit={canAmendCommit}
+										scrollElementRef={scrollElementRef}
+										scrollPaddingEnd={scrollPaddingEnd}
+										stackScrollStart={stackScrollStart}
+										stackSize={stackSize}
+										segmentIndex={index}
+										selectedCommitIndex={
+											selectedSegmentIndex === index ? selectedCommitIndex : undefined
+										}
+									/>
+								)}
+							</div>
+							<SegmentRailConnector projectId={projectId} segment={segment} behind={behind} />
+						</Fragment>
+					);
+				})}
+			</StackCard>
+			<GraphGap height={CARD_GAP} bend="LocalOnly" />
+		</div>
 	);
 };
 
@@ -1005,16 +1071,41 @@ const focusCommitMessageInput = () => {
 
 const Stacks: FC<{
 	projectId: string;
+	graph: Graph;
 	newBranch: NewBranchActions;
 	checkCommit: (evt: { commitId: string; shiftKey: boolean }) => void;
 	onAmendCommit: (commitId: string) => void;
 	canAmendCommit: boolean;
 	onEdgeSpill: (offset: -1 | 1) => void;
-}> = ({ projectId, newBranch, checkCommit, onAmendCommit, canAmendCommit, onEdgeSpill }) => {
+	/** The uncommitted files card, which heads the trunk above the stack cards. */
+	head: ReactNode;
+	/** Stands in for the card at the scroller's head while the card is scrolled out above. */
+	dock: ReactNode;
+	/** How far down the dock's mark sticks: the card's head height, so the stand-in takes over as the head is pushed. */
+	dockOffset: number;
+	scrollElementRef: RefObject<HTMLDivElement | null>;
+	scrollPaddingEnd: number;
+}> = ({
+	projectId,
+	graph,
+	newBranch,
+	checkCommit,
+	onAmendCommit,
+	canAmendCommit,
+	onEdgeSpill,
+	head,
+	dock,
+	dockOffset,
+	scrollElementRef,
+	scrollPaddingEnd,
+}) => {
+	const store = useAppStore();
+	const queryClient = useQueryClient();
 	const addressSpace = useAddressSpace();
 	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
 	const selection = useSelection("applied", addressSpace);
 	const activeList = useActiveList();
+	const dispatch = useAppDispatch();
 	const dryRunOperation = useAppSelector((state) => {
 		const pendingOperation = projectSlice.selectors.selectPendingOperation(state, projectId);
 
@@ -1044,7 +1135,8 @@ const Stacks: FC<{
 		operation: dryRunOperation,
 	});
 	const dryRunWorkspace = dryRunOperationResult?.workspace ?? null;
-	const stacks = (headInfo?.stacks ?? []).toReversed();
+	// Cards in the graph's order, the section below.
+	const { plan, stacks } = graph;
 	// Undefined `headInfo` is still loading, which is not the same as "empty" —
 	// treating it as empty would flash the empty state on every open.
 	const isEmpty = headInfo !== undefined && stacks.length === 0;
@@ -1065,10 +1157,15 @@ const Stacks: FC<{
 		() => new Set(pendingPushBranchList),
 		[pendingPushBranchList],
 	);
-	const scrollElementRef = useRef<HTMLDivElement>(null);
-	const retainScrollElement = useCallback((element: HTMLDivElement | null) => {
-		if (element) scrollElementRef.current = element;
-	}, []);
+	const retainScrollElement = useCallback(
+		(element: HTMLDivElement | null) => {
+			if (element) scrollElementRef.current = element;
+		},
+		[scrollElementRef],
+	);
+	// The cards start under the uncommitted files card and the gap below it.
+	const [headRef, headHeight] = useHeight();
+	const scrollMargin = headHeight + CARD_GAP;
 	const getStackKey = useCallback((index: number) => stacks[index]?.id ?? index, [stacks]);
 	const headInfoIndex = headInfo ? getHeadInfoIndex(headInfo) : undefined;
 	const selectedContext =
@@ -1077,8 +1174,10 @@ const Stacks: FC<{
 			: selection?._tag === "Commit"
 				? headInfoIndex?.commitContextByCommitId(selection.commitId)
 				: undefined;
-	const selectedStackIndex =
-		selectedContext === undefined ? undefined : stacks.length - selectedContext.stackIndex - 1;
+	const selectedStack =
+		selectedContext === undefined ? undefined : headInfo?.stacks[selectedContext.stackIndex];
+	const selectedStackIndexRaw = selectedStack === undefined ? -1 : stacks.indexOf(selectedStack);
+	const selectedStackIndex = selectedStackIndexRaw === -1 ? undefined : selectedStackIndexRaw;
 	const selectedSegmentIndex = selectedContext?.segmentIndex;
 	const selectedCommitIndex =
 		selection?._tag === "Commit"
@@ -1086,12 +1185,14 @@ const Stacks: FC<{
 			: undefined;
 
 	// Pin the containing stack too, otherwise the nested selected row can still be unmounted.
+	// In index order: a pinned index flipping between appended and in place would move every
+	// card's node, and the scroller re-anchors on each move.
 	const rangeExtractorWithSelected = useCallback(
 		(range: Range) =>
 			getRangeExtractorWithIndices(
 				range,
 				selectedStackIndex === undefined ? [] : [selectedStackIndex],
-			),
+			).sort((a, b) => a - b),
 		[selectedStackIndex],
 	);
 
@@ -1106,42 +1207,68 @@ const Stacks: FC<{
 			// estimate once a stack is mounted; its main job is to make far-away stacks reachable.
 			const singleLineRowHeight = 28;
 			const branchRowHeight = 54;
-			const stackBodyPaddingStart = 6;
-			const stackBorderHeight = 1;
-			const stackSeparatorHeight = index === 0 ? 0 : 1;
+			const stackPadHeight = 6;
+			const stackBordersHeight = 2;
 			const finalConnectorHeight = 8;
 			const betweenSegmentConnectorHeight = 14;
 			const stack = stacks[index];
 			if (stack === undefined) return singleLineRowHeight;
 
+			// Estimation only needs the latest cached state; mounted cards measure wrapped text.
+			const reviews = queryClient.getQueryData(
+				listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }).queryKey,
+			);
+			const state = store.getState();
 			let contentHeight = 0;
 			for (const segment of stack.segments) {
-				if (segment.refName !== null) contentHeight += branchRowHeight;
+				const branchRef =
+					segment.refName === null ? null : decodeBytes(segment.refName.fullNameBytes);
+				if (segment.refName !== null) {
+					contentHeight += branchRowHeight;
+					const review = reviews?.find(
+						(review) => review.sourceBranch === segment.refName?.displayName,
+					);
+					if (review !== undefined) contentHeight += 6 + (review.labels.length > 0 ? 22 : 0);
+				}
 
-				const isFolded =
-					segment.refName !== null &&
-					foldedSegments[decodeBytes(segment.refName.fullNameBytes)] === true;
-				if (!isFolded) contentHeight += Math.max(1, segment.commits.length) * singleLineRowHeight;
+				const isFolded = branchRef !== null && foldedSegments[branchRef] === true;
+				if (!isFolded) {
+					contentHeight +=
+						segment.commits.length === 0
+							? singleLineRowHeight
+							: segment.commits.length * COMMIT_ROW_HEIGHT;
+					if (
+						branchRef !== null &&
+						projectSlice.selectors.selectIncomingExpanded(state, projectId, branchRef)
+					)
+						contentHeight += segment.commitsOnRemote.length * COMMIT_ROW_HEIGHT;
+				}
 			}
 
 			return (
-				stackBodyPaddingStart +
-				stackBorderHeight +
-				stackSeparatorHeight +
+				stackPadHeight +
+				stackBordersHeight +
 				contentHeight +
 				finalConnectorHeight +
-				Math.max(0, stack.segments.length - 1) * betweenSegmentConnectorHeight
+				Math.max(0, stack.segments.length - 1) * betweenSegmentConnectorHeight +
+				CARD_GAP
 			);
 		},
 		getItemKey: getStackKey,
 		rangeExtractor: rangeExtractorWithSelected,
-		gap: 10,
-		// Matches --scroll-gradient-height.
-		scrollPaddingStart: 14,
-		scrollPaddingEnd: 14,
+		scrollMargin,
+		// The head clears the docked uncommitted files row, the foot the docked target row.
+		scrollPaddingStart: HEAD_DOCKED_HEIGHT,
+		scrollPaddingEnd,
 	});
 
 	const selectedAddressKey = selection === null ? undefined : addressIdentityKey(selection);
+	// Whether the selection sits in the section's fold, looked up once per
+	// selection or plan: the hotkeys ask on every render.
+	const selectedFold = useMemo(
+		() => (selection === null ? null : foldAt(plan, selection)),
+		[plan, selection],
+	);
 	const lastRevealedAddressKeyRef = useRef<string>(undefined);
 
 	// If the selected row's stack is not rendered, reveal the stack first. Its branch row or nested
@@ -1162,6 +1289,12 @@ const Stacks: FC<{
 		lastRevealedAddressKeyRef.current = selectedAddressKey;
 	}, [rowVirtualizer, selectedAddressKey, selectedStackIndex]);
 
+	const toggleIncoming = () => dispatch(projectSlice.actions.toggleGraphIncoming({ projectId }));
+	const toggleHistory = () => dispatch(projectSlice.actions.toggleGraphHistory({ projectId }));
+	const showMoreRun = (runId: string) =>
+		dispatch(projectSlice.actions.showMoreGraphRun({ projectId, runId }));
+	const foldRun = (runId: string) =>
+		dispatch(projectSlice.actions.foldGraphRun({ projectId, runId }));
 	const hotkeysRef = useRef<HTMLDivElement>(null);
 	useActiveListsHotkeys({
 		addressSpace,
@@ -1171,6 +1304,22 @@ const Stacks: FC<{
 		focusCommitMessageInput,
 		onEdgeSpill,
 		pendingPushBranches,
+		// The fold key on a section row closes the fold and parks the cursor on
+		// the row above it, since the header is not a value.
+		sectionToggle:
+			selectedFold !== null
+				? () => {
+						const first = foldAddresses(plan, selectedFold)[0];
+						const index =
+							first === undefined
+								? undefined
+								: addressSpace.indexByKey.get(addressIdentityKey(first));
+						const above = index === undefined ? undefined : addressSpace.items[index - 1];
+						if (above !== undefined) setCursor("applied", above);
+						if (selectedFold === "incoming") toggleIncoming();
+						else toggleHistory();
+					}
+				: null,
 	});
 
 	return (
@@ -1178,51 +1327,94 @@ const Stacks: FC<{
 			<div
 				ref={retainScrollElement}
 				className={classes(uiStyles.scroller, styles.stacksScroller)}
-				data-empty={isEmpty}
+				style={{
+					"--row-padding-inline-start": `${ROW_INSET}px`,
+					"--graph-trunk-inset": `${GRAPH_TRUNK_INSET}px`,
+				}}
 			>
+				{/* Its own tree: the files walk with their own cursor, and the arrow
+				    keys spill into the cards' tree at its edge. */}
+				<div ref={headRef}>{head}</div>
+				<div className={styles.dock} style={{ "--dock-offset": `${dockOffset}px` }}>
+					{dock}
+				</div>
+				<GraphGap height={CARD_GAP} />
+				{/* One tree: the cards and the upstream section below them share the
+				    applied list's cursor, and arrow keys walk them in reading order. */}
 				<div
 					tabIndex={0}
 					role="tree"
 					aria-activedescendant={selection ? treeItemId(selection) : undefined}
-					className={classes(styles.tree, styles.stacks, styles.virtualContainer)}
+					className={classes(styles.tree, styles.content)}
 					data-focus-scope={"sidebar" satisfies FocusScope}
 					data-preview-source={activeList === "applied"}
-					ref={useMergedRefs(
-						rowVirtualizer.containerRef,
+					ref={useMergedRefs<HTMLDivElement>(
 						hotkeysRef,
 						useAutofocusScope(activeList === "applied"),
 					)}
 				>
-					{rowVirtualizer.getVirtualItems().map((virtualRow) => {
-						const stack = stacks[virtualRow.index];
-						if (stack === undefined) return null;
+					<div
+						className={classes(styles.stacks, styles.virtualContainer)}
+						ref={rowVirtualizer.containerRef}
+					>
+						{rowVirtualizer.getVirtualItems().map((virtualRow) => {
+							const stack = stacks[virtualRow.index];
+							if (stack === undefined) return null;
 
-						return (
-							<StackC
-								key={stack.id ?? virtualRow.index}
-								data-index={virtualRow.index}
-								ref={rowVirtualizer.measureElement}
-								projectId={projectId}
-								stack={stack}
-								checkCommit={checkCommit}
-								onAmendCommit={onAmendCommit}
-								canAmendCommit={canAmendCommit}
-								pendingPushBranches={pendingPushBranches}
-								scrollElementRef={scrollElementRef}
-								stackScrollStart={virtualRow.start}
-								stackSize={virtualRow.size}
-								selectedSegmentIndex={
-									selectedStackIndex === virtualRow.index ? selectedSegmentIndex : undefined
-								}
-								selectedCommitIndex={
-									selectedStackIndex === virtualRow.index ? selectedCommitIndex : undefined
-								}
-							/>
-						);
-					})}
+							return (
+								<StackC
+									key={stack.id ?? virtualRow.index}
+									data-index={virtualRow.index}
+									ref={rowVirtualizer.measureElement}
+									projectId={projectId}
+									stack={stack}
+									checkCommit={checkCommit}
+									onAmendCommit={onAmendCommit}
+									canAmendCommit={canAmendCommit}
+									pendingPushBranches={pendingPushBranches}
+									scrollElementRef={scrollElementRef}
+									scrollPaddingEnd={scrollPaddingEnd}
+									stackScrollStart={virtualRow.start}
+									stackSize={virtualRow.size}
+									scrollMargin={scrollMargin}
+									worktrees={plan.worktrees}
+									selectedSegmentIndex={
+										selectedStackIndex === virtualRow.index ? selectedSegmentIndex : undefined
+									}
+									selectedCommitIndex={
+										selectedStackIndex === virtualRow.index ? selectedCommitIndex : undefined
+									}
+								/>
+							);
+						})}
+					</div>
+					{plan.worktrees.standalone.map((worktree) => (
+						<WorktreeCard
+							key={worktree.name}
+							projectId={projectId}
+							worktree={worktree}
+							worktrees={plan.worktrees}
+						/>
+					))}
+					<Section
+						projectId={projectId}
+						plan={plan}
+						onToggleIncoming={toggleIncoming}
+						onToggleHistory={toggleHistory}
+						onShowMoreHistory={() => void graph.showMoreHistory()}
+						historyMore={graph.historyMore}
+						onShowMoreRun={showMoreRun}
+						onFoldRun={foldRun}
+						scrollElementRef={scrollElementRef}
+					/>
 				</div>
 
-				{isEmpty && <NoStacks projectId={projectId} newBranch={newBranch} />}
+				{isEmpty && (
+					<div className={styles.empty}>
+						<NoStacks projectId={projectId} newBranch={newBranch} />
+					</div>
+				)}
+				<div className={styles.foot} />
 			</div>
 		</DryRunWorkspaceContext>
 	);
@@ -1231,6 +1423,8 @@ const Stacks: FC<{
 export const WorkspaceLists: FC<
 	{
 		projectId: string;
+		/** The stacks graph, computed once by the host that built the address space. */
+		graph: Graph;
 		addressSpace: AddressSpace<Address>;
 		uncommittedAddressSpace: AddressSpace<string>;
 		absorptionTargetCommitIds: ReadonlySet<string>;
@@ -1240,6 +1434,7 @@ export const WorkspaceLists: FC<
 	} & ComponentProps<"div">
 > = ({
 	projectId,
+	graph,
 	addressSpace,
 	uncommittedAddressSpace,
 	absorptionTargetCommitIds,
@@ -1354,124 +1549,108 @@ export const WorkspaceLists: FC<
 		);
 	};
 
-	const stacksCollapsed = useAppSelector((state) =>
-		projectSlice.selectors.selectSidebarPanelCollapsed(state, projectId, "stacks"),
-	);
-	const uncommittedCollapsed = useAppSelector((state) =>
-		projectSlice.selectors.selectSidebarPanelCollapsed(state, projectId, "uncommitted"),
+	const uncommittedFolded = useAppSelector((state) =>
+		projectSlice.selectors.selectUncommittedFolded(state, projectId),
 	);
 
-	const layoutId = `project=${projectId}:sidebar-tree`;
-	const sidebarLayout = useDefaultLayout({
-		id: layoutId,
-		panelIds: ["uncommitted-changes-panel", "stacks-panel"] satisfies Array<PanelId>,
-	});
-
-	// The two panes stack vertically, so arrow navigation continues across
-	// their boundary: entering a pane selects its item nearest to the border,
-	// while the pane being left keeps its selection. An empty neighbor keeps
-	// focus where it is. Mod+Alt+arrow pane toggling stays selection-neutral.
-	// A folded panel has no rows to land on, so arrow keys stop at the boundary
-	// rather than moving the selection into a list nobody can see.
+	// The files and the cards are two lists in one scroller, so arrow navigation
+	// continues across their boundary: entering a list selects its item nearest
+	// the border, while the list being left keeps its selection. An empty
+	// neighbour keeps focus where it is. The folded card has no rows to land on,
+	// so arrow keys stop at the boundary rather than moving the selection into a
+	// list nobody can see.
 	const spillIntoStacks = (offset: -1 | 1) => {
-		if (offset !== 1 || stacksCollapsed) return;
+		if (offset !== 1) return;
 		const item = addressSpace.items.at(0);
 		if (item === undefined) return;
 		setCursor("applied", item);
 		focusScope("sidebar");
 	};
 	const spillIntoUncommittedChanges = (offset: -1 | 1) => {
-		if (offset !== -1 || uncommittedCollapsed) return;
+		if (offset !== -1 || uncommittedFolded) return;
 		const path = uncommittedAddressSpace.items.at(-1);
 		if (path === undefined) return;
 		onActiveFileSelection(path);
 		focusScope("uncommitted-files");
 	};
+	const scrollElementRef = useRef<HTMLDivElement>(null);
+	// Rows scrolled into view clear the docked target row, or the foot's gradient.
+	const footDock = graph.plan.header !== null ? DOCKED_HEIGHT : 0;
+	const scrollPaddingEnd = Math.max(footDock, 14);
+	// The card's head, whose height says when its docked stand-in takes over.
+	const [cardHeadRef, cardHeadHeight] = useHeight();
+	const uncommitted = (
+		<OperationSourceC
+			projectId={projectId}
+			sources={[uncommittedChangesAddress]}
+			respectChecked={false}
+			outline="inside"
+			render={
+				<OperationTarget
+					enabled
+					projectId={projectId}
+					address={uncommittedChangesAddress}
+					outline="inside"
+					render={
+						<UncommittedChanges
+							addressSpace={uncommittedAddressSpace}
+							commitTarget={commitTarget}
+							projectId={projectId}
+							targetComboboxItems={commitTargetComboboxItems}
+							hasNoBranches={hasNoBranches}
+							amendCommit={amendCommit}
+							canAmendCommit={canAmendCommit}
+							selectActiveFile={onActiveFileSelection}
+							spillEdge={spillIntoStacks}
+							worktreeChanges={worktreeChanges}
+							scrollElementRef={scrollElementRef}
+							footDock={footDock}
+							headRef={cardHeadRef}
+							headHeight={cardHeadHeight}
+						/>
+					}
+				/>
+			}
+		/>
+	);
 
 	return (
 		<WorkspaceListsProvider
 			addressSpace={addressSpace}
 			absorptionTargetCommitIds={absorptionTargetCommitIds}
 		>
-			<Group
-				{...props}
-				id={layoutId}
-				orientation="vertical"
-				className={classes(props.className, styles.tree)}
-				data-folded-panel={
-					stacksCollapsed ? "stacks" : uncommittedCollapsed ? "uncommitted" : "none"
-				}
-				defaultLayout={sidebarLayout.defaultLayout}
-				onLayoutChanged={sidebarLayout.onLayoutChanged}
-			>
-				<Panel
-					id={"uncommitted-changes-panel" satisfies PanelId}
-					className={styles.uncommittedChangesOuterPanel}
-					defaultSize={280}
-					minSize={200}
-					groupResizeBehavior="preserve-pixel-size"
-				>
-					<OperationSourceC
-						projectId={projectId}
-						sources={[uncommittedChangesAddress]}
-						respectChecked={false}
-						outline="inside"
-						render={
-							<OperationTarget
-								enabled
-								projectId={projectId}
-								address={uncommittedChangesAddress}
-								outline="inside"
-								render={
-									<UncommittedChanges
-										addressSpace={uncommittedAddressSpace}
-										commitTarget={commitTarget}
-										projectId={projectId}
-										targetComboboxItems={commitTargetComboboxItems}
-										hasNoBranches={hasNoBranches}
-										amendCommit={amendCommit}
-										canAmendCommit={canAmendCommit}
-										selectActiveFile={onActiveFileSelection}
-										spillEdge={spillIntoStacks}
-										worktreeChanges={worktreeChanges}
-									/>
-								}
-							/>
-						}
-					/>
-				</Panel>
-
-				<ResizeHandle />
-
-				<Panel
-					id={"stacks-panel" satisfies PanelId}
-					className={styles.stacksPanel}
-					data-collapsed={stacksCollapsed}
-					minSize={120}
-				>
-					<SectionHeaderRow
-						label="Stacks and branches"
-						className={styles.stacksHeader}
-						leading={<PanelFoldToggle projectId={projectId} panel="stacks" />}
-						actions={stacksHeaderActions}
-					>
-						{/* Only while folded, as with a branch row's commit count: the rows
-						    below say all of this and more when they are on screen. */}
-						{stacksCollapsed && <StacksSummary stacks={headInfo?.stacks ?? []} />}
-					</SectionHeaderRow>
-
-					<Activity mode={stacksCollapsed ? "hidden" : "visible"}>
-						<Stacks
+			<div {...props} className={classes(props.className, styles.lists)}>
+				<SectionHeaderRow
+					label="Workspace"
+					className={styles.header}
+					actions={stacksHeaderActions}
+				/>
+				<Stacks
+					projectId={projectId}
+					graph={graph}
+					newBranch={newBranch}
+					checkCommit={checkCommit}
+					onAmendCommit={amendCommit}
+					canAmendCommit={canAmendCommit}
+					onEdgeSpill={spillIntoUncommittedChanges}
+					head={uncommitted}
+					dockOffset={cardHeadHeight}
+					dock={
+						<UncommittedChangesRow
+							changes={worktreeChanges?.changes ?? []}
+							isClean={worktreeChanges !== undefined && worktreeChanges.changes.length === 0}
 							projectId={projectId}
-							newBranch={newBranch}
-							checkCommit={checkCommit}
-							onAmendCommit={amendCommit}
-							canAmendCommit={canAmendCommit}
-							onEdgeSpill={spillIntoUncommittedChanges}
+							mode={{
+								kind: "docked",
+								onSelect: () => scrollElementRef.current?.scrollTo({ top: 0 }),
+							}}
+							className={styles.dockRow}
 						/>
-					</Activity>
-				</Panel>
-			</Group>
+					}
+					scrollElementRef={scrollElementRef}
+					scrollPaddingEnd={scrollPaddingEnd}
+				/>
+			</div>
 		</WorkspaceListsProvider>
 	);
 };

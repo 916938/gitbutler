@@ -10,9 +10,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::{self, FromStr as _};
 
 use bstr::{BStr, BString, ByteSlice};
-use but_core::UnifiedPatch;
 use but_core::sync::RepoShared;
-use but_core::{ChangeId, ref_metadata::StackId};
+use but_core::{ChangeId, TreeStatusKind, UnifiedPatch, ref_metadata::StackId};
 use but_ctx::Context;
 use but_graph::workspace::{Stack, StackCommit, StackSegment};
 use gix::hash::hasher;
@@ -394,6 +393,7 @@ pub fn identify_hunks(
         .map(|(id, hunk)| IdAndHunk {
             id: format!("{}:{}", tree_change.short_id, id.short_id()),
             hunk,
+            tree_status: tree_change.inner.status.kind(),
         })
         .collect())
 }
@@ -507,6 +507,13 @@ impl WorkspaceCommitWithId {
     /// The ID of the first parent if the commit has parents.
     pub fn first_parent_id(&self) -> Option<gix::ObjectId> {
         self.inner.parent_ids.first().cloned()
+    }
+    /// The composite ID of the commit.
+    pub fn id(&self) -> CommitId {
+        CommitId {
+            commit_id: self.inner.id,
+            change_id: self.change_id.clone().map(|cid| cid.change_id),
+        }
     }
 }
 /// Methods to calculate the short IDs of committed files.
@@ -841,9 +848,9 @@ impl IdMap {
             .filter_map(|source| source.source.worktree_name().map(ToOwned::to_owned))
             .collect();
         let UncommittedInfo {
-            partitioned_hunks,
+            partitioned_changes_and_hunks,
             uncommitted_short_filenames,
-        } = UncommittedInfo::from_sources(sources)?;
+        } = UncommittedInfo::from_sources(sources);
         let StacksInfo {
             mut stacks,
             mut id_usage,
@@ -856,8 +863,8 @@ impl IdMap {
         let mut fallback_id_usage = id_usage.clone();
 
         let mut uncommitted_files: BTreeMap<ChangeId, UncommittedFile> = BTreeMap::new();
-        for (source, hunks) in partitioned_hunks {
-            let but_core::SingleHunk { path, .. } = hunks.first();
+        for (source, change, hunks) in partitioned_changes_and_hunks {
+            let path = &change.path_bytes;
             let reverse_hex = create_reverse_hex_id(&source, path)?;
             // Ensure that uncommitted files do not collide with CLI IDs generated after
             if let Some(uint_id) = UintId::from_name(&reverse_hex[..2]) {
@@ -872,6 +879,7 @@ impl IdMap {
                 reverse_hex,
                 UncommittedFile {
                     source,
+                    tree_status: Into::<but_core::TreeChange>::into(change).status.kind(),
                     short_id: ShortId::default(),
                     short_id_hunks: hunks.map(|hunk| (UnqualifiedHunkId::default(), hunk)),
                 },
@@ -1028,6 +1036,7 @@ impl IdMap {
                     format!("{}:{}", uncommitted_file.short_id, hunk_id.short_id()),
                     UncommittedHunk {
                         source: uncommitted_file.source.clone(),
+                        tree_status: uncommitted_file.tree_status,
                         hunk: hunk.clone(),
                     },
                 );
@@ -1180,7 +1189,7 @@ impl IdMap {
         let sources =
             change_source::changes_by_source(&repo, context_lines, worktree_names, head_changes)?;
 
-        let worktrees = but_workspace::worktrees::worktree_infos(&ws, &repo);
+        let worktrees = &ws.worktrees;
         // Worktree commits are addressed by change ID just like workspace commits, so both
         // feed the same map - otherwise `but status` would print change IDs for them that no
         // other command could resolve.
@@ -1193,7 +1202,7 @@ impl IdMap {
             .chain(
                 worktrees
                     .iter()
-                    .flat_map(|worktree| worktree.commits.iter())
+                    .flat_map(|worktree| worktree.commits())
                     .map(|c| c.id),
             );
 
@@ -1222,7 +1231,10 @@ impl IdMap {
             ws.stacks.clone(),
             sources,
             commit_id_to_change_id,
-            worktree_commits_by_name(&worktrees),
+            worktrees
+                .iter()
+                .map(|worktree| (worktree.name.clone(), worktree.commits().cloned().collect()))
+                .collect(),
             ctx.settings.context_lines,
         )
     }
@@ -1239,8 +1251,7 @@ pub(crate) fn worktree_commits_by_name(
         .iter()
         .map(|worktree| {
             let commits = worktree
-                .commits
-                .iter()
+                .commits()
                 .map(|commit| StackCommit {
                     id: commit.id,
                     parent_ids: commit.parent_ids.clone(),
@@ -1297,6 +1308,7 @@ impl IdMap {
                 hunks.push(IdAndHunk {
                     id: short_id.to_owned(),
                     hunk: hunk.to_owned(),
+                    tree_status: uncommitted_hunk.tree_status,
                 });
             }
         }
@@ -1881,11 +1893,17 @@ pub struct IdAndHunk {
     pub id: ShortId,
     /// The worktree hunk identified by `id`.
     pub hunk: but_core::SingleHunk,
+    /// The tree status of the related tree change.
+    pub tree_status: TreeStatusKind,
 }
 
 impl PartialEq for IdAndHunk {
     fn eq(&self, other: &Self) -> bool {
-        let Self { id: _, hunk } = self;
+        let Self {
+            id: _,
+            hunk,
+            tree_status: _,
+        } = self;
         hunk.identifies_same_hunk(&other.hunk)
     }
 }
@@ -2043,31 +2061,86 @@ pub enum CliId {
 }
 
 impl PartialEq for CliId {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::UncommittedHunkOrFile(l), Self::UncommittedHunkOrFile(r)) => l == r,
-            (
-                Self::CommittedFile {
-                    committed_file: l,
-                    id: _,
-                },
-                Self::CommittedFile {
+    fn eq(&self, other: &CliId) -> bool {
+        match self {
+            CliId::UncommittedHunkOrFile(l) => {
+                if let CliId::UncommittedHunkOrFile(r) = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::PathPrefix {
+                id: _,
+                hunks: _,
+                source: _,
+            } => false,
+            CliId::CommittedFile {
+                committed_file: l,
+                id: _,
+            } => {
+                if let CliId::CommittedFile {
                     committed_file: r,
                     id: _,
-                },
-            ) => l == r,
-            (CliId::CommittedHunk(l), CliId::CommittedHunk(r)) => l == r,
-            (Self::Branch(l), Self::Branch(r)) => l == r,
-            (Self::AnonymousSegment(l), Self::AnonymousSegment(r)) => l == r,
-            (Self::Commit { commit: l, id: _ }, Self::Commit { commit: r, id: _ }) => l == r,
-            (Self::Stack { id: l_id, .. }, Self::Stack { id: r_id, .. }) => l_id == r_id,
-            (Self::Uncommitted { .. }, Self::Uncommitted { .. }) => true,
-            (Self::Worktree { name: l, .. }, Self::Worktree { name: r, .. }) => l == r,
-            (
-                Self::WorktreeUncommitted { name: l, .. },
-                Self::WorktreeUncommitted { name: r, .. },
-            ) => l == r,
-            _ => false,
+                } = other
+                {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::CommittedHunk(l) => {
+                if let CliId::CommittedHunk(r) = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::Branch(l) => {
+                if let CliId::Branch(r) = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::AnonymousSegment(l) => {
+                if let CliId::AnonymousSegment(r) = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::Commit { commit: l, id: _ } => {
+                if let CliId::Commit { commit: r, id: _ } = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::Stack { id: l, stack_id: _ } => {
+                if let CliId::Stack { id: r, stack_id: _ } = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::Uncommitted { id: _ } => {
+                matches!(other, CliId::Uncommitted { id: _ })
+            }
+            CliId::Worktree { name: l, id: _ } => {
+                if let CliId::Worktree { name: r, id: _ } = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
+            CliId::WorktreeUncommitted { name: l, id: _ } => {
+                if let CliId::WorktreeUncommitted { name: r, id: _ } = other {
+                    l == r
+                } else {
+                    false
+                }
+            }
         }
     }
 }
@@ -2116,6 +2189,11 @@ impl CliId {
 
     /// Returns the short ID string for display to users.
     pub fn to_short_string(&self) -> ShortId {
+        self.short_string().to_string()
+    }
+
+    /// Borrows the short ID string for display to users.
+    pub fn short_string(&self) -> &str {
         match self {
             CliId::UncommittedHunkOrFile(UncommittedHunkOrFile { id, .. })
             | CliId::PathPrefix { id, .. }
@@ -2127,7 +2205,7 @@ impl CliId {
             | CliId::Stack { id, .. }
             | CliId::Worktree { id, .. }
             | CliId::WorktreeUncommitted { id, .. }
-            | CliId::Uncommitted { id, .. } => id.clone(),
+            | CliId::Uncommitted { id, .. } => id,
         }
     }
 
@@ -2165,6 +2243,8 @@ pub struct UncommittedFile {
     pub short_id: ShortId,
     /// The checkout this file was read from.
     pub source: ChangeSourceId,
+    /// The associated tree change
+    tree_status: TreeStatusKind,
     /// Every element has the same [`but_core::SingleHunk::path`] so the first hunk can be used
     /// to obtain it.
     short_id_hunks: NonEmpty<(UnqualifiedHunkId, but_core::SingleHunk)>,
@@ -2182,6 +2262,7 @@ impl UncommittedFile {
             hunks: self.hunks().map(|(hunk_id, hunk)| IdAndHunk {
                 id: format!("{}:{hunk_id}", self.short_id),
                 hunk: hunk.to_owned(),
+                tree_status: self.tree_status,
             }),
             id: self.short_id.clone(),
             is_entire_file: true,
@@ -2212,6 +2293,7 @@ impl<'a> Node<'a> for &'a UncommittedFile {
                         id: id.clone(),
                         hunks: NonEmpty::new(IdAndHunk {
                             id,
+                            tree_status: self.tree_status,
                             hunk: hunk.to_owned(),
                         }),
                         is_entire_file: false,
@@ -2233,6 +2315,7 @@ impl<'a> Node<'a> for &'a UncommittedFile {
                             id: id.clone(),
                             hunks: NonEmpty::new(IdAndHunk {
                                 id: id.clone(),
+                                tree_status: self.tree_status,
                                 hunk: hunk.to_owned(),
                             }),
                             is_entire_file: false,
@@ -2262,6 +2345,8 @@ pub struct UncommittedHunk {
     pub hunk: but_core::SingleHunk,
     /// The checkout this hunk was read from.
     pub source: ChangeSourceId,
+    /// The status of the associated tree change.
+    pub tree_status: TreeStatusKind,
 }
 
 impl<'a> Node<'a> for &'a UncommittedHunk {
@@ -2283,6 +2368,7 @@ impl<'a> Node<'a> for &'a UncommittedHunk {
             id: short_id.to_owned(),
             hunks: NonEmpty::new(IdAndHunk {
                 id: short_id.to_owned(),
+                tree_status: self.tree_status,
                 hunk: self.hunk.clone(),
             }),
             is_entire_file: false,

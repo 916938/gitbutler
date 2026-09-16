@@ -25,6 +25,8 @@ import { type Range, useVirtualizer } from "@tanstack/react-virtual";
 import {
 	type ComponentProps,
 	type FC,
+	type ReactNode,
+	type RefObject,
 	useCallback,
 	useDeferredValue,
 	useLayoutEffect,
@@ -35,7 +37,11 @@ import styles from "./FilesTree.module.css";
 import { Row, RowLabel, RowLabelContainer } from "./Row.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
 import { focusScope, useAddressSpaceHotkeys, type FocusScope } from "#ui/focus-scopes.ts";
-import { addressSpaceIncludes, type AddressSpace } from "#ui/workspace/address-space.ts";
+import {
+	addressSpaceIncludes,
+	getAdjacent,
+	type AddressSpace,
+} from "#ui/workspace/address-space.ts";
 import { changesFileHotkeys } from "#ui/hotkeys.ts";
 import { useRevealInFolder } from "./useRevealInFolder.ts";
 import { useHotkeys } from "@tanstack/react-hotkeys";
@@ -45,7 +51,7 @@ import { DirectoryRow, type DirectoryCheckedState } from "./DirectoryRow.tsx";
 import type { FileRowItem } from "./file-row.ts";
 import { parentDirectoryRow, type FileTreeRow } from "./file-tree.ts";
 import { useFileDisplayMode } from "./useFileDisplayMode.ts";
-import { checkedRange, addressSpaceRange } from "#ui/checking.ts";
+import { checkedRange, addressSpaceRange, selectionAfterChecking } from "#ui/checking.ts";
 import { useDiscardFileChanges, useOpenInProgram } from "#ui/api/mutations.ts";
 import type { TreeChange } from "@gitbutler/but-sdk";
 import type { CSSProperties } from "react";
@@ -55,6 +61,7 @@ import { FileRowTooltipRoot, type FileRowTooltipPayload } from "./FileRowTooltip
 const EMPTY_REVIEWED_PATHS: ReadonlySet<string> = new Set();
 
 const useFilesTreeHotkeys = ({
+	checkAll,
 	checkRow,
 	addressSpace,
 	onRowSelection,
@@ -70,7 +77,8 @@ const useFilesTreeHotkeys = ({
 	selectedChange,
 	toggleDirectoryCollapsed,
 }: {
-	checkRow: (evt: { path: string; shiftKey: boolean }) => void;
+	checkAll: () => void;
+	checkRow: (evt: { path: string; shiftKey: boolean }) => string | null;
 	addressSpace: AddressSpace<string>;
 	onRowSelection: (selection: string) => void;
 	onEdgeSpill?: (offset: -1 | 1) => void;
@@ -141,6 +149,9 @@ const useFilesTreeHotkeys = ({
 		focusScope("sidebar");
 	};
 
+	// Repeats must follow the pending cursor before React renders it. Null ends the held-key run
+	// so it cannot reverse and undo the checks; a fresh keypress starts from the selected row.
+	const nextCheckedRow = useRef<string>(null);
 	const toggleSelectedRowChecked = (event: KeyboardEvent) => {
 		if (selection === null) return;
 		// Leave activation of a directly focused checkbox to the checkbox itself.
@@ -148,7 +159,13 @@ const useFilesTreeHotkeys = ({
 
 		event.preventDefault();
 		event.stopPropagation();
-		checkRow({ path: selection, shiftKey: event.shiftKey });
+		if (event.shiftKey) {
+			nextCheckedRow.current = null;
+			checkRow({ path: selection, shiftKey: true });
+			return;
+		}
+		const item = event.repeat ? nextCheckedRow.current : selection;
+		if (item !== null) nextCheckedRow.current = checkRow({ path: item, shiftKey: false });
 	};
 
 	const discardSelectedFile = () => {
@@ -193,6 +210,17 @@ const useFilesTreeHotkeys = ({
 	);
 
 	useHotkeys([
+		{
+			hotkey: changesFileHotkeys.checkAll.hotkey,
+			callback: checkAll,
+			options: {
+				conflictBehavior: "allow",
+				enabled: selectedRow !== undefined && noOperationPending && canCheckTheseFiles,
+				ignoreInputs: true,
+				target: ref,
+				meta: changesFileHotkeys.checkAll.meta,
+			},
+		},
 		{
 			hotkey: changesFileHotkeys.absorb.hotkey,
 			callback: absorbSelectedFile,
@@ -361,6 +389,7 @@ type RowShared = {
 	ageBadgeNow: number | null;
 	pathDisplay: "lead" | "trail" | "hidden";
 	canCheck: boolean;
+	anyOperationPending: boolean;
 	canUncommit: boolean;
 	uncommit?: (change: TreeChange, extendToCheckedFiles: boolean) => void;
 	checkFile: (evt: { path: string; shiftKey: boolean }) => void;
@@ -368,6 +397,7 @@ type RowShared = {
 	onRowSelection: (selection: string) => void;
 	onToggleDirectoryCollapsed: (path: string) => void;
 	branchNameByCommitId: (commitId: string) => string | undefined;
+	rail: ReactNode | undefined;
 };
 
 /**
@@ -414,6 +444,7 @@ const FilesTreeRow: FC<{
 		ageBadgeNow,
 		pathDisplay,
 		canCheck,
+		anyOperationPending,
 		canUncommit,
 		uncommit,
 		checkFile,
@@ -421,6 +452,7 @@ const FilesTreeRow: FC<{
 		onRowSelection,
 		onToggleDirectoryCollapsed,
 		branchNameByCommitId,
+		rail,
 	} = shared;
 	const virtStyle: CSSProperties = { position: "absolute", top: 0, left: 0, width: "100%", height };
 
@@ -447,6 +479,7 @@ const FilesTreeRow: FC<{
 				checkedState={checkedState}
 				checkDirectory={checkDirectory}
 				focusScope={focusScope}
+				rail={rail}
 				inert={inert}
 				onSelect={() => onRowSelection(row.path)}
 			/>
@@ -521,6 +554,7 @@ const FilesTreeRow: FC<{
 								focusScope={focusScope}
 								tooltipHandle={tooltipHandle}
 								ageBadgeNow={ageBadgeNow}
+								rail={rail}
 								branchNameByCommitId={branchNameByCommitId}
 							/>
 						}
@@ -536,16 +570,18 @@ const FilesTreeRow: FC<{
 						isChecked={isChecked}
 						isReviewed={isReviewed}
 						onSelect={() => onRowSelection(row.path)}
-						canCheck={false}
+						canCheck={canCheck && item._tag === "Change"}
 						checkFile={() => {}}
 						projectId={projectId}
 						fileParent={fileParent}
 						focusScope={focusScope}
 						tooltipHandle={tooltipHandle}
 						ageBadgeNow={ageBadgeNow}
+						rail={rail}
 						branchNameByCommitId={() => undefined}
-						anyOperationPending
+						anyOperationPending={anyOperationPending}
 						menuItems={[]}
+						presentationalOnly
 					/>
 				)
 			}
@@ -570,6 +606,10 @@ const FilesTreeVirtualList: FC<{
 	isFileChecked: (path: string) => boolean;
 	directoryCheckedState: (filePaths: Array<string>) => DirectoryCheckedState;
 	shared: RowShared;
+	scrollElementRef: RefObject<HTMLElement | null> | undefined;
+	scrollMargin: number;
+	scrollPaddingStart: number;
+	scrollPaddingEnd: number;
 }> = ({
 	rows,
 	addressSpace,
@@ -580,6 +620,10 @@ const FilesTreeVirtualList: FC<{
 	isFileChecked,
 	directoryCheckedState,
 	shared,
+	scrollElementRef,
+	scrollMargin,
+	scrollPaddingStart,
+	scrollPaddingEnd,
 }) => {
 	const selectedRowIndex =
 		selection !== null ? (addressSpace.indexByKey.get(selection) ?? null) : null;
@@ -599,14 +643,15 @@ const FilesTreeVirtualList: FC<{
 		directDomUpdates: true,
 		directDomUpdatesMode: "transform",
 		count: rows.length,
-		getScrollElement: () => groupRef.current?.parentElement?.parentElement ?? null,
+		getScrollElement: () =>
+			scrollElementRef?.current ?? groupRef.current?.parentElement?.parentElement ?? null,
 		// Keep in sync with --single-line-row-height.
 		estimateSize: () => 28,
 		getItemKey: (index) => rows[index]?.path ?? index,
 		rangeExtractor: rangeExtractorWithSelected,
-		// Matches --scroll-gradient-height.
-		scrollPaddingStart: 14,
-		scrollPaddingEnd: 14,
+		scrollMargin,
+		scrollPaddingStart,
+		scrollPaddingEnd,
 	});
 	const deferredIsScrolling = useDeferredValue(rowVirtualizer.isScrolling, true);
 	// Keep OperationSourceC mounted while an operation refers to its rows, especially while a
@@ -615,11 +660,12 @@ const FilesTreeVirtualList: FC<{
 	const renderInteractiveRows =
 		hasPendingOperationSources || (!rowVirtualizer.isScrolling && !deferredIsScrolling);
 
-	// Virtualisation-friendly equivalent to Row's own scrollIntoView.
+	// Virtualisation-friendly equivalent to Row's own scrollIntoView. Again as
+	// the head and foot to clear are measured or grow; auto is a no-op once clear.
 	useLayoutEffect(() => {
 		if (selectedRowIndex !== null)
 			rowVirtualizer.scrollToIndex(selectedRowIndex, { align: "auto" });
-	}, [rowVirtualizer, selectedRowIndex]);
+	}, [rowVirtualizer, selectedRowIndex, scrollPaddingStart, scrollPaddingEnd]);
 
 	return (
 		<div
@@ -689,12 +735,19 @@ export const FilesTree: FC<
 		 * apply, which hides the mark.
 		 */
 		reviewedPaths?: ReadonlySet<string>;
-		emptyLabel?: string;
 		/**
 		 * Timestamp the row age badges are measured against; `null` hides them.
 		 * The caller owns the ticking.
 		 */
 		ageBadgeNow?: number | null;
+		/** On the graph, every row's rail, drawn before its steps. */
+		rail?: ReactNode;
+		/** The scroller the list scrolls in when it is not the tree's own parent, and the list's offset in it. */
+		scrollElementRef?: RefObject<HTMLElement | null>;
+		scrollMargin?: number;
+		/** Room a row scrolled into view keeps clear at the scroller's head and foot; by default, its gradients. */
+		scrollPaddingStart?: number;
+		scrollPaddingEnd?: number;
 	} & ComponentProps<"div">
 > = ({
 	rows,
@@ -710,8 +763,12 @@ export const FilesTree: FC<
 	fileParent,
 	focusScope,
 	reviewedPaths = EMPTY_REVIEWED_PATHS,
-	emptyLabel = "No changes.",
 	ageBadgeNow = null,
+	rail,
+	scrollElementRef,
+	scrollMargin = 0,
+	scrollPaddingStart = 14,
+	scrollPaddingEnd = 14,
 	ref: refProp,
 	...props
 }) => {
@@ -730,10 +787,12 @@ export const FilesTree: FC<
 	const canCheck = useAppSelector((state) =>
 		projectSlice.selectors.selectCanCheckFiles(state, projectId, fileParent),
 	);
-	const hasPendingOperationSources = useAppSelector((state) => {
-		const pendingOperation = projectSlice.selectors.selectPendingOperation(state, projectId);
-		return pendingOperation._tag === "Absorb" || pendingOperation._tag === "Transfer";
-	});
+	const pendingOperationTag = useAppSelector(
+		(state) => projectSlice.selectors.selectPendingOperation(state, projectId)._tag,
+	);
+	const anyOperationPending = pendingOperationTag !== "None";
+	const hasPendingOperationSources =
+		pendingOperationTag === "Absorb" || pendingOperationTag === "Transfer";
 	const checkedAddressKeys = useAppSelector((state) =>
 		projectSlice.selectors.selectCheckedAddressKeys(state, projectId),
 	);
@@ -862,18 +921,67 @@ export const FilesTree: FC<
 		});
 	};
 
-	/** Space and the row checkboxes both land here, whichever kind of row it is. */
-	const checkRow = ({ path, shiftKey }: { path: string; shiftKey: boolean }): void => {
+	/** Keyboard checking for either kind of row. */
+	const checkRow = ({ path, shiftKey }: { path: string; shiftKey: boolean }): string | null => {
 		const row = rowByPath.get(path);
 		if (row?._tag === "Directory") {
-			checkDirectory({ path, checked: directoryCheckedState(row.filePaths) !== "checked" });
-			return;
+			const checked = checkedFilePaths();
+			checkDirectory({
+				path,
+				checked: !row.filePaths.filter(checkable).every((path) => checked.has(path)),
+			});
+		} else {
+			if (!row || !checkable(path)) return null;
+			checkFile({ path, shiftKey });
 		}
 
-		checkFile({ path, shiftKey });
+		if (shiftKey) return null;
+		const checked = checkedFilePaths();
+		const next = selectionAfterChecking({
+			selection: path,
+			getAdjacent: (offset) =>
+				getAdjacent({ addressSpace, selection: path, offset, getKey: (path) => path }),
+			getChecked: (path) => {
+				const row = rowByPath.get(path);
+				if (!row || !checkable(path)) return null;
+				if (row._tag === "File") return checked.has(path);
+				const paths = row.filePaths.filter(checkable);
+				return paths.length > 0 ? paths.every((path) => checked.has(path)) : null;
+			},
+		});
+		if (next !== null) onRowSelection(next);
+		return next;
 	};
 
 	useFilesTreeHotkeys({
+		checkAll: () => {
+			if (!selectedRow) return;
+
+			const lastSepIdx = selectedRow.path.lastIndexOf("/");
+			const directoryPath =
+				selectedRow._tag === "Directory"
+					? selectedRow.path
+					: lastSepIdx === -1
+						? ""
+						: selectedRow.path.slice(0, lastSepIdx);
+			const dir = rowByPath.get(directoryPath);
+			if (dir?._tag === "Directory") return checkDirectory({ path: dir.path, checked: true });
+
+			const prefix = directoryPath === "" ? "" : `${directoryPath}/`;
+			const paths = rows
+				.values()
+				.filter((row) => row.depth === 0)
+				.flatMap((row) => (row._tag === "Directory" ? row.filePaths : row.path));
+
+			const previous = checkedFilePaths();
+			fileCheckRangeAnchor.current = null;
+			fileCheckRangeEnd.current = null;
+
+			applyCheckedFiles({
+				previous,
+				next: previous.union(new Set(paths.filter((path) => path.startsWith(prefix)))),
+			});
+		},
 		checkRow,
 		addressSpace,
 		onRowSelection,
@@ -898,6 +1006,7 @@ export const FilesTree: FC<
 		ageBadgeNow,
 		pathDisplay,
 		canCheck,
+		anyOperationPending,
 		canUncommit,
 		uncommit,
 		checkFile,
@@ -906,6 +1015,7 @@ export const FilesTree: FC<
 		onToggleDirectoryCollapsed,
 		branchNameByCommitId: (commitId) =>
 			headInfoIndex?.commitContextByCommitId(commitId)?.segment.refName?.displayName,
+		rail,
 	};
 
 	return (
@@ -921,8 +1031,12 @@ export const FilesTree: FC<
 			<FileRowTooltipRoot handle={tooltipHandle} />
 			{rows.length === 0 ? (
 				<Row interactive={false}>
+					{rail}
 					<RowLabelContainer>
-						<RowLabel className={rowStyles.fadedText}>{emptyLabel}</RowLabel>
+						{/* Both callers hide the tree outright when there is nothing to
+						    list, so an empty tree only ever means the filter matched
+						    nothing. */}
+						<RowLabel className={rowStyles.fadedText}>No matching files.</RowLabel>
 					</RowLabelContainer>
 				</Row>
 			) : (
@@ -936,6 +1050,10 @@ export const FilesTree: FC<
 					isFileChecked={isFileChecked}
 					directoryCheckedState={directoryCheckedState}
 					shared={shared}
+					scrollElementRef={scrollElementRef}
+					scrollMargin={scrollMargin}
+					scrollPaddingStart={scrollPaddingStart}
+					scrollPaddingEnd={scrollPaddingEnd}
 				/>
 			)}
 		</div>

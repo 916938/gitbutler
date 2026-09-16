@@ -23,6 +23,12 @@ export function gitLabEnterprisePatError(error: unknown): string {
 	}
 }
 
+/** The message for the host field, when the backend rejected the host rather than the token. */
+export function gitLabHostError(error: unknown): string | undefined {
+	if (getUserErrorCode(error) !== "GitLabInvalidHost") return undefined;
+	return "Enter the full URL of your GitLab instance, for example https://gitlab.example.com";
+}
+
 export function isSameGitLabAccountIdentifier(
 	a: GitlabAccountIdentifier,
 	b: GitlabAccountIdentifier,
@@ -156,7 +162,7 @@ export class GitLabUserService {
 	}
 }
 
-function injectBackendEndpoints(api: BackendApi) {
+export function injectBackendEndpoints(api: BackendApi) {
 	return api.injectEndpoints({
 		endpoints: (build) => ({
 			forgetGitLabAccount: build.mutation<void, GitlabAccountIdentifier>({
@@ -181,8 +187,12 @@ function injectBackendEndpoints(api: BackendApi) {
 					command: "get_gl_user",
 				},
 				query: (args) => args,
+				// The account list tag is what every credential mutation
+				// invalidates, so a mounted lookup the old token failed with
+				// refetches once a replacement token is stored.
 				providesTags: (_result, _error, username) => [
 					...providesItem(ReduxTag.ForgeUser, `gitlab:${username}`),
+					providesList(ReduxTag.GitLabUserList),
 				],
 			}),
 			listKnownGitLabAccounts: build.query<GitlabAccountIdentifier[], void>({
@@ -210,11 +220,7 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Store GitLab PAT",
 				},
 				query: (args) => args,
-				invalidatesTags: [
-					providesList(ReduxTag.GitLabUserList),
-					invalidatesList(ReduxTag.PullRequests),
-					invalidatesList(ReduxTag.Checks),
-				],
+				invalidatesTags: invalidatesAfterStoredToken,
 			}),
 			storeGitLabEnterprisePat: build.mutation<
 				GitlabAuthStatusResponse,
@@ -225,12 +231,21 @@ function injectBackendEndpoints(api: BackendApi) {
 					actionName: "Store GitLab Enterprise PAT",
 				},
 				query: (args) => args,
-				invalidatesTags: [
-					providesList(ReduxTag.GitLabUserList),
-					invalidatesList(ReduxTag.PullRequests),
-					invalidatesList(ReduxTag.Checks),
-				],
+				invalidatesTags: invalidatesAfterStoredToken,
 			}),
 		}),
 	});
+}
+
+/**
+ * A static tag list is also applied when the mutation fails, which would
+ * refetch the user lookup with the unchanged, still-rejected credentials.
+ */
+function invalidatesAfterStoredToken(_result: unknown, error: unknown) {
+	if (error) return [];
+	return [
+		providesList(ReduxTag.GitLabUserList),
+		invalidatesList(ReduxTag.PullRequests),
+		invalidatesList(ReduxTag.Checks),
+	];
 }

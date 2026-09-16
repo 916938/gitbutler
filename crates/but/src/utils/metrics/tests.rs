@@ -39,7 +39,10 @@ fn metrics_use_invoked_command_names() {
     );
     assert_command(
         Subcommands::Agent(agent::Platform {
-            cmd: Some(agent::Subcommands::Setup { print: false }),
+            cmd: Some(agent::Subcommands::Setup {
+                print: false,
+                stub: false,
+            }),
         }),
         "agentSetup",
     );
@@ -90,6 +93,7 @@ fn metrics_use_invoked_command_names() {
 
 #[test]
 fn formerly_unknown_commands_use_explicit_names() {
+    #[cfg(feature = "nightly")]
     assert_command(
         Subcommands::_Expand {
             cli_id: CliIdArg("c1".into()),

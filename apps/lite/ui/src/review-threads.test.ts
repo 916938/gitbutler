@@ -1,11 +1,12 @@
 import {
-	forgeHunkPatch,
+	forgeHunkDiff,
 	threadsByPathForScope,
 	threadStillAnchored,
 	threadStillAnchoredInFile,
 } from "./review-threads.ts";
 import { branchFileParent, commitFileParent } from "#ui/addresses.ts";
 import type { ForgeReviewThread } from "@gitbutler/but-sdk";
+import { DiffHunksRenderer, parsePatchFiles } from "@pierre/diffs";
 import { describe, expect, it } from "vitest";
 
 const thread = (overrides: Partial<ForgeReviewThread> = {}): ForgeReviewThread => ({
@@ -22,6 +23,61 @@ const thread = (overrides: Partial<ForgeReviewThread> = {}): ForgeReviewThread =
 });
 
 const branch = branchFileParent({ branchRef: [] });
+
+describe("inline thread row order", () => {
+	it.each(["unified", "split"] as const)(
+		"keeps %s code rows in sequence around a thread",
+		async (diffStyle) => {
+			const [patch] = parsePatchFiles(
+				[
+					"diff --git a/view.tsx b/view.tsx",
+					"--- a/view.tsx",
+					"+++ b/view.tsx",
+					"@@ -150,4 +241,5 @@",
+					" context",
+					"-old one",
+					"-old two",
+					"+new one",
+					"+new two",
+					"+<div className={styles.gap}>",
+					" end",
+					"",
+				].join("\n"),
+			);
+			const diff = patch?.files[0];
+			if (diff === undefined) throw new Error("Missing fixture diff");
+			const renderer = new DiffHunksRenderer({ diffStyle });
+			try {
+				const before = await renderer.asyncRender(diff);
+				renderer.setLineAnnotations([{ side: "additions", lineNumber: 244, metadata: undefined }]);
+				const after = await renderer.asyncRender(diff);
+				for (const key of [
+					"unifiedGutterAST",
+					"deletionsGutterAST",
+					"additionsGutterAST",
+				] as const) {
+					const codeRows = (result: typeof after) =>
+						result[key]?.filter(
+							(node) =>
+								node.type === "element" && node.properties["data-column-number"] !== undefined,
+						);
+					expect(codeRows(after)).toEqual(codeRows(before));
+				}
+				const gutter = diffStyle === "unified" ? after.unifiedGutterAST : after.additionsGutterAST;
+				if (gutter === undefined) throw new Error("Missing rendered gutter");
+				const anchor = gutter.findIndex(
+					(node) => node.type === "element" && node.properties["data-column-number"] === 244,
+				);
+				expect(gutter[anchor + 1]).toMatchObject({
+					properties: { "data-gutter-buffer": "annotation" },
+				});
+				expect(gutter[anchor + 2]).toMatchObject({ properties: { "data-column-number": 245 } });
+			} finally {
+				renderer.cleanUp();
+			}
+		},
+	);
+});
 
 describe("threadsByPathForScope", () => {
 	it("anchors an open thread on the side the forge left it", () => {
@@ -131,41 +187,45 @@ describe("threadStillAnchored", () => {
 	});
 });
 
-describe("forgeHunkPatch", () => {
+describe("forgeHunkDiff", () => {
 	it("re-tallies the counts the forge left behind", () => {
 		// The header claims six and twelve lines; three and four were sent,
 		// because the hunk stops at the line the comment sits on.
 		const truncated = "@@ -527,6 +527,12 @@ CREATE TABLE\n a\n b\n+c\n d";
+		const diff = forgeHunkDiff("src/lib.rs", truncated);
 
-		expect(forgeHunkPatch("src/lib.rs", truncated)).toBe(
-			[
-				"diff --git a/src/lib.rs b/src/lib.rs",
-				"--- a/src/lib.rs",
-				"+++ b/src/lib.rs",
-				"@@ -527,3 +527,4 @@",
-				" a",
-				" b",
-				"+c",
-				" d",
-				"",
-			].join("\n"),
-		);
+		expect(diff?.hunks[0]?.hunkSpecs).toBe("@@ -527,3 +527,4 @@\n");
+		expect(diff?.deletionLines).toEqual(["a\n", "b\n", "d\n"]);
+		expect(diff?.additionLines).toEqual(["a\n", "b\n", "c\n", "d\n"]);
 	});
 
 	it("keeps a blank context line, which is a space rather than nothing", () => {
-		const patch = forgeHunkPatch("f.ts", "@@ -1,9 +1,9 @@\n a\n \n+b\n");
+		const diff = forgeHunkDiff("f.ts", "@@ -1,9 +1,9 @@\n a\n \n+b\n");
 
-		expect(patch?.split("\n").slice(4, -1)).toEqual([" a", " ", "+b"]);
+		expect(diff?.deletionLines).toEqual(["a\n", "\n"]);
+		expect(diff?.additionLines).toEqual(["a\n", "\n", "b\n"]);
 	});
 
 	it("declines anything that is not a hunk", () => {
-		expect(forgeHunkPatch("f.ts", "no header here")).toBeNull();
+		expect(forgeHunkDiff("f.ts", "no header here")).toBeNull();
+	});
+
+	it("keys the parsed diff by content, not file name", () => {
+		// Two threads on one file: the forge truncates each hunk at its own
+		// comment line, so the same path carries different lines.
+		const short = forgeHunkDiff("f.ts", "@@ -1,3 +1,3 @@\n a\n+b\n");
+		const long = forgeHunkDiff("f.ts", "@@ -1,3 +1,3 @@\n a\n+b\n+c\n");
+
+		expect(short?.cacheKey).toBeDefined();
+		expect(short?.cacheKey).not.toBe(long?.cacheKey);
+		expect(forgeHunkDiff("f.ts", "@@ -1,3 +1,3 @@\n a\n+b\n")?.cacheKey).toBe(short?.cacheKey);
 	});
 
 	it("drops the no-newline marker a file's unterminated end carries", () => {
-		const patch = forgeHunkPatch("f.ts", "@@ -1,2 +1,2 @@\n a\n+b\n\\ No newline at end of file");
+		const diff = forgeHunkDiff("f.ts", "@@ -1,2 +1,2 @@\n a\n+b\n\\ No newline at end of file");
 
-		expect(patch?.split("\n").slice(3, -1)).toEqual(["@@ -1,1 +1,2 @@", " a", "+b"]);
+		expect(diff?.hunks[0]?.hunkSpecs).toBe("@@ -1,1 +1,2 @@\n");
+		expect(diff?.additionLines).toEqual(["a\n", "b\n"]);
 	});
 });
 

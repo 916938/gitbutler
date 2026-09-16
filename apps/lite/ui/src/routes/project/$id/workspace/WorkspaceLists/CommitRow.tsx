@@ -1,4 +1,3 @@
-import rowStyles from "../Row.module.css";
 import { useAddressSpace } from "./context.tsx";
 import { startKeyboardTransfer, setCursor, startInlineEdit } from "#ui/use-cursor.ts";
 import {
@@ -11,8 +10,7 @@ import {
 } from "#ui/api/mutations.ts";
 import { forgeInfoOptions, headInfoQueryOptions } from "#ui/api/queries.ts";
 import { classes } from "#ui/components/classes.ts";
-import { ConflictIcon } from "#ui/components/ConflictIcon.tsx";
-import { GraphSegment } from "#ui/components/GraphSegment.tsx";
+import { GraphSegment, type GraphSegmentStatus } from "#ui/components/GraphSegment.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { commitBody, commitForgeUrl, commitIsDiverged, commitTitle } from "#ui/commit.ts";
@@ -37,14 +35,15 @@ import { useAppDispatch, useAppSelector, useAppStore } from "#ui/store.ts";
 import type { Commit } from "@gitbutler/but-sdk";
 import { Toast, Toolbar, Tooltip } from "@base-ui/react";
 import { useQuery } from "@tanstack/react-query";
-import { type ComponentProps, type FC, useOptimistic, useTransition } from "react";
-import { RowCheckbox, RowLabel, RowLabelContainer, RowToolbar } from "../Row.tsx";
+import { type ComponentProps, type FC, useId, useOptimistic, useTransition } from "react";
+import { RowCheckbox, RowToolbar } from "../Row.tsx";
 import { getRowButtonClassName } from "../Row-utils.ts";
 import { InlineEditor } from "./InlineEditor.tsx";
 import { insertBlankCommitMenuItem } from "./insertBlankCommitMenuItem.ts";
 import { ItemRow } from "./ItemRow.tsx";
 import { selectAfterDiscardedCommits } from "./selectAfterDiscardedCommit.ts";
 import styles from "./CommitRow.module.css";
+import { CommitRowContent } from "../CommitRowContent.tsx";
 import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
 
 export const CommitRow: FC<
@@ -58,6 +57,15 @@ export const CommitRow: FC<
 		amendCommit: () => void;
 		canAmendCommit: boolean;
 		scrollSelectedIntoView?: boolean;
+		/** The rail below the commit's circle: the next icon's colour, or plain under a card's last. */
+		below?: GraphSegmentStatus;
+		/** Columns of the main line running behind the row, left of its rail. */
+		behind?: number;
+		/**
+		 * The linked worktree whose lane the commit is drawn in. Such a commit is
+		 * outside the workspace, so the actions that rewrite it stay off.
+		 */
+		worktree?: string;
 	} & ComponentProps<"div">
 > = ({
 	commit,
@@ -67,6 +75,9 @@ export const CommitRow: FC<
 	checkCommit,
 	amendCommit,
 	canAmendCommit,
+	worktree,
+	below,
+	behind,
 	...restProps
 }) => {
 	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
@@ -77,9 +88,11 @@ export const CommitRow: FC<
 	};
 	const address = commitAddress(commitAddressV);
 
-	const canCheck = useAppSelector((state) =>
-		projectSlice.selectors.selectCanCheckCommits(state, projectId),
-	);
+	const descriptionId = useId();
+	const inWorkspace = worktree === undefined;
+	const canCheck =
+		useAppSelector((state) => projectSlice.selectors.selectCanCheckCommits(state, projectId)) &&
+		inWorkspace;
 	const isDependency = useAppSelector((state) =>
 		projectSlice.selectors.selectDependencyCommitIds(state, projectId).has(commit.id),
 	);
@@ -252,9 +265,6 @@ export const CommitRow: FC<
 					dryRun: false,
 				});
 			} catch (error) {
-				// oxlint-disable-next-line no-console
-				console.error(error);
-
 				toastManager.add({
 					type: "error",
 					title: "Failed to reword commit",
@@ -274,7 +284,39 @@ export const CommitRow: FC<
 	const title = commitTitle(commitWithOptimisticMessage.message);
 	const body = commitBody(commitWithOptimisticMessage.message);
 
-	const menuItems: Array<NativeMenuItem> = [
+	// Items that only read the commit, the whole menu of a commit outside the workspace.
+	const readOnlyMenuItems: Array<NativeMenuItem> = [
+		nativeMenuItem({
+			label: "Copy",
+			submenu: [
+				nativeMenuItem({
+					label: "Change ID",
+					onSelect: () => window.lite.clipboardWriteText(commit.changeId),
+				}),
+				nativeMenuItem({
+					label: "Commit ID",
+					onSelect: () => window.lite.clipboardWriteText(commit.id),
+				}),
+				nativeMenuItem({
+					label: "Commit Title",
+					enabled: title !== undefined,
+					onSelect: () => window.lite.clipboardWriteText(title ?? ""),
+				}),
+				nativeMenuItem({
+					label: "Commit Body",
+					enabled: body !== undefined,
+					onSelect: () => window.lite.clipboardWriteText(body ?? ""),
+				}),
+			],
+		}),
+		nativeMenuItem({
+			label: mforgeUrl?.freshness === "stale" ? "Open In Browser (stale)" : "Open In Browser",
+			enabled: mforgeUrl != null,
+			accelerator: toElectronAccelerator(sidebarHotkeys.openCommitInBrowser.hotkey),
+			onSelect: openCommitInBrowser,
+		}),
+	];
+	const workspaceMenuItems: Array<NativeMenuItem> = [
 		nativeMenuItem({
 			label: "Reword Commit",
 			enabled: !isCommitMessagePending,
@@ -306,35 +348,7 @@ export const CommitRow: FC<
 			accelerator: toElectronAccelerator(selectionOperationHotkeys.cut.hotkey),
 		}),
 		nativeMenuSeparator,
-		nativeMenuItem({
-			label: "Copy",
-			submenu: [
-				nativeMenuItem({
-					label: "Change ID",
-					onSelect: () => window.lite.clipboardWriteText(commit.changeId),
-				}),
-				nativeMenuItem({
-					label: "Commit ID",
-					onSelect: () => window.lite.clipboardWriteText(commit.id),
-				}),
-				nativeMenuItem({
-					label: "Commit Title",
-					enabled: title !== undefined,
-					onSelect: () => window.lite.clipboardWriteText(title ?? ""),
-				}),
-				nativeMenuItem({
-					label: "Commit Body",
-					enabled: body !== undefined,
-					onSelect: () => window.lite.clipboardWriteText(body ?? ""),
-				}),
-			],
-		}),
-		nativeMenuItem({
-			label: mforgeUrl?.freshness === "stale" ? "Open In Browser (stale)" : "Open In Browser",
-			enabled: mforgeUrl != null,
-			accelerator: toElectronAccelerator(sidebarHotkeys.openCommitInBrowser.hotkey),
-			onSelect: openCommitInBrowser,
-		}),
+		...readOnlyMenuItems,
 		insertBlankCommitMenuItem(insertBlankCommit, "above"),
 		nativeMenuSeparator,
 		nativeMenuItem({
@@ -365,14 +379,16 @@ export const CommitRow: FC<
 			onSelect: uncommitCommit,
 		}),
 	];
+	const menuItems = inWorkspace ? workspaceMenuItems : readOnlyMenuItems;
 
 	return (
 		<ItemRow
 			{...restProps}
 			address={address}
+			aria-describedby={isRewording ? undefined : descriptionId}
 			isChecked={isChecked}
 			isHighlighted={isDependency}
-			onDoubleClick={noOperationPending ? startEditing : undefined}
+			onDoubleClick={noOperationPending && inWorkspace ? startEditing : undefined}
 			onShiftSelect={
 				noOperationPending && canCheck
 					? () => checkCommit({ commitId: commit.id, shiftKey: true })
@@ -387,6 +403,8 @@ export const CommitRow: FC<
 				<GraphSegment
 					glyph="commit"
 					status={commitIsDiverged(commit) ? "Diverged" : commit.state.type}
+					below={below}
+					behind={behind}
 				/>
 				<Tooltip.Root
 					// This gets in the way when the user tries to move their hover to a
@@ -433,26 +451,15 @@ export const CommitRow: FC<
 					onExit={endEditing}
 				/>
 			) : (
-				<RowLabelContainer>
-					{hasConflicts && (
-						<ConflictIcon
-							variant="conflict"
-							className={styles.conflictIcon}
-							aria-label="Conflicted"
-						/>
-					)}
-					<RowLabel singleLine>
-						{title === undefined ? (
-							<span className={rowStyles.fadedText}>(no message)</span>
-						) : (
-							title
-						)}
-					</RowLabel>
-				</RowLabelContainer>
+				<CommitRowContent
+					commit={commitWithOptimisticMessage}
+					hasConflicts={hasConflicts}
+					descriptionId={descriptionId}
+				/>
 			)}
 
 			{noOperationPending && (
-				<Toolbar.Root aria-label="Commit actions" render={<RowToolbar />}>
+				<Toolbar.Root aria-label="Commit actions" render={<RowToolbar reserveSpace />}>
 					<Toolbar.Button
 						aria-label="Commit menu"
 						onClick={(event) => {

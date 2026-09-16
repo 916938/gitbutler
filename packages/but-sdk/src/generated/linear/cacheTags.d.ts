@@ -24,6 +24,7 @@ export declare const apiProvides: {
 	readonly getReview: readonly ["Reviews"];
 	readonly getReviewMergeStatus: readonly ["MergeStatus"];
 	readonly getWorkspaceFile: readonly [];
+	readonly getWorkspaceFileFromSource: readonly [];
 	readonly headInfo: readonly ["Workspace"];
 	readonly listCiChecks: readonly ["Checks"];
 	readonly listCommentReactions: readonly ["CommentReactions"];
@@ -38,6 +39,7 @@ export declare const apiProvides: {
 	readonly listSnapshots: readonly ["Workspace"];
 	readonly operatingMode: readonly ["OperatingMode"];
 	readonly treeChangeDiffs: readonly ["Diffs"];
+	readonly treeChangeDiffsFromSource: readonly ["Diffs"];
 	readonly workspaceFetchFromRemotes: readonly [];
 	readonly workspaceFetchStatus: readonly ["FetchStatus"];
 	readonly workspaceTargetCommits: readonly ["TargetCommits"];
@@ -50,6 +52,7 @@ export declare const apiInvalidates: {
 	readonly addProject: readonly ["Projects"];
 	readonly addReviewLabels: readonly ["Reviews"];
 	readonly addReviewReaction: readonly ["ReviewReactions"];
+	readonly addSubmissionReaction: readonly ["ReviewSubmissions"];
 	readonly branchRemove: readonly ["Branches", "Workspace"];
 	readonly branchRename: readonly ["Branches", "Workspace"];
 	readonly createReviewComment: readonly ["ReviewComments"];
@@ -66,12 +69,14 @@ export declare const apiInvalidates: {
 	readonly removeCommentReaction: readonly ["CommentReactions", "ReviewComments"];
 	readonly removeReviewLabel: readonly ["Reviews"];
 	readonly removeReviewReaction: readonly ["ReviewReactions"];
+	readonly removeSubmissionReaction: readonly ["ReviewSubmissions"];
 	readonly requestReview: readonly ["Reviews", "ReviewTimeline"];
 	readonly resetAiConfiguration: readonly ["AiConfiguration"];
 	readonly saveEditAndReturnToWorkspace: readonly ["OperatingMode"];
 	readonly setGbConfig: readonly ["GbConfig", "SigningSettings"];
 	readonly setReviewAutoMerge: readonly ["Reviews"];
 	readonly setReviewDraftiness: readonly ["Reviews", "MergeStatus"];
+	readonly setReviewThreadResolved: readonly ["ReviewThreads"];
 	readonly storeBitbucketApiToken: readonly ["ForgeAccounts", "ForgeLogin"];
 	readonly storeGithubPat: readonly ["ForgeAccounts", "ForgeLogin"];
 	readonly storeGitlabPat: readonly ["ForgeAccounts", "ForgeLogin"];
@@ -81,11 +86,13 @@ export declare const apiInvalidates: {
 	readonly updateReviewComment: readonly ["ReviewComments"];
 	readonly withdrawReviewRequest: readonly ["Reviews"];
 	readonly workspaceBranchAndAncestorsPush: readonly ["Workspace", "Reviews", "MergeStatus", "Checks", "ReviewTimeline"];
+	readonly worktreeNew: readonly ["Worktrees", "Workspace"];
 	readonly worktreeRemove: readonly ["Worktrees", "Workspace"];
 	readonly worktreeSetArchived: readonly ["Worktrees", "Workspace"];
 };
 
 export declare const watcherInvalidates: {
+	readonly externalInvalidation: readonly [];
 	readonly gitActivity: readonly ["Branches", "TargetCommits", "Workspace", "Commits", "Diffs", "WorktreeChanges", "Worktrees", "AbsorptionPlan", "Comments"];
 	readonly gitFetch: readonly ["Branches", "TargetCommits", "FetchStatus", "Reviews"];
 	readonly gitHead: readonly ["OperatingMode"];

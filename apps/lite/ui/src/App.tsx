@@ -8,6 +8,7 @@ import { Provider } from "react-redux";
 import { store } from "#ui/store.ts";
 import { Toasts } from "#ui/components/Toasts.tsx";
 import { AskpassPromptDialog } from "#ui/AskpassPromptDialog.tsx";
+import { AppUpdater } from "./AppUpdater.tsx";
 import { guiSettingsQueryOptions } from "./api/queries.ts";
 import { defaultSettings } from "./settings.ts";
 
@@ -36,6 +37,20 @@ const SyntaxThemeSync: FC = () => {
 	return null;
 };
 
+// The stylesheet reads the choice off the root element (see control-cursor.css).
+const HandCursorSync: FC = () => {
+	const { data: handCursor } = useQuery({
+		...guiSettingsQueryOptions,
+		select: (cfg) => cfg.handCursor ?? defaultSettings.handCursor,
+	});
+
+	useEffect(() => {
+		document.documentElement.toggleAttribute("data-hand-cursor", handCursor === true);
+	}, [handCursor]);
+
+	return null;
+};
+
 export const App: FC<{
 	queryClient: QueryClient;
 	toastManager: ToastManager;
@@ -51,7 +66,10 @@ export const App: FC<{
 							highlighterOptions={{ preferredHighlighter: "shiki-wasm" }}
 						>
 							<SyntaxThemeSync />
-							<RouterProvider router={router} />
+							<HandCursorSync />
+							<AppUpdater>
+								<RouterProvider router={router} />
+							</AppUpdater>
 							<AskpassPromptDialog />
 							<Toasts />
 						</WorkerPoolContextProvider>

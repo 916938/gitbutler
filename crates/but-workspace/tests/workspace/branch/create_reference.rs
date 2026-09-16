@@ -65,15 +65,12 @@ Single commit, no main remote/target, no ws commit, but ws-reference
             &meta,
             project_meta(&repo)?,
             &mut db,
-            Options {
-                extra_target_commit_id: id_by_rev(&repo, "main").detach().into(),
-                ..Options::limited()
-            },
+            Options::limited(),
         )?;
         let ws = graph.into_workspace()?;
 
-        // And even though setting an extra-target works like it should, i.e a simulated target
-        // which we can store in absence of a selected target branch…
+        // And even though a stored target commit works like it should, i.e a simulated target
+        // in absence of a selected target branch…
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
@@ -2108,7 +2105,9 @@ Single commit, target, no ws commit, but ws-reference
         // Precondition (see `⇣1` above): the target tip (M2) is one commit ahead of A's base,
         // so it sits OUTSIDE the workspace — the situation the no-anchor path mishandled.
         let target_id = ws
-            .resolved_target_commit_id()
+            .target_commit
+            .as_ref()
+            .map(|target| target.commit_id)
             .expect("the scenario sets a default target");
         assert!(
             ws.find_owner_indexes_by_commit_id(target_id).is_none(),
@@ -2376,10 +2375,12 @@ fn errors() -> anyhow::Result<()> {
         a_id,
         a_ref.to_owned(),
         &*meta,
-        but_core::ref_metadata::ProjectMeta::default(),
+        but_core::ref_metadata::ProjectMeta {
+            target_commit_id: Some(main_id.detach()),
+            ..Default::default()
+        },
         &mut db,
         Options {
-            extra_target_commit_id: main_id.detach().into(),
             commits_limit_hint: 0.into(),
             ..Options::limited()
         },
@@ -2388,46 +2389,35 @@ fn errors() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-⌂:A <> ✓! on 89cc2d3
-└── ≡:A on 89cc2d3 {1}
+⌂:A <> ✓!
+└── ≡:A {1}
     └── :A
+        └── ✂️·89cc2d3
 
 "#]]
     );
 
-    let (a_id, _a_ref_owned) = id_at(&repo, "A");
-    for (anchor, expected_err) in [
-        (
-            Anchor::at_segment(a_ref, Below),
-            "Cannot create reference on unborn branch",
-        ),
-        (
-            Anchor::at_id(a_id, Below),
-            "Commit 89cc2d303514654e9cab2d05b9af08b420a740c1 isn't part of the workspace",
-        ),
-    ] {
-        let err = but_workspace::branch::create_reference(
-            new_name,
-            anchor.clone(),
-            &repo,
-            &ws,
-            &mut *meta,
-            stack_id_for_name,
-            None,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            expected_err,
-            "{anchor:?}: TODO: make these error messages consistent, and one might argue that this makes it hard to create refs on such bases."
-        );
-        assert!(meta.branch(a_ref)?.is_default(), "no data was stored");
-        assert_ne!(
-            repo.find_reference(a_ref)?.id(),
-            main_id,
-            "it shouldn't actually have changed the ref"
-        );
-    }
+    // The single commit of `A` is visible, but nothing below it is.
+    let err = but_workspace::branch::create_reference(
+        new_name,
+        Anchor::at_segment(a_ref, Below),
+        &repo,
+        &ws,
+        &mut *meta,
+        stack_id_for_name,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Commit d79bba960b112dbd25d45921c47eeda22288022b isn't part of the workspace",
+    );
+    assert!(meta.branch(a_ref)?.is_default(), "no data was stored");
+    assert_ne!(
+        repo.find_reference(a_ref)?.id(),
+        main_id,
+        "it shouldn't actually have changed the ref"
+    );
     Ok(())
 }
 
@@ -2825,31 +2815,6 @@ fn journey_anon_workspace() -> anyhow::Result<()> {
     );
     assert!(repo.try_find_reference(new)?.is_none());
 
-    // Give the graph a base
-    let graph = but_graph::Graph::from_commit_traversal(
-        id,
-        None,
-        &meta,
-        but_core::ref_metadata::ProjectMeta::default(),
-        &mut db,
-        Options {
-            extra_target_commit_id: Some(first_id.detach()),
-            ..Default::default()
-        },
-    )?;
-    let ws = graph.into_workspace()?;
-    // And the extra-target serves as base also in single-branch mode.
-    snapbox::assert_data_eq!(
-        graph_workspace(&ws).to_string(),
-        snapbox::str![[r#"
-⌂:second <> ✓! on 3d57fc1
-└── ≡📙:second on 3d57fc1 {1}
-    └── 📙:second
-        └── ·12995d7
-
-"#]]
-    );
-
     Ok(())
 }
 
@@ -2863,8 +2828,8 @@ mod ad_hoc_at_reference {
     use super::*;
     use but_workspace::branch::create_reference::Position;
 
-    /// A single-branch workspace checked out on `main` (3 commits) with a *writable* branch-order
-    /// backend, so `AtReference` placements can persist their order.
+    /// A single-branch workspace checked out on `main` (2 commits above the target) with a
+    /// *writable* branch-order backend, so `AtReference` placements can persist their order.
     fn ad_hoc_workspace() -> anyhow::Result<(
         tempfile::TempDir,
         gix::Repository,
@@ -2875,7 +2840,10 @@ mod ad_hoc_at_reference {
     )> {
         let (tmp, repo, _legacy_meta, mut db) =
             named_writable_scenario("single-branch-with-3-commits")?;
-        let project_meta = project_meta(&repo)?;
+        let project_meta =
+            crate::ref_info::with_workspace_commit::utils::project_meta_with_target_at(
+                &repo, "main~2",
+            )?;
         let meta = branch_order_meta(&repo)?;
         let ws = but_graph::Graph::from_head(
             &repo,
@@ -2929,9 +2897,11 @@ mod ad_hoc_at_reference {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] on 281da94 {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     └── :main[🌳]
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );
@@ -3021,13 +2991,12 @@ mod ad_hoc_at_reference {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     ├── :main[🌳]
     └── 📙:empty-bottom
-        ├── ·281da94 (✓)
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );
@@ -3075,15 +3044,14 @@ mod ad_hoc_at_reference {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     ├── :main[🌳]
     ├── 📙:empty-middle
     ├── 📙:inserted-below-middle
     └── 📙:empty-bottom
-        ├── ·281da94 (✓)
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );
@@ -3103,13 +3071,12 @@ mod ad_hoc_at_reference {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:empty-top[🌳] <> ✓! on 281da94
-└── ≡📙:empty-top[🌳] {1}
+⌂:empty-top[🌳] <> ✓! on 3d57fc1
+└── ≡📙:empty-top[🌳] on 3d57fc1 {1}
     ├── 📙:empty-top[🌳]
     └── :main
-        ├── ·281da94 (✓)
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );
@@ -3188,14 +3155,13 @@ mod ad_hoc_at_reference {
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-⌂:main[🌳] <> ✓! on 281da94
-└── ≡:main[🌳] {1}
+⌂:main[🌳] <> ✓! on 3d57fc1
+└── ≡:main[🌳] on 3d57fc1 {1}
     ├── :main[🌳]
     ├── 📙:empty-middle
     └── 📙:empty-bottom
-        ├── ·281da94 (✓)
-        ├── ·12995d7 (✓)
-        └── ·3d57fc1 (✓)
+        ├── ·281da94
+        └── ·12995d7
 
 "#]]
         );

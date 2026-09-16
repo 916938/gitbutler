@@ -5,19 +5,19 @@
 	background-color: var(--bg-2);
 }
 
-/* Heads the panel, and gives way to the filter row while that is open — so
-   narrowing the list costs no vertical space, as in the file lists. */
-.header {
-	flex-shrink: 0;
-	border-block-end: 1px solid var(--border-section);
-}
-
 /* The two ways of narrowing the list sit together; starting a branch is a
    different kind of act, so the rule holds it apart. */
 .headerGroup {
 	display: flex;
 	column-gap: 10px;
 	align-items: center;
+}
+
+/* With the badge beside the icon the button is no longer icon-only, so it
+   takes the regular button's padding; this pulls it back in to the icon-only
+   rhythm the search button beside it keeps. */
+.filterButtonActive {
+	--button-padding-inline: 6px;
 }
 
 .headerSeparator {
@@ -28,11 +28,14 @@
 	background-color: var(--border-3);
 }
 
-/* The cards run the full width of the panel, so nothing insets them. */
+/* The cards run the full width of the panel, so nothing insets them. The
+   line dividing the list from whatever heads it lives here rather than on the
+   header, so it holds while the filter row stands in for that header. */
 .list {
 	display: flex;
 	flex-grow: 1;
 	flex-direction: column;
+	border-block-start: 1px solid var(--border-section);
 }
 
 /* The tree holds only stack groups, so the heading and empty-state message
@@ -80,5 +83,37 @@
 	justify-content: safe center;
 }
 
-/* The label column and its meta line now live in Row.module.css, shared with
-   the workspace outline's branch rows. */
+.branchRow .reviewMeta {
+	column-gap: 6px;
+	row-gap: 2px;
+	flex-wrap: wrap;
+	padding-block-end: 2px;
+	font-size: 12px;
+	line-height: 18px;
+}
+
+/* Only the number is the link; the arrow hangs off it without a space so the
+   underline stops at the number. Mirrors the pull request panel's link. */
+.reviewLink {
+	display: inline-flex;
+	flex-shrink: 0;
+	align-items: center;
+	color: var(--text-2);
+	text-decoration: underline;
+	text-decoration-color: color-mix(in srgb, currentcolor 40%, transparent);
+	text-underline-position: from-font;
+
+	&:hover {
+		color: var(--text-1);
+		text-decoration-color: currentcolor;
+	}
+}
+
+.reviewAuthor {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.branchRow .branchMeta {
+	font-size: 12px;
+}

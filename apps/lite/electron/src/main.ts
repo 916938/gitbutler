@@ -1,4 +1,5 @@
-import { checkForUpdates, registerUpdater, setAutoUpdateEnabled } from "./updater.js";
+import { posthogHost } from "./telemetry.js";
+import { checkForUpdates, downloadUpdate, getUpdateStatus, installUpdate } from "./updater.js";
 import WatcherManager from "./watcher.js";
 import * as sdk from "@gitbutler/but-sdk";
 import {
@@ -18,7 +19,6 @@ import {
 	askpassInit,
 	askpassSubmitPromptResponse,
 	initApplicationNamespace,
-	interactiveLoginShellEnvironment,
 } from "@gitbutler/but-sdk";
 import {
 	app,
@@ -30,6 +30,7 @@ import {
 	Menu,
 	nativeTheme,
 	net,
+	Notification,
 	protocol,
 	session,
 	shell,
@@ -46,17 +47,21 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { initLogging } from "./logging.js";
 import { type GUISettings, readSettings, writeSettings } from "./settings.js";
-import { initMetrics, metricsOnLogin, shutdownMetrics, withApiCommandCapture } from "./metrics.js";
+import {
+	initMetrics,
+	metricsOnLogin,
+	reportError,
+	shutdownMetrics,
+	withApiCommandCapture,
+} from "./metrics.js";
 import { apiParamNames } from "@gitbutler/but-sdk/api-param-names";
-
-Object.assign(process.env, interactiveLoginShellEnvironment());
 
 const isHeadless = process.env.GITBUTLER_LITE_HEADLESS === "true";
 if (isHeadless && process.platform === "darwin") app.setActivationPolicy("accessory");
 
 // Do this early before any APIs that depend upon it are called. Likewise take care in imported
 // modules.
-if (!app.isPackaged) app.setName("GitButler Lite Dev");
+if (!app.isPackaged) app.setName("GitButler Next Dev");
 
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDirPath = path.dirname(currentFilePath);
@@ -64,7 +69,6 @@ const currentDirPath = path.dirname(currentFilePath);
 // [ref:lite_default_settings]
 const applyGUISettings = (settings: GUISettings): void => {
 	nativeTheme.themeSource = settings.theme ?? "system";
-	setAutoUpdateEnabled(settings.autoUpdate ?? true);
 };
 
 // Permissions in this array are allowed by default for trusted origins, without prompting the user for input.
@@ -126,6 +130,8 @@ protocol.registerSchemesAsPrivileged([
 			standard: true,
 			secure: true,
 			supportFetchAPI: true,
+			// Lets Chromium keep the renderer bundle's compiled bytecode between launches.
+			codeCache: true,
 		},
 	},
 ]);
@@ -175,8 +181,7 @@ const configureAskpass = (): void => {
 	try {
 		askpassInit((err, event) => {
 			if (err) {
-				// oxlint-disable-next-line no-console
-				console.error(`Error encountered while initializing askpass:\n${err}`);
+				reportError(err, "Failed to initialize askpass");
 				return;
 			}
 
@@ -187,8 +192,7 @@ const configureAskpass = (): void => {
 				window.webContents.send("askpassPrompt", event);
 		});
 	} catch (err) {
-		// oxlint-disable-next-line no-console
-		console.error(`Error encountered while configuring askpass:\n${String(err)}`);
+		reportError(err, "Failed to configure askpass");
 	}
 };
 
@@ -300,7 +304,9 @@ const newUrlOrNull = (url: string): URL | null => {
 const electronHandlerOverrides = {
 	askpassSubmitPromptResponse: ({ id, response }) => askpassSubmitPromptResponse(id, response),
 	clipboardWriteText: (text) => clipboard.writeText(text),
+	getAppSettings: () => sdk.getAppSettings(),
 	getVersion: () => app.getVersion(),
+	isPackaged: () => app.isPackaged,
 	openInWebBrowser: (url) => {
 		// shell.openExternal() is powerful and dangerous. For example, on macOS you can launch a
 		// program with shell.openExternal("file:///Applications/Numbers.app"). Similarly bad
@@ -322,16 +328,39 @@ const electronHandlerOverrides = {
 		// manager; it never launches it, so a path is all it takes.
 		shell.showItemInFolder(itemPath);
 	},
+	showNotification: ({ id, title, body }) => {
+		const [window] = BrowserWindow.getAllWindows();
+		// Decided here, not in the renderer: a freshly loaded document reports
+		// `document.hasFocus()` true while the window sits behind another app.
+		if (!Notification.isSupported() || window === undefined || window.isFocused()) return;
+		const notification = new Notification({ title, body });
+		notification.on("click", () => {
+			showAndFocusWindow(window);
+			window.webContents.send("notificationClick", id);
+		});
+		// macOS refuses silently when the app is not allowed to notify
+		// (UNErrorDomain error 1); the log is the only place that says so.
+		notification.on("failed", (_event, error) => {
+			// oxlint-disable-next-line no-console
+			console.error(`Desktop notification failed: ${error}`);
+		});
+		notification.show();
+	},
 	pickDirectory: async () => {
 		const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ["openDirectory"] });
 		return canceled ? null : (filePaths[0] ?? null);
 	},
 	watcherStopAll: () => WatcherManager.getInstance().stopAllWatchersForShutdown(),
 	readGUISettings: () => readSettings(),
+	updateFeatureFlags: (update) => sdk.updateFeatureFlags(update),
 	writeGUISettings: async (settings) => {
 		applyGUISettings(settings);
 		await writeSettings(settings);
 	},
+	getUpdateStatus,
+	checkForUpdates,
+	downloadUpdate,
+	installUpdate,
 } satisfies HandlerOverrides & { [K in HostOnlyKey]: Handler<K> };
 
 const registerIpcHandlers = (): void => {
@@ -386,11 +415,14 @@ const registerIpcHandlers = (): void => {
 				}),
 			);
 
+			// The renderer measures in CSS pixels; the popup is placed in window points, and
+			// page zoom is the ratio between them.
+			const zoomFactor = event.sender.getZoomFactor();
 			await new Promise<void>((resolve) => {
 				menu.popup({
 					window,
-					x: Math.round(position.x),
-					y: Math.round(position.y),
+					x: Math.round(position.x * zoomFactor),
+					y: Math.round(position.y * zoomFactor),
 					callback: () => resolve(),
 				});
 			});
@@ -455,8 +487,7 @@ const completeLogin = async (url: URL): Promise<boolean> => {
 		const profile = await sdk.loginAndPersist(accessToken);
 		void metricsOnLogin(profile);
 	} catch (error) {
-		// oxlint-disable-next-line no-console
-		console.error("Failed to sign in from a login link", error);
+		reportError(error, "Failed to sign in from a login link");
 	}
 	return true;
 };
@@ -519,6 +550,8 @@ const createMainWindow = async (initialUrl?: string): Promise<void> => {
 		width: 1024,
 		height: 768,
 		show: !isHeadless,
+		// Visible before the renderer loads. Keep in sync with --bg-1.
+		backgroundColor: nativeTheme.shouldUseDarkColors ? "#292929" : "#ffffff",
 		minWidth: 545,
 		minHeight: 400,
 		icon,
@@ -528,6 +561,8 @@ const createMainWindow = async (initialUrl?: string): Promise<void> => {
 			contextIsolation: true,
 			nodeIntegration: false,
 			preload: path.join(currentDirPath, "preload.cjs"),
+			// Cache every script's bytecode, not only what Chromium's heuristics deem hot.
+			v8CacheOptions: "bypassHeatCheck",
 		},
 	});
 	registerEditingContextMenu(mainWindow);
@@ -557,15 +592,8 @@ const createMainWindow = async (initialUrl?: string): Promise<void> => {
 	}
 
 	const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-	if (devServerUrl !== undefined) {
-		await mainWindow.loadURL(initialUrl ?? devServerUrl);
-		return;
-	}
-
 	const rootUrl = `${liteProtocolScheme}://${liteProtocolHost}/`;
-	await mainWindow.loadURL(initialUrl ?? rootUrl);
-	registerUpdater(mainWindow);
-	checkForUpdates();
+	await mainWindow.loadURL(initialUrl ?? devServerUrl ?? rootUrl);
 };
 
 app.enableSandbox(); // forces sandboxing for all renderers, even if they try to launch without
@@ -588,17 +616,26 @@ if (!app.requestSingleInstanceLock()) {
 	});
 }
 
-void app.whenReady().then(async () => {
+export const start = async (shellEnvironment: Promise<Record<string, string>>): Promise<void> => {
+	await app.whenReady();
+	// Creating the default session lets Electron prewarm the first renderer while startup continues.
+	void session.defaultSession;
 	initLogging();
-	applyGUISettings(await readSettings());
+	Object.assign(process.env, await shellEnvironment);
 	await initApplicationNamespace(null);
+	if (app.isPackaged) {
+		const channel = process.env.CHANNEL;
+		await initMetrics(
+			app.getVersion(),
+			"production",
+			channel === "nightly" || channel === "release" ? channel : "dev",
+		);
+	}
+
+	applyGUISettings(await readSettings());
 	configureAskpass();
 
 	if (app.isPackaged) {
-		// Packaged-only so dev builds send nothing, and awaited so the client
-		// exists before the IPC handlers and the launch-link login below run.
-		await initMetrics(app.getVersion());
-
 		registerLiteProtocolHandler();
 
 		// Basic non-Strict CSP based on https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html#basic-non-strict-csp-policy
@@ -607,7 +644,7 @@ void app.whenReady().then(async () => {
 			"script-src 'self' 'wasm-unsafe-eval';" +
 			"style-src 'self' 'unsafe-inline';" +
 			"font-src 'self';" +
-			"connect-src 'self';" +
+			`connect-src 'self' ${posthogHost};` +
 			"object-src 'none';" +
 			"base-uri 'none';" +
 			"frame-ancestors 'none';" +
@@ -643,7 +680,7 @@ void app.whenReady().then(async () => {
 			"style-src 'self' 'unsafe-inline';" +
 			"font-src 'self';" +
 			// ws source for HMR
-			"connect-src 'self' ws://127.0.0.1:5173;" +
+			`connect-src 'self' ws://127.0.0.1:5173 ${posthogHost};` +
 			"object-src 'none';" +
 			"base-uri 'none';" +
 			"frame-ancestors 'none';" +
@@ -706,7 +743,7 @@ void app.whenReady().then(async () => {
 		if (existing) showAndFocusWindow(existing);
 		else void createMainWindow();
 	});
-});
+};
 
 app.on("before-quit", (event) => {
 	WatcherManager.destroyInstance();

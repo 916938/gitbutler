@@ -58,8 +58,7 @@ pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
             expensive_commit_info: true,
             gerrit_mode,
         },
-    )?
-    .pruned_to_entrypoint();
+    )?;
 
     // Enrich active associations from the forge cache while keeping durable
     // stored identity for integrated branches.
@@ -261,7 +260,7 @@ pub fn stash_into_branch(
     crate::branch::branch_create_with_perm(
         ctx,
         Some(full_ref_name.clone()),
-        crate::branch::json::BranchCreatePlacement::Independent,
+        crate::branch::json::BranchCreatePlacement::Independent { order: None },
         perm,
     )?;
     let stack_id = {
@@ -345,17 +344,21 @@ pub async fn workspace_branch_and_ancestors_push(
 ) -> Result<WorkspaceBranchAndAncestorsPushOutcome> {
     let branch: gix::refs::FullName = branch.try_into()?;
     let sync_ctx = ctx.clone();
-    let review_target_updates = {
+    let (trunk, review_targets) = {
         let ctx = ctx.clone().into_thread_local();
-        crate::legacy::forge::review_target_updates_for_branch(&ctx, branch.as_ref())?
+        let trunk =
+            crate::legacy::forge::target_short_name(&ctx.project_meta()?, &*ctx.repo.get()?)?;
+        (
+            trunk,
+            crate::legacy::forge::review_target_updates_for_branch(&ctx, branch.as_ref())?,
+        )
     };
-    let review_targets = review_target_updates
-        .iter()
-        .map(|(_, desired, current)| (desired.clone(), current.clone()))
-        .collect::<Vec<_>>();
-    let flattened_review_targets =
-        crate::legacy::forge::flatten_review_targets_before_push(sync_ctx.clone(), &review_targets)
-            .await?;
+    let flattened_review_targets = crate::legacy::forge::flatten_review_targets_before_push(
+        sync_ctx.clone(),
+        trunk,
+        &review_targets,
+    )
+    .await?;
     let push_branch = branch.clone();
     // This API also awaits forge synchronization, but the Git push remains synchronous and may
     // perform network I/O, hooks, and credential handling. Keep it off Tokio's async worker pool.
@@ -459,12 +462,9 @@ pub fn workspace_branch_and_ancestors_push_only(
             gerrit_mode,
         },
     )?;
-    let head_info = head_info.pruned_to_entrypoint();
-
     let result = but_workspace::legacy::push::workspace_branch_and_ancestors_push(
         &repo,
         &ws,
-        &ctx.project_meta()?,
         &head_info,
         &mut db,
         gerrit_mode_enabled,

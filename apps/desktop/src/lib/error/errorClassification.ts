@@ -200,9 +200,29 @@ With \`seahorse\` or equivalent, create a \`Login\` password store, right click 
 	},
 	GitHubTokenExpired: {
 		severity: "error",
+		terminal: true,
 		userMessage: `
 Your GitHub token appears expired. Please log out and back in to refresh it. (Settings -> Integrations -> Forget)
 	`,
+	},
+	/**
+	 * GitLab rejected a stored token (401) or refused the account behind it
+	 * (403). Both are terminal until the user stores a different token; a 403
+	 * needs scopes or permissions, not the same token typed again.
+	 */
+	GitLabUnauthorized: {
+		severity: "error",
+		terminal: true,
+		title: "GitLab Token Rejected",
+		userMessage:
+			"GitLab did not accept your stored token; it may have expired or been revoked. Store a new personal access token under Settings → Integrations.",
+	},
+	GitLabForbidden: {
+		severity: "error",
+		terminal: true,
+		title: "GitLab Access Refused",
+		userMessage:
+			"GitLab refused access for your stored token. Check the token scopes and your account permissions, then store a new token under Settings → Integrations.",
 	},
 	...GITHUB_DEVICE_OAUTH_CLASSIFICATIONS,
 	GitHubOrgOAuthRestricted: GH_ORG_AUTH_CLASSIFICATION,
@@ -224,6 +244,32 @@ Your GitHub token appears expired. Please log out and back in to refresh it. (Se
 		userMessage: `
 GitHub could not access this repository or part of it (for example CI checks). Check that the repository still exists, grant the missing read permission, or reconnect GitHub under Settings → Integrations.
 		`,
+	},
+	/**
+	 * A GitHub organization refuses personal access tokens whose lifetime
+	 * exceeds its policy. Terminal until the user connects a token with a
+	 * shorter expiration: credential mutations invalidate the review list,
+	 * so pollers resume once that fetch succeeds.
+	 */
+	GitHubTokenLifetimeRestricted: {
+		severity: "error",
+		terminal: true,
+		title: "GitHub Token Lifetime Restricted",
+		userMessage:
+			"A GitHub organization limits how long personal access tokens may stay valid. Create a token with a shorter expiration that meets the organization's policy, then reconnect GitHub with it under Settings → Integrations.",
+	},
+	/**
+	 * GitHub's API quota is exhausted. Polling through it only deepens the
+	 * block, so it's terminal: pollers stop until refetch-on-focus or a
+	 * manual retry succeeds, and telemetry captures it once per session
+	 * instead of once per polled card.
+	 */
+	GitHubRateLimited: {
+		severity: "warning",
+		terminal: true,
+		title: "GitHub Rate Limit Exceeded",
+		userMessage:
+			"GitHub's API rate limit was exceeded. Automatic refreshes are paused and resume when you return to the app; the limit usually resets within an hour.",
 	},
 	/**
 	 * No forge credentials are stored — the user never authenticated or

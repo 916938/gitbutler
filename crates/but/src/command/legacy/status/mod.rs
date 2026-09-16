@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context as _;
 use bstr::{BStr, BString, ByteSlice};
 use but_api::diff::ComputeLineStats;
 use but_core::{
-    ChangeId, IgnoredWorktreeTreeChangeStatus, RepositoryExt, TreeStatus,
+    ChangeId, IgnoredWorktreeTreeChangeStatus, RepositoryExt,
     ref_metadata::StackId,
     sync::{RepoExclusive, RepoExclusiveGuard},
     ui,
@@ -27,12 +27,14 @@ use crate::{
         self, OutputFormat,
         atoms::{CliIdArg, Purpose, ResolvedCliIdArg},
     },
-    command::legacy::status::uncommitted_file::UncommittedFileWithId,
     command::legacy::{
         forge::review,
-        status::output::{
-            BranchLineContent, CommitLineContent, FileLineContent, StatusOutput, StatusOutputLine,
-            UncommittedLineContent,
+        status::{
+            output::{
+                BranchLineContent, CommitLineContent, FileLineContent, StatusOutput,
+                StatusOutputLine, UncommittedLineContent,
+            },
+            uncommitted_file::UncommittedFileWithId,
         },
         upstream::{self, BranchStatus as UpstreamBranchStatus},
         workspace_target,
@@ -44,7 +46,7 @@ use crate::{
     tui::text::truncate_text,
     utils::{
         InputOutputChannel, OutputChannel, WriteWithUtils, shorten_hex_object_id,
-        shorten_object_id, time::format_relative_time_verbose,
+        shorten_object_id, status_letter, status_letter_ui, time::format_relative_time_verbose,
     },
 };
 
@@ -471,24 +473,8 @@ fn build_status_context<'a>(
                 expensive_commit_info: true,
                 ..Default::default()
             },
-        )?
-        .pruned_to_entrypoint();
-        let mut stacks = ws.stacks.clone();
-        if !head_info.is_entrypoint {
-            // Status reads commit details from pruned ref-info, but builds CLI IDs from graph
-            // stacks, so both views must contain the same segments when HEAD is inside a stack.
-            let visible_segment_ids: HashSet<_> = head_info
-                .stacks
-                .iter()
-                .flat_map(|stack| stack.segments.iter().map(|segment| segment.id))
-                .collect();
-            stacks.retain_mut(|stack| {
-                stack
-                    .segments
-                    .retain(|segment| visible_segment_ids.contains(&segment.id));
-                !stack.segments.is_empty()
-            });
-        }
+        )?;
+        let stacks = ws.stacks.clone();
         let mut push_statuses_by_segment_id = HashMap::<SegmentIndex, PushStatus>::new();
         let mut local_commits_by_id = HashMap::<gix::ObjectId, LocalCommit>::new();
         let mut remote_commits_by_id = HashMap::<gix::ObjectId, Commit>::new();
@@ -499,7 +485,7 @@ fn build_status_context<'a>(
         // different disambiguation length here than everywhere else.
         let worktrees = head_info.worktrees;
         for worktree in &worktrees {
-            for local_commit in &worktree.commits {
+            for local_commit in worktree.commits() {
                 commit_id_to_change_id
                     .insert(local_commit.id, local_commit.change_id().into_owned());
                 local_commits_by_id.insert(local_commit.id, local_commit.clone());
@@ -574,7 +560,16 @@ fn build_status_context<'a>(
     // Kept for the tree status letters; the hunks move into the ID map.
     let changes_by_source = sources
         .iter()
-        .map(|source| (source.source.clone(), source.changes.clone()))
+        .map(|source| {
+            (
+                source.source.clone(),
+                source
+                    .changes_with_hunks
+                    .iter()
+                    .map(|(change, _)| change.clone().into())
+                    .collect(),
+            )
+        })
         .collect();
     let id_map = IdMap::new(
         stacks,
@@ -1239,7 +1234,7 @@ fn print_worktree_status(
                         .values()
                         .any(|candidate| candidate.name == wt.name)
                 })
-                .flat_map(|wt| wt.commits.iter().map(|c| c.id)),
+                .flat_map(|wt| wt.commits().map(|c| c.id)),
         )
         .collect();
     for worktree in status_ctx.worktrees.iter().filter(|wt| {
@@ -1488,12 +1483,11 @@ fn print_files(
 
     for file in files {
         let state = status_from_changes(changes, file.path.clone());
-        let path = match &state {
-            Some(state) => path_with_color_ui(state, file.path.to_string()),
-            None => Span::raw(file.path.to_string()),
-        };
-
-        let status = state.as_ref().map(status_letter_ui).unwrap_or_default();
+        let path = Span::raw(file.path.to_string());
+        let status = state
+            .as_ref()
+            .map(|status| status_letter_ui(status, t))
+            .unwrap_or_else(|| Span::raw(char::default().to_string()));
 
         let cli_id = &file.short_id;
         let id_padding = " ".repeat(max_id_width.saturating_sub(cli_id.len()) + 1);
@@ -1511,7 +1505,7 @@ fn print_files(
                 Span::styled(cli_id.to_string(), t.cli_id),
                 Span::raw(id_padding),
             ]),
-            status: Vec::from([Span::raw(status.to_string()), Span::raw(" ")]),
+            status: Vec::from([status, Span::raw(" ")]),
             path: Vec::from([path]),
         };
 
@@ -1799,7 +1793,7 @@ fn print_worktree_row(
     let t = crate::theme::get();
     let cli_id = with_id.reference_id();
     let line = UncommittedLineContent {
-        id: Vec::from([Span::styled(cli_id.to_short_string().to_string(), t.cli_id)]),
+        id: Vec::from([Span::styled(cli_id.to_short_string(), t.cli_id)]),
         decoration_start: Vec::from([Span::raw(" {")]),
         label: Vec::from([Span::styled(
             worktree.ref_name.as_ref().map_or_else(
@@ -1832,7 +1826,7 @@ fn print_uncommitted_group(
 ) -> anyhow::Result<()> {
     let t = crate::theme::get();
     let line = UncommittedLineContent {
-        id: Vec::from([Span::styled(cli_id.to_short_string().to_string(), t.cli_id)]),
+        id: Vec::from([Span::styled(cli_id.to_short_string(), t.cli_id)]),
         decoration_start: Vec::from([Span::raw(format!(" {}", decoration.0))]),
         label: Vec::from([Span::styled(label.to_owned(), t.info)]),
         decoration_end: Vec::from([Span::raw(decoration.1.to_owned())]),
@@ -1874,7 +1868,7 @@ fn lookup_cli_id_for_short_id(
     kind: &str,
 ) -> anyhow::Result<CliId> {
     let mut matches = id_map.parse_using_repo(short_id, repo)?;
-    matches.retain(|id| id.to_short_string() == short_id && predicate(id));
+    matches.retain(|id| id.short_string() == short_id && predicate(id));
 
     match matches.len() {
         1 => Ok(matches.remove(0)),
@@ -1884,44 +1878,6 @@ fn lookup_cli_id_for_short_id(
         _ => Err(anyhow::anyhow!(
             "CLI id '{short_id}' is ambiguous for {kind} in IdMap"
         )),
-    }
-}
-
-fn status_letter(status: &TreeStatus) -> char {
-    match status {
-        TreeStatus::Addition { .. } => 'A',
-        TreeStatus::Deletion { .. } => 'D',
-        TreeStatus::Modification { .. } => 'M',
-        TreeStatus::Rename { .. } => 'R',
-    }
-}
-
-pub fn status_letter_ui(status: &ui::TreeStatus) -> char {
-    match status {
-        ui::TreeStatus::Addition { .. } => 'A',
-        ui::TreeStatus::Deletion { .. } => 'D',
-        ui::TreeStatus::Modification { .. } => 'M',
-        ui::TreeStatus::Rename { .. } => 'R',
-    }
-}
-
-pub fn path_with_color_ui(status: &ui::TreeStatus, path: String) -> Span<'static> {
-    let t = crate::theme::get();
-    match status {
-        ui::TreeStatus::Addition { .. } => Span::styled(path, t.addition),
-        ui::TreeStatus::Deletion { .. } => Span::styled(path, t.deletion),
-        ui::TreeStatus::Modification { .. } => Span::styled(path, t.modification),
-        ui::TreeStatus::Rename { .. } => Span::styled(path, t.renaming),
-    }
-}
-
-fn path_with_color(status: &TreeStatus, path: String) -> Span<'static> {
-    let t = crate::theme::get();
-    match status {
-        TreeStatus::Addition { .. } => Span::styled(path, t.addition),
-        TreeStatus::Deletion { .. } => Span::styled(path, t.deletion),
-        TreeStatus::Modification { .. } => Span::styled(path, t.modification),
-        TreeStatus::Rename { .. } => Span::styled(path, t.renaming),
     }
 }
 
@@ -2143,9 +2099,10 @@ fn displayed_file_id(padded_prefix: Option<&str>, short_id: &str) -> String {
 }
 
 fn tree_change_display_cli(change: &but_core::TreeChange) -> (Span<'static>, Span<'static>) {
-    let path = path_with_color(&change.status, change.path.to_string());
-    let status_letter = status_letter(&change.status);
-    (Span::raw(format!("{status_letter} ")), path)
+    let path = Span::raw(change.path.to_string());
+    let mut status = status_letter(&change.status, crate::theme::get());
+    status.content.to_mut().push(' ');
+    (status, path)
 }
 
 impl CliDisplay for but_core::TreeChange {

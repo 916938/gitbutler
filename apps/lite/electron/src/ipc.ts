@@ -1,12 +1,15 @@
 import type {
 	AiConfiguration,
 	AiConfigurationUpdate,
+	AppSettings,
+	FeatureFlagsUpdate,
 	WatcherEvent,
 	AskpassPromptEvent,
 } from "@gitbutler/but-sdk";
 import type * as sdk from "@gitbutler/but-sdk";
 import { apiParamNames } from "@gitbutler/but-sdk/api-param-names";
 import type { GUISettings } from "./settings.js";
+import type { AvailabilitySnapshot, InstallationStatus } from "./updater-state.js";
 
 type SDK = Pick<
 	{
@@ -22,15 +25,25 @@ type SDK = Pick<
  * SDK's, plus the members electron implements itself.
  */
 export type LiteElectronApi = SDK & {
+	getUpdateStatus: () => Promise<InstallationStatus>;
+	checkForUpdates: () => Promise<AvailabilitySnapshot>;
+	downloadUpdate: (version: string) => Promise<void>;
+	installUpdate: () => Promise<void>;
+	onUpdateStatusChange: (callback: (state: InstallationStatus) => void) => () => void;
 	onAskpassPrompt: (callback: (event: AskpassPromptEvent) => void) => () => void;
 	askpassSubmitPromptResponse: (params: AskpassSubmitPromptResponseParams) => Promise<void>;
 	clipboardWriteText: (text: string) => Promise<void>;
 	/** A `but://app/...` link the app was asked to open, as an in-app path. */
 	onDeepLink: (callback: (path: string) => void) => () => void;
 	getAiConfiguration: () => Promise<AiConfiguration>;
+	/** The settings shared with the other surfaces through the settings file. */
+	getAppSettings: () => Promise<AppSettings>;
 	getVersion: () => Promise<string>;
+	isPackaged: () => Promise<boolean>;
 	isFullScreen: () => Promise<boolean>;
 	onFullScreenChange: (callback: (fullScreen: boolean) => void) => () => void;
+	/** A click on a desktop notification, by the id it was shown with. */
+	onNotificationClick: (callback: (id: string) => void) => () => void;
 	openInWebBrowser: (url: string) => Promise<void>;
 	pathJoin: (...paths: Array<string>) => Promise<string>;
 	pickDirectory: () => Promise<string | null>;
@@ -38,12 +51,19 @@ export type LiteElectronApi = SDK & {
 	/** Reveal a file in the OS file manager, selected in its containing folder. */
 	showItemInFolder: (path: string) => Promise<void>;
 	showNativeMenu: (params: ShowNativeMenuParams) => Promise<string | null>;
+	/**
+	 * Show a desktop notification, unless the window is focused — the bell is
+	 * in view then. A no-op where the OS offers none.
+	 */
+	showNotification: (params: ShowNotificationParams) => Promise<void>;
 	streamAiResponse: (
 		systemMessage: string,
 		prompt: string,
 		onToken: (token: string) => void,
 	) => Promise<string>;
 	updateAiConfiguration: (update: AiConfigurationUpdate) => Promise<AiConfiguration>;
+	/** Feature flags shared with the other surfaces; unset fields are left unchanged. */
+	updateFeatureFlags: (update: FeatureFlagsUpdate) => Promise<void>;
 	watcherSubscribe: (projectId: string, callback: (event: WatcherEvent) => void) => Promise<string>;
 	watcherUnsubscribe: (subscriptionId: string) => Promise<boolean>;
 	watcherStopAll: () => Promise<number>;
@@ -62,20 +82,30 @@ export const exposedEndpoints = Object.keys(apiParamNames) as ReadonlyArray<Endp
 
 /** Members the main process answers itself rather than forwarding to the SDK. */
 export const localEndpoints = [
+	"getUpdateStatus",
+	"checkForUpdates",
+	"downloadUpdate",
+	"installUpdate",
+	"updateStatusChange",
 	"askpassPrompt",
 	"askpassSubmitPromptResponse",
 	"clipboardWriteText",
 	"deepLink",
 	"fullScreenChange",
+	"getAppSettings",
 	"getVersion",
 	"isFullScreen",
+	"isPackaged",
+	"notificationClick",
 	"openInWebBrowser",
 	"pathJoin",
 	"pickDirectory",
 	"readGUISettings",
 	"showItemInFolder",
 	"showNativeMenu",
+	"showNotification",
 	"streamAiResponse",
+	"updateFeatureFlags",
 	"watcherStopAll",
 	"watcherSubscribe",
 	"watcherUnsubscribe",
@@ -147,6 +177,14 @@ export interface StreamAiResponseToken {
 	token: string;
 }
 
+export interface ShowNotificationParams {
+	/** Handed back on click, so the renderer can land on what was announced. */
+	id: string;
+	title: string;
+	body: string;
+}
+
+/** In CSS pixels relative to the viewport, as the renderer measures them. */
 export interface NativeMenuPosition {
 	x: number;
 	y: number;

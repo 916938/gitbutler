@@ -524,38 +524,79 @@ const createGutterStore = <T>(
 	 */
 	let checkDrag: {
 		host: HTMLElement;
-		startAddress: Extract<Address, { _tag: "Hunk" }>;
 		startKey: string;
+		/** The cell the drag last reached; the next sample paints from there. */
+		lastCell: HTMLElement;
 		checked: boolean;
 		painted: Set<string>;
 		moved: boolean;
 	} | null = null;
 
-	const lineAddressAtPoint = (
+	const lineCellAtPoint = (
 		host: HTMLElement,
 		clientX: number,
 		clientY: number,
-	): Extract<Address, { _tag: "Hunk" }> | null => {
-		const shadowRoot = host.shadowRoot;
-		const itemId = itemIdsByHost.get(host);
-		if (!shadowRoot || itemId === undefined) return null;
-
-		const element = shadowRoot.elementFromPoint(clientX, clientY);
+	): HTMLElement | null => {
+		const element = host.shadowRoot?.elementFromPoint(clientX, clientY);
 		if (!(element instanceof HTMLElement)) return null;
 
 		// A checkbox is the host's own child assigned to a slot, so the cell holding it is only an
 		// ancestor of the slot, never of the checkbox.
-		const cell =
+		return (
 			element.closest<HTMLElement>("[data-column-number]") ??
 			element.assignedSlot?.closest<HTMLElement>("[data-column-number]") ??
-			null;
-		if (!cell) return null;
+			null
+		);
+	};
+
+	const lineAddressFromCell = (
+		host: HTMLElement,
+		cell: HTMLElement,
+	): Extract<Address, { _tag: "Hunk" }> | null => {
+		const itemId = itemIdsByHost.get(host);
+		if (itemId === undefined) return null;
 
 		const target = diffLineTargetFromElement({ element: cell, itemId });
 		if (target?.lineType !== "change") return null;
 
 		const address = getLineAddress()(target);
 		return address ? hunkAddress(address) : null;
+	};
+
+	/** The cell in the same column as `beside` that stands for the line `cell` stood for. */
+	const sameLineCell = (beside: HTMLElement, cell: HTMLElement): HTMLElement | null => {
+		const lineNumber = cell.getAttribute("data-column-number");
+		const lineType = cell.getAttribute("data-line-type");
+		if (lineNumber === null || lineType === null) return null;
+
+		return (
+			beside.parentElement?.querySelector<HTMLElement>(
+				`[data-column-number="${CSS.escape(lineNumber)}"][data-line-type="${CSS.escape(lineType)}"]`,
+			) ?? null
+		);
+	};
+
+	/**
+	 * The number cells from one to another in travel order, both included. A pointer sample can
+	 * land several lines past the one before it — the browser reports at most one a frame, and a
+	 * quick flick outruns the mouse's own rate — so the lines between come from this walk rather
+	 * than from a sample each. The cells of a column are siblings, so the walk stops at the
+	 * column's edge: if the two are in different columns, only the two of them are returned.
+	 */
+	const lineCellsBetween = (from: HTMLElement, to: HTMLElement): Array<HTMLElement> => {
+		// A re-render replaces the cells wholesale; the line the drag last reached is still there.
+		const start = from.isConnected ? from : (sameLineCell(to, from) ?? from);
+		const forward = Boolean(start.compareDocumentPosition(to) & Node.DOCUMENT_POSITION_FOLLOWING);
+		const cells: Array<HTMLElement> = [];
+		for (
+			let cell: Element | null = start;
+			cell;
+			cell = forward ? cell.nextElementSibling : cell.previousElementSibling
+		) {
+			if (cell instanceof HTMLElement && cell.hasAttribute("data-column-number")) cells.push(cell);
+			if (cell === to) return cells;
+		}
+		return [from, to];
 	};
 
 	const paintCheckDragLine = (address: Extract<Address, { _tag: "Hunk" }>): void => {
@@ -572,19 +613,22 @@ const createGutterStore = <T>(
 	const handleCheckDragMove = (event: PointerEvent): void => {
 		if (!checkDrag) return;
 
-		const address = lineAddressAtPoint(checkDrag.host, event.clientX, event.clientY);
-		if (!address) return;
+		const { host, startKey } = checkDrag;
+		const cell = lineCellAtPoint(host, event.clientX, event.clientY);
+		if (!cell || cell === checkDrag.lastCell) return;
 
-		const key = addressIdentityKey(address);
-		// Until the press reaches another line it is still a click, and the checkbox answers it.
-		if (!checkDrag.moved && key === checkDrag.startKey) return;
-
+		// Context lines sit in the column too; the drag passes over them without painting.
+		const crossed = lineCellsBetween(checkDrag.lastCell, cell).flatMap(
+			(crossedCell) => lineAddressFromCell(host, crossedCell) ?? [],
+		);
 		if (!checkDrag.moved) {
+			// Until the press reaches another line it is still a click, and the checkbox answers it.
+			if (crossed.every((address) => addressIdentityKey(address) === startKey)) return;
 			checkDrag.moved = true;
-			checkDrag.host.setAttribute(CHECK_DRAG_ATTRIBUTE, "");
-			paintCheckDragLine(checkDrag.startAddress);
+			host.setAttribute(CHECK_DRAG_ATTRIBUTE, "");
 		}
-		paintCheckDragLine(address);
+		for (const address of crossed) paintCheckDragLine(address);
+		checkDrag.lastCell = cell;
 	};
 
 	/**
@@ -602,15 +646,17 @@ const createGutterStore = <T>(
 		const host = root instanceof ShadowRoot ? root.host : null;
 		if (!(host instanceof HTMLElement)) return;
 
-		const address = lineAddressAtPoint(host, event.clientX, event.clientY);
+		const cell = lineCellAtPoint(host, event.clientX, event.clientY);
+		if (!cell) return;
+		const address = lineAddressFromCell(host, cell);
 		if (!address) return;
 
 		event.stopPropagation();
 		endCheckDrag();
 		checkDrag = {
 			host,
-			startAddress: address,
 			startKey: addressIdentityKey(address),
+			lastCell: cell,
 			checked: !isAddressChecked(address),
 			painted: new Set(),
 			moved: false,

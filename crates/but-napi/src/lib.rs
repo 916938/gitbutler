@@ -25,8 +25,9 @@ use napi_derive::napi;
 use but_api::{
     self as _,
     watcher::{
-        WatcherGitActivityPayload, WatcherGitFetchPayload, WatcherGitHeadPayload, WatcherPayload,
-        WatcherWorkspaceActivityPayload, WatcherWorktreeChangesPayload,
+        WatcherExternalInvalidationPayload, WatcherGitActivityPayload, WatcherGitFetchPayload,
+        WatcherGitHeadPayload, WatcherPayload, WatcherWorkspaceActivityPayload,
+        WatcherWorktreeChangesPayload,
     },
 };
 
@@ -223,17 +224,23 @@ impl From<but_askpass::PromptEvent<but_askpass::Context>> for AskpassPromptEvent
 /// Return the interactive login shell environment for GUI launches.
 ///
 /// Returns an empty map when launched from a terminal or on Windows, where shell startup may block.
+/// Async so the shell can start while Electron boots instead of before it.
 #[napi]
-pub fn interactive_login_shell_environment() -> HashMap<String, String> {
+pub async fn interactive_login_shell_environment() -> napi::Result<HashMap<String, String>> {
     if cfg!(windows) || std::env::var_os("TERM").is_some() {
-        return HashMap::new();
+        return Ok(HashMap::new());
     }
 
-    but_core::cmd::extract_interactive_login_shell_environment()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
-        .collect()
+    let vars: HashMap<String, String> = tokio::task::spawn_blocking(|| {
+        but_core::cmd::extract_interactive_login_shell_environment()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .collect()
+    })
+    .await
+    .map_err(|err| napi::Error::from_reason(err.to_string()))?;
+    Ok(vars)
 }
 
 /// Initialize the process-global askpass broker and forward prompt events to JavaScript.
@@ -316,14 +323,32 @@ fn event_from_change(change: gitbutler_watcher::Change) -> WatcherEvent {
                 WatcherWorkspaceActivityPayload
             )),
         },
+        gitbutler_watcher::Change::ExternalInvalidation { project_id, tags } => WatcherEvent {
+            name: format!("project://{project_id}/external-invalidation"),
+            payload: serde_json::json!(WatcherPayload::ExternalInvalidation(
+                WatcherExternalInvalidationPayload {
+                    // The sentinel is a file anyone can write; only names a tag has get through.
+                    tags: tags
+                        .into_iter()
+                        .filter(|tag| but_api::tags::CacheTag::from_name(tag).is_some())
+                        .collect(),
+                }
+            )),
+        },
         gitbutler_watcher::Change::WorktreeChanges {
             project_id,
             changes,
-            changed_paths: _,
+            changed_paths,
         } => WatcherEvent {
             name: format!("project://{project_id}/worktree_changes"),
             payload: serde_json::json!(WatcherPayload::WorktreeChanges(
-                WatcherWorktreeChangesPayload { changes }
+                WatcherWorktreeChangesPayload {
+                    changes,
+                    changed_paths: changed_paths
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect(),
+                }
             )),
         },
     }

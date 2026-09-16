@@ -1,7 +1,14 @@
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { classes } from "#ui/components/classes.ts";
 import { FolderIcon } from "#ui/components/FolderIcon.tsx";
-import { Popup, PopupItem, PopupSearch, PopupSection } from "#ui/components/Popup.tsx";
+import {
+	Popup,
+	PopupEmpty,
+	PopupItem,
+	PopupSearch,
+	PopupSection,
+	PopupSectionLabel,
+} from "#ui/components/Popup.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { useAddLocalRepository } from "#ui/components/useAddLocalRepository.ts";
 import { globalHotkeys } from "#ui/hotkeys.ts";
@@ -181,17 +188,13 @@ const VirtualizedProjectList: FC<{
 								className={styles.virtualProject}
 							>
 								{row.isFirstInGroup && (
-									<div
+									<PopupSectionLabel
 										id={`${groupDescriptionId}-${row.groupIndex}`}
 										aria-hidden="true"
-										className={classes(
-											"text-12",
-											styles.groupLabel,
-											row.groupIndex > 0 && styles.groupLabelDivided,
-										)}
+										divided={row.groupIndex > 0}
 									>
 										{group.value}
-									</div>
+									</PopupSectionLabel>
 								)}
 
 								<PopupItem
@@ -335,7 +338,11 @@ export const ProjectPicker: FC<{ project: ProjectForFrontend }> = (p) => {
 							render={<Combobox.Input value={query} />}
 						/>
 						<Combobox.Empty>
-							<div className={classes("text-13", styles.empty)}>No projects found.</div>
+							<PopupEmpty
+								query={deferredQuery}
+								nothingFound="No projects found"
+								nothingToList="No projects yet"
+							/>
 						</Combobox.Empty>
 
 						<VirtualizedProjectList

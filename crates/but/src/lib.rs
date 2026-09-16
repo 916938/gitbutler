@@ -543,7 +543,10 @@ async fn match_subcommand(
         cmd => cmd,
     };
 
+    #[cfg(feature = "nightly")]
     let is_expand = matches!(&cmd, Subcommands::_Expand { .. });
+    #[cfg(not(feature = "nightly"))]
+    let is_expand = false;
     // A non-interactive invocation of a regular command: the situation where an
     // agent-facing maintenance notice is worth printing.
     let notice_worthy_command = !out.can_prompt()
@@ -683,6 +686,18 @@ async fn dispatch_subcommand(
                 Some(args::config::Subcommands::Feature { flag, status }) => {
                     command::config::feature_config(out, *flag, *status).map_err(CliError::from)
                 }
+                Some(args::config::Subcommands::User { cmd }) => {
+                    let ctx = match cmd {
+                        Some(
+                            args::config::UserSubcommand::Set { global: true, .. }
+                            | args::config::UserSubcommand::Unset { global: true, .. },
+                        ) => None,
+                        _ => discover_optional_context(&args.current_dir)?,
+                    };
+                    command::config::user_config(ctx.as_ref(), out, cmd.clone())
+                        .await
+                        .map_err(CliError::from)
+                }
                 #[cfg(feature = "legacy")]
                 Some(args::config::Subcommands::Forge {
                     cmd: Some(args::config::ForgeSubcommand::GithubStacks { .. }),
@@ -735,19 +750,34 @@ async fn dispatch_subcommand(
             })
             .map(|()| DispatchOutcome::Return);
         }
-        Subcommands::Skill(args::skill::Platform { cmd }) => {
-            // Skill commands use repository context when available, but can run
-            // without one. Subcommand handlers produce tailored guidance when a
-            // local repository is actually required.
-            let ctx = but_ctx::Context::discover(&args.current_dir);
-            let mut ctx = match ctx {
-                Ok(ctx) => Some(ctx),
-                Err(err) if is_not_in_git_repository_error(&err) => None,
-                Err(err) => {
-                    return Err(CliError::Internal(err));
-                }
+        Subcommands::Alias(alias_args::Platform { cmd }) => {
+            let ctx = match &cmd {
+                Some(
+                    alias_args::Subcommands::Add { global: true, .. }
+                    | alias_args::Subcommands::Remove { global: true, .. },
+                ) => None,
+                _ => discover_optional_context(&args.current_dir)?,
             };
-            return command::skill::handle(ctx.as_mut(), out, cmd)
+            return (match cmd {
+                Some(alias_args::Subcommands::List) | None => {
+                    command::alias::list(ctx.as_ref(), out)
+                }
+                Some(alias_args::Subcommands::Add {
+                    name,
+                    value,
+                    global,
+                }) => command::alias::add(ctx.as_ref(), out, &name, &value, global.into()),
+                Some(alias_args::Subcommands::Remove { name, global }) => {
+                    command::alias::remove(ctx.as_ref(), out, &name, global.into())
+                }
+            })
+            .map(|()| DispatchOutcome::Return)
+            .map_err(CliError::from);
+        }
+        Subcommands::Skill(platform) => {
+            // The handler discovers a repository only for the modes that need
+            // one, so reads and global installs work inside an unreadable repo.
+            return command::skill::handle(&args.current_dir, out, platform)
                 .map(|()| DispatchOutcome::Return)
                 .map_err(CliError::from);
         }
@@ -800,6 +830,7 @@ async fn dispatch_subcommand(
             .map(|()| DispatchOutcome::Return)
             .map_err(CliError::from);
         }
+        #[cfg(feature = "nightly")]
         Subcommands::_Open { .. } => setup::init_ctx(
             &args,
             InitCtxOptions {
@@ -808,9 +839,8 @@ async fn dispatch_subcommand(
             },
             out,
         ),
-        Subcommands::_Expand { .. } | Subcommands::Alias(..) => {
-            but_ctx::Context::discover(&args.current_dir)
-        }
+        #[cfg(feature = "nightly")]
+        Subcommands::_Expand { .. } => but_ctx::Context::discover(&args.current_dir),
         Subcommands::Branch(branch::Platform { ref cmd }) => setup::init_ctx(
             &args,
             match cmd {
@@ -846,7 +876,7 @@ async fn dispatch_subcommand(
         | Subcommands::Undo(..)
         | Subcommands::Redo(..)
         | Subcommands::RefreshRemoteData { .. }
-        | Subcommands::Land { .. } => setup::init_ctx(&args, InitCtxOptions::default(), out),
+        | Subcommands::Merge { .. } => setup::init_ctx(&args, InitCtxOptions::default(), out),
         #[cfg(feature = "legacy")]
         Subcommands::Clean { .. }
         | Subcommands::Status { .. }
@@ -921,6 +951,7 @@ async fn dispatch_subcommand(
         | Subcommands::Help { .. }
         | Subcommands::Onboarding
         | Subcommands::Config(..)
+        | Subcommands::Alias(..)
         | Subcommands::Skill(..)
         | Subcommands::Agent(..)
         | Subcommands::Mcp(..)
@@ -933,6 +964,7 @@ async fn dispatch_subcommand(
         Subcommands::Setup { .. } => {
             unreachable!("handled above")
         }
+        #[cfg(feature = "nightly")]
         Subcommands::_Open {
             sources,
             program_id,
@@ -943,6 +975,7 @@ async fn dispatch_subcommand(
             command::open::open(&ctx, out, sources, program_id)?;
             None
         }
+        #[cfg(feature = "nightly")]
         Subcommands::_Expand { cli_id } => {
             let outcome = command::expand::handle(&ctx, cli_id)?;
             out.print_cli_output(outcome)?;
@@ -969,27 +1002,13 @@ async fn dispatch_subcommand(
                     let outcome = command::worktree::remove::remove(&mut ctx, &worktree, force)?;
                     out.print_cli_output(outcome)?;
                 }
+                worktree::Subcommands::New { name } => {
+                    let outcome = command::worktree::new::new(&mut ctx, name.as_ref())?;
+                    out.print_cli_output(outcome)?;
+                }
             }
             None
         }
-        Subcommands::Alias(alias_args::Platform { cmd }) => match cmd {
-            Some(alias_args::Subcommands::List) | None => {
-                command::alias::list(&*ctx.repo.get()?, out)?;
-                None
-            }
-            Some(alias_args::Subcommands::Add {
-                name,
-                value,
-                global,
-            }) => {
-                command::alias::add(&mut ctx, out, &name, &value, global.into())?;
-                None
-            }
-            Some(alias_args::Subcommands::Remove { name, global }) => {
-                command::alias::remove(&mut ctx, out, &name, global.into())?;
-                None
-            }
-        },
         Subcommands::Branch(branch::Platform { cmd }) => match cmd {
             #[cfg(not(feature = "legacy"))]
             None => todo!("implement list and call recursively"),
@@ -1621,7 +1640,7 @@ async fn dispatch_subcommand(
             ws
         }
         #[cfg(feature = "legacy")]
-        Subcommands::Land {
+        Subcommands::Merge {
             branch,
             yes,
             no_ff,
@@ -1629,8 +1648,8 @@ async fn dispatch_subcommand(
         } => {
             let conflicts_before = command::legacy::conflict_notice::snapshot(&ctx);
             let result =
-                command::legacy::land::handle(&mut ctx, out, &branch, yes, no_ff, whole_stack)
-                    .context("Failed to land branch.");
+                command::legacy::merge::handle(&mut ctx, out, &branch, yes, no_ff, whole_stack)
+                    .context("Failed to merge branch.");
             if result.is_ok() {
                 command::legacy::conflict_notice::report_newly_conflicted(
                     &ctx,
@@ -1754,7 +1773,7 @@ fn run_agentlog_command(
     Ok(())
 }
 
-fn is_not_in_git_repository_error(err: &anyhow::Error) -> bool {
+pub(crate) fn is_not_in_git_repository_error(err: &anyhow::Error) -> bool {
     matches!(
         err.downcast_ref::<gix::discover::Error>(),
         Some(gix::discover::Error::Discover(
@@ -1763,6 +1782,14 @@ fn is_not_in_git_repository_error(err: &anyhow::Error) -> bool {
                 | gix::discover::upwards::Error::NoGitRepositoryWithinFs { .. }
         ))
     )
+}
+
+fn discover_optional_context(path: &std::path::Path) -> CliResult<Option<but_ctx::Context>> {
+    match but_ctx::Context::discover(path) {
+        Ok(ctx) => Ok(Some(ctx)),
+        Err(err) if is_not_in_git_repository_error(&err) => Ok(None),
+        Err(err) => Err(CliError::Internal(err)),
+    }
 }
 
 #[cfg(feature = "legacy")]

@@ -1,8 +1,11 @@
 import {
+	useSetReviewThreadResolved,
 	useAddCommentReaction,
+	useAddSubmissionReaction,
 	useCreateReviewComment,
 	useDeleteReviewComment,
 	useRemoveCommentReaction,
+	useRemoveSubmissionReaction,
 	useOpenInProgram,
 	useUpdateReviewComment,
 } from "#ui/api/mutations.ts";
@@ -32,7 +35,7 @@ import {
 import * as md from "#ui/markdown-editing.ts";
 import { applyToTextarea } from "#ui/markdown-textarea.ts";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
-import { Tooltip } from "@base-ui/react";
+import { Toggle, ToggleGroup, Tooltip } from "@base-ui/react";
 import { Badge, type BadgeVariant } from "#ui/components/Badge.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Clamped } from "#ui/components/Clamped.tsx";
@@ -42,11 +45,13 @@ import { Kbd } from "#ui/components/Kbd.tsx";
 import type { IconName } from "#ui/components/iconNames.ts";
 import { Markdown } from "#ui/components/Markdown.tsx";
 import { MarkdownAttachments } from "#ui/components/MarkdownAttachments.tsx";
-import { MarkdownToolbar } from "#ui/components/MarkdownToolbar.tsx";
+import { useMentionSuggestions } from "#ui/components/MentionSuggestions.tsx";
 import { RelativeTime } from "#ui/components/RelativeTime.tsx";
+import { ToggleGroupStyles, ToggleStyles } from "#ui/components/ToggleGroup.tsx";
 import {
 	groupReactors,
 	Reactions,
+	tallyReactions,
 } from "#ui/routes/project/$id/workspace/PullRequestReactions.tsx";
 import type {
 	ForgeReview,
@@ -60,12 +65,13 @@ import type {
 import { ReviewThreadReply } from "#ui/routes/project/$id/workspace/ReviewThreadReply.tsx";
 import { encodeBytes } from "#ui/api/bytes.ts";
 import { getHeadInfoIndex } from "#ui/api/ref-info.ts";
-import { forgeHunkPatch, threadStillAnchoredInFile } from "#ui/review-threads.ts";
+import { forgeHunkDiff, threadStillAnchoredInFile } from "#ui/review-threads.ts";
+import { isAgent } from "#ui/review-users.ts";
 import { defaultSettings } from "#ui/settings.ts";
 import { pullRequestHotkeys } from "#ui/hotkeys.ts";
 import { FreshBadge, RegisterFreshItems } from "#ui/review-arrival.tsx";
 import { useHotkeys } from "@tanstack/react-hotkeys";
-import { PatchDiff } from "@pierre/diffs/react";
+import { FileDiff } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import { clearReviewFocus, useRequestedComment } from "#ui/review-focus.ts";
 import {
@@ -84,12 +90,8 @@ import styles from "./PullRequestComments.module.css";
 /** Where a notification scrolls to when its toast named this comment. */
 const commentAnchorId = (commentId: number): string => `review-comment-${commentId}`;
 
-/**
- * Whether the author is an agent of any kind — Copilot, CI, a review bot.
- * The forge's own flag when it survives the trip, else the `[bot]` login
- * suffix every GitHub App carries.
- */
-const isAgent = (user: ForgeReviewUser): boolean => user.isBot || user.login.endsWith("[bot]");
+/** What a reply picks up from the card it answers. */
+type Quotable = { body: string | null; author: ForgeReviewUser | null };
 
 /**
  * The card header's identity: round avatar plus the login, as designed. An
@@ -100,7 +102,7 @@ const Author: FC<{ user: ForgeReviewUser }> = ({ user }) => (
 	<>
 		<Avatar src={user.avatarUrl} />
 		<span className={classes("text-13", "text-semibold", styles.authorLogin)}>{user.login}</span>
-		{isAgent(user) && <Badge variant="purple">Agent</Badge>}
+		{isAgent(user) && <Badge variant="lightGray">Agent</Badge>}
 	</>
 );
 
@@ -144,14 +146,7 @@ const Card: FC<{
 	id,
 	children,
 }) => (
-	<div
-		id={id}
-		className={classes(
-			styles.card,
-			author !== null && isAgent(author) && styles.cardAgent,
-			className,
-		)}
-	>
+	<div id={id} className={classes(styles.card, className)}>
 		<div className={styles.cardBody}>
 			<div className={styles.cardHeader}>
 				<div className={styles.cardIdentity}>
@@ -180,6 +175,7 @@ const Card: FC<{
  * row, so the surrounding card chrome stays put while editing.
  */
 const BodyEditor: FC<{
+	projectId: string;
 	value: string;
 	onChange: (value: string) => void;
 	onCancel: () => void;
@@ -187,31 +183,49 @@ const BodyEditor: FC<{
 	saving: boolean;
 	label: string;
 	saveLabel: string;
-}> = ({ value, onChange, onCancel, onSave, saving, label, saveLabel }) => (
-	<div className={styles.editor}>
-		<textarea
-			aria-label={label}
-			className={classes("text-13", "text-body", styles.editorInput)}
-			disabled={saving}
-			onChange={(evt) => onChange(evt.currentTarget.value)}
-			value={value}
-		/>
-		<div className={styles.editorActions}>
-			<button className={getButtonClassName({})} disabled={saving} onClick={onCancel} type="button">
-				Cancel
-			</button>
-			<button
-				className={getButtonClassName({ variant: "gray" })}
-				disabled={saving || value.trim() === ""}
-				onClick={onSave}
-				type="button"
-			>
-				{saveLabel}
-				<Icon name={saving ? "spinner" : "tick"} />
-			</button>
+}> = ({ projectId, value, onChange, onCancel, onSave, saving, label, saveLabel }) => {
+	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+	const mentions = useMentionSuggestions({
+		projectId,
+		targetRef: textareaRef,
+		value,
+		onInput: onChange,
+	});
+
+	return (
+		<div className={styles.editor}>
+			<textarea
+				{...mentions.textareaProps}
+				aria-label={label}
+				className={classes("text-13", "text-body", styles.editorInput)}
+				disabled={saving}
+				onKeyDown={mentions.onKeyDown}
+				ref={textareaRef}
+				value={value}
+			/>
+			{mentions.popup}
+			<div className={styles.editorActions}>
+				<button
+					className={getButtonClassName({})}
+					disabled={saving}
+					onClick={onCancel}
+					type="button"
+				>
+					Cancel
+				</button>
+				<button
+					className={getButtonClassName({ variant: "gray" })}
+					disabled={saving || value.trim() === ""}
+					onClick={onSave}
+					type="button"
+				>
+					{saveLabel}
+					<Icon name={saving ? "spinner" : "tick"} />
+				</button>
+			</div>
 		</div>
-	</div>
-);
+	);
+};
 
 const Comment: FC<{
 	projectId: string;
@@ -220,7 +234,7 @@ const Comment: FC<{
 	/** The signed-in forge login, for ownership checks and reaction toggling. */
 	currentLogin: string | null | undefined;
 	/** Quote this comment into the composer. */
-	onReply: (comment: ForgeReviewComment) => void;
+	onReply: (comment: Quotable) => void;
 }> = ({ projectId, reviewId, comment, currentLogin, onReply }) => {
 	const createdAtMs = comment.createdAt === null ? null : Date.parse(comment.createdAt);
 	const isOwn = currentLogin != null && comment.author?.login === currentLogin;
@@ -330,6 +344,7 @@ const Comment: FC<{
 			{editing ? (
 				<BodyEditor
 					label="Edit comment"
+					projectId={projectId}
 					onCancel={() => setEditing(false)}
 					onChange={setEditBody}
 					onSave={handleSave}
@@ -374,12 +389,15 @@ const ThreadAnchor: FC<{ thread: ForgeReviewThread }> = ({ thread }) => {
 	);
 };
 
-export const ThreadComment: FC<{ comment: ForgeReviewThreadComment }> = ({ comment }) => {
+export const ThreadComment: FC<{ comment: ForgeReviewThreadComment; compact?: boolean }> = ({
+	comment,
+	compact = false,
+}) => {
 	const createdAtMs = comment.createdAt === null ? null : Date.parse(comment.createdAt);
 
 	return (
 		<div
-			className={styles.threadComment}
+			className={classes(styles.threadComment, compact && styles.compactComment)}
 			id={comment.id > 0 ? commentAnchorId(comment.id) : undefined}
 		>
 			<div className={styles.cardIdentity}>
@@ -404,7 +422,9 @@ export const ThreadComment: FC<{ comment: ForgeReviewThreadComment }> = ({ comme
  * The code a thread hangs off, rendered by the same engine as the diff view
  * so it carries real line numbers and the app's diff settings. Pierre parses
  * a whole patch, and the forge sends only the `@@` hunk, so the file headers
- * are put back on — the same shape `synthesizeFilePatch` builds.
+ * are put back on — the same shape `synthesizeFilePatch` builds — and the
+ * parsed diff is keyed by its content so threads on one file do not share
+ * Pierre's highlight cache.
  */
 const ThreadHunk: FC<{
 	projectId: string;
@@ -476,15 +496,15 @@ const ThreadHunk: FC<{
 		);
 	};
 
-	const patch = useMemo(() => forgeHunkPatch(path, diffHunk), [path, diffHunk]);
+	const fileDiff = useMemo(() => forgeHunkDiff(path, diffHunk), [path, diffHunk]);
 
 	// Nothing to draw from a hunk no parser would take.
-	if (patch === null) return null;
+	if (fileDiff === null) return null;
 
 	return (
 		<div className={styles.hunk} onContextMenu={onContextMenu}>
-			<PatchDiff
-				patch={patch}
+			<FileDiff
+				fileDiff={fileDiff}
 				options={{
 					// Unified whatever the diff view is set to: a comment card is too
 					// narrow for two columns, and a thread hangs on one line anyway.
@@ -523,6 +543,7 @@ const Thread: FC<{
 	branchApplied: boolean;
 }> = ({ projectId, reviewId, thread, branchApplied }) => {
 	const [expanded, setExpanded] = useState(!thread.isResolved);
+	const { mutate: setResolved, isPending: resolving } = useSetReviewThreadResolved(projectId);
 	// The thread hangs where its first comment was left; later replies carry
 	// the same hunk.
 	const firstComment = thread.comments[0];
@@ -606,7 +627,19 @@ const Thread: FC<{
 							key={comment.id !== 0 ? comment.id : comment.htmlUrl}
 						/>
 					))}
-					<ReviewThreadReply projectId={projectId} reviewId={reviewId} threadId={thread.id} />
+					<div className={styles.threadActions}>
+						<ReviewThreadReply projectId={projectId} reviewId={reviewId} threadId={thread.id} />
+						<button
+							className={getButtonClassName({ variant: "ghost" })}
+							type="button"
+							disabled={resolving}
+							onClick={() =>
+								setResolved({ projectId, threadId: thread.id, resolved: !thread.isResolved })
+							}
+						>
+							{resolving ? "Updating…" : thread.isResolved ? "Reopen conversation" : "Resolve"}
+						</button>
+					</div>
 				</div>
 			)}
 		</div>
@@ -720,9 +753,27 @@ const Submission: FC<{
 	submission: ForgeReviewSubmission;
 	threads: Array<ForgeReviewThread>;
 	branchApplied: boolean;
-}> = ({ projectId, reviewId, submission, threads, branchApplied }) => {
+	/** The signed-in forge login, for reaction toggling. */
+	currentLogin: string | null | undefined;
+	/** Quote this submission into the composer. */
+	onReply: (submission: Quotable) => void;
+}> = ({ projectId, reviewId, submission, threads, branchApplied, currentLogin, onReply }) => {
 	const submittedAtMs = submission.submittedAt === null ? null : Date.parse(submission.submittedAt);
 	const body = submission.body?.trim() === "" ? null : submission.body;
+
+	// The listing carries every reaction with who left it, so unlike a
+	// comment there is no second request before the chips can toggle.
+	const { counts, reactors } = useMemo(
+		() => tallyReactions(submission.reactions),
+		[submission.reactions],
+	);
+	const { mutate: addSubmissionReaction } = useAddSubmissionReaction(projectId);
+	const { mutate: removeSubmissionReaction } = useRemoveSubmissionReaction(projectId);
+	const toggleReaction = (kind: string, myReactionId: number | null) => {
+		const input = { projectId, reviewId, submissionId: submission.id, kind };
+		if (myReactionId === null) addSubmissionReaction(input);
+		else removeSubmissionReaction(input);
+	};
 
 	return (
 		<Card
@@ -731,6 +782,23 @@ const Submission: FC<{
 			timestamp={submittedAtMs}
 			freshKey={`s:${submission.id}`}
 			id={submission.id > 0 ? commentAnchorId(submission.id) : undefined}
+			footer={
+				<>
+					<Reactions
+						reactions={counts}
+						reactors={reactors}
+						myLogin={currentLogin}
+						onToggle={toggleReaction}
+					/>
+					<button
+						className={getButtonClassName({ variant: "ghost" })}
+						onClick={() => onReply(submission)}
+						type="button"
+					>
+						Reply
+					</button>
+				</>
+			}
 		>
 			{/* A review that only left diff comments has no body of its own;
 			    without its threads the card would say nothing at all. */}
@@ -897,6 +965,35 @@ const ownForgeAvatar = (
 const orEmptyNotice = (items: Array<NativeMenuItem>, notice: string): Array<NativeMenuItem> =>
 	items.length > 0 ? items : [nativeMenuItem({ label: notice, enabled: false })];
 
+/** An icon button that opens a native menu of things to insert. */
+const InsertButton: FC<{
+	label: string;
+	icon: IconName;
+	/** Built on click, so the menu lists whatever has loaded by then. */
+	items: () => Array<NativeMenuItem>;
+	notice: string;
+}> = ({ label, icon, items, notice }) => (
+	<Tooltip.Root>
+		<Tooltip.Trigger
+			className={getButtonClassName({ variant: "ghost", iconOnly: true })}
+			render={<button aria-label={label} type="button" />}
+			// Keeps the caret in the textarea: a plain click would blur it
+			// first, so the insert would have no position to act on.
+			onMouseDown={(evt) => evt.preventDefault()}
+			onClick={(evt) =>
+				void showNativeMenuFromTrigger(evt.currentTarget, orEmptyNotice(items(), notice))
+			}
+		>
+			<Icon name={icon} />
+		</Tooltip.Trigger>
+		<Tooltip.Portal>
+			<Tooltip.Positioner sideOffset={4}>
+				<Tooltip.Popup render={<TooltipPopup />}>{label}</Tooltip.Popup>
+			</Tooltip.Positioner>
+		</Tooltip.Portal>
+	</Tooltip.Root>
+);
+
 /**
  * Insert an `@mention` or a `#reference` at the caret. Candidates come from
  * the forge — collaborators and open reviews — and are picked from a native
@@ -920,64 +1017,41 @@ const ForgeInserts: FC<{
 		if (target !== null) onInput(applyToTextarea(target, md.insert(snippet)));
 	};
 
-	const button = (
-		label: string,
-		icon: IconName,
-		items: () => Array<NativeMenuItem>,
-		notice: string,
-	) => (
-		<Tooltip.Root>
-			<Tooltip.Trigger
-				className={getButtonClassName({ variant: "ghost", iconOnly: true })}
-				render={<button aria-label={label} type="button" />}
-				// Keeps the caret in the textarea: a plain click would blur it
-				// first, so the insert would have no position to act on.
-				onMouseDown={(evt) => evt.preventDefault()}
-				onClick={(evt) =>
-					void showNativeMenuFromTrigger(evt.currentTarget, orEmptyNotice(items(), notice))
-				}
-			>
-				<Icon name={icon} />
-			</Tooltip.Trigger>
-			<Tooltip.Portal>
-				<Tooltip.Positioner sideOffset={4}>
-					<Tooltip.Popup render={<TooltipPopup />}>{label}</Tooltip.Popup>
-				</Tooltip.Positioner>
-			</Tooltip.Portal>
-		</Tooltip.Root>
-	);
-
 	return (
 		<>
-			{button(
-				"Mention someone",
-				"user",
-				() =>
-					(candidates ?? []).map((candidate) =>
-						nativeMenuItem({
-							label: candidate.login,
-							onSelect: () => insert(`@${candidate.login} `),
-						}),
-					),
-				"No one to mention",
-			)}
-			{button(
-				"Reference a pull request",
-				"hash",
-				() =>
+			<InsertButton
+				label="Mention someone"
+				icon="user"
+				items={() =>
+					(candidates ?? [])
+						.filter((candidate) => !isAgent(candidate))
+						.map((candidate) =>
+							nativeMenuItem({
+								label: candidate.login,
+								onSelect: () => insert(`@${candidate.login} `),
+							}),
+						)
+				}
+				notice="No one to mention"
+			/>
+			<InsertButton
+				label="Reference a pull request"
+				icon="hash"
+				items={() =>
 					(reviews?.reviews ?? []).map((review) =>
 						nativeMenuItem({
 							label: `#${review.number} ${review.title}`,
 							onSelect: () => insert(`#${review.number} `),
 						}),
-					),
-				"No pull requests to reference",
-			)}
+					)
+				}
+				notice="No pull requests to reference"
+			/>
 		</>
 	);
 };
 
-/** The bottom composer: toolbar, avatar + source, then the action footer. */
+/** The bottom composer: avatar + source, then the action footer. */
 const Composer: FC<{
 	draft: string;
 	setDraft: (update: string | ((current: string) => string)) => void;
@@ -986,7 +1060,6 @@ const Composer: FC<{
 	avatarUrl: string | null | undefined;
 	projectId: string;
 }> = ({ draft, setDraft, onSubmit, textareaRef, avatarUrl, projectId }) => {
-	const [scrolled, setScrolled] = useState(false);
 	// Folded to one quiet row until engaged; a draft arriving from outside —
 	// a reply quote, a failed submit restoring its text — unfolds it too.
 	const [engaged, setEngaged] = useState(false);
@@ -1002,6 +1075,13 @@ const Composer: FC<{
 		},
 		[textareaRef],
 	);
+
+	const mentions = useMentionSuggestions({
+		projectId,
+		targetRef: textareaRef,
+		value: draft,
+		onInput: setDraft,
+	});
 
 	const submit = () => {
 		onSubmit();
@@ -1041,37 +1121,30 @@ const Composer: FC<{
 	return (
 		<div
 			className={styles.composer}
-			data-body-scrolled={scrolled || undefined}
 			// Leaving the whole composer with nothing written folds it back.
 			onBlur={(evt) => {
 				if (empty && !evt.currentTarget.contains(evt.relatedTarget)) setEngaged(false);
 			}}
 			ref={composerRef}
 		>
-			<MarkdownToolbar
-				className={styles.composerToolbar}
-				onInput={setDraft}
-				targetRef={textareaRef}
-			/>
-
 			<div className={styles.composerBody}>
 				<Avatar src={avatarUrl} />
 				<textarea
+					{...mentions.textareaProps}
 					aria-label="Write a comment"
 					className={classes("text-13", "text-body", styles.composerInput)}
-					onChange={(evt) => setDraft(evt.currentTarget.value)}
 					onKeyDown={(evt) => {
+						if (mentions.onKeyDown(evt)) return;
 						if (evt.key === "Escape" && empty) {
 							evt.preventDefault();
 							setEngaged(false);
 						}
 					}}
-					// Only the flip re-renders: React bails out of an unchanged state.
-					onScroll={(evt) => setScrolled(evt.currentTarget.scrollTop > 0)}
 					placeholder="Write a comment…"
 					ref={attachInput}
 					value={draft}
 				/>
+				{mentions.popup}
 			</div>
 
 			<div className={styles.composerFooter}>
@@ -1094,103 +1167,46 @@ const Composer: FC<{
 };
 
 /**
- * How many happenings the Activity section shows before asking. Recent
- * pushes are the point of the section, so the rest stays folded away.
+ * Which of the activity the reader is looking at: what people wrote, what
+ * agents wrote, or the whole timeline — every comment and review plus the
+ * happenings around them (opened, commits, review requests).
  */
-const collapsedTimelineCount = 5;
+type ActivityFeed = "human" | "agents" | "timeline";
 
 /**
- * The compact happenings — opened, commits, review requests — for the side
- * panel's Activity section, newest first. The conversation itself stays in
- * the main column.
+ * The activity, newest first: the composer, then comment, review and thread
+ * cards, with the timeline's happenings woven in when the feed shows them.
  */
-export const ReviewTimeline: FC<{ projectId: string; review: ForgeReview }> = ({
-	projectId,
-	review,
-}) => {
-	const reviewId = review.number;
-	const { data: events, isPending } = useQuery(
-		listReviewTimelineEventsQueryOptions({ projectId, reviewId }),
-	);
-	const { data: currentLogin } = useQuery(currentForgeLoginQueryOptions(projectId));
-	const [expanded, setExpanded] = useState(false);
-
-	// Events render here, so this surface owns their skip registration —
-	// keyed the way `TimelineEvent` keys its markers. Memoized: the list's
-	// identity feeds `RegisterFreshItems`'s effect, so a fresh copy per
-	// render would re-register on every poll.
-	const freshEvents = useMemo(
-		() =>
-			(events ?? [])
-				.filter(
-					(event) =>
-						event.createdAt !== null &&
-						!(currentLogin != null && event.actor?.login === currentLogin),
-				)
-				.map((event) => ({
-					key: `e:${event.kind}:${event.createdAt ?? ""}`,
-					atMs: Date.parse(event.createdAt ?? ""),
-				})),
-		[events, currentLogin],
-	);
-
-	const items = useMemo(
-		() =>
-			timelineItems(review, undefined, undefined, [], events).filter(
-				(item) => item.kind === "opened" || item.kind === "event",
-			),
-		[review, events],
-	);
-
-	if (isPending) return <div className={classes("text-13", styles.commentsEmpty)}>Loading…</div>;
-	const shown = expanded ? items : items.slice(0, collapsedTimelineCount);
-	const hidden = items.length - shown.length;
-
-	return (
-		<div className={styles.commentList}>
-			<RegisterFreshItems source="timeline" items={freshEvents} />
-			{shown.map((item) =>
-				item.kind === "opened" ? (
-					<FeedEvent key="opened" icon="pr" timestamp={item.at}>
-						{item.review.author !== null && <Ref>{item.review.author.login}</Ref>} opened this pull
-						request
-					</FeedEvent>
-				) : (
-					<TimelineEvent key={item.key} event={item.event} />
-				),
-			)}
-			{hidden > 0 && (
-				<button
-					className={classes("text-12", styles.timelineMore)}
-					onClick={() => setExpanded(true)}
-					type="button"
-				>
-					Show {hidden} more
-				</button>
-			)}
-		</div>
-	);
-};
-
-/** The conversation, oldest first: comment, review and thread cards, then the composer. */
 export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }> = ({
 	projectId,
 	review,
 }) => {
 	const reviewId = review.number;
-	const { data: comments, isPending } = useQuery(
+	const [feed, setFeed] = useState<ActivityFeed>("timeline");
+	const { data: allComments, isPending } = useQuery(
 		listReviewCommentsQueryOptions({ projectId, reviewId }),
 	);
-	const { data: submissions, isPending: submissionsPending } = useQuery(
+	const { data: allSubmissions, isPending: submissionsPending } = useQuery(
 		listReviewSubmissionsQueryOptions({ projectId, reviewId }),
 	);
+	const { data: events } = useQuery(listReviewTimelineEventsQueryOptions({ projectId, reviewId }));
 	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
-	const { data: threads } = useQuery({
+	const { data: allThreads } = useQuery({
 		...listReviewThreadsQueryOptions({ projectId, reviewId }),
 		// The conversation mounts optimistically while `forgeInfo` loads;
 		// this endpoint's capability gate has to hold here instead.
 		enabled: forgeInfo?.capabilities.reviewComments === true,
 	});
+	// The people and agent feeds are split on the forge's own bot flag; a
+	// thread goes with whoever started it. Everything downstream — the fresh
+	// registration included — sees only what the feed shows, so a hidden
+	// comment is never counted as looked at.
+	const inFeed = (author: ForgeReviewUser | null) =>
+		feed === "timeline" || (author?.isBot ?? false) === (feed === "agents");
+	const comments = allComments?.filter((comment) => inFeed(comment.author));
+	const submissions = allSubmissions?.filter((submission) => inFeed(submission.author));
+	const threads = allThreads?.filter((thread) => inFeed(thread.comments[0]?.author ?? null));
+	const shownEvents = feed === "timeline" ? events : undefined;
 	const { data: currentLogin } = useQuery(currentForgeLoginQueryOptions(projectId));
 	// Whether the review's branch is in the workspace; its threads only check
 	// themselves against the working file when it is.
@@ -1207,31 +1223,35 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 	const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
 	// What the dwell may record as skipped: the conversation's own unread-
-	// eligible items. Memoized: this component re-renders per draft
-	// keystroke, and the derivation walks every listing.
-	const freshItems = useMemo(() => {
-		const own = (login: string | null | undefined) =>
-			currentLogin != null && login != null && login.toLowerCase() === currentLogin.toLowerCase();
-		return [
-			...(comments ?? [])
-				.filter(
-					(comment) => comment.id > 0 && comment.createdAt !== null && !own(comment.author?.login),
-				)
-				.map((comment) => ({ key: `c:${comment.id}`, atMs: Date.parse(comment.createdAt ?? "") })),
-			...(submissions ?? [])
-				.filter((submission) => submission.submittedAt !== null && !own(submission.author?.login))
-				.map((submission) => ({
-					key: `s:${submission.id}`,
-					atMs: Date.parse(submission.submittedAt ?? ""),
-				})),
-			...(threads ?? [])
-				.flatMap((thread) => thread.comments)
-				.filter(
-					(comment) => comment.id > 0 && comment.createdAt !== null && !own(comment.author?.login),
-				)
-				.map((comment) => ({ key: `tc:${comment.id}`, atMs: Date.parse(comment.createdAt ?? "") })),
-		];
-	}, [comments, submissions, threads, currentLogin]);
+	// eligible items.
+	const own = (login: string | null | undefined) =>
+		currentLogin != null && login != null && login.toLowerCase() === currentLogin.toLowerCase();
+	const freshItems = [
+		...(comments ?? [])
+			.filter(
+				(comment) => comment.id > 0 && comment.createdAt !== null && !own(comment.author?.login),
+			)
+			.map((comment) => ({ key: `c:${comment.id}`, atMs: Date.parse(comment.createdAt ?? "") })),
+		...(submissions ?? [])
+			.filter((submission) => submission.submittedAt !== null && !own(submission.author?.login))
+			.map((submission) => ({
+				key: `s:${submission.id}`,
+				atMs: Date.parse(submission.submittedAt ?? ""),
+			})),
+		...(threads ?? [])
+			.flatMap((thread) => thread.comments)
+			.filter(
+				(comment) => comment.id > 0 && comment.createdAt !== null && !own(comment.author?.login),
+			)
+			.map((comment) => ({ key: `tc:${comment.id}`, atMs: Date.parse(comment.createdAt ?? "") })),
+		// Keyed the way `TimelineEvent` keys its markers.
+		...(shownEvents ?? [])
+			.filter((event) => event.createdAt !== null && !own(event.actor?.login))
+			.map((event) => ({
+				key: `e:${event.kind}:${event.createdAt ?? ""}`,
+				atMs: Date.parse(event.createdAt ?? ""),
+			})),
+	];
 
 	const handleSubmit = () => {
 		const body = draft.trim();
@@ -1246,27 +1266,36 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 		);
 	};
 
-	const handleReply = (comment: ForgeReviewComment) => {
-		const quote = comment.body
-			.split("\n")
-			.map((line) => `> ${line}`)
-			.join("\n");
-		setDraft((current) =>
-			current.trim() === "" ? `${quote}\n\n` : `${current.trimEnd()}\n\n${quote}\n\n`,
-		);
+	const handleReply = ({ body, author }: Quotable) => {
+		// A verdict without a summary has nothing to quote, so the reply
+		// addresses its author instead.
+		const opener =
+			body === null || body.trim() === ""
+				? author === null
+					? ""
+					: `@${author.login} `
+				: `${body
+						.split("\n")
+						.map((line) => `> ${line}`)
+						.join("\n")}\n\n`;
+		setDraft((current) => (current.trim() === "" ? opener : `${current.trimEnd()}\n\n${opener}`));
 		composerRef.current?.focus();
 	};
 
-	// Memoized like `freshItems`: this component re-renders per composer
-	// keystroke, and a fresh grouping would re-render every card below.
+	// By hand: the compiler cannot tell these two calls are pure, and this
+	// component re-renders per composer keystroke, so a fresh grouping would
+	// re-render every card below.
 	const { filed, loose } = useMemo(
 		() => fileThreadsUnderSubmissions(submissions, threads),
 		[submissions, threads],
 	);
-	// Events render in the side panel's Activity section instead.
+	// Opening the review is a happening like the rest, so it only shows with them.
 	const items = useMemo(
-		() => timelineItems(review, comments, submissions, loose, []),
-		[review, comments, submissions, loose],
+		() =>
+			timelineItems(review, comments, submissions, loose, shownEvents).filter(
+				(item) => shownEvents !== undefined || item.kind !== "opened",
+			),
+		[review, comments, submissions, loose, shownEvents],
 	);
 
 	// A notification named a comment: scroll to it once it is on the page.
@@ -1288,7 +1317,7 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 		let target: HTMLElement | null = null;
 		let lastTop = Number.NaN;
 		const aim = () => {
-			target ??= document.getElementById(commentAnchorId(requestedComment));
+			if (target === null) target = document.getElementById(commentAnchorId(requestedComment));
 			if (target === null) return;
 			const top = target.getBoundingClientRect().top;
 			if (top !== lastTop) target.scrollIntoView({ block: "center" });
@@ -1317,6 +1346,28 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 	return (
 		<div className={styles.comments}>
 			<RegisterFreshItems source="conversation" items={freshItems} />
+			<div className={styles.activityHeader}>
+				<h3 className={classes("text-15", "text-semibold")}>Activity</h3>
+				<ToggleGroup
+					render={<ToggleGroupStyles />}
+					value={[feed]}
+					onValueChange={(value: Array<ActivityFeed>) => {
+						const head = value[0];
+						if (head !== undefined) setFeed(head);
+					}}
+					aria-label="Activity feed"
+				>
+					<Toggle render={<ToggleStyles />} value={"human" satisfies ActivityFeed}>
+						Humans
+					</Toggle>
+					<Toggle render={<ToggleStyles />} value={"agents" satisfies ActivityFeed}>
+						Agents
+					</Toggle>
+					<Toggle render={<ToggleStyles />} value={"timeline" satisfies ActivityFeed}>
+						Timeline
+					</Toggle>
+				</ToggleGroup>
+			</div>
 			<Composer
 				avatarUrl={ownForgeAvatar(items, currentLogin) ?? profile?.picture}
 				projectId={projectId}
@@ -1326,7 +1377,11 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 				textareaRef={composerRef}
 			/>
 			{loading ? (
-				<div className={classes("text-13", styles.commentsEmpty)}>Loading…</div>
+				<div className={classes("text-13", styles.commentsLoading)}>Loading…</div>
+			) : items.length === 0 ? (
+				<div className={classes("text-13", styles.commentsLoading)}>
+					{feed === "agents" ? "No comments from agents yet" : "No comments yet"}
+				</div>
 			) : (
 				<div className={styles.commentList}>
 					{items.map((item) =>
@@ -1347,6 +1402,8 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 								submission={item.submission}
 								threads={filed.get(item.submission.id) ?? []}
 								branchApplied={sourceBranchApplied === true}
+								currentLogin={currentLogin}
+								onReply={handleReply}
 							/>
 						) : item.kind === "thread" ? (
 							<div className={styles.card} key={`thread-${item.thread.id}`}>
@@ -1359,7 +1416,14 @@ export const PullRequestComments: FC<{ projectId: string; review: ForgeReview }>
 									/>
 								</div>
 							</div>
-						) : null,
+						) : item.kind === "opened" ? (
+							<FeedEvent key="opened" icon="pr" timestamp={item.at}>
+								{item.review.author !== null && <Ref>{item.review.author.login}</Ref>} opened this
+								pull request
+							</FeedEvent>
+						) : (
+							<TimelineEvent key={item.key} event={item.event} />
+						),
 					)}
 				</div>
 			)}

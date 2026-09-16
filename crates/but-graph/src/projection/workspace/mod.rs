@@ -1,12 +1,10 @@
-use anyhow::Context as _;
 use but_core::ref_metadata;
 
-use super::Stack;
+use super::{Stack, WorktreeStack};
 use crate::{Graph, SegmentIndex};
 
 pub(super) mod api;
-mod init;
-pub(crate) use init::Downgrade;
+pub(crate) mod init;
 
 /// A workspace reference is a list of [Stacks](Stack), with a reference to the underlying [`Graph`].
 #[derive(Clone)]
@@ -57,6 +55,9 @@ pub struct Workspace {
     /// have nothing to do with the actual workspace.
     /// To see that, look at [Self::stacks].
     pub metadata: Option<ref_metadata::Workspace>,
+    /// The linked worktrees the traversal was [seeded with](crate::init::Options::worktrees), in
+    /// [tip order](Graph::worktree_tips), each with the first-parent history it owns.
+    pub worktrees: Vec<WorktreeStack>,
 }
 
 /// A copy of all workspace state, to pass it around internally.
@@ -69,100 +70,7 @@ pub(crate) struct WorkspaceState {
     pub target_ref: Option<TargetRef>,
     pub target_commit: Option<TargetCommit>,
     pub metadata: Option<ref_metadata::Workspace>,
-}
-
-/// Graph-level workspace facts needed while reconciling a traversed graph.
-///
-/// This deliberately stops before the final workspace projection pruning and
-/// remote-display enrichment. Reconciliation needs the workspace frame and
-/// current graph paths, not a finished [`Workspace`].
-pub(crate) struct WorkspaceReconciliationInput {
-    /// Segment that represents the workspace tip/ref being reconciled.
-    ///
-    /// In managed mode this is the workspace ref segment. Reconciliation uses
-    /// it as the root for inserting or reordering virtual stack branch
-    /// segments according to workspace metadata.
-    pub id: SegmentIndex,
-    /// Current graph paths below the workspace tip, grouped using the same
-    /// first-parent path rules as projection, but before projection-only
-    /// pruning and remote display enrichment.
-    ///
-    /// Reconciliation uses these paths to discover which already-traversed
-    /// segments can receive metadata-defined branch segments.
-    pub stacks: Vec<Stack>,
-    /// Segment that owns the computed workspace lower-bound commit, regardless
-    /// of whether that segment is currently part of [`Self::stacks`].
-    ///
-    /// This is the full frame-of-reference lower bound used to decide where
-    /// workspace stack collection stops and which base candidates are relevant.
-    /// It may point to a target/integrated segment outside the workspace paths,
-    /// unlike [`Self::lower_bound_segment_id_in_workspace()`].
-    pub lower_bound_segment_id: Option<SegmentIndex>,
-    /// Resolved target ref for the workspace, if one is available.
-    ///
-    /// Reconciliation uses the target segment to avoid creating independent
-    /// branch segments from target-side history and to identify candidates
-    /// where the target is connected from above.
-    pub target_ref: Option<TargetRef>,
-    /// Resolved target commit for the workspace, if one is available.
-    ///
-    /// This can come from workspace metadata or traversal target context. It is
-    /// used as another lower-bound/candidate anchor when reconciling branches
-    /// against the traversed graph.
-    pub target_commit: Option<TargetCommit>,
-    /// Workspace metadata that defines the desired applied/unapplied stacks,
-    /// branch order, branch names, and target settings.
-    ///
-    /// This is the non-Git input reconciliation applies to the traversed graph.
-    pub metadata: ref_metadata::Workspace,
-}
-
-impl WorkspaceReconciliationInput {
-    /// Return the lower-bound segment only if it is currently part of one of
-    /// [`Self::stacks`].
-    ///
-    /// This is narrower than [`Self::lower_bound_segment_id`]. Reconciliation
-    /// uses it for the "split lower bound out of a named stack segment" fixup,
-    /// which is only valid when that lower-bound segment is inside the current
-    /// workspace stack paths. If the lower bound comes from the target side or
-    /// another integrated context outside the workspace paths, this returns
-    /// `None` to avoid mutating unrelated graph structure.
-    pub fn lower_bound_segment_id_in_workspace(&self) -> Option<SegmentIndex> {
-        self.lower_bound_segment_id.filter(|lb_sidx| {
-            self.stacks
-                .iter()
-                .flat_map(|s| s.segments.iter().map(|s| s.id))
-                .any(|sid| sid == *lb_sidx)
-        })
-    }
-}
-
-impl Workspace {
-    fn from_state(
-        graph: Graph,
-        WorkspaceState {
-            id,
-            kind,
-            stacks,
-            lower_bound,
-            lower_bound_segment_id,
-            target_ref,
-            target_commit,
-            metadata,
-        }: WorkspaceState,
-    ) -> Self {
-        Workspace {
-            graph,
-            id,
-            kind,
-            stacks,
-            lower_bound,
-            lower_bound_segment_id,
-            target_ref,
-            target_commit,
-            metadata,
-        }
-    }
+    pub worktrees: Vec<WorktreeStack>,
 }
 
 /// A classifier for the workspace.
@@ -210,15 +118,6 @@ impl WorkspaceKind {
     /// Implies `has_managed_ref() == true`.
     pub fn has_managed_commit(&self) -> bool {
         matches!(self, WorkspaceKind::Managed { .. })
-    }
-}
-
-impl WorkspaceKind {
-    fn managed(ref_info: &Option<crate::RefInfo>) -> anyhow::Result<Self> {
-        let ref_info = ref_info
-            .clone()
-            .context("BUG: managed workspaces must always be on a named segment")?;
-        Ok(WorkspaceKind::Managed { ref_info })
     }
 }
 
@@ -275,7 +174,7 @@ impl TargetCommit {
 impl TargetRef {
     /// Return `None` if `ref_name` wasn't found as segment in `graph`.
     /// This can happen if a reference is configured, but not actually present as reference.
-    /// Note that `commits_ahead` isn't set yet, see [`Self::compute_and_set_commits_ahead()`].
+    /// Note that `commits_ahead` isn't set yet, see [`Self::commits_ahead()`].
     fn from_ref_name_without_commits_ahead(
         ref_name: &gix::refs::FullName,
         graph: &Graph,
@@ -287,16 +186,19 @@ impl TargetRef {
         })
     }
 
-    fn compute_and_set_commits_ahead(
-        &mut self,
+    /// Count the commits of the target at `target_segment` that aren't in the workspace, stopping
+    /// at `lower_bound_segment`.
+    pub(crate) fn commits_ahead(
         graph: &Graph,
+        target_segment: SegmentIndex,
         lower_bound_segment: Option<SegmentIndex>,
-    ) {
+    ) -> usize {
         let lower_bound = lower_bound_segment.map(|sidx| (sidx, graph[sidx].generation));
-        self.commits_ahead = 0;
-        Self::visit_upstream_commits(graph, self.segment_index, lower_bound, |s| {
-            self.commits_ahead += s.commits.len();
-        })
+        let mut commits_ahead = 0;
+        Self::visit_upstream_commits(graph, target_segment, lower_bound, |s| {
+            commits_ahead += s.commits.len();
+        });
+        commits_ahead
     }
 }
 

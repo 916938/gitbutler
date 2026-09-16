@@ -26,7 +26,7 @@
 	position: fixed;
 	inset: 0;
 	background-color: var(--bg-overlay);
-	transition: opacity var(--transition-popup);
+	transition: opacity var(--transition-popup) var(--easing-popup);
 
 	&[data-starting-style],
 	&[data-ending-style] {
@@ -60,8 +60,8 @@
 	max-width: 100%;
 	max-height: 100%;
 	transition:
-		transform var(--transition-popup),
-		opacity var(--transition-popup);
+		transform var(--transition-popup) var(--easing-popup),
+		opacity var(--transition-popup) var(--easing-popup);
 
 	/* Only reached when the caller keeps the modal mounted and toggles `open`. A caller that
 	   renders it already open — `{shown && <Picker open />}` — mounts past the starting state, and
@@ -89,8 +89,8 @@
 .dropdown {
 	transform-origin: var(--transform-origin);
 	transition:
-		transform var(--transition-popup),
-		opacity var(--transition-popup);
+		transform var(--transition-popup) var(--easing-popup),
+		opacity var(--transition-popup) var(--easing-popup);
 
 	&[data-starting-style],
 	&[data-ending-style] {
@@ -141,11 +141,21 @@
 	flex: none;
 	align-items: center;
 	color: var(--text-2);
-	cursor: default;
 
 	&:hover {
 		color: var(--text-1);
 	}
+}
+
+/* Holds the list's height where the rows would have been, so the popup does not collapse to the
+   search row with a line under it. The block centres in that height on its own geometry: the two
+   measures the block sizes for a panel are its custom properties, set here for a list. */
+.empty {
+	--empty-state-gap: 18px;
+	--empty-state-counterweight: 0px;
+
+	justify-content: center;
+	min-height: 200px;
 }
 
 .section {
@@ -160,15 +170,38 @@
 	border-top: 1px solid var(--border-3);
 }
 
+/* The heading carries the 4px its rows open with, so it is the same box whether a section wraps
+   it or a virtualised list renders it as a row of its own. */
 .sectionLabel {
-	padding: 8px 10px 0;
+	padding: 8px 10px 4px;
 	color: var(--text-3);
+}
+
+/* A row of its own has no section to draw the divider on, so the heading below the line hosts it
+   inside its own box. The previous section's inset, the divider, then this heading's own inset:
+   4px + 1px + 8px. */
+.sectionLabelDivided {
+	position: relative;
+	padding-top: 13px;
+
+	&::before {
+		position: absolute;
+		inset-inline: 0;
+		top: 4px;
+		border-top: 1px solid var(--border-3);
+		content: "";
+	}
 }
 
 .sectionItems {
 	display: flex;
 	flex-direction: column;
 	padding: 4px;
+}
+
+/* A heading above already opens the rows by the 4px. */
+.sectionLabel + .sectionItems {
+	padding-top: 0;
 }
 
 .item {
@@ -184,7 +217,6 @@
 	background: none;
 	color: var(--text-1);
 	text-align: start;
-	cursor: default;
 
 	/* `data-highlighted` is what Base UI's list primitives set as the keyboard walks them, so
 	   pointer and keyboard land on the same tint. */
@@ -195,7 +227,6 @@
 
 	&:disabled,
 	&[data-disabled] {
-		cursor: not-allowed;
 		opacity: var(--opacity-disabled);
 	}
 }

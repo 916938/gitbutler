@@ -411,6 +411,43 @@ mod error {
         }
 
         #[test]
+        fn static_context_hides_token_lifetime_policy_details() {
+            const MESSAGE: &str =
+                "Create a token with a shorter expiration, then reconnect GitHub.";
+            let err = anyhow!("HTTP 403 Forbidden")
+                .context(r#"The 'example-org' organization forbids access via a personal access tokens (classic) if the token's lifetime is greater than 180 days. Please adjust your token's lifetime at the following URL: https://github.com/settings/tokens/123456"#)
+                .context(Context::new_static(Code::GitHubTokenLifetimeRestricted, MESSAGE))
+                .context("Failed to list open pull requests");
+            let serialized = json(err);
+            let expected =
+                format!(r#"{{"code":"GitHubTokenLifetimeRestricted","message":"{MESSAGE}"}}"#);
+            assert_eq!(serialized, expected, "the API sends only static guidance");
+            let leaked = ["example-org", "settings/tokens"]
+                .iter()
+                .any(|detail| serialized.contains(detail));
+            assert!(
+                !leaked,
+                "the organization name and token URL must stay private"
+            );
+        }
+
+        #[test]
+        fn static_context_between_operation_layers_keeps_its_code() {
+            const MESSAGE: &str = "GitLab did not accept the token.";
+            // The forge read wrappers add operation text below and above the
+            // classification, like `but_gitlab::mr::list` around its client.
+            let err = anyhow!("HTTP 401")
+                .context("Failed to list open merge requests")
+                .context(Context::new_static(Code::GitLabUnauthorized, MESSAGE))
+                .context("Failed to list open merge requests");
+            assert_eq!(
+                json(err),
+                format!(r#"{{"code":"GitLabUnauthorized","message":"{MESSAGE}"}}"#),
+                "the code survives the outer operation layer and only the static guidance is sent"
+            );
+        }
+
+        #[test]
         fn find_context_without_message() {
             let err = anyhow!("err msg").context(Context::from(Code::Validation));
             assert_eq!(

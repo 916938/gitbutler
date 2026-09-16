@@ -1,4 +1,5 @@
 import { classes } from "#ui/components/classes.ts";
+import { EmptyState } from "#ui/components/EmptyState.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
 import type { IconName } from "#ui/components/iconNames.ts";
 import { Kbd } from "#ui/components/Kbd.tsx";
@@ -239,6 +240,36 @@ export const PopupSearch: FC<{ onClear?: () => void } & useRender.ComponentProps
 };
 
 /**
+ * What a popup's list shows when it has no rows: one line under a drawing, the "Empty state" block
+ * sized for a list rather than a panel — the line sits closer under the illustration and there is
+ * no counterweight, since a line under a light drawing has no weight to lift.
+ *
+ * Which drawing and which line follow the branches tab's rule. The papers peeking out and
+ * `nothingFound` are for a search that came up empty; a list with nothing in it before anything
+ * was typed gets the cactus and `nothingToList`, since nothing was searched for and "found" would
+ * be the wrong word. Pass the `query` the list is filtered on — the deferred one, where the caller defers — so
+ * the block and the rows it stands in for agree.
+ *
+ * Both lines are one short line, no full stop, like every other line of their length in Lite:
+ * "No hotkeys found", "Nothing to restore yet".
+ *
+ * For a popup as wide as a picker. A dropdown no wider than its trigger — the commit target
+ * combobox — keeps a plain line, since the illustration would fill it.
+ *
+ * @public
+ */
+export const PopupEmpty: FC<{ query: string; nothingFound: string; nothingToList: string }> = ({
+	query,
+	nothingFound,
+	nothingToList,
+}) =>
+	query === "" ? (
+		<EmptyState illustration="cactus" description={nothingToList} className={styles.empty} />
+	) : (
+		<EmptyState illustration="papers" description={nothingFound} className={styles.empty} />
+	);
+
+/**
  * A run of {@link PopupItem}s under an optional heading. Sections divide from one another, so a
  * popup can group its rows without the last group drawing a line against the container's edge.
  *
@@ -269,6 +300,25 @@ export const PopupSection: FC<{ label?: ReactNode } & useRender.ComponentProps<"
 	});
 
 /**
+ * A section's heading on its own, for a list whose rows a virtualiser positions one by one and so
+ * cannot wrap in a {@link PopupSection}. The same heading a section draws; `divided` adds the
+ * hairline the section before it would otherwise have drawn.
+ *
+ * @public
+ */
+export const PopupSectionLabel: FC<{ divided?: boolean } & useRender.ComponentProps<"div">> = ({
+	divided = false,
+	render,
+	...props
+}) =>
+	useRender({
+		render: render ?? <div />,
+		props: mergeProps<"div">(props, {
+			className: classes("text-12", styles.sectionLabel, divided && styles.sectionLabelDivided),
+		}),
+	});
+
+/**
  * One row of a popup: an optional glyph, the label, and — at the far end — a shortcut and a
  * trailing glyph marking what the row is or where it leads.
  *
@@ -281,13 +331,18 @@ export const PopupItem: FC<
 	{
 		/** Leads the row — what kind of thing it is. */
 		icon?: IconName;
+		/**
+		 * Leads the row where a glyph from the icon set is not the right mark — a program's own
+		 * image, say. Sits after `icon` when both are given.
+		 */
+		leading?: ReactNode;
 		/** Closes the row — a tick for the current choice, a chevron for a step further in. */
 		trailing?: IconName;
 		/** The shortcut that does what the row does, sat before any trailing glyph. */
 		kbd?: string | HotkeySequence;
 		children: ReactNode;
 	} & useRender.ComponentProps<"button">
-> = ({ icon, trailing, kbd, children, render, ...props }) =>
+> = ({ icon, leading, trailing, kbd, children, render, ...props }) =>
 	useRender({
 		// oxlint-disable-next-line jsx_a11y/control-has-associated-label -- Labelled by its children.
 		render: render ?? <button type="button" />,
@@ -296,6 +351,7 @@ export const PopupItem: FC<
 			children: (
 				<>
 					{icon !== undefined && <Icon name={icon} className={styles.itemIcon} />}
+					{leading}
 					<span className={styles.itemLabel}>{children}</span>
 					{kbd !== undefined && <Kbd hotkey={kbd} className={styles.itemKbd} />}
 					{trailing !== undefined && <Icon name={trailing} className={styles.itemIcon} />}

@@ -46,14 +46,18 @@ import {
 import { decodeBytes } from "#ui/api/bytes.ts";
 import type { FocusScope } from "#ui/focus-scopes.ts";
 import {
-	createInitialUpstreamState,
-	getUpstreamSelectors,
-	upstreamReducers,
-	type UpstreamState,
-} from "./upstream.ts";
+	createInitialGraphState,
+	getGraphSelectors,
+	graphReducers,
+	type GraphState,
+} from "./graph.ts";
 
-/** The workspace page's two lists; the one named here is active and drives the details pane. */
-export type ActiveList = "applied" | "uncommitted";
+/**
+ * The workspace page's lists, in the order the details pane falls back
+ * through them; the one named active drives the pane.
+ */
+export const activeLists = ["applied", "uncommitted"] as const;
+export type ActiveList = (typeof activeLists)[number];
 
 export type CheckableAddress = Extract<Address, { _tag: "Commit" | "File" | "Hunk" }>;
 
@@ -79,6 +83,11 @@ type WorkspaceState = {
 	 * hiding them that is the exception worth recording.
 	 */
 	foldedSegments: Record<string, true>;
+	/**
+	 * Remote legs shown, by the local branch's full ref. Expanded rather than
+	 * folded, unlike `foldedSegments`: a leg starts collapsed.
+	 */
+	expandedIncoming: Record<string, true>;
 	dependencyCommitIds: Array<string>;
 	pendingOperation: PendingOperation;
 	/**
@@ -124,6 +133,7 @@ const createInitialWorkspaceState = (): WorkspaceState => ({
 	checkedAddresses: {},
 	checkedConflicts: {},
 	foldedSegments: {},
+	expandedIncoming: {},
 	dependencyCommitIds: [],
 	pendingOperation: noPendingOperation,
 	notice: null,
@@ -136,37 +146,22 @@ const createInitialWorkspaceState = (): WorkspaceState => ({
 	filesCollapsedDirectories: {},
 });
 
-export type PageId = "workspace" | "upstream" | "branches";
-
-/** One of the two stacked lists the workspace sidebar is split into. */
-export type SidebarPanel = "uncommitted" | "stacks";
-
-/** The panel that is not `panel`. */
-const otherSidebarPanel = (panel: SidebarPanel): SidebarPanel =>
-	panel === "uncommitted" ? "stacks" : "uncommitted";
+export type PageId = "workspace" | "branches";
 
 export type ProjectState = {
 	filesVisible: boolean;
-	/**
-	 * Which sidebar panel has the workspace tree to itself, the other being
-	 * collapsed to its header, or `"both"` when they share it.
-	 *
-	 * One field rather than a collapsed flag per panel: collapsing both would
-	 * leave a sidebar of two headers and nothing else, and naming the panel that
-	 * is open makes that state unrepresentable instead of something every reader
-	 * has to guard against.
-	 */
-	sidebarPanelFocus: SidebarPanel | "both";
+	/** The uncommitted files card at the top of the graph, folded to its header row. */
+	uncommittedFolded: boolean;
 	branches: BranchesState;
-	upstream: UpstreamState;
+	graph: GraphState;
 	workspace: WorkspaceState;
 };
 
 export const createInitialProjectState = (): ProjectState => ({
 	filesVisible: true,
-	sidebarPanelFocus: "both",
+	uncommittedFolded: false,
 	branches: createInitialBranchesState(),
-	upstream: createInitialUpstreamState(),
+	graph: createInitialGraphState(),
 	workspace: createInitialWorkspaceState(),
 });
 
@@ -185,8 +180,20 @@ export const projectReducers = {
 
 		state.workspace.diffCursor = selection;
 	},
-	toggleUpstreamSegment: (state: ProjectState, { segmentId }: { segmentId: string }) => {
-		upstreamReducers.toggleSegment(state.upstream, { segmentId });
+	toggleGraphIncoming: (state: ProjectState) => {
+		graphReducers.toggleIncoming(state.graph);
+	},
+	toggleGraphHistory: (state: ProjectState) => {
+		graphReducers.toggleHistory(state.graph);
+	},
+	showMoreGraphHistory: (state: ProjectState) => {
+		graphReducers.showMoreHistory(state.graph);
+	},
+	showMoreGraphRun: (state: ProjectState, { runId }: { runId: string }) => {
+		graphReducers.showMoreRun(state.graph, { runId });
+	},
+	foldGraphRun: (state: ProjectState, { runId }: { runId: string }) => {
+		graphReducers.foldRun(state.graph, { runId });
 	},
 	startInlineEdit: (state: ProjectState, edit: PendingInlineEdit) => {
 		state.workspace.pendingOperation = pendingInlineEdit(edit);
@@ -472,14 +479,8 @@ export const projectReducers = {
 	toggleFiles: (state: ProjectState) => {
 		state.filesVisible = !state.filesVisible;
 	},
-	/**
-	 * Collapses `panel` to its header, or restores it when it is the collapsed
-	 * one. Collapsing while the other panel is already collapsed swaps which one
-	 * is open rather than closing the sidebar down to two headers.
-	 */
-	toggleSidebarPanelCollapsed: (state: ProjectState, { panel }: { panel: SidebarPanel }) => {
-		const other = otherSidebarPanel(panel);
-		state.sidebarPanelFocus = state.sidebarPanelFocus === other ? "both" : other;
+	toggleUncommittedFolded: (state: ProjectState) => {
+		state.uncommittedFolded = !state.uncommittedFolded;
 	},
 	setSelectedBranchTab: (
 		state: ProjectState,
@@ -493,6 +494,11 @@ export const projectReducers = {
 	toggleSegmentFolded: (state: ProjectState, { branchRef }: { branchRef: string }) => {
 		if (state.workspace.foldedSegments[branchRef]) delete state.workspace.foldedSegments[branchRef];
 		else state.workspace.foldedSegments[branchRef] = true;
+	},
+	toggleIncomingExpanded: (state: ProjectState, { branchRef }: { branchRef: string }) => {
+		if (state.workspace.expandedIncoming[branchRef])
+			delete state.workspace.expandedIncoming[branchRef];
+		else state.workspace.expandedIncoming[branchRef] = true;
 	},
 	/**
 	 * Folds or unfolds several segments at once, for acting on a whole stack.
@@ -650,9 +656,7 @@ const selectDependencyCommitIds = createSelector(
 
 export const projectSelectors = {
 	selectFilesVisible: (state: ProjectState) => state.filesVisible,
-	/** Whether `panel` is collapsed to its header, the other having the tree. */
-	selectSidebarPanelCollapsed: (state: ProjectState, panel: SidebarPanel) =>
-		state.sidebarPanelFocus === otherSidebarPanel(panel),
+	selectUncommittedFolded: (state: ProjectState) => state.uncommittedFolded,
 	/**
 	 * The explicitly chosen tab, or `undefined` when none was picked — the
 	 * caller supplies the default, since whether the Pull Request tab is worth
@@ -680,6 +684,8 @@ export const projectSelectors = {
 	selectFoldedSegments: (state: ProjectState) => state.workspace.foldedSegments,
 	selectSegmentFolded: (state: ProjectState, branchRef: string) =>
 		state.workspace.foldedSegments[branchRef] === true,
+	selectIncomingExpanded: (state: ProjectState, branchRef: string) =>
+		state.workspace.expandedIncoming[branchRef] === true,
 	selectDependencyCommitIds,
 	selectAddressChecked: (state: ProjectState, address: CheckableAddress) =>
 		state.workspace.checkedAddresses[addressIdentityKey(address)] !== undefined,
@@ -729,5 +735,5 @@ export const projectSelectors = {
 		);
 	},
 	...getBranchesSelectors((state: ProjectState) => state.branches),
-	...getUpstreamSelectors((state: ProjectState) => state.upstream),
+	...getGraphSelectors((state: ProjectState) => state.graph),
 };

@@ -82,7 +82,9 @@ const CommitTargetComboboxPopup: FC<{ current: CommitTargetPickerItem | null }> 
 			render={<Combobox.Input />}
 		/>
 		<Combobox.Empty>
-			<div className={classes("text-13", styles.targetEmpty)}>No targets found.</div>
+			{/* A line, not the block: this dropdown is as narrow as its trigger, and the illustration
+			    would fill it. */}
+			<div className={classes("text-13", styles.targetEmpty)}>No targets found</div>
 		</Combobox.Empty>
 		<Combobox.List className={styles.targetList}>
 			{(item: CommitTargetPickerItem) => (
@@ -335,7 +337,7 @@ export const CommitForm: FC<{
 		if (!worktreeChanges) return;
 
 		branchCreate(
-			{ projectId, newRef: null, placement: { type: "independent" } },
+			{ projectId, newRef: null, placement: { type: "independent", subject: { order: 0 } } },
 			{
 				onSuccess: (response) => {
 					// The new branch is the target from here on, also for the retry
@@ -627,6 +629,7 @@ export const CommitForm: FC<{
 					<div className={styles.commitActions}>
 						<Tooltip.Root>
 							<Tooltip.Trigger
+								aria-label="Cancel"
 								className={getButtonClassName({ variant: "outline" })}
 								onClick={() => {
 									// Persist the draft before the textarea unmounts.
@@ -646,7 +649,8 @@ export const CommitForm: FC<{
 									/>
 								}
 							>
-								Cancel
+								<span className={styles.cancelLabel}>Cancel</span>
+								<Icon name="cross" className={styles.cancelIcon} />
 							</Tooltip.Trigger>
 							<Tooltip.Portal>
 								<Tooltip.Positioner sideOffset={4}>

@@ -591,6 +591,7 @@ Squashed branch 'a-branch-1' into unl
 
 "#]]);
 
+    // Keep the target message first, followed by sources in newest-first branch order.
     env.but("status -fv")
         .assert()
         .success()
@@ -598,8 +599,71 @@ Squashed branch 'a-branch-1' into unl
 ╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ br [a-branch-1]
-┊● unl author 2000-01-01 00:00:00 +0000 (sha 9269bbf)
-┊│     add one  add two  add three
+┊● unl author 2000-01-01 00:00:00 +0000 (sha 615f4cb)
+┊│     add one  add three  add two
+┊│     unl:k A one
+┊│     unl:o A three
+┊│     unl:t A two
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
+fn agent_squash_without_message_keeps_combined_message_instead_of_editor() {
+    let env = one_branch_three_commits();
+
+    // Agents get no editor even if one is configured; a spawned editor would fail the test.
+    env.but("squash a-branch-1")
+        .env("AI_AGENT", "codex")
+        .env("GIT_EDITOR", "false")
+        .assert()
+        .success();
+
+    env.but("status -fv")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ br [a-branch-1]
+┊● unl author 2000-01-01 00:00:00 +0000 (sha 615f4cb)
+┊│     add one  add three  add two
+┊│     unl:k A one
+┊│     unl:o A three
+┊│     unl:t A two
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
+fn json_squash_without_message_keeps_combined_message_instead_of_editor() {
+    let env = one_branch_three_commits();
+
+    // JSON runs get no editor even if one is configured; a spawned editor would fail the test.
+    env.but("squash a-branch-1 --json")
+        .env("GIT_EDITOR", "false")
+        .assert()
+        .success();
+
+    env.but("status -fv")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ br [a-branch-1]
+┊● unl author 2000-01-01 00:00:00 +0000 (sha 615f4cb)
+┊│     add one  add three  add two
 ┊│     unl:k A one
 ┊│     unl:o A three
 ┊│     unl:t A two
@@ -921,7 +985,7 @@ Hint: run `but help` for all commands
 fn squash_with_duplicate_branch_sources() {
     let env = two_branches();
 
-    env.but("squash one one -t uqr -u")
+    env.but("squash one one -t uqr --use-source-message")
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
@@ -936,7 +1000,7 @@ Squashed branch 'one' into uqr
 ╭┄ @ [uncommitted] (no changes)
 ┊
 ┊╭┄ se [second]
-┊●   uqr add four
+┊●   uqr add two
 ┊│     uqr:q A four
 ┊│     uqr:k A one
 ┊│     uqr:t A two
@@ -949,6 +1013,11 @@ Squashed branch 'one' into uqr
 Hint: run `but help` for all commands
 
 "#]]);
+    // Repeated branch arguments must preserve source order without repeating messages.
+    snapbox::assert_data_eq!(
+        env.invoke_git("log -1 --format=%B second"),
+        str!["add two\n\nadd one"]
+    );
 }
 
 #[test]
@@ -1072,9 +1141,9 @@ fn amend_uncommitted_hunks_into_commits() {
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-───────────╮
- qs:9 file │
-───────────╯
+─────────────╮
+ qs:9 M file │
+─────────────╯
 
 @@ -1,3 +1,4 @@
 ───────────────
@@ -1083,9 +1152,9 @@ fn amend_uncommitted_hunks_into_commits() {
 2 ┊ 3 │  line
 3 ┊ 4 │  line
 
-───────────╮
- qs:d file │
-───────────╯
+─────────────╮
+ qs:d M file │
+─────────────╯
 
 @@ -7,4 +8,4 @@
 ───────────────
@@ -1109,9 +1178,9 @@ Amended nky
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-───────────╮
- qs:d file │
-───────────╯
+─────────────╮
+ qs:d M file │
+─────────────╯
 
 @@ -8,4 +8,4 @@
 ───────────────
@@ -2437,9 +2506,9 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-────────────╮
- s:q:3 file │
-────────────╯
+──────────────╮
+ s:q:3 M file │
+──────────────╯
 
 @@ -1,3 +1,4 @@
 ───────────────
@@ -2448,9 +2517,9 @@ Hint: run `but help` for all commands
 2 ┊ 3 │  two
 3 ┊ 4 │  three
 
-────────────╮
- s:q:8 file │
-────────────╯
+──────────────╮
+ s:q:8 M file │
+──────────────╯
 
 @@ -5,3 +6,4 @@
 ───────────────
@@ -2474,9 +2543,9 @@ Amended knw
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-────────────╮
- s:q:8 file │
-────────────╯
+──────────────╮
+ s:q:8 M file │
+──────────────╯
 
 @@ -6,3 +6,4 @@
 ───────────────
@@ -2492,9 +2561,9 @@ Amended knw
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-────────────╮
- k:q:c file │
-────────────╯
+──────────────╮
+ k:q:c A file │
+──────────────╯
 
 @@ -1,0 +1,8 @@
 ───────────────
@@ -2516,9 +2585,9 @@ Amended knw
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-───────────╮
- qs:8 file │
-───────────╯
+─────────────╮
+ qs:8 M file │
+─────────────╯
 
 @@ -6,3 +6,4 @@
 ───────────────
@@ -2574,9 +2643,9 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-────────────╮
- s:q:3 file │
-────────────╯
+──────────────╮
+ s:q:3 M file │
+──────────────╯
 
 @@ -1,3 +1,4 @@
 ───────────────
@@ -2585,9 +2654,9 @@ Hint: run `but help` for all commands
 2 ┊ 3 │  two
 3 ┊ 4 │  three
 
-────────────╮
- s:q:8 file │
-────────────╯
+──────────────╮
+ s:q:8 M file │
+──────────────╯
 
 @@ -5,3 +6,4 @@
 ───────────────
@@ -2605,9 +2674,9 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-────────────╮
- k:q:0 file │
-────────────╯
+──────────────╮
+ k:q:0 A file │
+──────────────╯
 
 @@ -1,0 +1,9 @@
 ───────────────
@@ -2710,9 +2779,9 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-───────────────────╮
- o:n:f deleted.txt │
-───────────────────╯
+─────────────────────╮
+ o:n:f D deleted.txt │
+─────────────────────╯
 
 @@ -1,1 +1,0 @@
 ───────────────
@@ -2852,9 +2921,9 @@ Hint: run `but help` for all commands
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
-───────────────────╮
- x:s:b renamed.txt │
-───────────────────╯
+─────────────────────╮
+ x:s:b R renamed.txt │
+─────────────────────╯
 
 @@ -1,3 +1,4 @@
 ───────────────

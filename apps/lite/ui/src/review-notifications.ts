@@ -2,8 +2,9 @@
  * @file Turning review activity into inbox entries.
  *
  * The decisions are pure and live in `review-activity.ts`; the hook here
- * feeds them the listing the app polls anyway. The unread dots stay the
- * record — the bell is the cross-review view of the same facts.
+ * feeds them the listing the app polls anyway. The per-review seen marks
+ * stay the record — the bell is the cross-review view of the same facts, and
+ * the desktop hears the loud ones while the window is elsewhere.
  */
 
 import {
@@ -27,15 +28,34 @@ import {
 	listReviewTimelineEventsQueryOptions,
 	listReviewsQueryOptions,
 } from "#ui/api/queries.ts";
-import { addInboxEntries, type InboxEntry, type InboxKind } from "#ui/review-inbox.ts";
-import { readSeenMarks, usePrNotificationsLevel } from "#ui/review-seen.ts";
+import {
+	addInboxEntries,
+	desktopNotices,
+	findInboxEntry,
+	markInboxSeen,
+	type InboxEntry,
+	type InboxKind,
+} from "#ui/review-inbox.ts";
+import { branchAddress } from "#ui/addresses.ts";
+import { projectSlice } from "#ui/projects/state.ts";
+import { requestReviewFocus } from "#ui/review-focus.ts";
+import { store } from "#ui/store.ts";
+import { setActiveList, setCursor, setPage } from "#ui/use-cursor.ts";
+import {
+	readSeenMarks,
+	useDesktopNotifications,
+	usePrNotificationsLevel,
+} from "#ui/review-seen.ts";
 import { selfMergedNumbers } from "#ui/api/mutations.ts";
 import type { ForgeReview, RefInfo } from "@gitbutler/but-sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useRef } from "react";
 
+/** Applied branches by display name, each with the ref bytes a cursor needs. */
+export type AppliedRefs = Map<string, Array<number>>;
+
 /** @public shared with the bell, whose entry clicks jump the same way. */
-export const appliedRefsByName = (headInfo: RefInfo): Map<string, Array<number>> =>
+export const appliedRefsByName = (headInfo: RefInfo): AppliedRefs =>
 	new Map(
 		headInfo.stacks.flatMap((stack) =>
 			stack.segments.flatMap((segment) =>
@@ -45,6 +65,40 @@ export const appliedRefsByName = (headInfo: RefInfo): Map<string, Array<number>>
 			),
 		),
 	);
+
+/**
+ * Where an entry lands, from the bell or a desktop notification: its branch
+ * in the workspace, or the forge when the branch is not applied — a review
+ * outside the workspace has no local branch to select.
+ */
+export const openInboxEntry = (
+	projectId: string,
+	entry: InboxEntry,
+	appliedRefs: AppliedRefs,
+): void => {
+	markInboxSeen(projectId, [entry.id]);
+	const branchRef = appliedRefs.get(entry.sourceBranch);
+	if (branchRef === undefined) {
+		void window.lite.openInWebBrowser(entry.htmlUrl);
+		return;
+	}
+	setPage("workspace");
+	// The details pane follows the active list; with the uncommitted list
+	// driving it, the cursor and tab writes below would change nothing the
+	// reader can see.
+	setActiveList("applied");
+	setCursor("applied", branchAddress({ branchRef }));
+	store.dispatch(
+		projectSlice.actions.setSelectedBranchTab({
+			projectId,
+			branchName: entry.sourceBranch,
+			tab: "pr",
+		}),
+	);
+	// Landing on the comment is what makes the click worth it when the
+	// review is already on screen.
+	if (entry.commentId != null) requestReviewFocus(entry.review, entry.commentId);
+};
 
 /** The kind an item files under; mentions outrank the item's own shape. */
 const inboxKindOf = (item: ReviewActivityItem, login: string | null): InboxKind => {
@@ -84,7 +138,7 @@ const entryOf = (
 			? (review.modifiedAt ?? new Date().toISOString())
 			: new Date(newest.atMs).toISOString();
 	return {
-		id: `${review.number}:${kind}:${at}`,
+		id: `${review.number}:${kind}:${at}${newest?.authorIsBot ? ":bot" : ""}`,
 		// Where a click should land, when the entry is about comments.
 		commentId: newestCommentId(bucket),
 		kind,
@@ -94,6 +148,7 @@ const entryOf = (
 		sourceBranch: review.sourceBranch,
 		htmlUrl: review.htmlUrl,
 		author: newest?.author ?? null,
+		authorIsBot: newest?.authorIsBot ?? false,
 		count: Math.max(bucket.length, 1),
 		snippet:
 			newest !== null && (newest.kind === "comment" || newest.kind === "verdict")
@@ -105,20 +160,46 @@ const entryOf = (
 };
 
 /**
+ * Coalesce one poll by kind and actor type, retaining each type's own target.
+ * @public exported for the test suite.
+ */
+export const coalesceInboxEntries = (
+	review: ForgeReview,
+	items: Array<ReviewActivityItem>,
+	login: string | null,
+): Array<InboxEntry> => {
+	const buckets = new Map<string, { kind: InboxKind; items: Array<ReviewActivityItem> }>();
+	for (const item of items) {
+		const kind = inboxKindOf(item, login);
+		const key = `${kind}:${item.authorIsBot === true}`;
+		const bucket = buckets.get(key);
+		if (bucket) bucket.items.push(item);
+		else buckets.set(key, { kind, items: [item] });
+	}
+	return [...buckets.values()].map(({ kind, items }) => entryOf(review, kind, items));
+};
+
+/**
  * Watch the review listing and file activity into the inbox. The first
  * listing observed is the baseline — nothing older is filed; the dots carry
  * that. Applied-branch reviews file everything short of silent, the rest
  * only mentions, and a kind's items on one review coalesce into one entry.
+ * Loud entries go to the desktop too; the host drops them while the window
+ * is focused.
  */
 export const useReviewActivityInbox = (projectId: string): void => {
 	const client = useQueryClient();
 	const level = usePrNotificationsLevel();
+	const desktop = useDesktopNotifications();
 
 	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
 	const enabled = level === "loud" && !!forgeInfo?.capabilities.prService;
 	const { data: reviews } = useQuery({
 		...listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }),
 		enabled,
+		// Polling pauses in an unfocused window, which is exactly when a
+		// desktop notification is the only way to be heard.
+		refetchIntervalInBackground: desktop,
 	});
 	const { data: appliedRefs } = useQuery({
 		...headInfoQueryOptions(projectId),
@@ -181,14 +262,7 @@ export const useReviewActivityInbox = (projectId: string): void => {
 				return true;
 			},
 		);
-		const buckets = new Map<InboxKind, Array<ReviewActivityItem>>();
-		for (const item of items) {
-			const kind = inboxKindOf(item, login);
-			const bucket = buckets.get(kind);
-			if (bucket) bucket.push(item);
-			else buckets.set(kind, [item]);
-		}
-		return [...buckets].map(([kind, bucket]) => entryOf(change.review, kind, bucket));
+		return coalesceInboxEntries(change.review, items, login);
 	});
 
 	const observe = useEffectEvent(async (listing: Array<ForgeReview>) => {
@@ -215,7 +289,9 @@ export const useReviewActivityInbox = (projectId: string): void => {
 				}),
 			)
 		).flat();
-		addInboxEntries(projectId, entries);
+		const fresh = addInboxEntries(projectId, entries);
+		if (desktop)
+			for (const notice of desktopNotices(fresh)) void window.lite.showNotification(notice);
 	});
 
 	// A disabled detector forgets its baseline, so re-enabling starts from
@@ -223,6 +299,18 @@ export const useReviewActivityInbox = (projectId: string): void => {
 	useEffect(() => {
 		if (!enabled) ledger.current = null;
 	}, [enabled, projectId]);
+
+	// The main process has focused the window by now; a summary, or an entry
+	// since dropped from the inbox, leaves the reader at the lit bell.
+	const onNotificationClick = useEffectEvent((id: string) => {
+		if (appliedRefs === undefined) return;
+		const entry = findInboxEntry(projectId, id);
+		if (entry !== undefined) openInboxEntry(projectId, entry, appliedRefs);
+	});
+	useEffect(() => {
+		if (!enabled) return;
+		return window.lite.onNotificationClick(onNotificationClick);
+	}, [enabled]);
 
 	// `appliedRefs` in the deps takes the baseline as soon as both the
 	// listing and the applied set exist, whichever resolves last. The login

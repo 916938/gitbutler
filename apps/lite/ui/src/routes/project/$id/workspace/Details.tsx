@@ -1,8 +1,11 @@
+import { forgeAuthFailure, forgeDestination, isCloudForge } from "#ui/forge.ts";
+import { ForgeAuthPrompt } from "./ForgeAuthPrompt.tsx";
 import { ResizeHandle } from "#ui/components/ResizeHandle.tsx";
 import { startAbsorb, setCursor, useCanShowFiles, useSelection } from "#ui/use-cursor.ts";
 import uiStyles from "#ui/components/ui.module.css";
 import { SuspenseQuery } from "@suspensive/react-query";
 import {
+	type PushBeforePublish,
 	useAddReviewLabels,
 	useCommitUncommitChanges,
 	useOpenInProgram,
@@ -10,6 +13,7 @@ import {
 	useResolveCommitConflictHunks,
 	useSaveGUISettings,
 } from "#ui/api/mutations.ts";
+import { downstackPushStatusFromSegments } from "#ui/segment.ts";
 import {
 	type DraftPRExtras,
 	draftPRQueryOptions,
@@ -24,6 +28,7 @@ import {
 	commentsQueryOptions,
 	commitConflictsQueryOptions,
 	commitDetailsWithLineStatsQueryOptions,
+	forgeAccountsQueryOptions,
 	forgeInfoOptions,
 	getReviewQueryOptions,
 	guiSettingsQueryOptions,
@@ -33,15 +38,14 @@ import {
 	listReviewThreadsQueryOptions,
 	treeChangesDiffsQueryOptions,
 	workspaceFileQueryOptions,
+	worktreeChangesQueryOptions,
 } from "#ui/api/queries.ts";
 import {
 	SeenOnArrivalContext,
 	useMarkReviewSeenOnView,
 	usePrNotificationsLevel,
-	useReviewUnread,
 	useSeenOnArrival,
 } from "#ui/review-seen.ts";
-import rowStyles from "./Row.module.css";
 import { decodeBytes } from "#ui/api/bytes.ts";
 import type { ForgeReview, TargetCommitReview, UnifiedPatch } from "@gitbutler/but-sdk";
 import { branchDetailsParams } from "#ui/branch.ts";
@@ -63,9 +67,9 @@ import {
 	weakCommitIdentityKey,
 	weakFileIdentityKey,
 	weakFileParentIdentityKey,
+	worktreeChangesFileParent,
 } from "#ui/addresses.ts";
-import type { DiffLineSelection } from "#ui/cursors.ts";
-import { checkedRange, addressSpaceRange } from "#ui/checking.ts";
+import { checkedRange, addressSpaceRange, selectionAfterChecking } from "#ui/checking.ts";
 import type { BranchTab, CheckableAddress } from "#ui/projects/project.ts";
 import { projectSlice } from "#ui/projects/state.ts";
 import { interfaceSlice } from "#ui/interface/state.ts";
@@ -73,18 +77,17 @@ import { Badge } from "#ui/components/Badge.tsx";
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
+import { useCopied } from "#ui/routes/project/$id/workspace/useCopied.ts";
 import { ToggleGroupStyles, ToggleStyles } from "#ui/components/ToggleGroup.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
-import {
-	PullRequestComments,
-	ReviewTimeline,
-} from "#ui/routes/project/$id/workspace/PullRequestComments.tsx";
+import { PullRequestComments } from "#ui/routes/project/$id/workspace/PullRequestComments.tsx";
 import {
 	NewPullRequestPanel,
 	PullRequestPanel,
 } from "#ui/routes/project/$id/workspace/PullRequestPanel.tsx";
 import {
 	PullRequestDescription,
+	PullRequestMeta,
 	PullRequestForm,
 	PullRequestPrimaryAction,
 } from "#ui/routes/project/$id/workspace/PullRequestForm.tsx";
@@ -97,6 +100,7 @@ import type {
 	ConflictedFile,
 	ManualConflict,
 	TreeChange,
+	WorktreeChanges,
 } from "@gitbutler/but-sdk";
 import {
 	type CodeViewItem,
@@ -129,6 +133,7 @@ import {
 } from "react";
 import { Group, Panel, useDefaultLayout } from "react-resizable-panels";
 import styles from "./Details.module.css";
+import rowStyles from "./Row.module.css";
 import { diffHotkeys, workspaceHotkeys } from "#ui/hotkeys.ts";
 import { useHotkeys } from "@tanstack/react-hotkeys";
 import {
@@ -173,7 +178,6 @@ import {
 	hunkSelectionForLineNavigation,
 	lineSelectionsForRange,
 	moveSelectedLineRange,
-	rangeFromLineGroups,
 	selectedLineRangeContainsPoint,
 	singleLineSelectionByLine,
 	type HunkLineSelection,
@@ -223,6 +227,7 @@ import {
 	getDiffView,
 	hunkAddressIdentityKey,
 	prepareDiffFiles,
+	resolveDiffSelection,
 	withoutFoldedHunks,
 } from "./diff-view.ts";
 import { DiffMinimap } from "./DiffMinimap.tsx";
@@ -403,14 +408,43 @@ const lineSelectionsEqual = (a: CodeViewLineSelection, b: CodeViewLineSelection)
 	(a.range.endSide ?? a.range.side ?? "additions") ===
 		(b.range.endSide ?? b.range.side ?? "additions");
 
-const DadJokeFooter: FC = () => {
+const DiffFooter: FC = () => {
+	const dispatch = useAppDispatch();
+	const view = useAppSelector(interfaceSlice.selectors.selectDiffFooterView);
 	const [{ setup, punchline }] = useState(getRandomDadJoke);
 
 	return (
-		<p className={styles.dadJoke}>
-			<span>{setup}</span>
-			<span>{punchline}</span>
-		</p>
+		<div className={styles.diffFooter}>
+			{view === "dadJokes" ? (
+				<>
+					<span>{setup}</span>
+					<span>{punchline}</span>
+				</>
+			) : (
+				<>
+					<span>Thanks for testing GitButler Next Nightly! ❤️</span>
+					<span>
+						We’d love to hear what you think.{" "}
+						<a
+							href="https://discord.gg/MmFkmaJ42D"
+							onClick={(event) => {
+								event.preventDefault();
+								void window.lite.openInWebBrowser(event.currentTarget.href);
+							}}
+						>
+							Share feedback on Discord
+						</a>
+					</span>
+				</>
+			)}
+			<button
+				type="button"
+				className={styles.diffFooterToggle}
+				onClick={() => dispatch(interfaceSlice.actions.toggleDiffFooterView())}
+			>
+				{view === "dadJokes" ? "Give feedback" : "Less feedback, more dad jokes"}
+			</button>
+		</div>
 	);
 };
 
@@ -434,8 +468,10 @@ const DiffContents: FC<{
 	manualCollapseByItem: Map<string, boolean>;
 	setManualCollapse: (itemId: string, collapsed: boolean | undefined) => void;
 	setFilesReviewed: (input: SetFilesReviewedInput) => void;
-	viewerRef: RefObject<CodeViewHandle<Annotation> | null>;
+	viewerRef: RefObject<DiffViewerHandle | null>;
 	didScrollToViaFileRef: RefObject<boolean>;
+	pendingFileRef: RefObject<FileAddress | null>;
+	renderAllFiles: boolean;
 	minimapFiles: Array<MinimapFile> | null;
 	canUncommit: boolean;
 	uncommit: (change: TreeChange, extendToCheckedFiles: boolean) => void;
@@ -460,6 +496,8 @@ const DiffContents: FC<{
 	setFilesReviewed,
 	viewerRef,
 	didScrollToViaFileRef,
+	pendingFileRef,
+	renderAllFiles,
 	minimapFiles,
 	canUncommit,
 	uncommit,
@@ -513,14 +551,20 @@ const DiffContents: FC<{
 	);
 	const visibleAddressSpace = withoutFoldedHunks(addressSpace, hunkByKey, collapsedItems);
 
+	const effectiveDiffStyle = diffStyle ?? defaultSettings.diffStyle;
+
 	const storedDiffSelection = useAppSelector((state) =>
 		projectSlice.selectors.selectDiffCursor(state, projectId),
 	);
-	const storedSelectedLines = useMemo((): CodeViewLineSelection | null => {
-		if (!storedDiffSelection) return null;
-		const file = fileByItemId.get(weakFileIdentityKey(storedDiffSelection.file));
-		return file ? { id: file.item.id, range: storedDiffSelection.range } : null;
-	}, [storedDiffSelection, fileByItemId]);
+	const storedSelectedLines = useMemo(
+		() =>
+			resolveDiffSelection({
+				selection: storedDiffSelection,
+				fileByItemId,
+				diffStyle: effectiveDiffStyle,
+			}),
+		[storedDiffSelection, fileByItemId, effectiveDiffStyle],
+	);
 	const storedSelectionHunk = useMemo(
 		() =>
 			navigationHunkForSelectedLines({
@@ -531,7 +575,6 @@ const DiffContents: FC<{
 		[storedSelectedLines, fileByItemId, hunkByKey],
 	);
 	const diffSelection = storedSelectionHunk ?? visibleAddressSpace.items[0] ?? null;
-	const hasStoredDiffSelection = storedDiffSelection !== null;
 	const canCheckHunks = useAppSelector((state) =>
 		projectSlice.selectors.selectCanCheckHunks(state, projectId, fileParent),
 	);
@@ -540,16 +583,14 @@ const DiffContents: FC<{
 	);
 	const diffSelectionHunk =
 		diffSelection !== null ? hunkByKey.get(hunkAddressIdentityKey(diffSelection)) : null;
-	const cursorSelectedHunk = diffSelection
-		? (hunkByKey.get(hunkAddressIdentityKey(diffSelection))?.selectedLines ?? null)
-		: null;
-	const cursorSelectedRange: CodeViewLineSelection | null = cursorSelectedHunk
+	const firstChangedGroup = diffSelectionHunk?.address.lineGroups[0];
+	const cursorSelectedRange: CodeViewLineSelection | null = firstChangedGroup
 		? {
-				id: cursorSelectedHunk.id,
+				id: diffSelectionHunk.file.item.id,
 				range: {
-					start: cursorSelectedHunk.range.start,
-					side: cursorSelectedHunk.range.side,
-					end: cursorSelectedHunk.range.start,
+					start: firstChangedGroup.start,
+					side: firstChangedGroup.side,
+					end: firstChangedGroup.start,
 				},
 			}
 		: null;
@@ -568,7 +609,6 @@ const DiffContents: FC<{
 		};
 	}, [selectedLines]);
 	const selectedLinesHunk = storedSelectionHunk ?? diffSelection;
-	const effectiveDiffStyle = diffStyle ?? defaultSettings.diffStyle;
 	// Primitives, so the item list and header closures below only pick up new
 	// identities when the selection crosses into another file — not on every
 	// j/k move within one.
@@ -594,9 +634,30 @@ const DiffContents: FC<{
 		// oxlint-disable-next-line react-hooks/exhaustive-deps react-hooks-js/exhaustive-deps -- Sync scroll only on mount, otherwise use events.
 	}, []);
 
+	// Finishes a scroll `PageBody` could not issue; CodeView's child layout effect has synced items.
+	useLayoutEffect(() => {
+		const itemId = pendingFileRef.current && weakFileIdentityKey(pendingFileRef.current);
+		if (itemId === null) return;
+		if (!renderAllFiles) {
+			pendingFileRef.current = null;
+			return;
+		}
+		if (itemId !== activeFileItemId || !viewerRef.current?.getItem(itemId)) return;
+		pendingFileRef.current = null;
+		didScrollToViaFileRef.current = true;
+		viewerRef.current.scrollTo({ type: "item", id: itemId });
+	}, [activeFileItemId, renderAllFiles, pendingFileRef, didScrollToViaFileRef, viewerRef]);
+
+	function selectedLinesForHunk(address: HunkAddress): CodeViewLineSelection | null {
+		const hunk = hunkByKey.get(hunkAddressIdentityKey(address));
+		if (!hunk) return null;
+		return { id: hunk.file.item.id, range: hunk.ranges[effectiveDiffStyle] };
+	}
+
 	const selectDiff = (selection: HunkAddress) => {
-		const nextSelectedLines = hunkByKey.get(hunkAddressIdentityKey(selection))?.selectedLines;
+		const nextSelectedLines = selectedLinesForHunk(selection);
 		if (!nextSelectedLines) return;
+		pendingFileRef.current = null;
 		setCursor("diff", { file: selection.parent, range: nextSelectedLines.range });
 
 		viewerRef.current?.scrollTo({
@@ -611,20 +672,19 @@ const DiffContents: FC<{
 		if (selectedLines) {
 			const file = fileByItemId.get(selectedLines.id);
 			if (file?.patch?.type === "Patch") {
-				const fileHunks = file.hunks.map(({ address }) => address);
 				const lineHunk = hunkSelectionForLineNavigation({
 					hunks: file.item.fileDiff.hunks,
-					selections: fileHunks,
+					selections: file.hunks,
 					range: selectedLines.range,
 					diffStyle: effectiveDiffStyle,
 					offset,
 				});
-				selection = lineHunk ?? fileHunks.at(offset === 1 ? -1 : 0) ?? null;
+				selection = lineHunk?.address ?? file.hunks.at(offset === 1 ? -1 : 0)?.address ?? null;
 
 				if (lineHunk) {
-					const hunkLines = hunkByKey.get(hunkAddressIdentityKey(lineHunk))?.selectedLines;
+					const hunkLines = selectedLinesForHunk(lineHunk.address);
 					if (hunkLines && !lineSelectionsEqual(selectedLines, hunkLines)) {
-						selectDiff(lineHunk);
+						selectDiff(lineHunk.address);
 						return;
 					}
 				}
@@ -712,6 +772,16 @@ const DiffContents: FC<{
 		directionalNavigation: false,
 	});
 
+	const selectAndRevealLines = (selection: CodeViewLineSelection): void => {
+		applySelectedLines(selection);
+		viewerRef.current?.scrollTo({
+			type: "range",
+			id: selection.id,
+			range: selection.range,
+			align: "nearest",
+		});
+	};
+
 	const moveSelectedLines = (offset: -1 | 1, extend: boolean): void => {
 		if (!selectedLines) return;
 		const file = fileByItemId.get(selectedLines.id);
@@ -726,28 +796,79 @@ const DiffContents: FC<{
 		});
 		if (!range) return;
 
-		const selection = { id: selectedLines.id, range };
-		applySelectedLines(selection);
-		viewerRef.current?.scrollTo({
-			type: "range",
-			id: selection.id,
-			range,
-			align: "nearest",
-		});
+		selectAndRevealLines({ id: selectedLines.id, range });
 	};
 
-	function toggleSelectedLinesChecked(event: KeyboardEvent): void {
-		if (event.composedPath().some(isInteractiveElement)) return;
-		const addresses = addressesForSelectedLines(selectedLines, "line");
-		if (addresses.length === 0) return;
+	// Repeats must follow the pending cursor before React renders it. Null ends the held-key run
+	// so it cannot reverse and undo the checks; a fresh keypress starts from the selected lines.
+	const nextCheckedLine = useRef<CodeViewLineSelection>(null);
 
+	function toggleSelectedLinesChecked(event: KeyboardEvent): void {
+		if (event.composedPath().some(isInteractiveElement) || !selectedLines) return;
 		event.preventDefault();
 		event.stopPropagation();
+		if (event.shiftKey) {
+			nextCheckedLine.current = null;
+			checkSelectedLines(selectedLines, true);
+			return;
+		}
+		const item = event.repeat ? nextCheckedLine.current : selectedLines;
+		if (item !== null) nextCheckedLine.current = checkSelectedLines(item, false);
+	}
+
+	function checkSelectedLines(
+		selection: CodeViewLineSelection,
+		shiftKey: boolean,
+	): CodeViewLineSelection | null {
+		const addresses = addressesForSelectedLines(selection, "line");
+		if (addresses.length === 0) return null;
 		const state = store.getState();
 		const checked = !addresses.every((address) =>
 			projectSlice.selectors.selectAddressChecked(state, projectId, address),
 		);
 		dispatch(projectSlice.actions.checkAddresses({ projectId, addresses, checked }));
+
+		if (shiftKey) return null;
+		const { range, id } = selection;
+		if (
+			range.start !== range.end ||
+			(range.endSide ?? range.side ?? "additions") !== (range.side ?? "additions")
+		)
+			return null;
+		const currentAddress = addresses[0];
+		const file = fileByItemId.get(id);
+		if (!currentAddress || file?.patch?.type !== "Patch") return null;
+		const nextState = store.getState();
+		const next = selectionAfterChecking({
+			selection,
+			getAdjacent: (offset) => {
+				const nextRange = moveSelectedLineRange({
+					hunks: file.item.fileDiff.hunks,
+					range,
+					diffStyle: effectiveDiffStyle,
+					offset,
+					extend: false,
+				});
+				return nextRange ? { id, range: nextRange } : null;
+			},
+			getChecked: (selection) => {
+				const addresses = addressesForSelectedLines(selection, "line");
+				if (
+					addresses.length === 0 ||
+					addresses.some(
+						(address) =>
+							address.hunkHeader.oldStart !== currentAddress.hunkHeader.oldStart ||
+							address.hunkHeader.newStart !== currentAddress.hunkHeader.newStart,
+					)
+				)
+					return null;
+				return addresses.every((address) =>
+					projectSlice.selectors.selectAddressChecked(nextState, projectId, address),
+				);
+			},
+		});
+		if (next) selectAndRevealLines(next);
+		return next;
 	}
 
 	const handleCreateComment = (
@@ -770,6 +891,20 @@ const DiffContents: FC<{
 				payload: "",
 			},
 		});
+	};
+
+	const getContiguousHunkAddressAtLine = ({
+		itemId,
+		lineNumber,
+		side,
+	}: Pick<DiffLineTarget, "itemId" | "lineNumber" | "side">): HunkAddress | null => {
+		const file = fileByItemId.get(itemId);
+		if (file?.patch?.type !== "Patch") return null;
+
+		return addressForLineSelection(
+			itemId,
+			contiguousSelectionByLine({ hunks: file.item.fileDiff.hunks, line: lineNumber, side }),
+		);
 	};
 
 	useHotkeys([
@@ -922,7 +1057,6 @@ const DiffContents: FC<{
 					itemId: diffSelectionHunk.file.item.id,
 					lineNumber: firstLine.start,
 					side: firstLine.side,
-					lineType: "change",
 				});
 				if (!hunk) return;
 
@@ -973,6 +1107,41 @@ const DiffContents: FC<{
 			},
 		},
 		{
+			hotkey: diffHotkeys.checkAll.hotkey,
+			callback: () => {
+				if (!selectedLines) return;
+
+				const address = getContiguousHunkAddressAtLine({
+					itemId: selectedLines.id,
+					lineNumber: selectedLines.range.end,
+					side: selectedLines.range.endSide ?? selectedLines.range.side ?? "additions",
+				});
+				if (!address) return;
+
+				dispatch(
+					projectSlice.actions.checkAddresses({
+						projectId,
+						addresses: address.lineGroups.flatMap((group) =>
+							Array.from({ length: group.lines }, (_, index) =>
+								hunkAddress({
+									...address,
+									lineGroups: [{ side: group.side, start: group.start + index, lines: 1 }],
+								}),
+							),
+						),
+						checked: true,
+					}),
+				);
+			},
+			options: {
+				conflictBehavior: "allow",
+				enabled: selectedLinesHunk !== null && canCheckHunks && noOperationPending,
+				ignoreInputs: true,
+				target: focusScopeRef,
+				meta: diffHotkeys.checkAll.meta,
+			},
+		},
+		{
 			hotkey: diffHotkeys.checkHunk.hotkey,
 			callback: toggleSelectedLinesChecked,
 			options: {
@@ -1005,10 +1174,8 @@ const DiffContents: FC<{
 				);
 			},
 			options: {
-				// A stored selection, not the resolver's first-hunk fallback: after
-				// scrolling with nothing selected, folding the fallback would fold a
-				// file far off-screen. j/k (which stores a selection) is the way in.
-				enabled: hasStoredDiffSelection && !!diffSelectionHunk,
+				// An unresolved cursor (e.g. an image) must not act on another file's fallback hunk.
+				enabled: storedSelectionHunk !== null,
 				conflictBehavior: "allow",
 				target: focusScopeRef,
 				meta: diffHotkeys.toggleFoldFile.meta,
@@ -1026,7 +1193,7 @@ const DiffContents: FC<{
 				handleSetReviewed(id, path, version)(!reviewedFiles.get(path)?.has(version));
 			},
 			options: {
-				enabled: hasStoredDiffSelection && !!diffSelectionHunk,
+				enabled: storedSelectionHunk !== null,
 				conflictBehavior: "allow",
 				target: focusScopeRef,
 			},
@@ -1069,6 +1236,7 @@ const DiffContents: FC<{
 			didScrollToViaFileRef.current = false;
 			return;
 		}
+		pendingFileRef.current = null;
 
 		const activeItem = viewer
 			.getRenderedItems()
@@ -1126,6 +1294,7 @@ const DiffContents: FC<{
 		if (!selection) return setCursor("diff", null);
 		const file = fileByItemId.get(selection.id);
 		if (!file) return;
+		pendingFileRef.current = null;
 		setCursor("diff", { file: file.address, range: selection.range });
 	}
 
@@ -1155,7 +1324,7 @@ const DiffContents: FC<{
 		itemId,
 		lineNumber,
 		side,
-	}: DiffLineTarget): HunkAddress | null => {
+	}: Pick<DiffLineTarget, "itemId" | "lineNumber" | "side">): HunkAddress | null => {
 		const file = fileByItemId.get(itemId);
 		if (file?.patch?.type !== "Patch") return null;
 
@@ -1176,27 +1345,10 @@ const DiffContents: FC<{
 				itemId: context.item.id,
 			});
 			if (!target) return;
-			const address = getHunkAddressAtLine(target);
+			const address = getContiguousHunkAddressAtLine(target);
 			if (!address) return;
-			const range = rangeFromLineGroups(address.lineGroups);
-			if (!range) return;
-
-			applySelectedLines({ id: target.itemId, range });
+			applySelectedLines(selectedLinesForHunk(address));
 		});
-
-	const getContiguousHunkAddressAtLine = ({
-		itemId,
-		lineNumber,
-		side,
-	}: DiffLineTarget): HunkAddress | null => {
-		const file = fileByItemId.get(itemId);
-		if (file?.patch?.type !== "Patch") return null;
-
-		return addressForLineSelection(
-			itemId,
-			contiguousSelectionByLine({ hunks: file.item.fileDiff.hunks, line: lineNumber, side }),
-		);
-	};
 
 	const getContextMenuAddressAtLine = ({
 		itemId,
@@ -1289,7 +1441,7 @@ const DiffContents: FC<{
 		visibleAddressSpace.items
 			.values()
 			.map((address) => {
-				const selection = hunkByKey.get(hunkAddressIdentityKey(address))?.selectedLines;
+				const selection = selectedLinesForHunk(address);
 				const lineAddresses = selection ? addressesForSelectedLines(selection, "line") : null;
 				return lineAddresses && lineAddresses.length > 0 ? { address, lineAddresses } : null;
 			})
@@ -1428,7 +1580,7 @@ const DiffContents: FC<{
 	const handleHunkPostRender = useDiffHunkDrag<Annotation>({
 		projectId,
 		fileParent,
-		getHunkAddress: getHunkAddressAtLine,
+		getHunkAddress: getContiguousHunkAddressAtLine,
 		getLineAddress: getLineAddressAtLine,
 		getSelectedAddresses: () => addressesForSelectedLines(selectedLines, "compact"),
 	});
@@ -1458,7 +1610,8 @@ const DiffContents: FC<{
 		const storedFile = stored && fileByItemId.get(weakFileIdentityKey(stored.file));
 		if (storedFile?.item.id !== itemId) return;
 
-		selectDiff(assert(storedFile.hunks[0]).address);
+		const firstHunk = storedFile.hunks[0];
+		if (firstHunk) selectDiff(firstHunk.address);
 		viewerRef.current?.scrollTo({ type: "item", id: itemId, align: "nearest" });
 	};
 
@@ -1553,16 +1706,18 @@ const DiffContents: FC<{
 			};
 
 			const loadWorkspaceFile = async (path: string): Promise<FileContents> => {
+				const worktree = fileParent._tag === "UncommittedChanges" ? fileParent.worktree : undefined;
 				const res = await queryClient.fetchQuery(
-					workspaceFileQueryOptions({ projectId, relativePath: path, version }),
+					workspaceFileQueryOptions({ projectId, relativePath: path, version, worktree }),
 				);
 				if (res.content === null || res.mimeType !== null)
 					throw new Error("Could not load file contents from workspace");
 
+				// The key names the checkout too: a path can be read from more than one.
 				return {
 					name: path,
 					contents: res.content,
-					cacheKey: `workspace:${path}:${version}`,
+					cacheKey: `workspace:${worktree ?? ""}:${path}:${version}`,
 				};
 			};
 
@@ -1590,7 +1745,7 @@ const DiffContents: FC<{
 		<>
 			<CodeView
 				ref={viewerRef}
-				renderCodeViewFooter={() => <DadJokeFooter key={diffContextKey} />}
+				renderCodeViewFooter={() => <DiffFooter key={diffContextKey} />}
 				renderCustomHeader={(item) => {
 					const file = fileByItemId.get(item.id);
 					// CodeView may briefly hold onto stale snapshots of our data.
@@ -1742,7 +1897,7 @@ const DiffContents: FC<{
             --mix-selection-light: 0%;
             --mix-selection-dark: 0%;
 
-            cursor: default;
+            cursor: var(--control-cursor);
           }
 
           [data-column-number][data-selected-line]:is(
@@ -2150,12 +2305,13 @@ const Diff: FC<{
 	manualConflicts?: Array<ManualConflict>;
 	/** True while `conflicts` still shows the replaced commit's hunks. */
 	conflictsStale?: boolean;
-	onActiveFileSelection: (itemId: string, firstSelection: DiffLineSelection | null) => void;
+	onActiveFileSelection: (file: FileAddress) => void;
 	onPassiveFileSelection: (selection: string) => void;
 	selection: Address;
 	projectId: string;
 	viewerRef: RefObject<DiffViewerHandle | null>;
 	didScrollToViaFileRef: RefObject<boolean>;
+	pendingFileRef: RefObject<FileAddress | null>;
 	headerSlot?: ReactNode;
 	/**
 	 * Whether this scope may have a files panel at all. Its caller knows, and the
@@ -2177,6 +2333,7 @@ const Diff: FC<{
 	onActiveFileSelection,
 	viewerRef,
 	didScrollToViaFileRef,
+	pendingFileRef,
 	headerSlot,
 }) => {
 	const focusScopeRef = useRef<HTMLDivElement>(null);
@@ -2305,7 +2462,11 @@ const Diff: FC<{
 		data: { treeChangeDiffs, lineStats },
 	} = useSuspenseQuery({
 		// Don't sort the changes input here as that could produce a distinct query key.
-		...treeChangesDiffsQueryOptions({ projectId, changes: unsortedChanges }),
+		...treeChangesDiffsQueryOptions({
+			projectId,
+			changes: unsortedChanges,
+			worktree: fileParent._tag === "UncommittedChanges" ? fileParent.worktree : undefined,
+		}),
 		select: withLineStats,
 	});
 
@@ -2426,38 +2587,6 @@ const Diff: FC<{
 		});
 	};
 
-	const activateRow = (selection: string) => {
-		onPassiveFileSelection(selection);
-
-		const path = selectedFilePath(filesRows, selection);
-		const file = path === null ? undefined : diffViewSansAnno.fileByPath.get(path);
-		if (!file) return;
-
-		const firstHunk = file.hunks[0];
-		onActiveFileSelection(
-			file.item.id,
-			firstHunk ? { file: file.address, range: firstHunk.selectedLines.range } : null,
-		);
-	};
-
-	const filesPanelRef = useRef<HTMLDivElement>(null);
-	const filesTreeRef = useRef<HTMLDivElement>(null);
-	const fileFilter = useListFilter({
-		filter: filesFilter,
-		setFilter: (filter) => dispatch(projectSlice.actions.setFilesFilter({ projectId, filter })),
-		inputId: "files-filter-input",
-		subject: "files",
-		scope: "files",
-		selectionKey: filesSelection,
-		firstKey: filesRows[0]?.path,
-		onEnterList: () => {
-			if (filesSelection !== null) activateRow(filesSelection);
-		},
-		panelRef: filesPanelRef,
-		listRef: filesTreeRef,
-		enabled: filesVisible && changes.length > 0,
-	});
-
 	const { data: diffSettings } = useQuery({
 		...guiSettingsQueryOptions,
 		select: (cfg) => ({
@@ -2465,6 +2594,7 @@ const Diff: FC<{
 			diffOverflow: cfg.diffOverflow,
 			diffStyle: cfg.diffStyle,
 			diffTabSize: cfg.diffTabSize,
+			filesPanelRight: cfg.filesPanelRight,
 			minimap: cfg.minimap,
 		}),
 	});
@@ -2484,6 +2614,31 @@ const Diff: FC<{
 	const diffStyle = canUseSplitDiff
 		? (diffSettings?.diffStyle ?? defaultSettings.diffStyle)
 		: "unified";
+
+	const activateRow = (selection: string) => {
+		onPassiveFileSelection(selection);
+
+		const path = selectedFilePath(filesRows, selection);
+		if (path !== null) onActiveFileSelection({ parent: fileParent, path });
+	};
+
+	const filesPanelRef = useRef<HTMLDivElement>(null);
+	const filesTreeRef = useRef<HTMLDivElement>(null);
+	const fileFilter = useListFilter({
+		filter: filesFilter,
+		setFilter: (filter) => dispatch(projectSlice.actions.setFilesFilter({ projectId, filter })),
+		inputId: "files-filter-input",
+		subject: "files",
+		scope: "files",
+		selectionKey: filesSelection,
+		firstKey: filesRows[0]?.path,
+		onEnterList: () => {
+			if (filesSelection !== null) activateRow(filesSelection);
+		},
+		panelRef: filesPanelRef,
+		listRef: filesTreeRef,
+		enabled: filesVisible && changes.length > 0,
+	});
 
 	const tabSize = diffSettings?.diffTabSize ?? defaultSettings.diffTabSize;
 
@@ -2590,6 +2745,52 @@ const Diff: FC<{
 		);
 	}
 
+	const filesOnRight = diffSettings?.filesPanelRight ?? defaultSettings.filesPanelRight;
+	const filesPanel = filesVisible ? (
+		<Panel
+			id={"files-panel" satisfies PanelId}
+			className={styles.panel}
+			defaultSize={320}
+			minSize={220}
+			groupResizeBehavior="preserve-pixel-size"
+		>
+			<div className={styles.filesPanelContent} ref={filesPanelRef}>
+				{fileFilter.rowProps === null ? (
+					<ChangesHeaderRow
+						projectId={projectId}
+						fileParent={fileParent}
+						changes={changes}
+						lineStats={lineStats}
+						onOpenFilter={fileFilter.open}
+					/>
+				) : (
+					<ListFilterRow {...fileFilter.rowProps} />
+				)}
+				<div
+					className={classes(uiStyles.scroller, uiStyles.scrollerWithSeparator, styles.diffFiles)}
+				>
+					<FilesTree
+						focusScope="files"
+						onRowSelection={activateRow}
+						projectId={projectId}
+						rows={filesRows}
+						collapsedDirectories={filesCollapsedDirectories}
+						onToggleDirectoryCollapsed={(path) =>
+							dispatch(projectSlice.actions.toggleFilesDirectoryCollapsed({ projectId, path }))
+						}
+						selection={filesSelection}
+						addressSpace={filesAddressSpace}
+						fileParent={fileParent}
+						reviewedPaths={reviewedFilePaths}
+						canUncommit={!isCommitUncommitChangesPending}
+						uncommit={uncommit}
+						ref={filesTreeRef}
+					/>
+				</div>
+			</div>
+		</Panel>
+	) : null;
+
 	return (
 		<div className={styles.diffTab}>
 			<Group
@@ -2597,61 +2798,9 @@ const Diff: FC<{
 				defaultLayout={diffLayout.defaultLayout}
 				onLayoutChanged={diffLayout.onLayoutChanged}
 			>
-				{filesVisible && (
+				{filesPanel !== null && !filesOnRight && (
 					<>
-						<Panel
-							id={"files-panel" satisfies PanelId}
-							className={styles.panel}
-							defaultSize={320}
-							minSize={220}
-							groupResizeBehavior="preserve-pixel-size"
-						>
-							<div className={styles.filesPanelContent} ref={filesPanelRef}>
-								{fileFilter.rowProps === null ? (
-									<ChangesHeaderRow
-										projectId={projectId}
-										fileParent={fileParent}
-										changes={changes}
-										lineStats={lineStats}
-										onOpenFilter={fileFilter.open}
-									/>
-								) : (
-									<ListFilterRow {...fileFilter.rowProps} />
-								)}
-								<div
-									className={classes(
-										uiStyles.scroller,
-										uiStyles.scrollerWithSeparator,
-										styles.diffFiles,
-									)}
-								>
-									<FilesTree
-										focusScope="files"
-										onRowSelection={activateRow}
-										projectId={projectId}
-										rows={filesRows}
-										collapsedDirectories={filesCollapsedDirectories}
-										onToggleDirectoryCollapsed={(path) =>
-											dispatch(
-												projectSlice.actions.toggleFilesDirectoryCollapsed({ projectId, path }),
-											)
-										}
-										selection={filesSelection}
-										addressSpace={filesAddressSpace}
-										fileParent={fileParent}
-										reviewedPaths={reviewedFilePaths}
-										canUncommit={!isCommitUncommitChangesPending}
-										uncommit={uncommit}
-										emptyLabel={
-											filesFilter !== null && filesItems.length > 0
-												? "No matching files."
-												: undefined
-										}
-										ref={filesTreeRef}
-									/>
-								</div>
-							</div>
-						</Panel>
+						{filesPanel}
 						<ResizeHandle />
 					</>
 				)}
@@ -2674,7 +2823,7 @@ const Diff: FC<{
 								}
 								onClick={toggleAllFilesReviewed}
 							>
-								{allFilesReviewed ? "Mark all unviewed" : "Mark all viewed"}
+								{allFilesReviewed ? "Mark all unreviewed" : "Mark all reviewed"}
 							</Toolbar.Button>
 							<ToggleGroupStyles>
 								<Toolbar.Button
@@ -2758,11 +2907,20 @@ const Diff: FC<{
 								focusScopeRef={focusScopeRef}
 								viewerRef={viewerRef}
 								didScrollToViaFileRef={didScrollToViaFileRef}
+								pendingFileRef={pendingFileRef}
+								renderAllFiles={renderAllFiles}
 								minimapFiles={minimapShown ? minimapFiles : null}
 							/>
 						</div>
 					</div>
 				</Panel>
+
+				{filesPanel !== null && filesOnRight && (
+					<>
+						<ResizeHandle />
+						{filesPanel}
+					</>
+				)}
 			</Group>
 		</div>
 	);
@@ -2774,29 +2932,13 @@ const CopyableId: FC<{
 	displayValue: string;
 	copyValue: string;
 }> = ({ label, icon, displayValue, copyValue }) => {
-	const [copied, setCopied] = useState(false);
-	const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-	const handleCopy = () => {
-		void window.lite.clipboardWriteText(copyValue);
-		setCopied(true);
-
-		if (resetTimeoutRef.current !== null) clearTimeout(resetTimeoutRef.current);
-		resetTimeoutRef.current = setTimeout(() => setCopied(false), 1500);
-	};
-
-	useLayoutEffect(
-		() => () => {
-			if (resetTimeoutRef.current !== null) clearTimeout(resetTimeoutRef.current);
-		},
-		[],
-	);
+	const { copied, copy } = useCopied(copyValue);
 
 	return (
 		<Tooltip.Root>
 			<Tooltip.Trigger
 				className={styles.commitDetailsMetaSha}
-				onClick={handleCopy}
+				onClick={copy}
 				render={<button type="button" aria-label={label} />}
 			>
 				<Icon size={14} name={copied ? "tick" : icon} />
@@ -2835,9 +2977,10 @@ const CommitDetails: FC<{
 	projectId: string;
 	/** The merged review the commit landed, when known: adds a Pull Request tab. */
 	review?: TargetCommitReview | null;
-	onActiveFileSelection: (itemId: string, firstSelection: DiffLineSelection | null) => void;
+	onActiveFileSelection: (file: FileAddress) => void;
 	viewerRef: RefObject<DiffViewerHandle | null>;
 	didScrollToViaFileRef: RefObject<boolean>;
+	pendingFileRef: RefObject<FileAddress | null>;
 }> = ({
 	selection,
 	review,
@@ -2845,6 +2988,7 @@ const CommitDetails: FC<{
 	onActiveFileSelection,
 	viewerRef,
 	didScrollToViaFileRef,
+	pendingFileRef,
 }) => {
 	const detailsFullWindow = useAppSelector(interfaceSlice.selectors.selectDetailsFullWindow);
 	const filesVisibleState = useAppSelector((state) =>
@@ -3026,6 +3170,7 @@ const CommitDetails: FC<{
 					onActiveFileSelection={onActiveFileSelection}
 					viewerRef={viewerRef}
 					didScrollToViaFileRef={didScrollToViaFileRef}
+					pendingFileRef={pendingFileRef}
 				/>
 			)}
 		</div>
@@ -3038,7 +3183,27 @@ const CommitDetails: FC<{
  * an integrated applied branch's stored identity.
  */
 const LandedReviewView: FC<{ projectId: string; reviewId: number }> = ({ projectId, reviewId }) => {
-	const { data: review, isError } = useQuery(getReviewQueryOptions({ projectId, reviewId }));
+	const { data: review, isError, error } = useQuery(getReviewQueryOptions({ projectId, reviewId }));
+	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
+	const destination = forgeDestination(forgeInfo, review?.htmlUrl);
+	const {
+		data: hasAccount,
+		isError: accountsError,
+		isPending: accountsPending,
+	} = useQuery({
+		...forgeAccountsQueryOptions(destination?.name),
+		select: (accounts) => destination !== null && isCloudForge(destination) && accounts.length > 0,
+	});
+	if (destination && accountsError) {
+		return (
+			<div className={classes(styles.loadingTab, "text-13")}>Could not load the pull request.</div>
+		);
+	}
+	if (destination && accountsPending)
+		return <div className={classes(styles.loadingTab, "text-13")}>Loading…</div>;
+	const authFailure = hasAccount === false ? "missing" : forgeAuthFailure(error);
+	if (authFailure !== null)
+		return <ForgeAuthPrompt destination={destination} hasAccount={hasAccount === true} />;
 	if (isError) {
 		return (
 			<div className={classes(styles.loadingTab, "text-13")}>Could not load the pull request.</div>
@@ -3064,6 +3229,7 @@ const BranchDiff: FC<BranchDetailsProps> = ({
 	onActiveFileSelection,
 	viewerRef,
 	didScrollToViaFileRef,
+	pendingFileRef,
 }) => {
 	const filesVisibleState = useAppSelector((state) =>
 		projectSlice.selectors.selectFilesVisible(state, projectId),
@@ -3097,6 +3263,7 @@ const BranchDiff: FC<BranchDetailsProps> = ({
 					onActiveFileSelection={onActiveFileSelection}
 					viewerRef={viewerRef}
 					didScrollToViaFileRef={didScrollToViaFileRef}
+					pendingFileRef={pendingFileRef}
 				/>
 			)}
 		</SuspenseQuery>
@@ -3122,17 +3289,15 @@ const BranchTitleRow: FC<{ branchName: string }> = ({ branchName }) => {
  * The Diff / Pull Request toggle. A branch with no review keeps the toggle —
  * the tab goes disabled and says so, where dropping the toggle would instead
  * read as the control having gone missing. The reason rides in the label
- * because a disabled button takes no pointer events, so a tooltip on it would
- * never open.
+ * rather than a tooltip: it is the whole story of this tab, so it has to be
+ * readable without hover (DESIGN.md → Empty states).
  */
 const BranchTabToggle: FC<{
 	branchTab: BranchTab;
 	setBranchTab: (tab: BranchTab) => void;
 	prDisabled?: boolean;
-	/** Marks the Pull Request tab with an unread-activity dot. */
-	prUnread?: boolean;
 	className?: string;
-}> = ({ branchTab, setBranchTab, prDisabled = false, prUnread = false, className }) => (
+}> = ({ branchTab, setBranchTab, prDisabled = false, className }) => (
 	<ToggleGroup
 		render={<ToggleGroupStyles className={className} />}
 		value={[branchTab]}
@@ -3148,11 +3313,6 @@ const BranchTabToggle: FC<{
 		</Toggle>
 		<Toggle render={<ToggleStyles />} value={"pr" satisfies BranchTab} disabled={prDisabled}>
 			{prDisabled ? "No pull request" : "Pull Request"}
-			{!prDisabled && prUnread && (
-				<span className={rowStyles.unreadDot}>
-					<span className={rowStyles.unreadLabel}>New activity</span>
-				</span>
-			)}
 		</Toggle>
 	</ToggleGroup>
 );
@@ -3202,7 +3362,7 @@ const ReviewLayout: FC<{
 	projectId: string;
 	sourceBranch: string;
 	review: ForgeReview;
-	editing?: { active: boolean; onDone: () => void };
+	editing?: { active: boolean; onStart: () => void; onDone: () => void };
 }> = ({ projectId, sourceBranch, review, editing }) => {
 	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
 	// The level is read unconditionally: behind `&&` the hook would be skipped
@@ -3225,21 +3385,17 @@ const ReviewLayout: FC<{
 					reviewId={review.number}
 					sourceBranch={sourceBranch}
 					title={review.title}
+					meta={<PullRequestMeta projectId={projectId} review={review} />}
 					canSubmit={editing !== undefined}
 					editing={editing?.active ?? false}
 					onDoneEditing={() => editing?.onDone()}
+					onStartEditing={editing?.onStart}
 				/>
 
 				{hasConversation && <PullRequestComments projectId={projectId} review={review} />}
 			</div>
 
-			<PullRequestPanel
-				projectId={projectId}
-				review={review}
-				activity={
-					hasConversation ? <ReviewTimeline projectId={projectId} review={review} /> : undefined
-				}
-			/>
+			<PullRequestPanel projectId={projectId} review={review} />
 		</div>
 	);
 };
@@ -3266,7 +3422,8 @@ const NewPullRequestView: FC<{
 	branchName: string;
 	targetBranch: string | undefined;
 	canSubmit: boolean;
-}> = ({ projectId, branchName, targetBranch, canSubmit }) => {
+	pushFirst: PushBeforePublish | null;
+}> = ({ projectId, branchName, targetBranch, canSubmit, pushFirst }) => {
 	// Same record the form persists its title and body to, read here for the
 	// fields the panel owns. Both writers merge, so neither wipes the other.
 	const { data: draft } = useSuspenseQuery(draftPRQueryOptions({ projectId, branchName }));
@@ -3306,6 +3463,7 @@ const NewPullRequestView: FC<{
 					sourceBranch={branchName}
 					title={null}
 					canSubmit={canSubmit}
+					pushFirst={pushFirst}
 					afterPublish={applyExtras}
 				/>
 			</div>
@@ -3324,9 +3482,10 @@ const NewPullRequestView: FC<{
 /** What every details view threads through to its Diff. */
 type DetailsViewProps = {
 	projectId: string;
-	onActiveFileSelection: (itemId: string, firstSelection: DiffLineSelection | null) => void;
+	onActiveFileSelection: (file: FileAddress) => void;
 	viewerRef: RefObject<DiffViewerHandle | null>;
 	didScrollToViaFileRef: RefObject<boolean>;
+	pendingFileRef: RefObject<FileAddress | null>;
 };
 
 type BranchDetailsProps = { branch: BranchAddress } & DetailsViewProps;
@@ -3343,6 +3502,7 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 	onActiveFileSelection,
 	viewerRef,
 	didScrollToViaFileRef,
+	pendingFileRef,
 }) => {
 	const dispatch = useAppDispatch();
 	const branchName = branchDetailsParams(decodeBytes(branch.branchRef)).branchName;
@@ -3350,7 +3510,7 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 	// Same query key as the applied branch's, so the two share one listing
 	// rather than polling the forge twice. Reviews are keyed by branch name,
 	// which says nothing about whether the branch is applied.
-	const { data: review } = useQuery({
+	const { data: review, error: reviewError } = useQuery({
 		...listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }),
 		enabled: forgeInfo?.capabilities.prService === true,
 		select: (reviews) => reviews.find((review) => review.sourceBranch === branchName) ?? null,
@@ -3370,8 +3530,26 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 				?.review?.number ?? null,
 	});
 	const landedReviewId = listedLandedNumber ?? null;
+	const destination = forgeDestination(forgeInfo, review?.htmlUrl);
+	const {
+		data: hasAccount,
+		isError: accountsError,
+		isPending: accountsPending,
+	} = useQuery({
+		...forgeAccountsQueryOptions(destination?.name),
+		select: (accounts) => destination !== null && isCloudForge(destination) && accounts.length > 0,
+	});
 
-	const reviewTab = review ? (
+	const authFailure = hasAccount === false ? "missing" : forgeAuthFailure(reviewError);
+
+	const needsAuth = forgeInfo?.capabilities.prService && authFailure !== null;
+	const reviewTab = needsAuth ? (
+		<ForgeAuthPrompt destination={destination} hasAccount={hasAccount === true} />
+	) : review && destination && accountsError ? (
+		<div className={classes(styles.loadingTab, "text-13")}>Could not load the pull request.</div>
+	) : review && destination && accountsPending ? (
+		<p className="text-13">Loading…</p>
+	) : review ? (
 		<ReviewView
 			key={review.number}
 			projectId={projectId}
@@ -3382,19 +3560,12 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 		<LandedReviewView projectId={projectId} reviewId={landedReviewId} />
 	) : null;
 
-	const notificationsLevel = usePrNotificationsLevel();
-	const prUnread = useReviewUnread(
-		projectId,
-		{ number: review?.number ?? 0, modifiedAt: review?.modifiedAt ?? null },
-		review != null && forgeInfo?.capabilities.prService === true && notificationsLevel !== "off",
-	);
-
 	const chosenTab = useAppSelector((state) =>
 		projectSlice.selectors.selectBranchTab(state, projectId, branchName),
 	);
 	// The review is what the branch is judged by, so a branch that has one —
 	// open or landed — opens on it; without one only the diff is on offer.
-	const branchTab = chosenTab ?? (reviewTab !== null ? "pr" : "diff");
+	const branchTab = chosenTab ?? (review || landedReviewId !== null ? "pr" : "diff");
 	const setBranchTab = (tab: BranchTab) => {
 		dispatch(projectSlice.actions.setSelectedBranchTab({ projectId, branchName, tab }));
 	};
@@ -3405,6 +3576,17 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 	useBranchTabHotkeys({ branchTab, setBranchTab, target: ref, enabled: reviewTab !== null });
 
 	const { isPending: isApplyPending, apply } = useApplyToWorkspace(projectId);
+	// A branch checked out in a linked worktree cannot be applied while it is; its
+	// commits show up in the worktree's lane instead.
+	const { data: worktreeName } = useQuery({
+		...headInfoQueryOptions(projectId),
+		select: (headInfo) =>
+			headInfo.worktrees.find(
+				(worktree) =>
+					worktree.refName !== null &&
+					decodeBytes(worktree.refName.fullNameBytes) === decodeBytes(branch.branchRef),
+			)?.name,
+	});
 
 	return (
 		<div className={styles.container} ref={ref}>
@@ -3416,19 +3598,24 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 						branchTab={branchTab}
 						setBranchTab={setBranchTab}
 						prDisabled={reviewTab === null}
-						prUnread={prUnread}
 					/>
 
 					<div className={styles.tabsRowRight}>
-						<button
-							type="button"
-							className={getButtonClassName({ variant: "gray" })}
-							disabled={isApplyPending}
-							onClick={() => apply(decodeBytes(branch.branchRef))}
-						>
-							{isApplyPending && <Icon name="spinner" />}
-							Apply to workspace
-						</button>
+						{worktreeName === undefined ? (
+							<button
+								type="button"
+								className={getButtonClassName({ variant: "gray" })}
+								disabled={isApplyPending}
+								onClick={() => apply(decodeBytes(branch.branchRef))}
+							>
+								{isApplyPending && <Icon name="spinner" />}
+								Apply to workspace
+							</button>
+						) : (
+							<span className={classes("text-12", rowStyles.fadedText)}>
+								Checked out in worktree {worktreeName}
+							</span>
+						)}
 					</div>
 				</div>
 			</div>
@@ -3445,6 +3632,7 @@ const UnappliedBranchDetails: FC<BranchDetailsProps> = ({
 						onActiveFileSelection={onActiveFileSelection}
 						viewerRef={viewerRef}
 						didScrollToViaFileRef={didScrollToViaFileRef}
+						pendingFileRef={pendingFileRef}
 					/>
 				)}
 			</Suspense>
@@ -3459,20 +3647,50 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 	onActiveFileSelection,
 	viewerRef,
 	didScrollToViaFileRef,
+	pendingFileRef,
 }) => {
 	const { data: forgeInfo } = useQuery(forgeInfoOptions(projectId));
+	const supportsPullRequests = forgeInfo?.capabilities.prService === true;
 	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
 	const headInfoIndex = headInfo ? getHeadInfoIndex(headInfo) : null;
 	const dispatch = useAppDispatch();
 	const branchRef = decodeBytes(branch.branchRef);
 	const branchName = branchDetailsParams(branchRef).branchName;
+	const { data: openReviews, error: reviewError } = useQuery({
+		...listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }),
+		enabled: supportsPullRequests,
+	});
+	const openReview = openReviews?.reviewsBySourceBranch.get(branchName);
+	const reviewsLoaded = openReviews !== undefined;
+	const destination = forgeDestination(forgeInfo, openReview?.htmlUrl);
+	const {
+		data: hasAccount,
+		isError: accountsError,
+		isPending: accountsPending,
+		isSuccess: accountsSuccess,
+	} = useQuery({
+		...forgeAccountsQueryOptions(destination?.name),
+		select: (accounts) => destination !== null && isCloudForge(destination) && accounts.length > 0,
+	});
+	const authFailure = hasAccount === false ? "missing" : forgeAuthFailure(reviewError);
+	const canUseForge = accountsSuccess && hasAccount && authFailure === null;
+	const branchCtx = headInfoIndex?.branchContextByRefBytes(branch.branchRef);
+	// A recorded PR missing from the open listing may be merged or closed.
+	// Keep it visible until verification rules out a merge.
+	const landedReviewId = useLandedReviewId(
+		projectId,
+		branchCtx ? recordedPullRequest(branchCtx.segment) : null,
+		reviewsLoaded && !openReview && canUseForge,
+	);
+	const hasReview = !!openReview || landedReviewId !== null;
+
 	const chosenTab = useAppSelector((state) =>
 		projectSlice.selectors.selectBranchTab(state, projectId, branchName),
 	);
-	// The review is where an applied branch is headed, so a forge that serves
-	// pull requests opens on that tab — the create form when none exists yet.
-	// Without such a forge the tab is a dead form, so the diff leads.
-	const branchTab = chosenTab ?? (forgeInfo?.capabilities.prService ? "pr" : "diff");
+	const defaultTab = supportsPullRequests && hasReview ? "pr" : "diff";
+	const branchTab = chosenTab ?? defaultTab;
+	const showCreatePullRequest =
+		branchTab === "diff" && supportsPullRequests && reviewsLoaded && !hasReview;
 
 	const setBranchTab = (tab: BranchTab) => {
 		dispatch(projectSlice.actions.setSelectedBranchTab({ projectId, branchName, tab }));
@@ -3490,47 +3708,22 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 	const ref = useRef<HTMLDivElement>(null);
 	useBranchTabHotkeys({ branchTab, setBranchTab, target: ref });
 
-	// Use push status of segment, not branch details; something about remote
-	// tracking refs.
-	const branchCtx = headInfoIndex?.branchContextByRefBytes(branch.branchRef);
+	// Once the parent branch is integrated, the PR can target the workspace's base.
 	const parentSegment = branchCtx?.stack.segments[branchCtx.segmentIndex + 1];
 	const targetBranch =
 		!parentSegment || parentSegment.pushStatus === "integrated"
 			? headInfo?.target?.remoteTrackingRef.displayName
-			: parentSegment.pushStatus === "completelyUnpushed"
-				? undefined
-				: parentSegment.refName?.displayName;
-
-	// The open listing already carries everything an open review needs, so the
-	// verification fetch is spent only when the listing has nothing for this
-	// branch — the case where the recorded number's fate actually decides the
-	// tab between the landed review and the create-PR flow.
-	const { data: hasOpenReview } = useQuery({
-		...listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }),
-		// The listing is alive anyway (every branch row subscribes to it), so
-		// this gate expresses intent rather than saving a fetch.
-		enabled: branchTab === "pr" && !!forgeInfo?.capabilities.prService,
-		select: (reviews) => reviews.some((review) => review.sourceBranch === branchName),
-	});
-	const landedReviewId = useLandedReviewId(
-		projectId,
-		branchCtx ? recordedPullRequest(branchCtx.segment) : null,
-		branchTab === "pr" && hasOpenReview === false,
-	);
-
-	// Subscribed regardless of the chosen tab: the dot on the toggle is what
-	// tells a reader parked on the diff that the review moved.
-	const notificationsLevel = usePrNotificationsLevel();
-	const { data: openReview } = useQuery({
-		...listReviewsQueryOptions({ projectId, cacheConfig: "noCache" }),
-		enabled: !!forgeInfo?.capabilities.prService && notificationsLevel !== "off",
-		select: (reviews) => reviews.find((review) => review.sourceBranch === branchName) ?? null,
-	});
-	const prUnread = useReviewUnread(
-		projectId,
-		{ number: openReview?.number ?? 0, modifiedAt: openReview?.modifiedAt ?? null },
-		!!openReview && !!forgeInfo?.capabilities.prService && notificationsLevel !== "off",
-	);
+			: parentSegment.refName?.displayName;
+	// A forge only opens a review on a branch it has, so a new PR pushes the
+	// branch and its ancestors first when any of them still has something to
+	// push. Conflicted commits cannot be pushed, and so cannot be reviewed yet.
+	const downstack = branchCtx
+		? downstackPushStatusFromSegments(branchCtx.stack.segments.slice(branchCtx.segmentIndex))
+		: null;
+	const pushFirst: PushBeforePublish | null = downstack?.anyRequiresPush
+		? { branch: branchRef, withForce: downstack.anyPushRequiresForce }
+		: null;
+	const canSubmit = pushFirst === null || !downstack?.anyHasConflicts;
 
 	return (
 		<div className={styles.container} ref={ref}>
@@ -3538,9 +3731,22 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 				<BranchTitleRow branchName={branchName} />
 
 				<div className={styles.tabsRow}>
-					<BranchTabToggle branchTab={branchTab} setBranchTab={setBranchTab} prUnread={prUnread} />
+					<BranchTabToggle branchTab={branchTab} setBranchTab={setBranchTab} />
 
-					{branchTab === "pr" && !!forgeInfo?.capabilities.prService && (
+					{showCreatePullRequest && (
+						<div className={styles.tabsRowRight}>
+							<button
+								type="button"
+								className={getButtonClassName({ variant: "gray" })}
+								onClick={() => setBranchTab("pr")}
+							>
+								<Icon name="pr" />
+								Create pull request
+							</button>
+						</div>
+					)}
+
+					{branchTab === "pr" && supportsPullRequests && canUseForge && (
 						<Suspense>
 							<SuspenseQuery
 								{...listReviewsQueryOptions({
@@ -3573,13 +3779,22 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 				{branchTab === "pr" ? (
 					<div className={styles.prTabScroll}>
 						<div className={styles.prTab}>
-							{!forgeInfo?.capabilities.prService ? (
+							{destination && accountsError ? (
+								<div className={classes(styles.loadingTab, "text-13")}>
+									Could not load the pull request.
+								</div>
+							) : destination && accountsPending ? (
+								<p className="text-13">Loading…</p>
+							) : !supportsPullRequests ? (
 								<NewPullRequestView
 									projectId={projectId}
 									branchName={branchName}
 									targetBranch={targetBranch}
 									canSubmit={false}
+									pushFirst={null}
 								/>
+							) : authFailure !== null ? (
+								<ForgeAuthPrompt destination={destination} hasAccount={hasAccount === true} />
 							) : (
 								<SuspenseQuery
 									{...listReviewsQueryOptions({
@@ -3589,19 +3804,17 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 								>
 									{({ data }) => {
 										const review = data.reviewsBySourceBranch.get(branchName);
-										const canSubmit =
-											targetBranch !== undefined &&
-											branchCtx?.segment.pushStatus !== "completelyUnpushed";
 
 										if (!review && landedReviewId !== null)
 											return <LandedReviewView projectId={projectId} reviewId={landedReviewId} />;
 
-										return !review || !canSubmit ? (
+										return !review ? (
 											<NewPullRequestView
 												projectId={projectId}
 												branchName={branchName}
 												targetBranch={targetBranch}
 												canSubmit={canSubmit}
+												pushFirst={pushFirst}
 											/>
 										) : (
 											<ReviewView
@@ -3609,7 +3822,11 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 												projectId={projectId}
 												sourceBranch={branchName}
 												review={review}
-												editing={{ active: prEditing, onDone: () => setPrEditing(false) }}
+												editing={{
+													active: prEditing,
+													onStart: startPrEdit,
+													onDone: () => setPrEditing(false),
+												}}
 											/>
 										);
 									}}
@@ -3624,6 +3841,7 @@ const AppliedBranchDetails: FC<BranchDetailsProps> = ({
 						onActiveFileSelection={onActiveFileSelection}
 						viewerRef={viewerRef}
 						didScrollToViaFileRef={didScrollToViaFileRef}
+						pendingFileRef={pendingFileRef}
 					/>
 				)}
 			</Suspense>
@@ -3654,11 +3872,24 @@ const FileDetailsSkeleton: FC = () => {
 
 const FileDetails: FC<{
 	path: string;
+	/** The main worktree's uncommitted changes, or a linked worktree's. */
+	parent: Extract<FileParent, { _tag: "UncommittedChanges" }>;
+	worktreeChanges: WorktreeChanges;
 	projectId: string;
-	onActiveFileSelection: (itemId: string, firstSelection: DiffLineSelection | null) => void;
+	onActiveFileSelection: (file: FileAddress) => void;
 	viewerRef: RefObject<DiffViewerHandle | null>;
 	didScrollToViaFileRef: RefObject<boolean>;
-}> = ({ path, projectId, onActiveFileSelection, viewerRef, didScrollToViaFileRef }) => {
+	pendingFileRef: RefObject<FileAddress | null>;
+}> = ({
+	path,
+	parent,
+	worktreeChanges,
+	projectId,
+	onActiveFileSelection,
+	viewerRef,
+	didScrollToViaFileRef,
+	pendingFileRef,
+}) => {
 	const detailsFullWindow = useAppSelector(interfaceSlice.selectors.selectDetailsFullWindow);
 	// This view is the uncommitted scope, and the sidebar's own "Uncommitted"
 	// list is already its files panel — a second one here would only repeat it,
@@ -3670,7 +3901,6 @@ const FileDetails: FC<{
 	// proxy then answers for the wrong scope.
 	const canShowFiles = false;
 	const filesVisible = false;
-	const { data: worktreeChanges } = useSuspenseQuery(changesInWorktreeQueryOptions(projectId));
 	const filesItems = getChangesFileRowItems(worktreeChanges).toArray();
 	const changes = filesItems
 		.values()
@@ -3678,8 +3908,11 @@ const FileDetails: FC<{
 		.filter((x) => x != null)
 		.toArray();
 
+	// The main worktree's files walk their own path-keyed list; a linked
+	// worktree's are rows of the applied list.
 	const selectFile = (selection: string) => {
-		setCursor("uncommitted", selection);
+		if (parent.worktree === undefined) setCursor("uncommitted", selection);
+		else setCursor("applied", fileAddress({ parent, path: selection }));
 	};
 
 	const title = (
@@ -3688,7 +3921,9 @@ const FileDetails: FC<{
 
 			<div className={styles.title}>
 				<Icon name="file-diff" />
-				<h3 className={classes("text-15", "text-semibold")}>Uncommitted</h3>
+				<h3 className={classes("text-15", "text-semibold")}>
+					{parent.worktree === undefined ? "Uncommitted" : `Uncommitted in ${parent.worktree}`}
+				</h3>
 			</div>
 		</>
 	);
@@ -3702,11 +3937,12 @@ const FileDetails: FC<{
 					canShowFiles={canShowFiles}
 					filesItems={filesItems}
 					onPassiveFileSelection={selectFile}
-					selection={fileAddress({ parent: uncommittedChangesFileParent, path })}
+					selection={fileAddress({ parent, path })}
 					projectId={projectId}
 					onActiveFileSelection={onActiveFileSelection}
 					viewerRef={viewerRef}
 					didScrollToViaFileRef={didScrollToViaFileRef}
+					pendingFileRef={pendingFileRef}
 					headerSlot={title}
 				/>
 			) : (
@@ -3715,6 +3951,39 @@ const FileDetails: FC<{
 				</div>
 			)}
 		</div>
+	);
+};
+
+/** A linked worktree's uncommitted file, read through the worktree source. */
+const WorktreeFileDetails: FC<{ path: string; worktree: string } & DetailsViewProps> = ({
+	path,
+	worktree,
+	...viewProps
+}) => {
+	const { data: worktreeChanges } = useSuspenseQuery(
+		worktreeChangesQueryOptions(viewProps.projectId, worktree),
+	);
+	return (
+		<FileDetails
+			path={path}
+			parent={worktreeChangesFileParent(worktree)}
+			worktreeChanges={worktreeChanges}
+			{...viewProps}
+		/>
+	);
+};
+
+const MainFileDetails: FC<{ path: string } & DetailsViewProps> = ({ path, ...viewProps }) => {
+	const { data: worktreeChanges } = useSuspenseQuery(
+		changesInWorktreeQueryOptions(viewProps.projectId),
+	);
+	return (
+		<FileDetails
+			path={path}
+			parent={uncommittedChangesFileParent}
+			worktreeChanges={worktreeChanges}
+			{...viewProps}
+		/>
 	);
 };
 
@@ -3764,6 +4033,18 @@ export const Details: FC<
 					<UnappliedBranchDetails key={branchIdentityKey(branch)} branch={branch} {...viewProps} />
 				),
 			Commit: (commit) => commitDetails(commit, viewProps, landedReview),
+			// A linked worktree's uncommitted file: the one file address the applied list holds.
+			File: (file) =>
+				file.parent._tag === "UncommittedChanges" && file.parent.worktree !== undefined ? (
+					<Suspense fallback={<FileDetailsSkeleton />}>
+						<WorktreeFileDetails
+							key={weakFileParentIdentityKey(file.parent)}
+							path={file.path}
+							worktree={file.parent.worktree}
+							{...viewProps}
+						/>
+					</Suspense>
+				) : null,
 		}),
 		Match.orElse(() => null),
 	);
@@ -3772,6 +4053,6 @@ export const Details: FC<
 /** The details pane for the uncommitted-files scope. */
 export const UncommittedFilesDetails: FC<{ path: string } & DetailsViewProps> = (p) => (
 	<Suspense fallback={<FileDetailsSkeleton />}>
-		<FileDetails {...p} />
+		<MainFileDetails {...p} />
 	</Suspense>
 );

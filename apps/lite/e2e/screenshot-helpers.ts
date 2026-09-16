@@ -49,7 +49,7 @@ export const shoot = async (appWindow: Page, name: string, selector: string): Pr
 
 export const openProject = async (appWindow: Page): Promise<void> => {
 	await expect(appWindow).toHaveURL(/\/project\/[^/]+\/workspace/);
-	await expect(appWindow.getByRole("button", { name: /select project/i })).toBeVisible();
+	await expect(appWindow.getByRole("combobox", { name: /select project/i })).toBeVisible();
 	await appWindow.setViewportSize(VIEWPORT);
 
 	// On CI the renderer the window starts with sometimes never produces a frame
@@ -57,7 +57,7 @@ export const openProject = async (appWindow: Page): Promise<void> => {
 	// waits for a paint that never arrives. Reloading gets a renderer that works.
 	await appWindow.reload();
 	await appWindow.getByRole("main").waitFor();
-	await expect(appWindow.getByRole("button", { name: /select project/i })).toBeVisible();
+	await expect(appWindow.getByRole("combobox", { name: /select project/i })).toBeVisible();
 };
 
 // Under a bare X server the renderer only paints a capturable frame on load: a
@@ -65,10 +65,7 @@ export const openProject = async (appWindow: Page): Promise<void> => {
 // arrives. So every surface is reached by navigating or reloading, never by
 // clicking, and is photographed immediately afterwards — which is also why each
 // surface gets its own test rather than sharing a window.
-export const goToTab = async (
-	appWindow: Page,
-	tab: "workspace" | "upstream" | "branches",
-): Promise<void> => {
+export const goToTab = async (appWindow: Page, tab: "workspace" | "branches"): Promise<void> => {
 	// The sidebar page lives in the query string, so this is a real navigation.
 	await appWindow.evaluate((page) => {
 		window.location.search = page === "workspace" ? "" : `?page=${page}`;
@@ -78,10 +75,10 @@ export const goToTab = async (
 	// only an explicit reload reliably produces one.
 	await appWindow.reload();
 	await appWindow.getByRole("main").waitFor();
-	await expect(appWindow.getByRole("button", { name: /select project/i })).toBeVisible();
+	await expect(appWindow.getByRole("combobox", { name: /select project/i })).toBeVisible();
 
 	// Assert the tab actually changed. Every other post-condition here is present
-	// on all three tabs, so without this a navigation that silently stayed put
+	// on both tabs, so without this a navigation that silently stayed put
 	// would write the workspace panel into branches-tab.png and pass. The
 	// workspace is the absence of the parameter, so it is asserted the other way
 	// round — `toContain("")` would pass on any tab at all.

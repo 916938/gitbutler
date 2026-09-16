@@ -158,7 +158,10 @@ pub mod json {
     #[serde(rename_all = "camelCase", tag = "type", content = "subject")]
     pub enum BranchCreatePlacement {
         /// Create the branch as a new independent stack at the workspace base.
-        Independent,
+        Independent {
+            /// Zero-based insertion index, clamped to the stack count. `None` appends.
+            order: Option<usize>,
+        },
         /// Create the branch relative to an existing commit or reference.
         ///
         /// When relative to a reference, the new branch points at the same commit
@@ -686,9 +689,28 @@ pub mod json {
         /// requests and `!` for GitLab merge requests. Precedes `number` when
         /// displayed.
         pub unit_symbol: String,
+        /// Labels used to categorize the review.
+        pub labels: Vec<but_forge::ForgeReviewLabel>,
+        /// The review author, which may differ from the latest commit author.
+        pub author: Option<ListedForgeReviewAuthor>,
+        /// ISO 8601 timestamp of when the review was opened.
+        pub created_at: Option<String>,
     }
     #[cfg(feature = "export-schema")]
     but_schemars::register_sdk_type!(ListedForgeReview);
+
+    /// Author identity used to display and search listed reviews.
+    #[derive(Debug, Serialize)]
+    #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
+    #[serde(rename_all = "camelCase")]
+    pub struct ListedForgeReviewAuthor {
+        /// The author's username on the forge.
+        pub login: String,
+        /// The author's display name, if available.
+        pub name: Option<String>,
+    }
+    #[cfg(feature = "export-schema")]
+    but_schemars::register_sdk_type!(ListedForgeReviewAuthor);
 
     impl From<&but_forge::ForgeReview> for ListedForgeReview {
         fn from(value: &but_forge::ForgeReview) -> Self {
@@ -697,6 +719,12 @@ pub mod json {
                 title: value.title.clone(),
                 html_url: value.html_url.clone(),
                 unit_symbol: value.unit_symbol.clone(),
+                labels: value.labels.clone(),
+                author: value.author.as_ref().map(|author| ListedForgeReviewAuthor {
+                    login: author.login.clone(),
+                    name: author.name.clone(),
+                }),
+                created_at: value.created_at.clone(),
             }
         }
     }
@@ -953,14 +981,14 @@ pub fn branch_create_with_perm(
 ) -> anyhow::Result<BranchCreateResult> {
     use but_workspace::branch::create_reference::{Anchor, Position};
 
-    let anchor = match placement {
-        json::BranchCreatePlacement::Independent => None,
+    let (anchor, order) = match placement {
+        json::BranchCreatePlacement::Independent { order } => (None, order),
         json::BranchCreatePlacement::Dependent { relative_to, side } => {
             let position = match side {
                 InsertSide::Above => Position::Above,
                 InsertSide::Below => Position::Below,
             };
-            Some(match relative_to {
+            let anchor = match relative_to {
                 crate::commit::json::RelativeTo::Commit(commit_id) => Anchor::AtCommit {
                     commit_id,
                     position,
@@ -972,7 +1000,8 @@ pub fn branch_create_with_perm(
                         position,
                     }
                 }
-            })
+            };
+            (Some(anchor), None)
         }
     };
 
@@ -1016,7 +1045,7 @@ pub fn branch_create_with_perm(
         &ws,
         &mut meta,
         |_| StackId::generate(),
-        None,
+        order,
     )?;
     *ws = new_ws.into_owned();
     drop(ws);
@@ -1150,13 +1179,13 @@ pub fn branch_remove_with_perm(
     }
 
     let mut meta = ctx.meta()?;
-    let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
+    let (mut repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
     let new_ws = if moved_head {
         None
     } else {
         but_workspace::branch::remove_reference(
             ref_name.as_ref(),
-            &repo,
+            &mut repo,
             &ws,
             &mut meta,
             but_workspace::branch::remove_reference::Options {
@@ -1171,18 +1200,10 @@ pub fn branch_remove_with_perm(
     } else {
         // Standalone branches are intentionally absent from the workspace
         // projection, as is a checked-out tip after moving HEAD below it.
-        let deleted_ref = if let Some(reference) = repo.try_find_reference(ref_name.as_ref())? {
-            let safe_delete = but_core::branch::SafeDelete::new(&repo)?;
-            let out = safe_delete.delete_reference(&reference)?;
-            if let Some(paths) = out.checked_out_in_worktree_dirs {
-                bail_precondition!(
-                    "Refusing to delete a branch that is checked out. Worktrees are: {paths:?}"
-                );
-            }
-            true
-        } else {
-            false
-        };
+        let deleted_ref = but_workspace::branch::remove_reference::delete_local_branch(
+            &mut repo,
+            ref_name.as_ref(),
+        )?;
         let deleted_meta = meta.remove(ref_name.as_ref())?;
         if deleted_ref || deleted_meta {
             let new_ws = ws
@@ -1514,12 +1535,14 @@ fn refs_are_prefix_related(a: &gix::refs::FullNameRef, b: &gix::refs::FullNameRe
     is_dir_prefix(a, b) || is_dir_prefix(b, a)
 }
 
-/// Checks out an existing local branch and returns the resulting workspace state.
+/// Checks out a branch and returns the resulting workspace state.
 ///
 /// This acquires exclusive worktree access from `ctx`, updates the worktree and
 /// index through [`but_core::worktree::safe_checkout_from_head()`], then points `HEAD`
-/// symbolically at `branch`. The branch must be an existing full local branch
-/// name under `refs/heads/`.
+/// symbolically at `branch`. The branch is either an existing full local branch
+/// name under `refs/heads/`, or a remote-tracking branch under `refs/remotes/`,
+/// in which case its local tracking branch is checked out, created at the
+/// remote-tracking commit first if it doesn't exist yet.
 #[but_api(napi, try_from = json::BranchCheckoutResult)]
 #[instrument(err(Debug))]
 pub fn branch_checkout(
@@ -1620,8 +1643,9 @@ pub fn workspace_checkout_with_perm_only(
     branch_checkout_with_perm_only(ctx, workspace_ref, perm)
 }
 
-/// Checks out an existing local branch under caller-held exclusive repository
-/// access.
+/// Checks out a branch under caller-held exclusive repository access.
+///
+/// See [`branch_checkout()`] for the accepted branch names.
 pub fn branch_checkout_with_perm(
     ctx: &mut but_ctx::Context,
     branch: gix::refs::FullName,
@@ -1644,22 +1668,27 @@ pub fn branch_checkout_with_perm(
     Ok(result)
 }
 
-/// Checks out an existing local branch under caller-held exclusive repository
-/// access without creating an oplog entry.
+/// Checks out a branch under caller-held exclusive repository access without
+/// creating an oplog entry.
+///
+/// See [`branch_checkout()`] for the accepted branch names.
 pub fn branch_checkout_with_perm_only(
     ctx: &mut but_ctx::Context,
     reference_name: gix::refs::FullName,
     perm: &mut RepoExclusive,
 ) -> anyhow::Result<BranchCheckoutResult> {
-    if !reference_name.as_bstr().starts_with_str("refs/heads/") {
-        bail!(
-            "Can only check out local branches under refs/heads, got '{}'",
-            reference_name.as_bstr()
-        );
-    }
-
     {
         let repo = ctx.repo.get()?;
+        let reference_name = match reference_name.category() {
+            Some(gix::refs::Category::LocalBranch) => reference_name,
+            Some(gix::refs::Category::RemoteBranch) => {
+                but_workspace::branch::local_tracking_branch(&repo, reference_name.as_ref())?
+            }
+            _ => bail!(
+                "Can only check out local branches under refs/heads or remote-tracking branches under refs/remotes, got '{}'",
+                reference_name.as_bstr()
+            ),
+        };
         let current_head = repo
             .head_id()
             .context("Cannot check out a branch while HEAD is unborn")?

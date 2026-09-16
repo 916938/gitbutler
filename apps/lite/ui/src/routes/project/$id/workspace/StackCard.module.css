@@ -1,6 +1,8 @@
 /* A card runs the full width of its panel, divided from the next by its own
    floor rather than held off it by rounding and a gap. */
 .card {
+	--graph-through-visibility: hidden;
+
 	display: flex;
 	flex-direction: column;
 	border-block-end: 1px solid var(--border-section);
@@ -30,4 +32,16 @@
 	height: 8px;
 	min-height: auto;
 	overflow: hidden;
+}
+
+/* In the graph the stub runs over the border to the card's edge, where the
+   gap below picks it up, and a row of gutter supplies the head room instead
+   of padding, so the main line can run through it. */
+.card[data-graph] .railConnector:last-child {
+	height: 9px;
+	margin-block-end: -1px;
+}
+
+.card[data-graph] > .body {
+	padding-block-start: 0;
 }

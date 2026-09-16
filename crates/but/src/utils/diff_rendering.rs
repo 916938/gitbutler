@@ -9,10 +9,7 @@ use std::{
 use anyhow::bail;
 use bstr::{BStr, BString, ByteSlice as _};
 use but_core::{
-    UnifiedPatch,
-    diff::LineStats,
-    ui::{TreeChange, TreeStatus},
-    unified_diff::DiffHunk,
+    TreeStatusKind, UnifiedPatch, diff::LineStats, ui::TreeChange, unified_diff::DiffHunk,
 };
 use but_ctx::Context;
 use gix::{ObjectId, actor::Signature};
@@ -31,12 +28,13 @@ use unicode_width::UnicodeWidthStr as _;
 use crate::{
     CliId, IdMap,
     id::{
-        CommitWithId, IdAndHunk, TreeChangeWithId, UncommittedHunk, UncommittedHunkOrFile,
-        identify_hunks,
+        CommitId, CommitWithId, CommittedFileId, CommittedHunk, IdAndHunk, TreeChangeWithId,
+        UncommittedHunk, UncommittedHunkOrFile, identify_hunks,
     },
     theme::Theme,
     utils::{
         change_source::ChangeSourceId,
+        status_letter_kind,
         string_interning::{SharedStrings, Strings},
     },
 };
@@ -559,7 +557,13 @@ pub fn render_commit(
                 out.write_section_separator()?;
             }
 
-            render_tree_changes_with_id(tree_changes, theme, &mut id_gen, out)?;
+            render_tree_changes_with_id(
+                workspace_commit.id(),
+                tree_changes,
+                theme,
+                &mut id_gen,
+                out,
+            )?;
         }
         CommitWithId::Remote(remote_commit) => {
             let commit_details = but_api::diff::commit_details(
@@ -656,8 +660,18 @@ pub fn render_uncommitted_source(
         out.write_section_separator()?;
     }
 
-    for (pos, (raw_id, cli_id, UncommittedHunk { hunk, source: _ })) in
-        uncommitted_hunks.into_iter().with_position()
+    for (
+        pos,
+        (
+            raw_id,
+            cli_id,
+            UncommittedHunk {
+                hunk,
+                tree_status,
+                source: _,
+            },
+        ),
+    ) in uncommitted_hunks.into_iter().with_position()
     {
         let id = id_gen.new_id(raw_id);
 
@@ -665,7 +679,7 @@ pub fn render_uncommitted_source(
             id,
             Some(Arc::clone(&cli_id)),
             hunk.path.as_ref(),
-            Some(ShortIdOrTreeStatus::ShortId(raw_id)),
+            Some(StatusLine::ShortIdAndTreeStatus(raw_id, *tree_status)),
             out,
             theme,
         )?;
@@ -765,7 +779,10 @@ fn render_id_and_hunks(
             id,
             Some(Arc::clone(&cli_id)),
             id_and_hunk.hunk.path.as_ref(),
-            Some(ShortIdOrTreeStatus::ShortId(raw_id)),
+            Some(StatusLine::ShortIdAndTreeStatus(
+                raw_id,
+                id_and_hunk.tree_status,
+            )),
             out,
             theme,
         )?;
@@ -829,7 +846,7 @@ pub fn render_committed_file(
         out.write_section_separator()?;
     }
 
-    render_tree_changes_with_id(tree_changes, theme, &mut id_gen, out)?;
+    render_tree_changes_with_id(workspace_commit.id(), tree_changes, theme, &mut id_gen, out)?;
 
     Ok(())
 }
@@ -919,6 +936,7 @@ fn compute_line_stats_from_tree_changes<'a>(
 }
 
 fn render_tree_changes_with_id(
+    commit_id: CommitId,
     tree_changes: Vec<(TreeChangeWithId, UnifiedPatch)>,
     theme: &'static Theme,
     id_gen: &mut IdGen<'_>,
@@ -930,6 +948,7 @@ fn render_tree_changes_with_id(
         tree_changes.into_iter().enumerate().with_position()
     {
         let mut id_gen = id_gen.scoped(i);
+
         match patch {
             UnifiedPatch::Patch {
                 is_result_of_binary_to_text_conversion,
@@ -947,7 +966,10 @@ fn render_tree_changes_with_id(
                     hunk_id,
                     None,
                     tree_change.inner.path.as_ref(),
-                    Some(ShortIdOrTreeStatus::ShortId(&tree_change.short_id)),
+                    Some(StatusLine::ShortIdAndTreeStatus(
+                        &tree_change.short_id,
+                        tree_change.inner.status.kind(),
+                    )),
                     out,
                     theme,
                 )?;
@@ -974,21 +996,42 @@ fn render_tree_changes_with_id(
             patch @ UnifiedPatch::Patch { .. } => {
                 let mut id_gen = id_gen.scoped("hunks");
                 let hunks = identify_hunks(&tree_change, patch)?;
-
                 for (hunk_pos, (j, hunk)) in hunks.into_iter().enumerate().with_position() {
                     let hunk_id = id_gen.new_id(j);
 
-                    // TODO need cli ID for TUI selection to work
+                    // It's prohibitively expensive to parse the IdMap for committed hunks, so we
+                    // construct the CliId inline instead.
+                    //
+                    // This is a bit of a hack that we want to get rid of by splitting CLI ID
+                    // parsing and CLI ID "evaluation" into two different steps, with sufficient
+                    // caching to make lookups inexpensive.
+                    let committed_file = CommittedFileId {
+                        commit_id: commit_id.commit_id,
+                        change_id: commit_id.change_id.clone(),
+                        path: tree_change.inner.path.clone(),
+                    };
+                    let cli_id = Arc::new(CliId::CommittedHunk(CommittedHunk {
+                        committed_file,
+                        id: hunk.id,
+                        hunk: hunk.hunk,
+                    }));
+                    let CliId::CommittedHunk(committed_hunk) = cli_id.as_ref() else {
+                        unreachable!("Constructed as CommittedHunk above")
+                    };
+
                     render_hunk_path_header(
                         hunk_id,
-                        None,
+                        Some(Arc::clone(&cli_id)),
                         tree_change.inner.path.as_ref(),
-                        Some(ShortIdOrTreeStatus::ShortId(&hunk.id)),
+                        Some(StatusLine::ShortIdAndTreeStatus(
+                            &committed_hunk.id,
+                            tree_change.inner.status.kind(),
+                        )),
                         out,
                         theme,
                     )?;
 
-                    render_hunk(hunk_id, None, &hunk.hunk, theme, out)?;
+                    render_hunk(hunk_id, None, &committed_hunk.hunk, theme, out)?;
 
                     if tree_change_pos.needs_padding_below() || hunk_pos.needs_padding_below() {
                         out.write_section_separator()?;
@@ -1001,7 +1044,10 @@ fn render_tree_changes_with_id(
                     out,
                     tree_change_pos,
                     tree_change.inner.path.as_ref(),
-                    Some(ShortIdOrTreeStatus::ShortId(&tree_change.short_id)),
+                    Some(StatusLine::ShortIdAndTreeStatus(
+                        &tree_change.short_id,
+                        tree_change.inner.status.kind(),
+                    )),
                     &mut id_gen,
                 )?;
             }
@@ -1011,7 +1057,10 @@ fn render_tree_changes_with_id(
                     out,
                     tree_change_pos,
                     tree_change.inner.path.as_ref(),
-                    Some(ShortIdOrTreeStatus::ShortId(&tree_change.short_id)),
+                    Some(StatusLine::ShortIdAndTreeStatus(
+                        &tree_change.short_id,
+                        tree_change.inner.status.kind(),
+                    )),
                     id_gen,
                     size_in_bytes,
                 )?;
@@ -1035,6 +1084,8 @@ fn render_tree_changes(
     {
         let mut id_gen = id_gen.scoped(i);
         let path = Arc::new(tree_change.path_bytes.clone());
+        let tree_status = Into::<but_core::TreeStatus>::into(tree_change.status.clone()).kind();
+
         match patch {
             UnifiedPatch::Patch {
                 hunks,
@@ -1052,7 +1103,7 @@ fn render_tree_changes(
                             hunk_id,
                             None,
                             tree_change.path.as_ref(),
-                            Some(ShortIdOrTreeStatus::TreeStatus(&tree_change.status)),
+                            Some(StatusLine::TreeStatus(tree_status)),
                             out,
                             theme,
                         )?;
@@ -1079,7 +1130,7 @@ fn render_tree_changes(
                     out,
                     tree_change_pos,
                     tree_change.path.as_ref(),
-                    Some(ShortIdOrTreeStatus::TreeStatus(&tree_change.status)),
+                    Some(StatusLine::TreeStatus(tree_status)),
                     &mut id_gen,
                 )?;
             }
@@ -1089,7 +1140,7 @@ fn render_tree_changes(
                     out,
                     tree_change_pos,
                     tree_change.path.as_ref(),
-                    Some(ShortIdOrTreeStatus::TreeStatus(&tree_change.status)),
+                    Some(StatusLine::TreeStatus(tree_status)),
                     id_gen,
                     size_in_bytes,
                 )?;
@@ -1105,7 +1156,7 @@ fn render_too_large_hunk(
     out: &mut dyn DiffLineWriter,
     tree_change_pos: Position,
     path: &BStr,
-    status: Option<ShortIdOrTreeStatus<'_>>,
+    status: Option<StatusLine<'_>>,
     mut id_gen: IdGen<'_>,
     size_in_bytes: u64,
 ) -> Result<(), anyhow::Error> {
@@ -1128,7 +1179,7 @@ fn render_binary_hunk(
     out: &mut dyn DiffLineWriter,
     tree_change_pos: Position,
     path: &BStr,
-    status: Option<ShortIdOrTreeStatus<'_>>,
+    status: Option<StatusLine<'_>>,
     id_gen: &mut IdGen<'_>,
 ) -> Result<(), anyhow::Error> {
     let patch_id = id_gen.new_id("binary");
@@ -1160,38 +1211,43 @@ fn render_signature(
     .into_iter()
 }
 
-enum ShortIdOrTreeStatus<'a> {
-    ShortId(&'a str),
-    TreeStatus(&'a TreeStatus),
+enum StatusLine<'a> {
+    TreeStatus(TreeStatusKind),
+    ShortIdAndTreeStatus(&'a str, TreeStatusKind),
 }
 
 fn render_hunk_path_header(
     id: SectionId,
     cli_id: Option<Arc<CliId>>,
     path: &BStr,
-    status: Option<ShortIdOrTreeStatus<'_>>,
+    status: Option<StatusLine<'_>>,
     out: &mut dyn DiffLineWriter,
     theme: &'static Theme,
 ) -> anyhow::Result<()> {
-    let status = status.map(|id_or_status| match id_or_status {
-        ShortIdOrTreeStatus::ShortId(id) => Span::raw(id.to_owned()).blue(),
-        ShortIdOrTreeStatus::TreeStatus(status) => change_status(status, theme),
-    });
-    let path = path.to_string();
-    let path_line = Vec::from_iter(
-        [Span::raw(" ")]
-            .into_iter()
-            .chain(
-                status
-                    .into_iter()
-                    .flat_map(|status| [status, Span::raw(" ")]),
-            )
-            .chain([
-                Span::raw(path),
-                Span::raw(" "),
-                Span::styled("│", theme.border),
-            ]),
-    );
+    let (short_id, status) = match status {
+        Some(StatusLine::TreeStatus(status)) => (None, Some(status)),
+        Some(StatusLine::ShortIdAndTreeStatus(id, status)) => (Some(id), Some(status)),
+        None => (None, None),
+    };
+
+    let mut path_line = Vec::with_capacity(8);
+    path_line.push(Span::raw(" "));
+
+    if let Some(short_id) = short_id {
+        path_line.push(Span::raw(short_id.to_string()).blue());
+        path_line.push(Span::raw(" "));
+    }
+
+    if let Some(status) = status {
+        path_line.push(status_letter_kind(status, theme));
+        path_line.push(Span::raw(" "));
+    }
+
+    path_line.extend([
+        Span::raw(path.to_string()),
+        Span::raw(" "),
+        Span::styled("│", theme.border),
+    ]);
 
     let width_including_padding = 1 + path_line.iter().map(|span| span.width()).sum::<usize>() - 2;
 
@@ -1203,15 +1259,6 @@ fn render_hunk_path_header(
     })?;
 
     Ok(())
-}
-
-fn change_status(status: &TreeStatus, theme: &'static Theme) -> Span<'static> {
-    match status {
-        TreeStatus::Addition { .. } => Span::styled("added", theme.addition),
-        TreeStatus::Deletion { .. } => Span::styled("deleted", theme.deletion),
-        TreeStatus::Modification { .. } => Span::styled("modified", theme.modification),
-        TreeStatus::Rename { .. } => Span::styled("renamed", theme.renaming),
-    }
 }
 
 fn render_unified_patch(
@@ -1481,6 +1528,7 @@ mod tests {
     fn id_and_hunk(id: &str, path: &str) -> IdAndHunk {
         IdAndHunk {
             id: id.to_owned(),
+            tree_status: but_core::TreeStatusKind::Modification,
             hunk: but_core::SingleHunk {
                 hunk_header: None,
                 path: BString::from(path),
@@ -1557,6 +1605,140 @@ mod tests {
             ["fi:a", "fi:b"],
             "the renderer uses every supplied hunk and preserves deterministic ordering"
         );
+        Ok(())
+    }
+
+    /// Note: Should be removed once we start using committed hunk CLI IDs in the TUI for
+    /// selections. This test is way too finnicky to provide any long term value once the functional
+    /// testing is in place.
+    #[test]
+    fn committed_hunk_headers_carry_cli_ids_for_their_sections() -> anyhow::Result<()> {
+        use but_core::{ChangeId, ChangeState, TreeChange, TreeStatus, UnifiedPatch};
+
+        use super::{DiffHunk, render_tree_changes_with_id};
+        use crate::id::{CommitId, TreeChangeWithId, identify_hunks};
+
+        let commit_id = CommitId {
+            commit_id: gix::ObjectId::from_hex(b"1111111111111111111111111111111111111111")?,
+            change_id: Some(ChangeId::from(BString::from("test-change"))),
+        };
+        let tree_change = TreeChangeWithId {
+            short_id: "fi".to_owned(),
+            inner: TreeChange {
+                path: BString::from("file.txt"),
+                status: TreeStatus::Modification {
+                    previous_state: ChangeState {
+                        id: gix::ObjectId::from_hex(b"2222222222222222222222222222222222222222")?,
+                        kind: gix::objs::tree::EntryKind::Blob,
+                    },
+                    state: ChangeState {
+                        id: gix::ObjectId::from_hex(b"3333333333333333333333333333333333333333")?,
+                        kind: gix::objs::tree::EntryKind::Blob,
+                    },
+                    flags: None,
+                },
+            },
+        };
+        let patch = UnifiedPatch::Patch {
+            hunks: vec![
+                DiffHunk {
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 1,
+                    diff: BString::from("@@ -1 +1 @@\n-old\n+new\n"),
+                },
+                DiffHunk {
+                    old_start: 20,
+                    old_lines: 1,
+                    new_start: 20,
+                    new_lines: 1,
+                    diff: BString::from("@@ -20 +20 @@\n-before\n+after\n"),
+                },
+            ],
+            is_result_of_binary_to_text_conversion: false,
+            lines_added: 2,
+            lines_removed: 2,
+        };
+        let expected_hunks = identify_hunks(&tree_change, patch.clone())?;
+        let mut id_gen = IdGen::new(Strings::default());
+        let mut writer = CollectingWriter::default();
+
+        render_tree_changes_with_id(
+            commit_id.clone(),
+            vec![(tree_change, patch)],
+            crate::theme::get(),
+            &mut id_gen,
+            &mut writer,
+        )?;
+
+        let headers = writer
+            .lines
+            .iter()
+            .filter_map(|line| match line {
+                DetailsLine::HunkHeader { id, cli_id, .. } => Some((*id, cli_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(headers.len(), 2, "each committed hunk has a path header");
+        assert_ne!(
+            headers[0].0, headers[1].0,
+            "hunks are separate selectable sections"
+        );
+
+        for ((section_id, cli_id), expected) in headers.into_iter().zip(expected_hunks) {
+            let Some(CliId::CommittedHunk(hunk)) = cli_id.as_deref() else {
+                panic!("committed hunk header must carry a committed-hunk CLI ID");
+            };
+            assert_eq!(
+                hunk.committed_file.commit_id, commit_id.commit_id,
+                "ID targets the rendered commit"
+            );
+            assert_eq!(
+                hunk.committed_file.change_id, commit_id.change_id,
+                "ID preserves the stable change ID"
+            );
+            assert_eq!(
+                hunk.committed_file.path, expected.hunk.path,
+                "ID targets the rendered file"
+            );
+            assert_eq!(hunk.id, expected.id, "ID identifies the corresponding hunk");
+            assert_eq!(
+                hunk.hunk.hunk_header, expected.hunk.hunk_header,
+                "ID carries the corresponding hunk range"
+            );
+            assert_eq!(
+                hunk.hunk.diff, expected.hunk.diff,
+                "ID carries the corresponding patch"
+            );
+            assert_eq!(
+                hunk.hunk.path, expected.hunk.path,
+                "hunk payload preserves the file path"
+            );
+
+            let body = writer
+                .lines
+                .iter()
+                .filter_map(|line| match line {
+                    DetailsLine::Code(line) if line.id == section_id => Some(line),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                body.len(),
+                2,
+                "both changed lines belong to their header's section"
+            );
+            assert!(
+                body.iter()
+                    .all(|line| Some(line.diff.as_ref()) == expected.hunk.diff.as_ref()),
+                "section contains the corresponding hunk's body"
+            );
+            assert!(
+                body.iter().all(|line| line.cli_id.is_none()),
+                "header alone supplies the section's CLI ID"
+            );
+        }
         Ok(())
     }
 
