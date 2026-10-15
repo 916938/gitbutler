@@ -2,6 +2,7 @@ mod anthropic;
 mod chat;
 mod client;
 mod config;
+mod deepseek;
 mod key;
 mod lmstudio;
 mod ollama;
@@ -27,6 +28,7 @@ pub enum LLMProviderKind {
     Ollama,
     LMStudio,
     OpenRouter,
+    DeepSeek,
 }
 
 impl LLMProviderKind {
@@ -37,6 +39,7 @@ impl LLMProviderKind {
             "ollama" => Some(LLMProviderKind::Ollama),
             "lmstudio" => Some(LLMProviderKind::LMStudio),
             "openrouter" => Some(LLMProviderKind::OpenRouter),
+            "deepseek" => Some(LLMProviderKind::DeepSeek),
             _ => None,
         }
     }
@@ -48,6 +51,7 @@ impl LLMProviderKind {
             LLMProviderKind::Ollama => "ollama",
             LLMProviderKind::LMStudio => "lmstudio",
             LLMProviderKind::OpenRouter => "openrouter",
+            LLMProviderKind::DeepSeek => "deepseek",
         }
     }
 
@@ -58,6 +62,7 @@ impl LLMProviderKind {
             LLMProviderKind::Ollama => "Ollama",
             LLMProviderKind::LMStudio => "LM Studio",
             LLMProviderKind::OpenRouter => "OpenRouter",
+            LLMProviderKind::DeepSeek => "DeepSeek",
         }
     }
 }
@@ -75,6 +80,7 @@ pub enum LLMClientType {
     Ollama(Arc<ollama::OllamaProvider>),
     LMStudio(Arc<lmstudio::LMStudioProvider>),
     OpenRouter(Arc<openrouter::OpenRouterProvider>),
+    DeepSeek(Arc<deepseek::DeepSeekProvider>),
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +157,20 @@ impl LLMProvider {
                     client: LLMClientType::OpenRouter(Arc::new(client)),
                 })
             }
+            LLMProviderKind::DeepSeek => {
+                let provider_config = config.string(AI_DEEPSEEK_ENDPOINT_KEY).map(|api_base| {
+                    deepseek::DeepSeekConfig {
+                        api_base: api_base.to_string(),
+                    }
+                });
+                let client = deepseek::DeepSeekProvider::with(
+                    provider_config,
+                    Some(configuration.deepseek.model),
+                )?;
+                Some(Self {
+                    client: LLMClientType::DeepSeek(Arc::new(client)),
+                })
+            }
         }
     }
 
@@ -161,6 +181,7 @@ impl LLMProvider {
             LLMClientType::Ollama(client) => client.model(),
             LLMClientType::LMStudio(client) => client.model(),
             LLMClientType::OpenRouter(client) => client.model(),
+            LLMClientType::DeepSeek(client) => client.model(),
         }
     }
 
@@ -178,6 +199,7 @@ impl LLMProvider {
             LLMClientType::Ollama(_) => DEFAULT_OLLAMA_MODEL,
             LLMClientType::LMStudio(_) => DEFAULT_LMSTUDIO_MODEL,
             LLMClientType::OpenRouter(_) => DEFAULT_OPENROUTER_MODEL,
+            LLMClientType::DeepSeek(_) => DEFAULT_DEEPSEEK_MODEL,
         }
         .to_string()
     }
@@ -206,6 +228,9 @@ impl LLMProvider {
                 client.stream_response(system_message, chat_messages, model, on_token)
             }
             LLMClientType::OpenRouter(client) => {
+                client.stream_response(system_message, chat_messages, model, on_token)
+            }
+            LLMClientType::DeepSeek(client) => {
                 client.stream_response(system_message, chat_messages, model, on_token)
             }
         }
@@ -239,6 +264,9 @@ impl LLMProvider {
             LLMClientType::OpenRouter(client) => {
                 client.structured_output::<T>(system_message, chat_messages, model)
             }
+            LLMClientType::DeepSeek(client) => {
+                client.structured_output::<T>(system_message, chat_messages, model)
+            }
         }
     }
 
@@ -260,6 +288,9 @@ impl LLMProvider {
                 client.response(system_message, chat_messages, model)
             }
             LLMClientType::OpenRouter(client) => {
+                client.response(system_message, chat_messages, model)
+            }
+            LLMClientType::DeepSeek(client) => {
                 client.response(system_message, chat_messages, model)
             }
         }

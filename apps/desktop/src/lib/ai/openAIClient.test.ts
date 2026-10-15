@@ -85,6 +85,22 @@ describe("OpenAIClient", () => {
 			);
 		});
 
+		test("When evaluate is called with DeepSeek Flash, it sends the current Flash id to the API", async () => {
+			const client = new OpenAIClient(
+				"dk-key",
+				DeepSeekModelName.Flash,
+				"https://api.deepseek.com",
+			);
+
+			await client.evaluate([{ role: MessageRole.User, content: "hello" }]);
+
+			expect(mockCreate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					model: "deepseek-flash",
+				}),
+			);
+		});
+
 		test("When evaluate is called with an OpenAI model, it sends the correct model name to the API", async () => {
 			const client = new OpenAIClient("oai-key", OpenAIModelName.GPT54, undefined);
 

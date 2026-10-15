@@ -22,6 +22,7 @@ import {
 	OpenAIModelName,
 	type AIClient,
 	AnthropicModelName,
+	DEEPSEEK_LEGACY_MODEL_NAMES,
 	DeepSeekModelName,
 	ModelKind,
 	MessageRole,
@@ -267,6 +268,10 @@ export class AIService {
 		);
 		if (Object.values(DeepSeekModelName).includes(storedValue as DeepSeekModelName)) {
 			return storedValue as DeepSeekModelName;
+		}
+		const migrated = DEEPSEEK_LEGACY_MODEL_NAMES[storedValue];
+		if (migrated) {
+			return migrated;
 		}
 		return defaultModel;
 	}

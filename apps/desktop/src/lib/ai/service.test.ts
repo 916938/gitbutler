@@ -390,6 +390,20 @@ describe("AIService", () => {
 			expect(await aiService.getDeepSeekModelName()).toBe(DeepSeekModelName.Pro);
 		});
 
+		test("When the retired V4 Flash id is stored, it migrates to the current Flash id", async () => {
+			const gitConfig = new DummyGitConfigService({
+				...defaultGitConfig,
+				[GitAIConfigKey.DeepSeekModelName]: "deepseek-v4-flash",
+			});
+			const secretsService = new DummySecretsService();
+			const tokenMemoryService = new TokenMemoryService();
+			const fetchMock = vi.fn();
+			const cloud = new HttpClient(fetchMock, "https://www.example.com", tokenMemoryService.token);
+			const aiService = new AIService(gitConfig, secretsService, cloud, tokenMemoryService);
+
+			expect(await aiService.getDeepSeekModelName()).toBe(DeepSeekModelName.Flash);
+		});
+
 		test("When a legacy/unknown model is stored, it falls back to the default", async () => {
 			const gitConfig = new DummyGitConfigService({
 				...defaultGitConfig,

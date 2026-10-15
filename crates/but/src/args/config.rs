@@ -319,6 +319,19 @@ pub enum AiSubcommand {
         #[clap(long)]
         api_key_env: Option<String>,
     },
+
+    /// Configure DeepSeek as the active AI provider.
+    Deepseek {
+        /// Preferred model name (for example, deepseek-v4-pro).
+        #[clap(long)]
+        model: Option<String>,
+        /// DeepSeek API key. Prefer --api-key-env to avoid shell history exposure.
+        #[clap(long, hide_env_values = true)]
+        api_key: Option<String>,
+        /// Name of an environment variable holding the DeepSeek API key.
+        #[clap(long)]
+        api_key_env: Option<String>,
+    },
 }
 
 /// Credential source options for OpenAI/Anthropic.
