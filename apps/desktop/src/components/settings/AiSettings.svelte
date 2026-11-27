@@ -137,7 +137,7 @@
 			value: DeepSeekModelName.Pro,
 		},
 		{
-			label: "DeepSeek V4 Flash",
+			label: "DeepSeek V4.1 Flash",
 			value: DeepSeekModelName.Flash,
 		},
 	];

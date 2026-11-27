@@ -602,6 +602,7 @@ AI Configuration (global)
   Ollama model: (not set)
   LM Studio endpoint: (not set)
   LM Studio model: (not set)
+  DeepSeek model: (not set)
 
 "#]]);
 }

@@ -44,6 +44,7 @@ const VSCODE_COMPATIBLE_SCHEMES = new Set([
 	"cursor",
 	"windsurf",
 	"trae",
+	"trae-cn",
 	"antigravity-ide",
 ]);
 

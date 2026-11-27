@@ -1,0 +1,113 @@
+use anyhow::Result;
+use async_openai::{Client, config::OpenAIConfig};
+use but_secret::{Sensitive, secret};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+
+use crate::{
+    chat::ChatMessage,
+    client::LLMClient,
+    config::AI_DEEPSEEK_SECRET_HANDLE,
+    openai_utils::{
+        OpenAIClientProvider, response_blocking, stream_response_blocking,
+        structured_output_blocking,
+    },
+};
+
+/// DeepSeek speaks the OpenAI protocol at this base, so the shared
+/// `OpenAIClientProvider` plumbing applies unchanged.
+const DEEPSEEK_API_BASE_DEFAULT: &str = "https://api.deepseek.com/v1";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DeepSeekConfig {
+    pub api_base: String,
+}
+
+impl Default for DeepSeekConfig {
+    fn default() -> Self {
+        Self {
+            api_base: DEEPSEEK_API_BASE_DEFAULT.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeepSeekProvider {
+    model: Option<String>,
+    config: DeepSeekConfig,
+    api_key: Sensitive<String>,
+}
+
+impl DeepSeekProvider {
+    pub fn with(config: Option<DeepSeekConfig>, model: Option<String>) -> Option<Self> {
+        let config = config.unwrap_or_default();
+        let api_key = Self::retrieve_api_key()?;
+        Some(Self {
+            config,
+            model,
+            api_key,
+        })
+    }
+
+    fn retrieve_api_key() -> Option<Sensitive<String>> {
+        // Try secret storage first, then fall back to env var
+        if let Ok(Some(key)) =
+            secret::retrieve(AI_DEEPSEEK_SECRET_HANDLE, secret::Namespace::Global)
+            && !key.0.trim().is_empty()
+        {
+            return Some(key);
+        }
+        if let Ok(val) = std::env::var("DEEPSEEK_API_KEY")
+            && !val.trim().is_empty()
+        {
+            return Some(Sensitive(val));
+        }
+        None
+    }
+}
+
+impl OpenAIClientProvider for DeepSeekProvider {
+    fn client(&self) -> Result<Client<OpenAIConfig>> {
+        let open_ai_config = OpenAIConfig::new()
+            .with_api_base(self.config.api_base.clone())
+            .with_api_key(self.api_key.0.clone());
+
+        Ok(Client::with_config(open_ai_config))
+    }
+}
+
+impl LLMClient for DeepSeekProvider {
+    fn model(&self) -> Option<String> {
+        self.model.clone()
+    }
+
+    fn stream_response(
+        &self,
+        system_message: &str,
+        chat_messages: Vec<ChatMessage>,
+        model: &str,
+        on_token: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Result<Option<String>> {
+        stream_response_blocking(self, system_message, chat_messages, model, on_token)
+    }
+
+    fn structured_output<
+        T: serde::Serialize + DeserializeOwned + JsonSchema + std::marker::Send + 'static,
+    >(
+        &self,
+        system_message: &str,
+        chat_messages: Vec<ChatMessage>,
+        model: &str,
+    ) -> Result<Option<T>> {
+        structured_output_blocking::<T>(self, system_message, chat_messages, model)
+    }
+
+    fn response(
+        &self,
+        system_message: &str,
+        chat_messages: Vec<ChatMessage>,
+        model: &str,
+    ) -> Result<Option<String>> {
+        response_blocking(self, system_message, chat_messages, model)
+    }
+}

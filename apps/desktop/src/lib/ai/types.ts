@@ -27,11 +27,19 @@ export enum AnthropicModelName {
 	Opus = "claude-opus-4-6",
 }
 
-// https://platform.deepseek.com/api-docs
+// https://api-docs.deepseek.com/quick_start/pricing
 export enum DeepSeekModelName {
-	Flash = "deepseek-v4-flash",
+	Flash = "deepseek-flash",
 	Pro = "deepseek-v4-pro",
 }
+
+// `deepseek-v4-flash` still resolves, but only as a compatibility alias that DeepSeek
+// routes to V4.1 Flash. Stored configurations are migrated to the current id so the
+// settings dropdown keeps matching what we send to the API.
+export const DEEPSEEK_LEGACY_MODEL_NAMES: Record<string, DeepSeekModelName> = {
+	"deepseek-v4-flash": DeepSeekModelName.Flash,
+	"deepseek-v4-flash-vision-exp": DeepSeekModelName.Flash,
+};
 
 export enum MessageRole {
 	System = "system",

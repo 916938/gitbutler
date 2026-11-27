@@ -9,10 +9,10 @@ use but_core::{
 };
 use but_ctx::Context;
 use but_llm::{
-    AI_ANTHROPIC_SECRET_HANDLE, AI_OPENAI_SECRET_HANDLE, AI_OPENROUTER_SECRET_HANDLE,
-    AiConfigurationSnapshot, LLMProviderKind, apply_anthropic_configuration,
-    apply_lmstudio_configuration, apply_ollama_configuration, apply_openai_configuration,
-    apply_openrouter_configuration,
+    AI_ANTHROPIC_SECRET_HANDLE, AI_DEEPSEEK_SECRET_HANDLE, AI_OPENAI_SECRET_HANDLE,
+    AI_OPENROUTER_SECRET_HANDLE, AiConfigurationSnapshot, LLMProviderKind,
+    apply_anthropic_configuration, apply_deepseek_configuration, apply_lmstudio_configuration,
+    apply_ollama_configuration, apply_openai_configuration, apply_openrouter_configuration,
 };
 use but_secret::{Sensitive, secret};
 use but_settings::{
@@ -1711,6 +1711,13 @@ impl CliOutputHuman for AiConfigOutcome {
                     t.config_value
                         .paint(info.lmstudio_model.as_deref().unwrap_or("(not set)"))
                 )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("DeepSeek model"),
+                    t.config_value
+                        .paint(info.deepseek_model.as_deref().unwrap_or("(not set)"))
+                )?;
             }
             AiConfigOutcome::Set { provider, scope } => {
                 writeln!(
@@ -1791,6 +1798,15 @@ fn ai_config_non_interactive(
             apply_openrouter_config(repo, scope, model, secret)?;
             LLMProviderKind::OpenRouter
         }
+        AiSubcommand::Deepseek {
+            model,
+            api_key,
+            api_key_env,
+        } => {
+            let secret = resolve_secret_input(api_key, api_key_env)?;
+            apply_deepseek_config(repo, scope, model, secret)?;
+            LLMProviderKind::DeepSeek
+        }
     };
 
     Ok(AiConfigOutcome::Set { provider, scope })
@@ -1812,7 +1828,8 @@ fn ai_config_interactive(
         ("Anthropic", LLMProviderKind::Anthropic),
         ("Ollama", LLMProviderKind::Ollama),
         ("LM Studio", LLMProviderKind::LMStudio),
-        ("OpenRouter", LLMProviderKind::OpenRouter)
+        ("OpenRouter", LLMProviderKind::OpenRouter),
+        ("DeepSeek", LLMProviderKind::DeepSeek)
     ];
     let provider = inout
         .prompt_select("Select an AI provider", &providers)?
@@ -1888,6 +1905,17 @@ fn ai_config_interactive(
                     .context("No API key provided. Aborting configuration.")?,
             );
             apply_openrouter_config(repo, scope, model, secret)?;
+        }
+        LLMProviderKind::DeepSeek => {
+            let model = inout.prompt(
+                "Preferred DeepSeek model (e.g. deepseek-v4-pro, leave empty for default):",
+            )?;
+            let secret = Some(
+                inout
+                    .prompt_secret("Enter DeepSeek API key:")?
+                    .context("No API key provided. Aborting configuration.")?,
+            );
+            apply_deepseek_config(repo, scope, model, secret)?;
         }
     }
 
@@ -2033,6 +2061,21 @@ fn apply_openrouter_config(
     })?;
     if let Some(key) = secret {
         secret::persist(AI_OPENROUTER_SECRET_HANDLE, &key, secret::Namespace::Global)?;
+    }
+    Ok(())
+}
+
+fn apply_deepseek_config(
+    repo: Option<&gix::Repository>,
+    scope: AiScope,
+    model: Option<String>,
+    secret: Option<Sensitive<String>>,
+) -> Result<()> {
+    edit_ai_git_config(repo, scope, |config| {
+        apply_deepseek_configuration(config, model.as_deref())
+    })?;
+    if let Some(key) = secret {
+        secret::persist(AI_DEEPSEEK_SECRET_HANDLE, &key, secret::Namespace::Global)?;
     }
     Ok(())
 }

@@ -7,9 +7,10 @@ use but_api_macros::but_api;
 use but_core::git_config::edit_config;
 use but_error::{Code, Context};
 use but_llm::{
-    AI_ANTHROPIC_SECRET_HANDLE, AI_OPENAI_SECRET_HANDLE, AiConfiguration as DomainConfiguration,
-    AnthropicConfiguration, CredentialsKeyOption, GITBUTLER_ACCESS_TOKEN_HANDLE, LLMProviderKind,
-    LmStudioConfiguration, OllamaConfiguration, OpenAiConfiguration,
+    AI_ANTHROPIC_SECRET_HANDLE, AI_DEEPSEEK_SECRET_HANDLE, AI_OPENAI_SECRET_HANDLE,
+    AiConfiguration as DomainConfiguration, AnthropicConfiguration, CredentialsKeyOption,
+    DeepSeekConfiguration, GITBUTLER_ACCESS_TOKEN_HANDLE, LLMProviderKind, LmStudioConfiguration,
+    OllamaConfiguration, OpenAiConfiguration,
 };
 use but_secret::{Sensitive, secret};
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,10 @@ pub struct AiConfiguration {
     pub lmstudio_endpoint: String,
     /// The LM Studio model to request.
     pub lmstudio_model: String,
+    /// The DeepSeek model to request.
+    pub deepseek_model: String,
+    /// Whether a DeepSeek key is stored, never the key itself.
+    pub deepseek_has_api_key: bool,
     /// Whether the active provider has everything it needs to answer.
     pub is_configured: bool,
     /// Whether nothing has been changed from the defaults and no key is stored, so a reset
@@ -80,6 +85,10 @@ pub struct AiConfigurationUpdate {
     pub lmstudio_endpoint: String,
     /// The LM Studio model to request.
     pub lmstudio_model: String,
+    /// The DeepSeek model to request.
+    pub deepseek_model: String,
+    /// A newly entered DeepSeek key to store; omitted leaves any stored key alone.
+    pub deepseek_api_key: Option<String>,
 }
 
 fn has_secret(handle: &str, namespace: secret::Namespace) -> Result<bool> {
@@ -92,16 +101,19 @@ fn get_configuration() -> Result<AiConfiguration> {
 
     let openai_has_api_key = has_secret(AI_OPENAI_SECRET_HANDLE, secret::Namespace::Global)?;
     let anthropic_has_api_key = has_secret(AI_ANTHROPIC_SECRET_HANDLE, secret::Namespace::Global)?;
+    let deepseek_has_api_key = has_secret(AI_DEEPSEEK_SECRET_HANDLE, secret::Namespace::Global)?;
     let has_gitbutler_token =
         has_secret(GITBUTLER_ACCESS_TOKEN_HANDLE, secret::Namespace::BuildKind)?;
-    let is_configured = configuration.is_configured(
+    let is_configured = configuration.is_configured_with(
         openai_has_api_key,
         anthropic_has_api_key,
         has_gitbutler_token,
+        deepseek_has_api_key,
     );
     let is_default = configuration == DomainConfiguration::default()
         && !openai_has_api_key
-        && !anthropic_has_api_key;
+        && !anthropic_has_api_key
+        && !deepseek_has_api_key;
 
     Ok(AiConfiguration {
         provider: configuration.provider.as_git_config_value().into(),
@@ -120,6 +132,8 @@ fn get_configuration() -> Result<AiConfiguration> {
         ollama_model: configuration.ollama.model,
         lmstudio_endpoint: configuration.lmstudio.endpoint,
         lmstudio_model: configuration.lmstudio.model,
+        deepseek_model: configuration.deepseek.model,
+        deepseek_has_api_key,
         is_configured,
         is_default,
     })
@@ -131,7 +145,8 @@ fn provider(value: &str) -> Result<LLMProviderKind> {
             provider @ (LLMProviderKind::OpenAi
             | LLMProviderKind::Anthropic
             | LLMProviderKind::Ollama
-            | LLMProviderKind::LMStudio),
+            | LLMProviderKind::LMStudio
+            | LLMProviderKind::DeepSeek),
         ) => Ok(provider),
         _ => bail!("Unsupported AI provider '{value}'"),
     }
@@ -153,6 +168,7 @@ fn validate_update(
     update: &AiConfigurationUpdate,
     openai_has_key: bool,
     anthropic_has_key: bool,
+    deepseek_has_key: bool,
 ) -> Result<()> {
     let configuration = domain_configuration(update, DomainConfiguration::default())?;
 
@@ -169,6 +185,12 @@ fn validate_update(
         && !anthropic_has_key
     {
         bail!("Enter an Anthropic API key")
+    }
+    if configuration.provider == LLMProviderKind::DeepSeek
+        && submitted_key(update.deepseek_api_key.clone()).is_none()
+        && !deepseek_has_key
+    {
+        bail!("Enter a DeepSeek API key")
     }
     Ok(())
 }
@@ -195,6 +217,9 @@ fn domain_configuration(
         endpoint: update.lmstudio_endpoint.clone(),
         model: update.lmstudio_model.clone(),
     };
+    configuration.deepseek = DeepSeekConfiguration {
+        model: update.deepseek_model.clone(),
+    };
     configuration.validate()?;
     Ok(configuration)
 }
@@ -210,10 +235,11 @@ pub fn get_ai_configuration() -> Result<AiConfiguration> {
 pub fn update_ai_configuration(update: AiConfigurationUpdate) -> Result<AiConfiguration> {
     let openai_has_key = has_secret(AI_OPENAI_SECRET_HANDLE, secret::Namespace::Global)?;
     let anthropic_has_key = has_secret(AI_ANTHROPIC_SECRET_HANDLE, secret::Namespace::Global)?;
+    let deepseek_has_key = has_secret(AI_DEEPSEEK_SECRET_HANDLE, secret::Namespace::Global)?;
     // What it turns down is input for the user to correct, not a fault.
-    validate_update(&update, openai_has_key, anthropic_has_key).map_err(|err| {
-        anyhow::anyhow!(Context::new(format!("{err:#}")).with_code(Code::Validation))
-    })?;
+    validate_update(&update, openai_has_key, anthropic_has_key, deepseek_has_key).map_err(
+        |err| anyhow::anyhow!(Context::new(format!("{err:#}")).with_code(Code::Validation)),
+    )?;
 
     if let Some(value) = submitted_key(update.openai_api_key.clone()) {
         secret::persist(
@@ -225,6 +251,13 @@ pub fn update_ai_configuration(update: AiConfigurationUpdate) -> Result<AiConfig
     if let Some(value) = submitted_key(update.anthropic_api_key.clone()) {
         secret::persist(
             AI_ANTHROPIC_SECRET_HANDLE,
+            &Sensitive(value),
+            secret::Namespace::Global,
+        )?;
+    }
+    if let Some(value) = submitted_key(update.deepseek_api_key.clone()) {
+        secret::persist(
+            AI_DEEPSEEK_SECRET_HANDLE,
             &Sensitive(value),
             secret::Namespace::Global,
         )?;
@@ -245,8 +278,9 @@ mod tests {
     use super::*;
     use but_llm::{
         AI_LMSTUDIO_MODEL_NAME_KEY, AI_MODEL_PROVIDER_KEY, AI_OPENAI_CUSTOM_ENDPOINT_KEY,
-        DEFAULT_ANTHROPIC_MODEL, DEFAULT_LMSTUDIO_ENDPOINT, DEFAULT_LMSTUDIO_MODEL,
-        DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL, DEFAULT_OPENAI_MODEL,
+        DEFAULT_ANTHROPIC_MODEL, DEFAULT_DEEPSEEK_MODEL, DEFAULT_LMSTUDIO_ENDPOINT,
+        DEFAULT_LMSTUDIO_MODEL, DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL,
+        DEFAULT_OPENAI_MODEL,
     };
 
     fn valid_update() -> AiConfigurationUpdate {
@@ -263,6 +297,8 @@ mod tests {
             ollama_model: DEFAULT_OLLAMA_MODEL.into(),
             lmstudio_endpoint: DEFAULT_LMSTUDIO_ENDPOINT.into(),
             lmstudio_model: DEFAULT_LMSTUDIO_MODEL.into(),
+            deepseek_model: DEFAULT_DEEPSEEK_MODEL.into(),
+            deepseek_api_key: None,
         }
     }
 
@@ -271,14 +307,14 @@ mod tests {
         let mut update = valid_update();
         update.provider = "openrouter".into();
         assert!(
-            validate_update(&update, false, false).is_err(),
+            validate_update(&update, false, false, false).is_err(),
             "unsupported providers must fail"
         );
 
         update = valid_update();
         update.ollama_endpoint = "http://localhost:11434".into();
         assert!(
-            validate_update(&update, false, false).is_err(),
+            validate_update(&update, false, false, false).is_err(),
             "Ollama requires host:port"
         );
     }
@@ -289,7 +325,7 @@ mod tests {
         update.openai_model = "my-custom-model".into();
         update.openai_key_option = "bringYourOwn".into();
         assert!(
-            validate_update(&update, true, false).is_ok(),
+            validate_update(&update, true, false, false).is_ok(),
             "a stored key may remain write-only"
         );
         assert_eq!(
@@ -302,12 +338,12 @@ mod tests {
         );
 
         assert!(
-            validate_update(&update, false, false).is_err(),
+            validate_update(&update, false, false, false).is_err(),
             "BYOK requires a stored or submitted key"
         );
         update.openai_api_key = Some("new-key".into());
         assert!(
-            validate_update(&update, false, false).is_ok(),
+            validate_update(&update, false, false, false).is_ok(),
             "a submitted BYOK key is sufficient"
         );
     }
@@ -339,6 +375,35 @@ mod tests {
             config.string(AI_LMSTUDIO_MODEL_NAME_KEY).unwrap(),
             DEFAULT_LMSTUDIO_MODEL,
             "the local model is persisted alongside the provider"
+        );
+    }
+
+    #[test]
+    fn validates_deepseek_provider() {
+        let mut update = valid_update();
+        update.provider = "deepseek".into();
+        assert!(
+            validate_update(&update, false, false, false).is_err(),
+            "DeepSeek requires a stored or submitted key"
+        );
+
+        update.deepseek_api_key = Some("sk-deepseek".into());
+        assert!(
+            validate_update(&update, false, false, false).is_ok(),
+            "a submitted DeepSeek key is sufficient"
+        );
+
+        update.deepseek_api_key = None;
+        assert!(
+            validate_update(&update, false, false, true).is_ok(),
+            "a stored DeepSeek key may remain write-only"
+        );
+
+        update.deepseek_model = "deepseek-flash".into();
+        let configuration = domain_configuration(&update, DomainConfiguration::default()).unwrap();
+        assert_eq!(
+            configuration.deepseek.model, "deepseek-flash",
+            "custom DeepSeek models must survive the transport conversion"
         );
     }
 }

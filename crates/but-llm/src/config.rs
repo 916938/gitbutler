@@ -15,10 +15,13 @@ pub const AI_LMSTUDIO_ENDPOINT_KEY: &str = "gitbutler.aiLMStudioEndpoint";
 pub const AI_LMSTUDIO_MODEL_NAME_KEY: &str = "gitbutler.aiLMStudioModelName";
 pub const AI_OPENROUTER_MODEL_NAME_KEY: &str = "gitbutler.aiOpenRouterModelName";
 pub const AI_OPENROUTER_ENDPOINT_KEY: &str = "gitbutler.aiOpenRouterEndpoint";
+pub const AI_DEEPSEEK_MODEL_NAME_KEY: &str = "gitbutler.aiDeepSeekModelName";
+pub const AI_DEEPSEEK_ENDPOINT_KEY: &str = "gitbutler.aiDeepSeekEndpoint";
 
 pub const AI_OPENAI_SECRET_HANDLE: &str = "aiOpenAIKey";
 pub const AI_ANTHROPIC_SECRET_HANDLE: &str = "aiAnthropicKey";
 pub const AI_OPENROUTER_SECRET_HANDLE: &str = "aiOpenRouterKey";
+pub const AI_DEEPSEEK_SECRET_HANDLE: &str = "aiDeepSeekKey";
 pub const GITBUTLER_ACCESS_TOKEN_HANDLE: &str = "gitbutler_access_token";
 
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4-nano";
@@ -28,6 +31,7 @@ pub const DEFAULT_OLLAMA_MODEL: &str = "llama3";
 pub const DEFAULT_LMSTUDIO_ENDPOINT: &str = "http://127.0.0.1:1234/v1";
 pub const DEFAULT_LMSTUDIO_MODEL: &str = "default";
 pub const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-4.1-mini";
+pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-pro";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiConfiguration {
@@ -55,12 +59,18 @@ pub struct LmStudioConfiguration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeepSeekConfiguration {
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiConfiguration {
     pub provider: LLMProviderKind,
     pub openai: OpenAiConfiguration,
     pub anthropic: AnthropicConfiguration,
     pub ollama: OllamaConfiguration,
     pub lmstudio: LmStudioConfiguration,
+    pub deepseek: DeepSeekConfiguration,
 }
 
 impl Default for AiConfiguration {
@@ -83,6 +93,9 @@ impl Default for AiConfiguration {
             lmstudio: LmStudioConfiguration {
                 endpoint: DEFAULT_LMSTUDIO_ENDPOINT.into(),
                 model: DEFAULT_LMSTUDIO_MODEL.into(),
+            },
+            deepseek: DeepSeekConfiguration {
+                model: DEFAULT_DEEPSEEK_MODEL.into(),
             },
         }
     }
@@ -129,6 +142,9 @@ impl AiConfiguration {
                     .unwrap_or(defaults.lmstudio.endpoint),
                 model: values.lmstudio_model.unwrap_or(defaults.lmstudio.model),
             },
+            deepseek: DeepSeekConfiguration {
+                model: values.deepseek_model.unwrap_or(defaults.deepseek.model),
+            },
         };
         Ok(configuration)
     }
@@ -138,6 +154,7 @@ impl AiConfiguration {
         required(&self.anthropic.model, "Anthropic model")?;
         required(&self.ollama.model, "Ollama model")?;
         required(&self.lmstudio.model, "LM Studio model")?;
+        required(&self.deepseek.model, "DeepSeek model")?;
         validate_ollama_endpoint(&self.ollama.endpoint)?;
         validate_url(&self.lmstudio.endpoint, "LM Studio endpoint")?;
         if self.openai.key_option == CredentialsKeyOption::BringYourOwn
@@ -173,6 +190,9 @@ impl AiConfiguration {
                 required(&self.lmstudio.model, "LM Studio model")?;
                 validate_url(&self.lmstudio.endpoint, "LM Studio endpoint")?;
             }
+            LLMProviderKind::DeepSeek => {
+                required(&self.deepseek.model, "DeepSeek model")?;
+            }
             LLMProviderKind::OpenRouter => {}
         }
         Ok(())
@@ -184,6 +204,25 @@ impl AiConfiguration {
         has_openai_key: bool,
         has_anthropic_key: bool,
         has_gitbutler_token: bool,
+    ) -> bool {
+        self.is_configured_with(
+            has_openai_key,
+            has_anthropic_key,
+            has_gitbutler_token,
+            false,
+        )
+    }
+
+    /// Like [`Self::is_configured`], but also aware of whether a DeepSeek key is stored.
+    ///
+    /// DeepSeek is bring-your-own-key only, so it can never be configured through the
+    /// GitButler proxy and needs its own stored-key signal.
+    pub fn is_configured_with(
+        &self,
+        has_openai_key: bool,
+        has_anthropic_key: bool,
+        has_gitbutler_token: bool,
+        has_deepseek_key: bool,
     ) -> bool {
         if self.validate_active().is_err() {
             return false;
@@ -198,6 +237,7 @@ impl AiConfiguration {
                 CredentialsKeyOption::ButlerApi => has_gitbutler_token,
             },
             LLMProviderKind::Ollama | LLMProviderKind::LMStudio => true,
+            LLMProviderKind::DeepSeek => has_deepseek_key,
             LLMProviderKind::OpenRouter => false,
         }
     }
@@ -242,6 +282,11 @@ impl AiConfiguration {
             AI_LMSTUDIO_MODEL_NAME_KEY,
             self.lmstudio.model.trim(),
         )?;
+        set_config_value(
+            config,
+            AI_DEEPSEEK_MODEL_NAME_KEY,
+            self.deepseek.model.trim(),
+        )?;
         Ok(())
     }
 }
@@ -258,6 +303,7 @@ pub struct AiConfigurationSnapshot {
     pub ollama_model: Option<String>,
     pub lmstudio_endpoint: Option<String>,
     pub lmstudio_model: Option<String>,
+    pub deepseek_model: Option<String>,
 }
 
 impl AiConfigurationSnapshot {
@@ -273,6 +319,7 @@ impl AiConfigurationSnapshot {
             ollama_model: config_value(config, AI_OLLAMA_MODEL_NAME_KEY),
             lmstudio_endpoint: config_value(config, AI_LMSTUDIO_ENDPOINT_KEY),
             lmstudio_model: config_value(config, AI_LMSTUDIO_MODEL_NAME_KEY),
+            deepseek_model: config_value(config, AI_DEEPSEEK_MODEL_NAME_KEY),
         }
     }
 }
@@ -347,6 +394,15 @@ pub fn apply_openrouter_configuration(
     validate_optional(model, "OpenRouter model")?;
     set_provider(config, LLMProviderKind::OpenRouter)?;
     set_optional(config, AI_OPENROUTER_MODEL_NAME_KEY, model)
+}
+
+pub fn apply_deepseek_configuration(
+    config: &mut gix::config::File,
+    model: Option<&str>,
+) -> Result<()> {
+    validate_optional(model, "DeepSeek model")?;
+    set_provider(config, LLMProviderKind::DeepSeek)?;
+    set_optional(config, AI_DEEPSEEK_MODEL_NAME_KEY, model)
 }
 
 fn set_provider(config: &mut gix::config::File, provider: LLMProviderKind) -> Result<()> {
