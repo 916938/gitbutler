@@ -36,5 +36,31 @@ pub enum Subcommands {
         /// the full skill files. Team-internal while the approach is evaluated.
         #[clap(long, hide = true)]
         stub: bool,
+        #[clap(flatten)]
+        json: crate::args::atoms::JsonArg,
+    },
+    /// Remove GitButler skills and workflow instructions from coding agents.
+    ///
+    /// Deletes every GitButler skill folder that `but agent setup` or
+    /// `but skill install` created, in your home directory and in the current
+    /// repository, and removes the GitButler section from agent instruction
+    /// files such as `~/.codex/AGENTS.md`, `~/.claude/rules/gitbutler.md`, or a
+    /// repository's `AGENTS.md`. Text outside the GitButler section is kept,
+    /// and a file left empty is deleted.
+    ///
+    /// In a terminal, it lists what it found and asks before removing it.
+    /// Otherwise it removes what it found and lists it.
+    ///
+    /// ## Examples
+    ///
+    /// Remove GitButler from your coding agents:
+    ///
+    /// ```text
+    /// but agent uninstall
+    /// ```
+    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
+    Uninstall {
+        #[clap(flatten)]
+        json: crate::args::atoms::JsonArg,
     },
 }

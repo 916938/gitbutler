@@ -1,6 +1,5 @@
 use std::{borrow::Cow, collections::HashMap};
 
-use but_settings::app_settings::FeatureFlags;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use strum::IntoEnumIterator;
 
@@ -26,14 +25,14 @@ use super::{
 #[cfg(test)]
 mod tests;
 
-pub fn default_key_binds(feature_flags: &FeatureFlags) -> KeyBinds {
+pub fn default_key_binds() -> KeyBinds {
     let mut key_binds = KeyBinds::new();
 
     for mode in ModeDiscriminant::iter() {
         let mut builder = key_binds.for_modes([mode]);
         match mode {
             ModeDiscriminant::Normal => {
-                register_normal_mode_key_binds(&mut builder, true, feature_flags);
+                register_normal_mode_key_binds(&mut builder, true);
             }
             ModeDiscriminant::PickChanges => {
                 builder.mark().register();
@@ -90,16 +89,14 @@ pub fn default_key_binds(feature_flags: &FeatureFlags) -> KeyBinds {
                 register_non_mode_specific_key_binds(&mut builder, WithFocusDetails::No);
             }
             ModeDiscriminant::Worktree => {
-                if feature_flags.worktree_manipulation {
-                    builder.worktree_new().register();
-                    builder.worktree_archive().register();
-                    builder.worktree_unarchive().register();
-                    builder
-                        .discard()
-                        .long_description("Discard worktree")
-                        .register();
-                    register_non_mode_specific_key_binds(&mut builder, WithFocusDetails::No);
-                }
+                builder.worktree_new().register();
+                builder.worktree_archive().register();
+                builder.worktree_unarchive().register();
+                builder
+                    .discard()
+                    .long_description("Discard worktree")
+                    .register();
+                register_non_mode_specific_key_binds(&mut builder, WithFocusDetails::No);
             }
             ModeDiscriminant::Details => {
                 builder
@@ -122,9 +119,19 @@ pub fn default_key_binds(feature_flags: &FeatureFlags) -> KeyBinds {
                     .register();
                 builder
                     .squash()
-                    .condition(KeyBindCondition::SelectionIsUncommitted.and(
-                        &KeyBindCondition::Not(&KeyBindCondition::DetailsReturnModeIsPickChanges),
-                    ))
+                    .condition(
+                        KeyBindCondition::SelectionHasHunks.and(&KeyBindCondition::Not(
+                            &KeyBindCondition::DetailsReturnModeIsPickChanges,
+                        )),
+                    )
+                    .register();
+                builder
+                    .move_mode()
+                    .condition(
+                        KeyBindCondition::SelectionIsCommitted.and(&KeyBindCondition::Not(
+                            &KeyBindCondition::DetailsReturnModeIsPickChanges,
+                        )),
+                    )
                     .register();
                 builder.details_discard().register();
 
@@ -210,7 +217,7 @@ pub fn confirm_key_binds() -> KeyBinds {
         .key_bind(
             "no",
             press().code(KeyCode::Char('n')).alt_code(KeyCode::Esc),
-            || Message::Confirm(ConfirmMessage::No),
+            || Message::Confirm(ConfirmMessage::Close),
         )
         .register();
 
@@ -346,12 +353,12 @@ pub fn help_key_binds() -> KeyBinds {
     key_binds
 }
 
-pub fn normal_with_marks_key_binds(feature_flags: &FeatureFlags) -> KeyBinds {
+pub fn normal_with_marks_key_binds() -> KeyBinds {
     let mut key_binds = KeyBinds::new();
 
     let mut builder = key_binds.for_modes(Vec::from([ModeDiscriminant::Normal]));
 
-    register_normal_mode_key_binds(&mut builder, false, feature_flags);
+    register_normal_mode_key_binds(&mut builder, false);
 
     key_binds
 }
@@ -361,9 +368,7 @@ struct KeyBindId(usize);
 
 #[derive(Debug)]
 pub struct KeyBinds {
-    /// All registered key binds.
     all_key_binds: Vec<KeyBind>,
-    /// Which key binds are available in which modes?
     mode_to_key_binds: HashMap<ModeDiscriminant, Vec<KeyBindId>>,
 }
 
@@ -564,7 +569,7 @@ impl KeyBindsBuilder<'_> {
         })
         .hide_from_hotbar()
         .show_only_in_normal_mode_help_section()
-        .long_description("Search for short IDs and jump there")
+        .long_description("Jump to a line by its ID, name, message, or path")
     }
 
     fn jump_previous(&mut self) -> KeyBindsInModesBuilder<'_> {
@@ -1144,7 +1149,7 @@ impl KeyBindsBuilder<'_> {
         self.key_bind("mark", press().code(KeyCode::Char(' ')), || {
             Message::Details(DetailsMessage::Mark)
         })
-        .condition(KeyBindCondition::SelectionIsUncommitted)
+        .condition(KeyBindCondition::SelectionHasHunks)
     }
 
     fn details_discard(&mut self) -> KeyBindsInModesBuilder<'_> {
@@ -1152,7 +1157,7 @@ impl KeyBindsBuilder<'_> {
             Message::Details(DetailsMessage::Discard)
         })
         .condition(
-            KeyBindCondition::SelectionIsUncommitted.and(&KeyBindCondition::Not(
+            KeyBindCondition::SelectionHasHunks.and(&KeyBindCondition::Not(
                 &KeyBindCondition::DetailsReturnModeIsPickChanges,
             )),
         )
@@ -1217,11 +1222,7 @@ impl KeyBindsBuilder<'_> {
     }
 }
 
-fn register_normal_mode_key_binds(
-    builder: &mut KeyBindsBuilder<'_>,
-    without_marks: bool,
-    feature_flags: &FeatureFlags,
-) {
+fn register_normal_mode_key_binds(builder: &mut KeyBindsBuilder<'_>, without_marks: bool) {
     builder.up().register();
     builder.down().register();
     builder.next_section().register();
@@ -1248,9 +1249,7 @@ fn register_normal_mode_key_binds(
     builder.branch().register();
     if without_marks {
         builder.stack().register();
-        if feature_flags.worktree_manipulation {
-            builder.worktree().register();
-        }
+        builder.worktree().register();
     }
 
     builder.cherry_pick().register();
@@ -1377,12 +1376,6 @@ impl KeyBindsInModesBuilder<'_> {
     /// show key binds specific to them.
     fn show_only_in_normal_mode_help_section(mut self) -> Self {
         self.show_only_in_normal_mode_help_section = true;
-        self
-    }
-
-    #[expect(dead_code)]
-    fn short_description(mut self, short_description: &'static str) -> Self {
-        self.short_description = short_description;
         self
     }
 
@@ -1637,7 +1630,6 @@ fn format_key_code(code: KeyCode, shifted: bool) -> String {
     }
 }
 
-/// Normalize a character for chord display rendering.
 fn normalize_char_for_display(ch: char, shifted: bool) -> char {
     if shifted && ch.is_ascii_alphabetic() {
         ch.to_ascii_lowercase()
@@ -1649,6 +1641,10 @@ fn normalize_char_for_display(ch: char, shifted: bool) -> char {
 #[derive(Debug, Copy, Clone)]
 pub enum KeyBindCondition {
     SelectionIsUncommitted,
+    /// The selection shows hunks that can be marked, discarded and squashed.
+    SelectionHasHunks,
+    /// The selection shows committed hunks, which can also be moved.
+    SelectionIsCommitted,
     DetailsReturnModeIsPickChanges,
     And {
         lhs: &'static Self,
@@ -1688,6 +1684,44 @@ impl KeyBindCondition {
                         source: ChangeSourceId::Worktree(_),
                         ..
                     }
+                    | CliId::Stack { .. } => false,
+                }
+            }
+            KeyBindCondition::SelectionHasHunks => {
+                let Some(selection) = selection else {
+                    return false;
+                };
+                match selection {
+                    CliId::UncommittedHunkOrFile(..)
+                    | CliId::UncommittedArea {
+                        source: ChangeSourceId::Head,
+                        ..
+                    }
+                    | CliId::CommittedFile { .. }
+                    | CliId::Commit { .. } => true,
+                    CliId::AnonymousSegment(..)
+                    | CliId::PathPrefix { .. }
+                    | CliId::CommittedHunk { .. }
+                    | CliId::Branch(..)
+                    | CliId::UncommittedArea {
+                        source: ChangeSourceId::Worktree(_),
+                        ..
+                    }
+                    | CliId::Stack { .. } => false,
+                }
+            }
+            KeyBindCondition::SelectionIsCommitted => {
+                let Some(selection) = selection else {
+                    return false;
+                };
+                match selection {
+                    CliId::CommittedFile { .. } | CliId::Commit { .. } => true,
+                    CliId::UncommittedHunkOrFile(..)
+                    | CliId::UncommittedArea { .. }
+                    | CliId::AnonymousSegment(..)
+                    | CliId::PathPrefix { .. }
+                    | CliId::CommittedHunk { .. }
+                    | CliId::Branch(..)
                     | CliId::Stack { .. } => false,
                 }
             }

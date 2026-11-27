@@ -24,7 +24,6 @@ UI code may still present stacks, lanes, or buckets. Core read/query paths and m
 
 This applies both when **changing** state and when **asking questions** about stacks, branches, commits, or dependencies. The compressed/projection views are convenient, but they are not the best internal source of truth for graph-shaped questions.
 
-
 | Task | Prefer | Avoid |
 |---|---|---|
 | Rewrite, move, drop, insert commits or ref placements | graph editor (`but_rebase::graph_rebase::Editor`) where an editor model exists | old linear rebase engine (`but_rebase::Rebase`) |
@@ -52,13 +51,25 @@ Avoid lower-level helpers reacquiring `Context` or repository write guards while
 
 ## Metadata and target refs
 
-Workspace metadata is exposed through `but_core::RefMetadata` and `but_core::ref_metadata::Workspace`.
+`but_core::ref_metadata::ProjectMeta` holds the configured target and cutoff. Workspace metadata is exposed through `but_core::RefMetadata` and `but_core::ref_metadata::Workspace`.
 
-Important concepts:
+Keep these concepts separate:
 
-- target ref — usually something like `origin/main`; the branch/ref used as the workflow frame of reference.
-- target commit ID — a commit reachable from the target ref that should stay included in the workspace context, making the workspace stable even when the target ref moves.
-- workspace stacks — legacy/presentation metadata; useful for compatibility but not ideal as new operation targets.
+- **Local target:** `ProjectMeta.target_ref` is an optional `LocalRefName`, such as `refs/heads/main`. This is the branch the editor treats as the target's own; other branches tracking the same upstream are not the local target.
+- **Target upstream:** derived from the local target's fetch tracking configuration. Its name can differ from the local branch name. A configured upstream can have a missing remote-tracking ref.
+- **Stored cutoff:** `ProjectMeta.target_commit_id` is an optional commit that fixes the workspace boundary even when refs move. It need not be reachable from the local target.
+- **Feature publication remote:** `ProjectMeta.push_remote` selects a remote for publishing feature branches. It does not select the target or its upstream.
+- **Workspace stacks:** metadata used to group branches for presentation and compatibility.
+
+Select the effective cutoff in this order:
+
+1. The stored cutoff, when set.
+2. The configured target upstream's tip.
+3. The local target's tip, only when no upstream is configured.
+
+Use `ProjectMeta::resolve_target_commit(&self, repo)` for this.
+
+A missing selected ref or object is an availability problem, not a reason to select a different cutoff. Reads leave an unset stored cutoff unset; initialization can record the effective cutoff. Graph and editor operations must resolve refs against their current graph or overlay.
 
 Treat target ref and target commit as **frame-of-reference metadata**, not automatically as mutation commands.
 
@@ -72,8 +83,9 @@ Use target ref/commit differently depending on the operation:
 
 Do not conflate:
 
-- local branch `foo` vs remote-tracking branch `origin/foo`
-- local branch `foo` relative to target ref `origin/main`
+- a feature branch and its own upstream;
+- the configured local target and its upstream;
+- the selected cutoff and the common base shown in the UI.
 
 Those answer different questions. This matters especially for normal Git / single-branch workflows.
 
@@ -94,6 +106,7 @@ Caveats:
 
 - The graph is segment/bucket based because older UI concerns influenced it.
 - It can encode ordering information Git itself does not represent, especially around refs.
+- A named segment may own no commits: it is a ref on the commit below it, so read what it points at with `resolve_to_unambiguously_pointed_to_commit()`, never off its own `commits`.
 - Merge parent order may not always be reliable; be careful with first-parent traversal or UI that assumes the first parent is the mainline.
 
 ## Workspace projection and refinfo
@@ -117,6 +130,10 @@ Avoid using them as source of truth for:
 
 If code needs graph topology or accurate relationships, go back to `but_graph::Graph` or the graph editor before converting into projection/refinfo.
 
+`Workspace.target_ref` describes the target in the projected graph. It is not the source of target configuration. `RefInfo.target_ref` is private and carries that projected target into UI conversion. Use `ProjectMeta` for the configured local target and its derived upstream.
+
+The selected cutoff can exist without a projected target reference. The projection's `lower_bound` describes the common base shown in the UI and can differ from the cutoff. Local-target ahead counts and incoming upstream commits also measure different things; do not substitute one for the other.
+
 ## Rebase and mutations
 
 Treat the old rebase engine (`but_rebase::Rebase`) as legacy. It is linear: base plus ordered rebase steps. That assumes a meaningful contiguous range, which breaks down for graph-shaped histories, merge commits, normal Git branches, and single-branch mode.
@@ -132,6 +149,10 @@ Important graph editor concepts:
 
 Materializing also records how local branches stack, read off the step graph by `SuccessfulRebase::branch_stacks()`: the workspace stacks when `HEAD` is on the workspace reference above a workspace commit, and the branch stack order of `HEAD` otherwise and of every linked worktree. `overlayed_graph()` previews with the same stacks. A branch a linked worktree has checked out stacks with that worktree, and the workspace stacks are rebuilt rather than reconciled, keeping only a stack's id and position. An operation that needs something else in metadata still writes it after materializing.
 
+Materializing moves `HEAD` and every active linked worktree off a branch the edit deletes. A branch any other worktree has checked out can't be deleted, so materializing refuses the whole edit.
+
+`but-graph` reads a linked worktree's branch stack order back when it forks the worktree's checked-out branch out of the lanes: the branches the order puts at one commit become a chain of empty segments resting on that commit, and the worktree's first-parent path into the commit runs through them. They never own commits. The order only claims what the editor would give the worktree: branches on the worktree's own first-parent path that no checkout has checked out and that the entrypoint's metadata doesn't stack. A stale order thus can't take a branch from another lane, and the workspace stacks stay as they are.
+
 The graph editor is not merely “a rebase command.” It is the in-memory graph mutation layer for history and ref-placement rewrites. It is currently created from a mutable workspace projection, so projection may be involved in editor setup even when the mutation decision should be graph-shaped.
 
 ### What the editor borrows
@@ -146,6 +167,16 @@ That exclusivity is the part worth remembering. `but_ctx::Context` hands out its
 
 The same applies to the workspace and metadata borrows: an operation that wants to hand `Context` to a helper after materializing must release the editor's borrows before it does.
 
+### Transactions compose editor operations
+
+`but_transaction::Transaction` runs several editor operations as one rebase. It records at most one undo step for all of them. Between operations, the transaction keeps only the rebase and the commit mappings. Each new method must call one editor-backed `but_workspace` operation, or call other methods of the transaction.
+
+- Put the behavior that callers need in the `but_workspace` operation, not in the transaction. This includes entering and leaving the workspace, the place of a new branch, and which branch removals to refuse. The API, the CLI and GPUI then get the same behavior from one place.
+- Make each decision inside the edit. If a later operation in the same transaction changes the decision, that operation changes the graph back. For example, `switch_to_branch` removes a workspace that the same transaction entered. Do not keep work in the transaction for the end of the callback.
+- Refuse an unsafe result before materializing changes `HEAD`, the worktree, the index, or a reference. Materializing does this for a switch, as "Switching" below says. Do not take a checkpoint to restore after a failure.
+- Declare references outside the workspace in `TransactionOptions::extra_mutable_refs` or `extra_immutable_refs`. Operations can rewrite a mutable reference like the commits that `HEAD` reaches. Operations can see an immutable reference, but they cannot change it. No operation needs a separate path for these references.
+- Test a behavior at the `but_workspace` operation that owns it, in `crates/but-workspace/tests/workspace/`. Test the transaction and `but-api` only for what they add: one undo step, declared references, and dry runs.
+
 ## Push and upstream integration
 
 Push should be graph-based, not stack-based.
@@ -158,7 +189,11 @@ For new push/dependency logic, ask graph questions:
 
 Push is not itself a mutation, so using the graph editor only for ordering can be conceptually awkward. Prefer `but_graph::Graph` for dependency and ordering questions.
 
-Upstream integration can be a useful conceptual pattern: reason over related subgraphs under workspace heads, even if existing code still uses stack terminology.
+Upstream integration uses the configured local target's upstream, not the feature publication remote. It requires an available upstream tip. Ordinary feature pushes do not require a target upstream.
+
+Pull can fast-forward the local target when it is behind its upstream and safe to update. It preserves local history when the target is ahead or diverged. A missing local target is an error, not a reason to recreate it at the upstream tip.
+
+UI pull state keeps upstream configuration, tip availability, cutoff equality, lagging lanes, and safe local fast-forward separate. Matching the cutoff to the upstream tip alone does not mean pull has no work.
 
 ## Single branch / normal Git mode
 
@@ -168,9 +203,19 @@ When touching code that should work in normal Git mode:
 
 - do not assume `gitbutler/workspace` is checked out;
 - do not assume stack metadata is the operation source of truth;
-- do not assume target ref equals the current branch’s remote-tracking branch;
-- separate branch remote divergence from target-ref/base divergence;
+- do not use the current branch's upstream as the project target's upstream;
+- distinguish feature-branch divergence, local-target divergence, and the workspace cutoff;
 - avoid managed-workspace-only assumptions unless the API explicitly requires managed workspace mode.
+
+### Entering and leaving the workspace
+
+Editor-backed `but_workspace` operations put `HEAD` on the workspace reference when their result needs a workspace commit, and take it off again when it no longer does. Callers, `but-transaction` included, don't set a workspace up beforehand or tidy one up afterwards.
+
+- **Entering** (`editor_workspace::enter_workspace`): an operation that makes a second stack beside the checked-out one, as `create_reference` without an anchor and `tear_off_branch` do. `apply_stack` enters even for one stack, as that's what it's asked for.
+- **Leaving** (`editor_workspace::leave_unnecessary_workspace`): an operation that can take a tip away from the workspace commit leaves the workspace whenever at most one tip is left when it's done, whether or not it took one away. It checks that tip's branch out, or the local target once none is left. Discarding, moving and squashing commits do this, as do moving and dropping a branch and integrating upstream.
+- **Switching** (`editor_workspace::switch_to_branch`): a checkout that was asked for is recorded in the editor too. Materializing refuses this checkout if it overwrites uncommitted changes or checks out a conflicted commit. It refuses before it changes `HEAD`, the worktree, the index, or any reference.
+
+A branch without an anchor has no lane to go to without a target, or while the target's own branch is checked out with commits. It goes on top of the checked-out branch then, and `HEAD` follows it.
 
 ## Checklist before adding graph/workspace code
 
@@ -185,6 +230,7 @@ Ask this for both read/query code and mutation code:
 7. Could this run outside managed workspace mode?
 8. Am I passing too much `but_ctx::Context` into lower layers?
 9. Does this operation need immediate materialization, or can it compose graph edits first?
+10. Can a transaction run this mutation or query together with others? If yes, put it in `but-workspace`, and make a mutation an editor operation. `but-transaction` only calls it.
 
 ## Encouraged patterns
 
@@ -204,12 +250,12 @@ Ask this for both read/query code and mutation code:
 - New push/upstream or internal query logic depends on workspace projection buckets instead of graph topology.
 - Lower-level crate takes `but_ctx::Context` and reacquires locks.
 - Code re-borrows a handle from `but_ctx::Context` while an editor chain still holds it, trading a compile error for a run-time one.
-- Code assumes target ref equals current branch’s remote-tracking branch.
+- Code treats a feature branch's upstream as the project target's upstream.
 - Code assumes a user/CLI-provided commit ID is a valid operation target merely because the object exists.
 
 ## Examples / starting points
 
-- Graph construction and workspace projection: `crates/but-graph/tests/graph/init/with_workspace.rs`, especially `workspace_with_stack_and_local_target()` and `workspace_projection_with_advanced_stack_tip()`, shows `Graph::from_head()`, `validated()`, `into_workspace()`, and snapshot-backed graph/projection expectations.
+- Graph construction and workspace projection: `but_graph::nosegment::workspace()` builds the workspace from the nosegment graph, and tests use `but_testsupport::graph_from_head()`. `crates/but-graph/tests/graph/workspace/target_commit.rs` shows `graph_from_head()`, `into_workspace()`, and snapshot-backed projection expectations.
 - Target ref and target commit semantics: `crates/but-graph/tests/graph/workspace/target_commit.rs`, especially `prefers_target_commit_over_target_ref()` and `returns_none_when_no_target()`, shows cases where target commit metadata and target refs intentionally differ.
 - Graph editor mutation patterns: `crates/but-rebase/tests/rebase/graph_rebase/replace.rs` and `crates/but-rebase/tests/rebase/graph_rebase/insert.rs` show selecting commits, replacing/inserting steps, checking `overlayed_graph()`, and materializing once.
 - Workspace mutation call sites layered over the graph editor: `crates/but-workspace/tests/workspace/commit/move_commit.rs` shows creating an editor, calling `but_workspace::commit::move_commit`, materializing, refreshing workspace state, and asserting ref movement.

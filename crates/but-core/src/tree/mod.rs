@@ -2,11 +2,10 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use anyhow::bail;
 use bstr::ByteSlice;
-use gix::{merge::tree::TreatAsUnresolved, object::tree::EntryKind, prelude::ObjectIdExt};
+use gix::{object::tree::EntryKind, prelude::ObjectIdExt};
 
-use crate::{DiffSpec, HunkHeader, HunkRange, RepositoryExt, UnifiedPatch, apply_hunks};
+use crate::{DiffSpec, HunkHeader, HunkRange, UnifiedPatch, apply_hunks};
 
-/// Utility types for the [`create_tree()`] function
 pub mod create_tree {
 
     /// Provide a description of why a [`crate::DiffSpec`] was rejected for application to the tree of a commit.
@@ -53,128 +52,51 @@ pub mod create_tree {
 }
 use create_tree::RejectionReason;
 
-use crate::worktree::worktree_file_to_git_in_buf;
+use crate::worktree::{symlink_target_in_git_form, worktree_file_to_git_in_buf};
 
-/// Additional information about the outcome of a [`create_tree()`] call.
+mod merged;
+pub use merged::{MergedFile, MergedHunks};
+
 #[derive(Debug)]
 pub struct CreateTreeOutcome {
-    /// Changes that were removed from `new_tree` because they caused conflicts when rebasing dependent commits,
-    /// when merging the workspace commit, or because the specified hunks didn't match exactly due to changes
-    /// that happened in the meantime, or if a file without a change was specified.
+    /// Changes that couldn't be applied, as when the specified hunks don't match the worktree's
+    /// any more, or when a file without a change was specified.
     pub rejected_specs: Vec<(RejectionReason, DiffSpec)>,
-    /// The newly created seen from tree that acts as the destination of the changes, or `None` if no tree could be
-    /// created as all changes-requests were rejected (or there was no change).
-    pub destination_tree: Option<gix::ObjectId>,
-    /// If `destination_tree` is `Some(_)`, this field is `Some(_)` as well and denotes the base-tree + all changes.
-    /// If the applied changes were from the worktree, it's `HEAD^{tree}` + changes.
-    /// Otherwise, it's `<commit>^{tree}` + changes.
-    pub changed_tree_pre_cherry_pick: Option<gix::ObjectId>,
+    /// `HEAD^{tree}` with the changes that applied, or `None` if changes were asked for and none
+    /// changed anything.
+    pub changed_tree: Option<gix::ObjectId>,
 }
 
-/// A lower-level function that only returns a new tree, without finally associating it with a commit.
+/// Apply `changes` of the worktree to `HEAD^{tree}`, or to the empty tree if `HEAD` is unborn,
+/// which is what they were made on.
 pub fn create_tree(
     repo: &gix::Repository,
-    target_tree: gix::ObjectId,
     changes: Vec<DiffSpec>,
     context_lines: u32,
 ) -> anyhow::Result<CreateTreeOutcome> {
-    let mut changes: Vec<_> = changes.into_iter().map(Ok).collect();
-    let (new_tree, changed_tree_pre_cherry_pick) = if changes.is_empty() {
-        (Some(target_tree), None)
-    } else {
-        'retry: loop {
-            let (new_tree, actual_base_tree) = {
-                let changes_base_tree = repo
-                    .head()?
-                    .id()
-                    .and_then(|id| {
-                        id.object()
-                            .ok()?
-                            .peel_to_commit()
-                            .ok()?
-                            .tree_id()
-                            .ok()?
-                            .detach()
-                            .into()
-                    })
-                    .unwrap_or(target_tree);
-                apply_worktree_changes(changes_base_tree, repo, &mut changes, context_lines)?
-            };
-
-            let tree_with_changes = if new_tree == actual_base_tree
-                && changes.iter().all(|c| {
-                    c.is_ok()
-                        // Some rejections are OK, and we want to create a commit anyway.
-                        || !matches!(
-                            c,
-                            Err((RejectionReason::CherryPickMergeConflict,_))
-                        )
-                }) {
-                changes
-                    .iter_mut()
-                    .for_each(|c| into_err_spec(c, RejectionReason::NoEffectiveChanges));
-                break 'retry (None, None);
-            } else {
-                new_tree
-            };
-            let tree_with_changes_without_cherry_pick = tree_with_changes.detach();
-            let mut tree_with_changes = tree_with_changes.detach();
-            let needs_cherry_pick = actual_base_tree
-                != gix::ObjectId::empty_tree(repo.object_hash())
-                && actual_base_tree != target_tree;
-            if needs_cherry_pick {
-                let base = actual_base_tree;
-                let ours = target_tree;
-                let theirs = tree_with_changes;
-                let mut merge_result = repo.merge_trees(
-                    base,
-                    ours,
-                    theirs,
-                    repo.default_merge_labels(),
-                    repo.tree_merge_options()?,
-                )?;
-                let unresolved_conflicts: Vec<_> = merge_result
-                    .conflicts
-                    .iter()
-                    .filter_map(|c| {
-                        c.is_unresolved(TreatAsUnresolved::git())
-                            .then_some(c.theirs.location())
-                    })
-                    .collect();
-                if !unresolved_conflicts.is_empty() {
-                    for change in changes.iter_mut().filter(|c| {
-                        c.as_ref().ok().is_some_and(|change| {
-                            unresolved_conflicts.contains(&change.path.as_bstr())
-                        })
-                    }) {
-                        into_err_spec(change, RejectionReason::CherryPickMergeConflict);
-                    }
-                    continue 'retry;
-                }
-                tree_with_changes = merge_result.tree.write()?.detach();
-            }
-            break 'retry (
-                Some(tree_with_changes),
-                Some(tree_with_changes_without_cherry_pick),
-            );
-        }
-    };
+    let head_tree = repo.head_tree_id_or_empty()?.detach();
+    let asked = !changes.is_empty();
+    let mut changes: Vec<PossibleChange> = changes.into_iter().map(Ok).collect();
+    let (changed_tree, _) = apply_worktree_changes(head_tree, repo, &mut changes, context_lines)?;
+    let changed_tree = changed_tree.detach();
+    let changed_nothing = asked && changed_tree == head_tree;
+    if changed_nothing {
+        (changes.iter_mut())
+            .for_each(|change| into_err_spec(change, RejectionReason::NoEffectiveChanges));
+    }
     Ok(CreateTreeOutcome {
         rejected_specs: changes.into_iter().filter_map(Result::err).collect(),
-        destination_tree: new_tree,
-        changed_tree_pre_cherry_pick,
+        changed_tree: (!changed_nothing).then_some(changed_tree),
     })
 }
 
 fn into_err_spec(input: &mut PossibleChange, reason: RejectionReason) {
     *input = match std::mem::replace(input, Ok(Default::default())) {
-        // What we thought was a good change turned out to be a no-op, rejected.
         Ok(inner) => Err((reason, inner)),
         Err(inner) => Err(inner),
     };
 }
 
-/// A utility type to keep track of `Ok` specs to use, or `Err` specs that have been rejected.
 pub type PossibleChange = Result<DiffSpec, (RejectionReason, DiffSpec)>;
 
 /// Apply `changes` to `changes_base_tree` and return the newly written tree as `(new_tree, actual_base_tree)`.
@@ -245,6 +167,12 @@ pub fn apply_worktree_changes<'repo>(
         };
         if change_request.hunk_headers.is_empty() {
             let rela_path = change_request.path.as_bstr();
+            if md.is_symlink() {
+                // Unlike Git, gix keeps the `\` separators that Windows reports in link targets.
+                let id = repo.write_blob(symlink_target_in_git_form(&path)?)?;
+                base_tree_editor.upsert(rela_path, EntryKind::Link, id)?;
+                continue;
+            }
             match pipeline.worktree_file_to_object(rela_path, &index)? {
                 Some((id, kind, _fs_metadata)) => {
                     base_tree_editor.upsert(rela_path, entry_kind(rela_path, kind), id)?;

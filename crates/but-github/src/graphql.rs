@@ -38,6 +38,14 @@ pub const GQL_DISABLE_PR_AUTO_MERGE: &str = r#"
     }
     "#;
 
+pub const GQL_GET_VIEWER_DEFAULT_MERGE_METHOD: &str = r#"
+    query ViewerDefaultMergeMethod($owner: String!, $repo: String!) {
+      repository(owner: $owner, name: $repo) {
+        viewerDefaultMergeMethod
+      }
+    }
+    "#;
+
 pub const GQL_GET_PR_NODE_ID: &str = r#"
     query PullRequestNodeId($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -48,9 +56,6 @@ pub const GQL_GET_PR_NODE_ID: &str = r#"
     }
     "#;
 
-/// Commits resolve their author to a GitHub account (`author.user`), which
-/// REST's timeline never reports — without a login, "your own push" cannot
-/// be told apart from anyone else's.
 /// The single-review fetch. GraphQL is the one source that lists a bot
 /// among a pull request's requested reviewers; REST leaves them out.
 pub const GQL_GET_PR: &str = r#"
@@ -125,70 +130,6 @@ pub const GQL_GET_PR: &str = r#"
     }
     "#;
 
-pub const GQL_LIST_PR_TIMELINE: &str = r#"
-    query PullRequestTimeline($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
-      repository(owner: $owner, name: $repo) {
-        pullRequest(number: $number) {
-          timelineItems(first: 100, after: $cursor, itemTypes: [PULL_REQUEST_COMMIT, REVIEW_REQUESTED_EVENT]) {
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            nodes {
-              __typename
-              ... on PullRequestCommit {
-                commit {
-                  oid
-                  messageHeadline
-                  author {
-                    name
-                    date
-                    user {
-                      __typename
-                      login
-                      avatarUrl
-                      databaseId
-                      name
-                    }
-                  }
-                }
-              }
-              ... on ReviewRequestedEvent {
-                createdAt
-                actor {
-                  __typename
-                  login
-                  avatarUrl
-                  ... on User {
-                    databaseId
-                    name
-                  }
-                  ... on Bot {
-                    databaseId
-                  }
-                }
-                requestedReviewer {
-                  __typename
-                  ... on User {
-                    databaseId
-                    login
-                    avatarUrl
-                    name
-                  }
-                  ... on Bot {
-                    databaseId
-                    login
-                    avatarUrl
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-"#;
-
 /// Diff-anchored review threads, which REST does not expose: `/pulls/{n}/comments`
 /// returns a flat comment list with neither thread grouping nor resolution state.
 pub const GQL_LIST_PR_REVIEW_THREADS: &str = r#"
@@ -237,44 +178,6 @@ pub const GQL_LIST_PR_REVIEW_THREADS: &str = r#"
                   }
                 }
               }
-            }
-          }
-        }
-      }
-    }
-    "#;
-
-/// Reply into an existing review thread. Keyed on the thread's node id, which
-/// is what the reader already carries; REST's reply endpoint wants the id of a
-/// comment inside the thread instead.
-///
-/// The comment selection must stay in step with `GQL_LIST_PR_REVIEW_THREADS`,
-/// since both decode into the same type.
-pub const GQL_ADD_REVIEW_THREAD_REPLY: &str = r#"
-    mutation AddPullRequestReviewThreadReply($threadId: ID!, $body: String!) {
-      addPullRequestReviewThreadReply(
-        input: { pullRequestReviewThreadId: $threadId, body: $body }
-      ) {
-        comment {
-          databaseId
-          body
-          createdAt
-          lastEditedAt
-          url
-          diffHunk
-          pullRequestReview {
-            databaseId
-          }
-          author {
-            __typename
-            login
-            avatarUrl
-            ... on User {
-              databaseId
-              name
-            }
-            ... on Bot {
-              databaseId
             }
           }
         }
@@ -332,38 +235,6 @@ pub const GQL_LIST_PR_REVIEWS: &str = r#"
               }
             }
           }
-        }
-      }
-    }
-    "#;
-
-/// The reaction selection must stay in step with `GQL_LIST_PR_REVIEWS`,
-/// since both decode into the same type.
-pub const GQL_ADD_REACTION: &str = r#"
-    mutation AddReaction($subjectId: ID!, $content: ReactionContent!) {
-      addReaction(input: { subjectId: $subjectId, content: $content }) {
-        reaction {
-          databaseId
-          content
-          user {
-            __typename
-            login
-            avatarUrl
-            databaseId
-            name
-          }
-        }
-      }
-    }
-    "#;
-
-/// GraphQL removes by kind rather than by reaction id: a viewer can only
-/// hold one reaction of each kind on a subject, so the pair is enough.
-pub const GQL_REMOVE_REACTION: &str = r#"
-    mutation RemoveReaction($subjectId: ID!, $content: ReactionContent!) {
-      removeReaction(input: { subjectId: $subjectId, content: $content }) {
-        reaction {
-          databaseId
         }
       }
     }

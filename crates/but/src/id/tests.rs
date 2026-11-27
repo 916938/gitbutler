@@ -54,6 +54,7 @@ fn committed_hunk_equality() {
         },
         id: "ignored by equality".into(),
         hunk: hunk("file.txt"),
+        tree_status: but_core::TreeStatusKind::Modification,
     };
 
     assert_eq!(
@@ -115,6 +116,7 @@ fn commit_id_works_with_two_or_more_characters() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
@@ -164,6 +166,7 @@ fn commit_id_appearing_multiple_times() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -204,6 +207,7 @@ fn commit_ids_become_longer_if_ambiguous() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
@@ -283,6 +287,7 @@ fn exact_branch_short_id_takes_priority() {
             .collect(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )
     .unwrap();
 
@@ -308,6 +313,7 @@ fn branches_work_with_single_character() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -350,6 +356,7 @@ fn parsing_retired_uncommitted_area_errors() {
         Default::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )
     .unwrap();
     let parse_error = id_map
@@ -374,6 +381,7 @@ fn branches_avoid_retired_uncommitted_area_id() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -415,6 +423,7 @@ fn uncommitted_files_avoid_retired_uncommitted_area_id() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     snapbox::assert_data_eq!(
@@ -442,6 +451,7 @@ fn branches_avoid_invalid_ids() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
@@ -491,6 +501,7 @@ fn branches_avoid_uncommitted_filenames() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -545,6 +556,7 @@ fn many_uncommitted_files_do_not_exhaust_generated_ids() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     assert_eq!(
@@ -602,6 +614,7 @@ fn branch_that_is_substring_of_other_substring_still_gets_id() -> anyhow::Result
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -663,6 +676,7 @@ fn non_commit_ids_do_not_collide() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     snapbox::assert_data_eq!(
         id_map.debug_state().to_debug(),
@@ -841,6 +855,7 @@ fn uncommitted_file_to_id_qualifies_hunk_ids() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let uncommitted_file = id_map
         .uncommitted_files
@@ -878,6 +893,7 @@ fn ids_are_case_sensitive() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1020,6 +1036,7 @@ fn uncommitted_files_disambiguate_between_themselves() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1160,6 +1177,7 @@ fn same_path_in_several_sources_gets_distinct_ids() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     let ids: Vec<_> = id_map
@@ -1216,6 +1234,7 @@ fn worktree_container_id() -> anyhow::Result<()> {
             worktree("wt-b", [segment("wt-b", [], None, [])]),
         ],
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1303,6 +1322,7 @@ fn worktree_uncommitted_area_id() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         vec![worktree("wt-a", [segment("wt-a", [], None, [])])],
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1380,6 +1400,7 @@ fn branch_and_worktree_short_ids_do_not_collide() -> anyhow::Result<()> {
             [segment("worktree-01", [], None, [])],
         )],
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     snapbox::assert_data_eq!(
@@ -1420,6 +1441,7 @@ fn generated_segment_ids_do_not_collide_with_worktree_names() -> anyhow::Result<
             ),
         ],
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     let branch_ids: Vec<_> = id_map
@@ -1527,6 +1549,7 @@ fn at_scopes_filenames_to_the_main_worktree() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1554,13 +1577,10 @@ fn at_scopes_filenames_to_the_main_worktree() -> anyhow::Result<()> {
         "`@` scoping keeps the main worktree's copy"
     );
 
-    // A bare filename is deliberately unscoped, so it reports both and the
-    // caller turns that into an ambiguity error.
-    let unscoped = id_map.parse("file", &TestChanges(changed_paths_fn))?;
     assert_eq!(
-        unscoped.len(),
-        2,
-        "a bare path matches every checkout it is dirty in"
+        id_map.parse("file", &TestChanges(changed_paths_fn))?,
+        id_map.parse("@:file", &TestChanges(changed_paths_fn))?,
+        "a bare path names the file in the checkout the map was built for"
     );
 
     Ok(())
@@ -1584,6 +1604,7 @@ fn uncommitted_files_disambiguate_with_branch() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1681,6 +1702,7 @@ fn longer_id_is_ok() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1736,6 +1758,7 @@ fn reverse_hex_filename_is_its_own_id() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1791,6 +1814,7 @@ fn branch_and_file_by_name() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1860,6 +1884,7 @@ fn colon_uncommitted_filename() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -1973,6 +1998,7 @@ fn uncommitted_path() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2086,6 +2112,7 @@ fn committed_files_are_deduplicated_by_commit_oid_path() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     // Simulate a changed_paths function that returns the same file twice
@@ -2138,6 +2165,7 @@ fn committed_file_can_be_referenced_by_either_change_id_or_commit_id() {
         commit_id_to_change_id,
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )
     .unwrap();
 
@@ -2208,6 +2236,7 @@ fn short_uncommitted_files_are_properly_reverse_hexed() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2334,6 +2363,7 @@ fn uncommitted_hunks_by_numeric_index() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2485,6 +2515,7 @@ fn uncommitted_hunks_by_id() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2664,6 +2695,7 @@ fn uncommitted_hunks_by_id_increase_id_length_as_necessary() -> anyhow::Result<(
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2775,6 +2807,7 @@ fn uncommitted_hunks_overspecifying_id_prefix() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2857,6 +2890,7 @@ fn uncommitted_hunks_overspecifying_id_prefix_with_collision_disambiguation() ->
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -2944,6 +2978,7 @@ fn underspecifying_hunk_ids() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -3128,6 +3163,7 @@ fn uncommitted_hunks_by_id_collision_handling() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -3223,6 +3259,7 @@ fn commit_matches_are_deduplicated_by_commit_oid() -> anyhow::Result<()> {
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -3253,6 +3290,7 @@ fn dedupe_does_not_hide_ambiguity_between_distinct_commits() -> anyhow::Result<(
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -3294,6 +3332,7 @@ fn dedupe_does_not_hide_ambiguity_between_branches_in_different_stacks() -> anyh
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -3333,6 +3372,7 @@ fn dedupe_treats_unmanaged_branches_with_same_name_as_the_same_branch() -> anyho
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let changed_paths_fn = |commit_id: gix::ObjectId,
                             parent_id: Option<gix::ObjectId>|
@@ -3370,6 +3410,7 @@ fn find_commits_by_change_id() {
         commit_id_to_change_id,
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )
     .unwrap();
     snapbox::assert_data_eq!(
@@ -3484,12 +3525,13 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
     let file_id = commitless
         .all_ids()
         .into_iter()
         .find_map(|cli_id| match cli_id {
-            CliId::UncommittedHunkOrFile(uncommitted) => Some(uncommitted.id.clone()),
+            CliId::UncommittedHunkOrFile(uncommitted) => Some(uncommitted.id),
             _ => None,
         })
         .expect("one uncommitted file");
@@ -3511,6 +3553,7 @@ fn uncommitted_selector_is_not_shadowed_by_commit_change_id() -> anyhow::Result<
         commit_id_to_change_id,
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     // In the full namespace the commit shadows the previously issued file ID.
@@ -3582,6 +3625,7 @@ fn a_file_literally_named_at_competes_with_the_uncommitted_area() -> anyhow::Res
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     // `@` names the whole area, so a dirty file of the same name must surface
@@ -3619,6 +3663,7 @@ fn uncommitted_scope_does_not_prefix_match_a_branch_short_id() -> anyhow::Result
         gix::hashtable::HashMap::default(),
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )?;
 
     let full = id_map.parse("kp", &TestChanges(changed_paths_fn))?;
@@ -3681,6 +3726,7 @@ fn change_ids_are_disambiguated_on_collision() {
         commit_id_to_change_id,
         Default::default(),
         3,
+        Some(ChangeSourceId::Head),
     )
     .unwrap();
     snapbox::assert_data_eq!(
@@ -3805,7 +3851,14 @@ fn worktree_commits_share_the_commit_namespace() -> anyhow::Result<()> {
         base: None,
         segments: vec![segment("wt-a", [wt_commit], None, [])],
     }];
-    let id_map = IdMap::new(stacks, sources, commit_id_to_change_id, worktrees, 3)?;
+    let id_map = IdMap::new(
+        stacks,
+        sources,
+        commit_id_to_change_id,
+        worktrees,
+        3,
+        Some(ChangeSourceId::Head),
+    )?;
 
     // The worktree commit resolves by its change ID, disambiguated against the
     // workspace commit's "swst".
@@ -4002,7 +4055,6 @@ mod util {
             DebugState { inner: self }
         }
 
-        /// Return a list of all branch CliIds.
         pub fn branch_ids(&self) -> Vec<String> {
             let mut short_ids = Vec::new();
             for stack_with_id in self.lanes.iter() {
@@ -4013,12 +4065,10 @@ mod util {
             short_ids
         }
 
-        /// Return all stack CliIds.
         pub fn stack_short_ids(&self) -> impl Iterator<Item = String> + '_ {
             self.lanes.iter().filter_map(|lane| lane.short_id.clone())
         }
 
-        /// Return a list of all commit CliIds.
         pub fn commit_ids(&self) -> Vec<String> {
             let mut short_ids = Vec::new();
             for stack_with_id in self.lanes.iter() {
@@ -4041,6 +4091,8 @@ mod util {
                 uncommitted_files,
                 uncommitted_hunks,
                 diff_context_lines: _,
+                paths_in: _,
+                invoked_directory: _,
             } = self;
             let changed_paths_fn = |commit_id: gix::ObjectId,
                                     parent_id: Option<gix::ObjectId>|
@@ -4079,9 +4131,11 @@ mod util {
                 uncommitted_files,
                 uncommitted_hunks,
                 diff_context_lines: _,
+                paths_in: _,
+                invoked_directory: _,
             } = self.inner;
             let commits_count = self.inner.commit_ids().len();
-            writeln!(f, "workspace_and_remote_commits_count: {}", &commits_count)?;
+            writeln!(f, "workspace_and_remote_commits_count: {commits_count}")?;
             id_list_if_not_empty(f, "branches", self.inner.branch_ids().into_iter().sorted())?;
             id_list_if_not_empty(
                 f,

@@ -1,4 +1,3 @@
-use but_api::WorkspaceState;
 use but_core::{DiffSpec, DryRun, RefMetadata};
 use but_ctx::Context;
 use but_oplog::legacy::{OperationKind, SnapshotDetails};
@@ -6,11 +5,14 @@ use but_rebase::graph_rebase::mutate::{InsertSide, RelativeTo};
 use but_testsupport::Sandbox;
 use but_workspace::{
     branch::create_reference::{Anchor, Position},
-    commit::squash_commits::MessageCombinationStrategy,
+    commit::{UncommitChangesSource, squash_commits::MessageCombinationStrategy},
 };
 use gix::{ObjectId, refs::FullName};
 
-use crate::{DynamicOutcome, with_transaction};
+use crate::{
+    Commit, DynamicOutcome, TransactionOptions, WorkspaceState, with_transaction,
+    with_transaction_options, with_transaction_with_perm,
+};
 
 #[track_caller]
 fn ref_target(env: &Sandbox, ref_name: &gix::refs::FullNameRef) -> Option<ObjectId> {
@@ -89,8 +91,7 @@ fn squashing_three_commits() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 12cb130 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* c0462e6 (branch) squashed
+* c0462e6 (HEAD -> branch) squashed
 * 6674d4f (origin/main, origin/HEAD, main, gitbutler/target) add random-file
 
 "#]]
@@ -187,6 +188,47 @@ fn create_reference_without_creating_commits() {
 }
 
 #[test]
+fn name_segment_attaches_head_to_a_commit_rewritten_earlier_in_the_transaction() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+    env.invoke_git("checkout --detach branch");
+    let [top] = find_commits(&env, ["HEAD"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let refname = FullName::try_from("refs/heads/named").unwrap();
+
+    let _workspace: WorkspaceState = with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::CreateBranch),
+        DryRun::No,
+        |mut tx| {
+            tx.reword_commit(top, "reworded".into())?;
+            tx.name_segment(&but_graph::WorktreeKind::Main, top, refname.as_ref())?;
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let repo = env.open_repo();
+    assert_eq!(
+        repo.head_name().unwrap(),
+        Some(refname.clone()),
+        "the detached HEAD is attached to the new branch"
+    );
+    assert_eq!(
+        repo.head_commit().unwrap().message_raw_sloppy(),
+        "reworded",
+        "the branch names the reworded commit, not the one passed in"
+    );
+    assert_num_snapshots(&ctx, 1);
+}
+
+#[test]
 fn create_reference_at_commit_then_commit_and_checkout() {
     for (dry_run, rollback) in [
         (DryRun::No, false),
@@ -238,7 +280,7 @@ fn create_reference_at_commit_then_commit_and_checkout() {
             assert_eq!(
                 ref_target(&env, new_branch.as_ref()),
                 None,
-                "rollback and dry run must remove the eagerly created reference"
+                "rollback and dry run must not create the reference"
             );
             assert_eq!(
                 repo.head_name().unwrap().unwrap(),
@@ -270,12 +312,12 @@ fn create_reference_at_commit_then_commit_and_checkout() {
                 base,
                 "the new branch must start at the requested base, not the old HEAD"
             );
-            assert!(
+            assert_eq!(
                 ctx.meta()
                     .unwrap()
                     .branch_stack_order(new_branch.as_ref())
-                    .unwrap()
-                    .is_none(),
+                    .unwrap(),
+                Some(vec![new_branch.clone()]),
                 "independent creation must not record a stack relationship with the base"
             );
             assert_num_snapshots(&ctx, 1);
@@ -346,11 +388,7 @@ fn create_reference_and_checkout_are_undoable_together() {
     env.setup_metadata(&["branch"]);
 
     let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
-    let original_head = repo
-        .head_name()
-        .unwrap()
-        .expect("HEAD starts symbolic")
-        .to_owned();
+    let original_head = repo.head_name().unwrap().expect("HEAD starts symbolic");
     let mut ctx = Context::from_repo_for_testing(repo)
         .map(Context::with_memory_app_cache)
         .unwrap();
@@ -407,16 +445,61 @@ fn create_reference_and_checkout_are_undoable_together() {
 }
 
 #[test]
+fn undo_deletes_a_reference_the_snapshot_names() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let new_branch = FullName::try_from("refs/heads/named-in-snapshot").unwrap();
+
+    let mut guard = ctx.exclusive_worktree_access();
+    let _workspace: WorkspaceState = with_transaction_with_perm(
+        &mut ctx,
+        &mut meta,
+        guard.write_permission(),
+        SnapshotDetails::new(OperationKind::CreateBranch),
+        &[new_branch.as_ref()],
+        DryRun::No,
+        |mut tx| {
+            tx.create_reference(new_branch.as_ref(), None, None)?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    drop(guard);
+    assert!(
+        ref_target(&env, new_branch.as_ref()).is_some(),
+        "the transaction creates the branch"
+    );
+
+    let snapshot = but_api::legacy::oplog::get_undo_target_snapshot(&ctx)
+        .unwrap()
+        .expect("the transaction records an undo target");
+    but_api::legacy::oplog::restore_snapshot_with_kind(
+        &mut ctx,
+        but_api::legacy::oplog::RestoreKind::RestoreFromSnapshotViaUndo,
+        snapshot.commit_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        ref_target(&env, new_branch.as_ref()),
+        None,
+        "the snapshot names the branch, which didn't exist before, so undo deletes it"
+    );
+}
+
+#[test]
 fn checkout_is_not_applied_when_transaction_rolls_back() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["branch"]);
 
     let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
-    let original_head = repo
-        .head_name()
-        .unwrap()
-        .expect("HEAD starts symbolic")
-        .to_owned();
+    let original_head = repo.head_name().unwrap().expect("HEAD starts symbolic");
     let mut ctx = Context::from_repo_for_testing(repo)
         .map(Context::with_memory_app_cache)
         .unwrap();
@@ -463,11 +546,7 @@ fn checkout_dry_run_only_previews_the_new_head() {
     env.setup_metadata(&["branch"]);
 
     let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
-    let original_head = repo
-        .head_name()
-        .unwrap()
-        .expect("HEAD starts symbolic")
-        .to_owned();
+    let original_head = repo.head_name().unwrap().expect("HEAD starts symbolic");
     let mut ctx = Context::from_repo_for_testing(repo)
         .map(Context::with_memory_app_cache)
         .unwrap();
@@ -828,6 +907,115 @@ fn cherry_pick_then_reword_copied_commit() {
 }
 
 #[test]
+fn extra_mutable_refs_outside_the_workspace_can_be_rewritten() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+    let [one] = find_commits(&env, ["dbdbcea"]);
+    let outside_commit = env.invoke_git(&format!("commit-tree -p {one} -m outside {one}^{{tree}}"));
+    env.invoke_git(&format!("branch outside {outside_commit}"));
+    let outside_commit = ObjectId::from_hex(outside_commit.as_bytes()).unwrap();
+    let outside = FullName::try_from("refs/heads/outside").unwrap();
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let mut guard = ctx.exclusive_worktree_access();
+
+    let undeclared = with_transaction_with_perm(
+        &mut ctx,
+        &mut meta,
+        guard.write_permission(),
+        SnapshotDetails::new(OperationKind::UpdateCommitMessage),
+        &[],
+        DryRun::No,
+        |mut tx| {
+            tx.reword_commit(outside_commit, "reworded".into())?;
+            Ok(())
+        },
+    );
+    assert!(
+        undeclared.is_err(),
+        "operations only see the workspace and the references the transaction declares"
+    );
+
+    let (reworded, _workspace) = with_transaction_options(
+        &mut ctx,
+        &mut meta,
+        guard.write_permission(),
+        TransactionOptions {
+            snapshot_details: Some(SnapshotDetails::new(OperationKind::UpdateCommitMessage)),
+            extra_mutable_refs: vec![outside.clone()],
+            ..Default::default()
+        },
+        |mut tx| Ok(Commit(tx.reword_commit(outside_commit, "reworded".into())?)),
+    )
+    .unwrap();
+
+    assert_ne!(reworded.id, outside_commit, "rewording made a new commit");
+    assert_eq!(
+        ref_target(&env, outside.as_ref()),
+        Some(reworded.id),
+        "the declared branch follows its reworded commit"
+    );
+    assert_num_snapshots(&ctx, 1);
+}
+
+#[test]
+fn undo_restores_a_listed_extra_mutable_ref_the_transaction_rewrote() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+    let [one] = find_commits(&env, ["dbdbcea"]);
+    let outside_commit = env.invoke_git(&format!("commit-tree -p {one} -m outside {one}^{{tree}}"));
+    env.invoke_git(&format!("branch outside {outside_commit}"));
+    let outside_commit = ObjectId::from_hex(outside_commit.as_bytes()).unwrap();
+    let outside = FullName::try_from("refs/heads/outside").unwrap();
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let mut guard = ctx.exclusive_worktree_access();
+    let (reworded, _workspace) = with_transaction_options(
+        &mut ctx,
+        &mut meta,
+        guard.write_permission(),
+        TransactionOptions {
+            snapshot_details: Some(SnapshotDetails::new(OperationKind::UpdateCommitMessage)),
+            snapshot_refs: &[outside.as_ref()],
+            extra_mutable_refs: vec![outside.clone()],
+            ..Default::default()
+        },
+        |mut tx| Ok(Commit(tx.reword_commit(outside_commit, "reworded".into())?)),
+    )
+    .unwrap();
+    drop(guard);
+    assert_eq!(
+        ref_target(&env, outside.as_ref()),
+        Some(reworded.id),
+        "the transaction rewrites the branch"
+    );
+
+    let snapshot = but_api::legacy::oplog::get_undo_target_snapshot(&ctx)
+        .unwrap()
+        .expect("the transaction records an undo target");
+    but_api::legacy::oplog::restore_snapshot_with_kind(
+        &mut ctx,
+        but_api::legacy::oplog::RestoreKind::RestoreFromSnapshotViaUndo,
+        snapshot.commit_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        ref_target(&env, outside.as_ref()),
+        Some(outside_commit),
+        "the transaction may rewrite the branch, so its snapshot preserves it for undo"
+    );
+}
+
+#[test]
 fn move_commits_then_commit_relative_to_moved_commit() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["branch"]);
@@ -871,8 +1059,7 @@ fn move_commits_then_commit_relative_to_moved_commit() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* d70d81f (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 3fb70d9 (branch) 
+* 3fb70d9 (HEAD -> branch) 
 * b18afe3 add file-one
 * 5fdd02a add file-three
 * 0d4aae5 add file-two
@@ -914,8 +1101,7 @@ fn move_commits_reorders_multiple_subjects() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 7fc8bdd (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* aedbf87 (branch) add file-two
+* aedbf87 (HEAD -> branch) add file-two
 * 18aee11 add file-one
 * 647709c add file-three
 * 6674d4f (origin/main, origin/HEAD, main, gitbutler/target) add random-file
@@ -1112,8 +1298,7 @@ fn discarding_three_commits() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 8413d71 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 6674d4f (origin/main, origin/HEAD, main, gitbutler/target, branch) add random-file
+* 6674d4f (HEAD -> branch, origin/main, origin/HEAD, main, gitbutler/target) add random-file
 
 "#]]
     );
@@ -1179,6 +1364,296 @@ fn discard_changes_from_commit() {
 }
 
 #[test]
+fn uncommit_changes_from_commit() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+
+    let [two] = find_commits(&env, ["9b3b3d5"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+
+    let (new_two, _workspace) = with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::DiscardChanges),
+        DryRun::No,
+        |mut tx| {
+            Ok(Commit(tx.uncommit_changes_from_commit(
+                two,
+                vec![diff_spec_for_file("file-two")],
+            )?))
+        },
+    )
+    .unwrap();
+
+    let repo = env.open_repo();
+    let new_two_tree = repo.find_commit(new_two.id).unwrap().tree().unwrap();
+    assert!(
+        new_two_tree
+            .lookup_entry_by_path("file-two")
+            .unwrap()
+            .is_none(),
+        "the uncommitted file is gone from the rewritten commit"
+    );
+    assert!(
+        env.projects_root().join("file-two").exists(),
+        "the uncommitted file stays in the worktree"
+    );
+    snapbox::assert_data_eq!(
+        env.invoke_git("status --porcelain"),
+        snapbox::str!["?? file-two"]
+    );
+}
+
+#[test]
+fn uncommit_changes_from_commits_reports_what_it_could_not_uncommit() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+
+    let [three, two] = find_commits(&env, ["1e25c58", "9b3b3d5"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+
+    let (failures, _workspace) = with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::DiscardChanges),
+        DryRun::No,
+        |mut tx| {
+            Ok(Commit(tx.uncommit_changes_from_commits([
+                UncommitChangesSource {
+                    commit_id: two,
+                    changes: vec![diff_spec_for_file("file-two")],
+                },
+                UncommitChangesSource {
+                    commit_id: three,
+                    changes: vec![diff_spec_for_file("file-missing")],
+                },
+            ])?))
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        failures
+            .iter()
+            .map(|failure| failure.commit_id)
+            .collect::<Vec<_>>(),
+        [three],
+        "only the source naming a file its commit doesn't change fails"
+    );
+    snapbox::assert_data_eq!(
+        env.invoke_git("status --porcelain"),
+        snapbox::str!["?? file-two"]
+    );
+}
+
+#[test]
+fn leaving_the_workspace_removes_its_metadata() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+
+    let a = FullName::try_from("refs/heads/A").unwrap();
+    let [a_tip] = find_commits(&env, ["A"]);
+
+    with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::SquashCommit),
+        DryRun::No,
+        |mut tx| {
+            tx.remove_reference(a.as_ref())?;
+            tx.discard_commits([a_tip])?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    drop(meta);
+
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "B",
+        "the workspace was left for the remaining stack"
+    );
+    let workspace_ref = FullName::try_from(but_core::WORKSPACE_REF_NAME).unwrap();
+    let workspace = ctx
+        .meta()
+        .unwrap()
+        .workspace(workspace_ref.as_ref())
+        .unwrap();
+    assert!(
+        workspace.stacks.is_empty(),
+        "workspace metadata goes with the reference"
+    );
+    assert!(
+        ctx.project_meta().unwrap().target_ref.is_some(),
+        "the target isn't workspace metadata"
+    );
+}
+
+#[test]
+fn removing_the_last_two_stacks_together_leaves_the_workspace() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+
+    let a = FullName::try_from("refs/heads/A").unwrap();
+    let b = FullName::try_from("refs/heads/B").unwrap();
+    let [a_tip, b_tip] = find_commits(&env, ["A", "B"]);
+
+    with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::SquashCommit),
+        DryRun::No,
+        |mut tx| {
+            tx.remove_reference(a.as_ref())?;
+            tx.remove_reference(b.as_ref())?;
+            tx.discard_commits([a_tip, b_tip])?;
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "main",
+        "nothing is left to keep a workspace for"
+    );
+    assert!(
+        ref_target(&env, "refs/heads/gitbutler/workspace".try_into().unwrap()).is_none(),
+        "the workspace reference goes with the workspace"
+    );
+}
+
+#[test]
+fn removing_the_branch_checked_out_on_its_own_keeps_head_on_a_branch() {
+    for (main_moved, expected_head) in [(false, "main"), (true, "gitbutler/workspace")] {
+        let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+        env.invoke_git("checkout -b lone main");
+        env.invoke_git("branch -D gitbutler/workspace");
+        if main_moved {
+            env.invoke_git("branch -f main branch");
+        }
+
+        let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+        let mut ctx = Context::from_repo_for_testing(repo)
+            .map(Context::with_memory_app_cache)
+            .unwrap();
+        let mut meta = ctx.meta().unwrap();
+        let lone = FullName::try_from("refs/heads/lone").unwrap();
+
+        with_transaction(
+            &mut ctx,
+            &mut meta,
+            SnapshotDetails::new(OperationKind::DeleteBranch),
+            DryRun::No,
+            |mut tx| tx.remove_reference(lone.as_ref()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            env.invoke_git("symbolic-ref --short HEAD"),
+            expected_head,
+            "HEAD goes to main where main is, else to a workspace there, never detached"
+        );
+        assert_eq!(
+            env.invoke_git("rev-parse HEAD^{tree}"),
+            env.invoke_git("rev-parse origin/main^{tree}"),
+            "the worktree stays at the target commit"
+        );
+    }
+}
+
+#[test]
+fn removing_the_last_two_stacks_one_after_the_other_keeps_head_on_a_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    env.invoke_bash("git branch -f main $(git commit-tree -p main -m moved A^{tree})");
+    let [a_tip, b_tip] = find_commits(&env, ["A", "B"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let a = FullName::try_from("refs/heads/A").unwrap();
+    let b = FullName::try_from("refs/heads/B").unwrap();
+
+    with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::DeleteBranch),
+        DryRun::No,
+        |mut tx| {
+            tx.discard_commits([a_tip, b_tip])?;
+            tx.remove_reference(a.as_ref())?;
+            tx.remove_reference(b.as_ref())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "gitbutler/workspace",
+        "removing A leaves the workspace for B, so removing B takes the branch HEAD is on, \
+         and main has other files"
+    );
+}
+
+#[test]
+fn removing_the_branch_checked_out_on_its_own_before_its_commits_keeps_head_below() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.invoke_bash("git checkout -q -b top branch && git branch -D gitbutler/workspace");
+    env.invoke_bash("echo top >top && git add top && git commit -q -m 'add top'");
+    let [top_commit] = find_commits(&env, ["top"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let top = FullName::try_from("refs/heads/top").unwrap();
+
+    with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::SquashCommit),
+        DryRun::No,
+        |mut tx| {
+            tx.remove_reference(top.as_ref())?;
+            tx.discard_commits([top_commit])
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        env.invoke_git("symbolic-ref --short HEAD"),
+        "branch",
+        "HEAD is placed once the commits removed after its branch are gone too, as squash removes the branch first"
+    );
+}
+
+#[test]
 fn remove_references() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["branch"]);
@@ -1227,11 +1702,52 @@ fn remove_references() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* 8413d71 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 6674d4f (origin/main, origin/HEAD, main, gitbutler/target) add random-file
+* 6674d4f (HEAD -> main, origin/main, origin/HEAD, gitbutler/target) add random-file
 
 "#]]
     );
 
+    assert_num_snapshots(&ctx, 1);
+}
+
+#[test]
+fn rename_reference_then_reword_a_commit_of_it() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["branch"]);
+    let [three] = find_commits(&env, ["1e25c58"]);
+
+    let repo = but_testsupport::open_repo(env.projects_root()).unwrap();
+    let mut ctx = Context::from_repo_for_testing(repo)
+        .map(Context::with_memory_app_cache)
+        .unwrap();
+    let mut meta = ctx.meta().unwrap();
+    let branch = FullName::try_from("refs/heads/branch").unwrap();
+    let renamed = FullName::try_from("refs/heads/renamed").unwrap();
+
+    with_transaction(
+        &mut ctx,
+        &mut meta,
+        SnapshotDetails::new(OperationKind::UpdateBranchName),
+        DryRun::No,
+        |mut tx| {
+            tx.rename_reference(branch.as_ref(), renamed.as_ref())?;
+            tx.reword_commit(three, "reworded".into())?;
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    // The branch has its new name and follows its reworded commit.
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* 5272902 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 9727a8e (renamed) reworded
+* 9b3b3d5 add file-two
+* dbdbcea add file-one
+* 6674d4f (origin/main, origin/HEAD, main, gitbutler/target) add random-file
+
+"#]]
+    );
     assert_num_snapshots(&ctx, 1);
 }

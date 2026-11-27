@@ -1,0 +1,566 @@
+/* A 20px box, the small controls' height, so counts line up with the buttons beside them. Counts sit
+   flush, 6px from glyph to glyph through the two paddings. */
+.count {
+	display: inline-flex;
+	column-gap: 4px;
+	align-items: center;
+	/* A long value (a branch's name) gives way before the counts beside it, down to its glyph. */
+	min-width: 20px;
+	/* A glyph alone, a MetaStatus with no label, stays as tall as the counts beside it. */
+	min-height: 20px;
+	padding: 2px 3px;
+	color: var(--but-muted-foreground);
+	line-height: 16px;
+	white-space: nowrap;
+
+	/* Inside a selected row on the solid fill, the opposite scheme makes every light-dark() colour
+	   below resolve to its inverted value, as Badge does. */
+	@container style(--selection-inverted: true) {
+		color-scheme: dark;
+
+		@container style(--scheme-dark: true) {
+			color-scheme: light;
+		}
+	}
+}
+
+/* The glyph in its label's colour, as one: a count reads as one thing. */
+.glyph {
+	flex-shrink: 0;
+}
+
+/* A count's or a status's glyph a step quieter than its value, as 🍑 But UI draws it, so the value
+   reads first. */
+.faded {
+	opacity: 0.7;
+}
+
+/* The working robot's loop, after the robot's motion in 🍑 But UI: a second of its face, then its
+   eyes turn into two bars that wave out of step while the smile draws in to its middle, and it all
+   settles back. A bar keeps centred on the screen as it grows, so it scales from its top and moves
+   down; the smile is a path of length 1, drawn in with its dashes. */
+.robot-eye,
+.robot-smile {
+	animation-duration: 4.25s;
+	animation-timing-function: cubic-bezier(0.5, 0, 0.5, 1);
+	animation-iteration-count: infinite;
+}
+
+.robot-eye {
+	transform-box: fill-box;
+	transform-origin: 50% 0;
+}
+
+.robot-eye-left {
+	animation-name: robot-eye-left;
+}
+
+.robot-eye-right {
+	animation-name: robot-eye-right;
+}
+
+.robot-smile {
+	animation-name: robot-smile;
+}
+
+/* The terminal's dots spinner, ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏: ten frames a second, each dot on or off in turn as
+   braille's dots are, stepping rather than turning, as the GPUI client draws it. Under reduced
+   motion it holds its first frame. */
+.spin-dot {
+	animation-duration: 1s;
+	animation-timing-function: step-end;
+	animation-iteration-count: infinite;
+}
+
+.spin-dot-0 {
+	animation-name: spin-dot-0;
+	opacity: 1;
+}
+
+.spin-dot-1 {
+	animation-name: spin-dot-1;
+	opacity: 1;
+}
+
+.spin-dot-2 {
+	animation-name: spin-dot-2;
+	opacity: 0;
+}
+
+.spin-dot-3 {
+	animation-name: spin-dot-3;
+	opacity: 1;
+}
+
+.spin-dot-4 {
+	animation-name: spin-dot-4;
+	opacity: 0;
+}
+
+.spin-dot-5 {
+	animation-name: spin-dot-5;
+	opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.spin-dot {
+		animation: none;
+	}
+}
+
+@keyframes spin-dot-0 {
+	0% {
+		opacity: 1;
+	}
+
+	10% {
+		opacity: 1;
+	}
+
+	20% {
+		opacity: 1;
+	}
+
+	30% {
+		opacity: 0;
+	}
+
+	40% {
+		opacity: 0;
+	}
+
+	50% {
+		opacity: 0;
+	}
+
+	60% {
+		opacity: 0;
+	}
+
+	70% {
+		opacity: 1;
+	}
+
+	80% {
+		opacity: 1;
+	}
+
+	90% {
+		opacity: 1;
+	}
+
+	100% {
+		opacity: 1;
+	}
+}
+
+@keyframes spin-dot-1 {
+	0% {
+		opacity: 1;
+	}
+
+	10% {
+		opacity: 0;
+	}
+
+	20% {
+		opacity: 0;
+	}
+
+	30% {
+		opacity: 0;
+	}
+
+	40% {
+		opacity: 0;
+	}
+
+	50% {
+		opacity: 0;
+	}
+
+	60% {
+		opacity: 1;
+	}
+
+	70% {
+		opacity: 1;
+	}
+
+	80% {
+		opacity: 1;
+	}
+
+	90% {
+		opacity: 1;
+	}
+
+	100% {
+		opacity: 1;
+	}
+}
+
+@keyframes spin-dot-2 {
+	0% {
+		opacity: 0;
+	}
+
+	10% {
+		opacity: 0;
+	}
+
+	20% {
+		opacity: 0;
+	}
+
+	30% {
+		opacity: 0;
+	}
+
+	40% {
+		opacity: 1;
+	}
+
+	50% {
+		opacity: 1;
+	}
+
+	60% {
+		opacity: 1;
+	}
+
+	70% {
+		opacity: 1;
+	}
+
+	80% {
+		opacity: 1;
+	}
+
+	90% {
+		opacity: 1;
+	}
+
+	100% {
+		opacity: 0;
+	}
+}
+
+@keyframes spin-dot-3 {
+	0% {
+		opacity: 1;
+	}
+
+	10% {
+		opacity: 1;
+	}
+
+	20% {
+		opacity: 1;
+	}
+
+	30% {
+		opacity: 1;
+	}
+
+	40% {
+		opacity: 1;
+	}
+
+	50% {
+		opacity: 0;
+	}
+
+	60% {
+		opacity: 0;
+	}
+
+	70% {
+		opacity: 0;
+	}
+
+	80% {
+		opacity: 0;
+	}
+
+	90% {
+		opacity: 1;
+	}
+
+	100% {
+		opacity: 1;
+	}
+}
+
+@keyframes spin-dot-4 {
+	0% {
+		opacity: 0;
+	}
+
+	10% {
+		opacity: 1;
+	}
+
+	20% {
+		opacity: 1;
+	}
+
+	30% {
+		opacity: 1;
+	}
+
+	40% {
+		opacity: 1;
+	}
+
+	50% {
+		opacity: 1;
+	}
+
+	60% {
+		opacity: 0;
+	}
+
+	70% {
+		opacity: 0;
+	}
+
+	80% {
+		opacity: 0;
+	}
+
+	90% {
+		opacity: 0;
+	}
+
+	100% {
+		opacity: 0;
+	}
+}
+
+@keyframes spin-dot-5 {
+	0% {
+		opacity: 0;
+	}
+
+	10% {
+		opacity: 0;
+	}
+
+	20% {
+		opacity: 1;
+	}
+
+	30% {
+		opacity: 1;
+	}
+
+	40% {
+		opacity: 1;
+	}
+
+	50% {
+		opacity: 1;
+	}
+
+	60% {
+		opacity: 1;
+	}
+
+	70% {
+		opacity: 1;
+	}
+
+	80% {
+		opacity: 0;
+	}
+
+	90% {
+		opacity: 0;
+	}
+
+	100% {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.robot-eye,
+	.robot-smile {
+		animation: none;
+	}
+}
+
+@keyframes robot-eye-left {
+	0% {
+		translate: 0 0;
+		scale: 1;
+	}
+	23.53% {
+		translate: 0 0;
+		scale: 1;
+	}
+	29.41% {
+		translate: 0 0.5px;
+		scale: 1 2;
+	}
+	36.47% {
+		translate: 0 1.5px;
+		scale: 1;
+	}
+	43.53% {
+		translate: 0 0;
+		scale: 1 2.5;
+	}
+	50.59% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	57.65% {
+		translate: 0 0.25px;
+		scale: 1 2.25;
+	}
+	64.71% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	71.76% {
+		translate: 0 0;
+		scale: 1 2.5;
+	}
+	78.82% {
+		translate: 0 1.5px;
+		scale: 1;
+	}
+	85.88% {
+		translate: 0 0;
+		scale: 1 2.5;
+	}
+	92.94% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	100% {
+		translate: 0 0;
+		scale: 1;
+	}
+}
+
+@keyframes robot-eye-right {
+	0% {
+		translate: 0 0;
+		scale: 1;
+	}
+	23.53% {
+		translate: 0 0;
+		scale: 1;
+	}
+	29.41% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	36.47% {
+		translate: 0 0.25px;
+		scale: 1 2.25;
+	}
+	43.53% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	50.59% {
+		translate: 0 0;
+		scale: 1 2.5;
+	}
+	57.65% {
+		translate: 0 1.5px;
+		scale: 1;
+	}
+	64.71% {
+		translate: 0 0;
+		scale: 1 2.5;
+	}
+	71.76% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	78.82% {
+		translate: 0 0.25px;
+		scale: 1 2.25;
+	}
+	85.88% {
+		translate: 0 1.75px;
+		scale: 1 0.75;
+	}
+	92.94% {
+		translate: 0 0.5px;
+		scale: 1 2;
+	}
+	100% {
+		translate: 0 0;
+		scale: 1;
+	}
+}
+
+@keyframes robot-smile {
+	0% {
+		stroke-dasharray: 1 1;
+		stroke-dashoffset: 0;
+	}
+	23.53% {
+		stroke-dasharray: 1 1;
+		stroke-dashoffset: 0;
+	}
+	29.41% {
+		stroke-dasharray: 0 1;
+		stroke-dashoffset: -0.5;
+	}
+	94.12% {
+		stroke-dasharray: 0 1;
+		stroke-dashoffset: -0.5;
+	}
+	100% {
+		stroke-dasharray: 1 1;
+		stroke-dashoffset: 0;
+	}
+}
+
+.value {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The robot fills its 14px edge to edge where the other glyphs leave air around them, so it keeps
+   1px more from the count before it. */
+.agent-working,
+.agent-waiting {
+	margin-inline-start: 1px;
+}
+
+.behind,
+.uncommitted,
+.conflicts,
+.agent-waiting,
+.working,
+.warning {
+	color: var(--but-warning-text);
+}
+
+.agent-working,
+.empty,
+.head {
+	color: var(--but-subtle-foreground);
+}
+
+.unpushed {
+	color: var(--but-info-text);
+}
+
+.cpu,
+.passed {
+	color: var(--but-success-text);
+}
+
+.cpu-danger,
+.failed {
+	color: var(--but-danger-text);
+}

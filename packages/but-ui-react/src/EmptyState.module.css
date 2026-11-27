@@ -1,0 +1,131 @@
+/* Spacing mirrors the "Empty state" component in 🍑 But UI: 24 under the
+   illustration, 8 between the two lines, 18 above the actions. Its `Tidy`
+   variant, for a popup's list, closes those to 20, 6 and 12 to sit with medium
+   buttons.
+
+   Centred optically, which is not the same as centred. The block's weight sits
+   low — two lines of type and a row of buttons under a light illustration — so
+   a block with equal room above and below reads as sitting under the middle.
+   The box is three rows with the block in the middle one, and the spare height
+   goes 2 : 3 to the rows around it, which puts the block a little above centre.
+
+   The lift is a share of the spare height rather than a length, so it is only
+   ever as large as the room there is to lift into: generous in a tall pane,
+   small in a panel dragged near its minimum, and nothing at all in a box as
+   tall as its content, where a fixed foot would be dead space under the text.
+   When the content outgrows the box the outer rows are 0 and the block starts
+   at the top, so its head never goes out of reach above the scroll origin.
+
+   Capped at 320, as the "Empty state" component in 🍑 But UI is, so the block
+   stays a block on any surface it lands on: the details pane is over a
+   thousand pixels wide, and text, actions or a wide illustration would
+   otherwise spread across it. This is the only measure — the lines inside
+   take theirs from here. It has no inset of its own, as in Figma: in a pane
+   narrower than the cap, the host's padding keeps the lines off its edges.
+
+   It centres itself, so no host has to remember to. The host's one job is to
+   give it a height, by being a pane that fills its column.
+
+   The gap under the illustration and the foot's share are custom properties
+   because both are sized for the full block, and a host holding a lighter one
+   sets its own: `--empty-state-lift: 1fr` centres plainly. A popup's list or a
+   card in a sidebar takes the `tidy` variant below, which sets lighter defaults
+   for both. */
+.empty {
+	display: grid;
+	grid-template-rows: minmax(0, 1fr) auto minmax(0, var(--empty-state-lift, 1.5fr));
+	flex: 1 0 auto;
+	max-width: 320px;
+	/* Centres itself horizontally whatever the host is — block, flex or grid —
+	   so the cap above cannot pin the block to one edge. Without this every host
+	   would have to remember an `align-items`, and the two that forgot would only
+	   show it once the block was narrower than the surface. */
+	margin-inline: auto;
+	text-align: center;
+}
+
+/* Fills the height its container gives it, so the outer rows have room to share out. A default, not
+   a rule: `:where` gives it no specificity, so a host that sets its own height wins whichever
+   stylesheet loads last. */
+:where(.empty) {
+	min-block-size: 100%;
+}
+
+.stack {
+	display: flex;
+	grid-row: 2;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--empty-state-gap, 24px);
+}
+
+/* Flush with the list it stands in for: the rows' left edge, their width, no measure of its own. */
+.start {
+	max-width: none;
+	margin-inline: 0;
+	text-align: start;
+
+	& .stack,
+	& .body {
+		align-items: flex-start;
+	}
+}
+
+.body {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 18px;
+}
+
+/* Both lines wrap balanced (`text-balance`, applied in the component). A
+   centred block with a long line and a two-word orphan under it reads as
+   broken, and the copy here is short enough that the browser's line-count cap
+   never comes into it. The measure it balances within is the block's own 320,
+   which is what stops a line running the width of a pane. */
+.lines {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* Both still defaults rather than rules: a host that sets the properties wins
+   here as it does on the default block. Centred plainly, since the line and a
+   medium button weigh little.
+
+   As the "Empty state" component's `Tidy` variant draws it: as tall as its
+   content, capped at 320 and centred like the default. It stands in
+   for a few rows, in a card or a popup's list, so the host's own padding is
+   the room around it and the host gives it any height past its content, as
+   `PopupEmpty` does. */
+.tidy {
+	grid-template-rows: minmax(0, 1fr) auto minmax(0, var(--empty-state-lift, 1fr));
+	min-block-size: auto;
+
+	& .stack {
+		gap: var(--empty-state-gap, 20px);
+	}
+
+	& .body {
+		gap: 12px;
+	}
+
+	& .lines {
+		gap: 6px;
+	}
+}
+
+.title {
+	margin: 0;
+	color: var(--but-foreground);
+}
+
+.description {
+	margin: 0;
+	color: var(--but-muted-foreground);
+}
+
+.actions {
+	display: flex;
+	gap: 6px;
+}

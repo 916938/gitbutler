@@ -1,5 +1,3 @@
-#![cfg(target_family = "unix")]
-
 use std::{path::Path, time::Duration};
 
 use but_ctx::Context;
@@ -59,10 +57,7 @@ fn isolated(test: impl Future<Output = anyhow::Result<()>>) -> anyhow::Result<()
 }
 
 fn watch(main: &Path, config_dir: &Path) -> anyhow::Result<Watched> {
-    let app_settings = AppSettingsWithDiskSync::new_with_customization(
-        config_dir,
-        Some(serde_json::json!({ "featureFlags": { "worktreeManipulation": true } })),
-    )?;
+    let app_settings = AppSettingsWithDiskSync::new_with_customization(config_dir, None)?;
     let project_id = ProjectHandleOrLegacyProjectId::ProjectHandle(ProjectHandle::from_path(main)?);
     let (tx, changes) = unbounded_channel();
     let watcher = gitbutler_watcher::watch_in_background(
@@ -80,6 +75,25 @@ fn watch(main: &Path, config_dir: &Path) -> anyhow::Result<Watched> {
         app_settings,
         changes,
         watcher,
+    })
+}
+
+#[test]
+fn head_branch_commits_are_git_activity() -> anyhow::Result<()> {
+    isolated(async {
+        let tmp = tempfile::tempdir()?;
+        invoke_bash_at_dir(
+            "git init main && cd main && git commit --allow-empty -m init",
+            tmp.path(),
+        );
+        let main = tmp.path().join("main");
+        let mut watched = watch(&main, &tmp.path().join("config"))?;
+        watched.settle().await?;
+
+        invoke_bash_at_dir("git commit --allow-empty -m second", &main);
+        watched
+            .expect(|change| matches!(change, Change::GitActivity { .. }))
+            .await
     })
 }
 
@@ -135,6 +149,8 @@ fn linked_worktrees_added_while_watching_are_watched() -> anyhow::Result<()> {
     })
 }
 
+// On Windows a change in an archived worktree's git dir is still reported as workspace activity.
+#[cfg(target_family = "unix")]
 #[test]
 fn linked_worktrees_archived_while_watching_are_not_watched() -> anyhow::Result<()> {
     isolated(async {
@@ -152,7 +168,7 @@ fn linked_worktrees_archived_while_watching_are_not_watched() -> anyhow::Result<
         watched.settle().await?;
 
         ctx.set_worktree_archived("linked".into(), true)?;
-        but_project_handle::write_invalidation_sentinel(&ctx.project_data_dir, &["Worktrees"]);
+        but_project_handle::write_refresh_sentinel(&ctx.project_data_dir);
         watched.settle().await?;
 
         invoke_bash_at_dir("git switch --detach", &tmp.path().join("linked"));
@@ -196,6 +212,11 @@ fn linked_worktree_changes_are_reported_for_that_worktree() -> anyhow::Result<()
                         .changes
                         .iter()
                         .any(|change| change.path_bytes == "file")
+                    // Its hunks come along unassigned, as a linked worktree isn't in the workspace.
+                    && changes
+                        .assignments
+                        .iter()
+                        .any(|assignment| assignment.path == "file" && assignment.stack_id.is_none())
                     && changed_paths.iter().eq(because_of.iter().map(Path::new))
             }
             _ => false,

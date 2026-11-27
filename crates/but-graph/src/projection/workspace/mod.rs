@@ -6,14 +6,11 @@ use crate::{Graph, SegmentIndex};
 pub(super) mod api;
 pub(crate) mod init;
 
-/// A workspace reference is a list of [Stacks](Stack), with a reference to the underlying [`Graph`].
 #[derive(Clone)]
 pub struct Workspace {
-    /// The underlying graph for providing simplified access to data.
     pub graph: Graph,
     /// An ID which uniquely identifies the [graph segment](crate::Segment) that represents the tip of the workspace.
     pub id: SegmentIndex,
-    /// Specify what kind of workspace this is.
     pub kind: WorkspaceKind,
     /// One or more stacks that live in the workspace, in order of parents of the workspace commit if there are more than one.
     pub stacks: Vec<Stack>,
@@ -46,7 +43,6 @@ pub struct Workspace {
     /// It is also valid to have this field point to the same Segment as [Self::target_ref]. Both have different purposes,
     /// semantically.
     pub target_commit: Option<TargetCommit>,
-    /// Read-only workspace metadata with additional information, or `None` if nothing was present.
     /// If this is `Some()` the `kind` is always [`WorkspaceKind::Managed`]
     ///
     /// # WARNING
@@ -60,7 +56,6 @@ pub struct Workspace {
     pub worktrees: Vec<WorktreeStack>,
 }
 
-/// A copy of all workspace state, to pass it around internally.
 pub(crate) struct WorkspaceState {
     pub id: SegmentIndex,
     pub kind: WorkspaceKind,
@@ -73,7 +68,6 @@ pub(crate) struct WorkspaceState {
     pub worktrees: Vec<WorktreeStack>,
 }
 
-/// A classifier for the workspace.
 #[derive(Debug, Clone)]
 pub enum WorkspaceKind {
     /// The `HEAD` is pointing to a dedicated workspace reference, like `refs/heads/gitbutler/workspace`.
@@ -116,7 +110,6 @@ impl WorkspaceKind {
         }
     }
 
-    /// Return `true` if this workspace is adhoc.
     pub fn has_adhoc_ref(&self) -> bool {
         match self {
             WorkspaceKind::Managed { .. } | WorkspaceKind::ManagedMissingWorkspaceCommit { .. } => {
@@ -135,7 +128,7 @@ impl WorkspaceKind {
 
 /// Information about the target reference, which marks a portion in the commit-graph
 /// that the workspace wants to integrate with.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TargetRef {
     /// The name of the target branch, i.e. the branch that all [Stacks](Stack) want to get merged into.
     /// Typically, this is `refs/remotes/origin/main`.
@@ -146,19 +139,49 @@ pub struct TargetRef {
     pub commits_ahead: usize,
 }
 
+/// Leaves out `segment_index`, as `ref_name` names the segment, and its index only says how the
+/// graph numbered its segments.
+impl std::fmt::Debug for TargetRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let TargetRef {
+            ref_name,
+            segment_index: _,
+            commits_ahead,
+        } = self;
+        f.debug_struct("TargetRef")
+            .field("ref_name", ref_name)
+            .field("commits_ahead", commits_ahead)
+            .finish()
+    }
+}
+
 /// Information about the target commit, which marks a portion in the commit-graph
 /// that the workspace wants to integrate with.
 ///
 /// It's an unnamed point of interest which may
 /// be set by any means. Typically, it's set by using a stored value, which makes it
 /// a point in time at which we have seen the [`TargetRef`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TargetCommit {
     /// The hash of the commit that was once included in the [target ref](TargetRef), and that we remember to expand
     /// the reach of the workspace.
     pub commit_id: gix::ObjectId,
     /// The index to the respective segment in the graph that contains [`Self::commit_id`].
     pub segment_index: SegmentIndex,
+}
+
+/// Leaves out `segment_index`, as `commit_id` is in the segment, and its index only says how the
+/// graph numbered its segments.
+impl std::fmt::Debug for TargetCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let TargetCommit {
+            commit_id,
+            segment_index: _,
+        } = self;
+        f.debug_struct("TargetCommit")
+            .field("commit_id", commit_id)
+            .finish()
+    }
 }
 
 impl TargetCommit {
@@ -184,20 +207,6 @@ impl TargetCommit {
 }
 
 impl TargetRef {
-    /// Return `None` if `ref_name` wasn't found as segment in `graph`.
-    /// This can happen if a reference is configured, but not actually present as reference.
-    /// Note that `commits_ahead` isn't set yet, see [`Self::commits_ahead()`].
-    fn from_ref_name_without_commits_ahead(
-        ref_name: &gix::refs::FullName,
-        graph: &Graph,
-    ) -> Option<Self> {
-        Some(TargetRef {
-            ref_name: ref_name.to_owned(),
-            segment_index: graph.segment_by_ref_name(ref_name.as_ref())?.id,
-            commits_ahead: 0,
-        })
-    }
-
     /// Count the commits of the target at `target_segment` that aren't in the workspace, stopping
     /// at `lower_bound_segment`.
     pub(crate) fn commits_ahead(

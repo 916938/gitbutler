@@ -5,9 +5,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow};
-use but_project_handle::{
-    INVALIDATION_SENTINEL_PATH, ProjectHandleOrLegacyProjectId, REFRESH_SENTINEL_PATH,
-};
+use but_project_handle::{ProjectHandleOrLegacyProjectId, REFRESH_SENTINEL_PATH};
 use gitbutler_notify_debouncer::{Debouncer, NoCache, new_debouncer};
 use gix::bstr::ByteSlice as _;
 use notify::{RecommendedWatcher, Watcher};
@@ -25,7 +23,9 @@ use crate::{
 /// We will collect notifications for up to this amount of time at a very
 /// maximum before releasing them. This duration will be hit if e.g. a build
 /// is constantly running and producing a lot of file changes, we will process
-/// them even if the build is still running.
+/// them even if the build is still running. A change to Git's refs, HEAD or
+/// index releases all pending events after FLUSH_AFTER_EMPTY ticks instead,
+/// quiet or not, so a commit made meanwhile shows.
 const DEBOUNCE_TIMEOUT: Duration = Duration::from_secs(60);
 
 // The internal rate at which the debouncer will update its state.
@@ -65,7 +65,6 @@ impl FileMonitorHandle {
 
 const ENV_WATCH_MODE: &str = "GITBUTLER_WATCH_MODE";
 
-/// Control how the filesystem watch should be established.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchMode {
     /// Recursively watch the worktree (and an extra git-dir if the repo uses
@@ -98,22 +97,6 @@ impl std::str::FromStr for WatchMode {
 }
 
 impl WatchMode {
-    /// Initialise the mode from the environment.
-    pub fn from_env() -> Self {
-        let Ok(mode) = std::env::var(ENV_WATCH_MODE) else {
-            return Self::Auto;
-        };
-
-        mode.parse().ok().unwrap_or_else(|| {
-            tracing::warn!(
-                env = ENV_WATCH_MODE,
-                value = mode,
-                "unknown watch mode; falling back to auto"
-            );
-            WatchMode::Auto
-        })
-    }
-
     /// Initialise the mode from `watch_mode_from_settings`, with environment variable override.
     /// If the environment variable `GITBUTLER_WATCH_MODE` is set, it overrides the feature flag.
     /// Otherwise, the feature flag value is used.
@@ -174,7 +157,6 @@ fn setup_watch_plan(
     git_dir: &Path,
     linked_git_dirs: &[&Path],
 ) -> Result<()> {
-    // Start the watcher, but retry if there are transient errors.
     backoff::retry(watch_backoff_policy(), || {
         let mut paths = debouncer.watcher().paths_mut();
         let mut add_error: Option<(std::path::PathBuf, notify::Error)> = None;
@@ -229,7 +211,6 @@ fn setup_legacy_watch(
         }
     };
 
-    // Start the watcher, but retry if there are transient errors.
     backoff::retry(watch_backoff_policy(), || {
         debouncer
             .watcher()
@@ -256,7 +237,7 @@ fn setup_legacy_watch(
 /// Use `watch_mode` to control how exactly the directory is watched.
 /// `linked_worktrees` lists the linked worktrees to watch besides the main one, whose changes are
 /// reported under their own [`Checkout`]. The list is obtained again whenever a linked worktree is
-/// registered, moved or removed, or when the invalidation sentinel is written, and is left as it
+/// registered, moved or removed, or when the refresh sentinel is written, and is left as it
 /// was if that fails.
 ///
 /// ### Why is this not an iterator?
@@ -278,20 +259,27 @@ pub fn spawn(
 ) -> Result<FileMonitorHandle> {
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let (notify_tx, notify_rx) = std::sync::mpsc::channel();
-    let mut debouncer = new_debouncer(
-        DEBOUNCE_TIMEOUT,
-        Some(TICK_RATE),
-        Some(FLUSH_AFTER_EMPTY),
-        notify_tx,
-    )
-    .context("failed to create debouncer")?;
-
     let worktree_path = gix::path::realpath(worktree_path)?;
     let repo = gix::open_opts(&worktree_path, gix::open::Options::isolated()).context(format!(
         "failed to open project repository to obtain git-dir: {}",
         worktree_path.display()
     ))?;
     let git_dir = repo.path().to_owned();
+    let mut debouncer = new_debouncer(
+        DEBOUNCE_TIMEOUT,
+        Some(TICK_RATE),
+        Some(FLUSH_AFTER_EMPTY),
+        {
+            let git_dir = git_dir.clone();
+            move |event: &notify::Event| {
+                is_interesting_kind(event.kind)
+                    && (event.paths.iter())
+                        .any(|path| classify_file(&git_dir, path) == FileKind::Git)
+            }
+        },
+        notify_tx,
+    )
+    .context("failed to create debouncer")?;
     let mut linked = linked_checkouts(&git_dir, &linked_worktrees).unwrap_or_default();
     let linked_git_dirs: Vec<_> = linked
         .iter()
@@ -658,15 +646,14 @@ fn update_dynamic_watches(
 fn is_interesting_kind(kind: notify::EventKind) -> bool {
     matches!(
         kind,
-        notify::EventKind::Create(
-            notify::event::CreateKind::File | notify::event::CreateKind::Folder
-        ) | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
+        // Of any kind: FSEvents reports a symlink, hard link or APFS clone (Finder's Duplicate,
+        // `cp -c`) as `Other`, and one it can't tell as `Any`.
+        notify::EventKind::Create(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
             | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
             // This makes many more events happen, but we won't miss `touch this && rm this` kind of events.
             | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
-            | notify::EventKind::Remove(
-                notify::event::RemoveKind::File | notify::event::RemoveKind::Folder
-            )
+            | notify::EventKind::Remove(_)
     )
 }
 
@@ -767,7 +754,7 @@ impl Changes {
         self.git.iter().any(|path| {
             path.starts_with(LINKED_WORKTREES_DIR)
                 || path == Path::new(LINKED_WORKTREE_GITDIR)
-                || path == Path::new(INVALIDATION_SENTINEL_PATH)
+                || path == Path::new(REFRESH_SENTINEL_PATH)
         })
     }
 }
@@ -876,7 +863,6 @@ impl WatchedCheckout {
     }
 }
 
-/// A classification for a changed file.
 #[derive(Debug, Eq, PartialEq)]
 enum FileKind {
     /// A file in the `.git` repository of the current project itself.
@@ -897,7 +883,6 @@ fn classify_file(git_dir: &Path, file_path: &Path) -> FileKind {
             || check_file_path == Path::new(GB_FLUSH)
             || check_file_path == Path::new(INDEX)
             || check_file_path == Path::new(REFRESH_SENTINEL_PATH)
-            || check_file_path == Path::new(INVALIDATION_SENTINEL_PATH)
             || check_file_path == Path::new(LINKED_WORKTREE_GITDIR)
             || check_file_path.starts_with(LOCAL_REFS_DIR)
             || check_file_path.starts_with(REMOTE_REFS_DIR)
@@ -930,6 +915,20 @@ mod tests {
 
     fn git_dir() -> &'static Path {
         Path::new("/repo/.git")
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn links_and_clones_count_as_created_and_removed() {
+        use notify::{EventKind, event::CreateKind, event::RemoveKind};
+        assert!(
+            is_interesting_kind(EventKind::Create(CreateKind::Other)),
+            "FSEvents reports a new symlink or APFS clone as `Other`"
+        );
+        assert!(
+            is_interesting_kind(EventKind::Remove(RemoveKind::Other)),
+            "and a removed symlink too"
+        );
     }
 
     #[test]
@@ -987,14 +986,6 @@ mod tests {
     fn classify_refresh_sentinel() {
         assert_eq!(
             classify_file(git_dir(), Path::new("/repo/.git/gitbutler/REFRESH")),
-            FileKind::Git
-        );
-    }
-
-    #[test]
-    fn classify_invalidation_sentinel() {
-        assert_eq!(
-            classify_file(git_dir(), Path::new("/repo/.git/gitbutler/INVALIDATE")),
             FileKind::Git
         );
     }

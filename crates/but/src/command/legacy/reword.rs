@@ -3,7 +3,6 @@ use bstr::{BString, ByteSlice};
 use but_api::diff::ComputeLineStats;
 use but_core::{DryRun, sync::RepoExclusive};
 use but_ctx::Context;
-use but_workspace::branch::create_reference::{Anchor, Position};
 use gitbutler_oplog::entry::{OperationKind, SnapshotDetails};
 
 use super::{
@@ -16,29 +15,33 @@ use crate::{
     args::atoms::{BranchArg, BranchOrCommit, CliIdArg, Purpose},
     bad_input,
     command::legacy::reword2::get_branch_name_from_editor,
+    theme::Theme,
     tui,
-    utils::{OutputChannel, get_change_id_for_commit, merged_upstream::MergedUpstream},
+    utils::{
+        CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils, get_change_id_for_commit,
+        merged_upstream::MergedUpstream,
+    },
 };
 
 pub(crate) fn reword_target(
     ctx: &mut Context,
-    out: &mut OutputChannel,
+    out: IntermediateChannel<'_>,
     target: CliIdArg,
     message: Option<&str>,
     format: bool,
     show_diff_in_editor: ShowDiffInEditor,
     allow_merged: crate::args::atoms::AllowMergedArg,
-) -> CliResult<()> {
+) -> CliResult<RewordOutcome> {
     // Formats without an interactive editor must provide the new message up front.
     if message.is_none() && !format && !out.format().allows_human_ui() {
         return Err(bad_input(
-            "A message must be provided via --message (-m) for this output format",
+            "A message must be provided via --message (-m) or --file (-F) for this output format",
         )
         .into());
     }
 
     let mut guard = ctx.exclusive_worktree_access();
-    let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
+    let id_map = IdMap::new_from_context(ctx, guard.read_permission(), None)?;
 
     let target = {
         let repo = ctx.repo.get()?;
@@ -58,19 +61,17 @@ pub(crate) fn reword_target(
                 )
                 .into());
             }
-            create_branch_for_anonymous_segment(
+            return create_branch_for_anonymous_segment(
                 ctx,
-                out,
                 segment,
                 message,
                 guard.write_permission(),
-            )?;
-            return Ok(());
+            );
         }
         target => target,
     };
 
-    match target.into_branch_or_commit()? {
+    let outcome = match target.into_branch_or_commit()? {
         BranchOrCommit::Branch(BranchArg(name)) => {
             if format {
                 return Err(bad_input(
@@ -84,7 +85,7 @@ pub(crate) fn reword_target(
                 )
                 .into());
             }
-            edit_branch_name(ctx, &name, out, message, guard.write_permission())?;
+            edit_branch_name(ctx, &name, message, guard.write_permission())?
         }
         BranchOrCommit::Commit(commit) => {
             // Rewording a landed commit is lost work: the rewritten commit is
@@ -94,25 +95,90 @@ pub(crate) fn reword_target(
             edit_commit_message_by_id_and_reword_commit(
                 ctx,
                 commit.commit_id,
-                out,
                 message,
                 format,
                 show_diff_in_editor,
                 guard.write_permission(),
-            )?;
+            )?
+        }
+    };
+
+    Ok(outcome)
+}
+
+#[must_use]
+pub(crate) enum RewordOutcome {
+    NamedAnonymousBranch {
+        cli_id: String,
+        new_name: String,
+    },
+    BranchNameUnchanged {
+        name: String,
+    },
+    RenamedBranch {
+        old_name: String,
+        new_name: String,
+    },
+    RewordedCommit {
+        change_id: but_core::ChangeId,
+        new_commit_id: gix::ObjectId,
+    },
+    CommitMessageUnchanged,
+}
+
+impl CliOutputHuman for RewordOutcome {
+    fn on_human(
+        self,
+        out: &mut dyn WriteWithUtils,
+        _agent: bool,
+        _theme: &'static Theme,
+    ) -> anyhow::Result<()> {
+        match self {
+            RewordOutcome::NamedAnonymousBranch { cli_id, new_name } => {
+                writeln!(out, "Named anonymous branch '{cli_id}' as '{new_name}'")?;
+            }
+            RewordOutcome::BranchNameUnchanged { name } => {
+                writeln!(out, "Branch already named '{name}' - nothing to do")?;
+            }
+            RewordOutcome::RenamedBranch { old_name, new_name } => {
+                writeln!(out, "Renamed branch '{old_name}' to '{new_name}'")?;
+            }
+            RewordOutcome::RewordedCommit { change_id, .. } => {
+                let new_commit = crate::theme::Commit(change_id);
+                writeln!(out, "Updated commit message for {new_commit}")?;
+            }
+            RewordOutcome::CommitMessageUnchanged => {
+                writeln!(out, "No changes to commit message - nothing to be done")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CliOutput for RewordOutcome {
+    fn on_json(self) -> impl serde::Serialize {
+        #[derive(serde::Serialize)]
+        struct Output {
+            new_commit_id: String,
+        }
+        match self {
+            RewordOutcome::RewordedCommit { new_commit_id, .. } => Some(Output {
+                new_commit_id: new_commit_id.to_string(),
+            }),
+            RewordOutcome::NamedAnonymousBranch { .. }
+            | RewordOutcome::BranchNameUnchanged { .. }
+            | RewordOutcome::RenamedBranch { .. }
+            | RewordOutcome::CommitMessageUnchanged => None,
         }
     }
-
-    Ok(())
 }
 
 fn create_branch_for_anonymous_segment(
     ctx: &mut Context,
-    out: &mut OutputChannel,
     segment: crate::id::AnonymousSegmentId,
     message: Option<&str>,
     perm: &mut RepoExclusive,
-) -> CliResult<()> {
+) -> CliResult<RewordOutcome> {
     let non_validated_new_name = prepare_provided_message(message, "branch name")
         .unwrap_or_else(|| get_branch_name_from_editor(""))?;
     let new_ref = {
@@ -126,44 +192,36 @@ fn create_branch_for_anonymous_segment(
             "Cannot name anonymous branch '{cli_id}' because it has no anchor commit"
         ))
     })?;
-    let snapshot_details = SnapshotDetails::new(OperationKind::CreateBranch);
+    let checkout = match segment.lane {
+        crate::id::LaneId::Stack(_) => but_graph::WorktreeKind::Main,
+        crate::id::LaneId::Worktree(name) => but_graph::WorktreeKind::LinkedId(name),
+    };
     let mut meta = ctx.meta()?;
     let (new_ref, _ws) = but_transaction::with_transaction_with_perm(
         ctx,
         &mut meta,
         perm,
-        snapshot_details,
+        SnapshotDetails::new(OperationKind::CreateBranch),
+        &[],
         DryRun::No,
         |mut tx| {
-            tx.create_reference(
-                new_ref.as_ref(),
-                Anchor::AtCommit {
-                    commit_id: anchor_commit_id,
-                    position: Position::Above,
-                },
-                Some(0),
-            )?;
+            tx.name_segment(&checkout, anchor_commit_id, new_ref.as_ref())?;
             Ok(but_transaction::Commit(new_ref))
         },
     )?;
 
-    if let Some(out) = out.for_human() {
-        writeln!(
-            out,
-            "Named anonymous branch '{cli_id}' as '{}'",
-            new_ref.shorten()
-        )?;
-    }
-    Ok(())
+    Ok(RewordOutcome::NamedAnonymousBranch {
+        cli_id,
+        new_name: new_ref.shorten().to_string(),
+    })
 }
 
 fn edit_branch_name(
     ctx: &mut Context,
     branch_name: &str,
-    out: &mut OutputChannel,
     message: Option<&str>,
     perm: &mut RepoExclusive,
-) -> CliResult<()> {
+) -> CliResult<RewordOutcome> {
     let lanes = crate::legacy::workspace::applied_lanes(ctx)?;
     for lane in &lanes {
         if let Some(branch) = lane.branch(branch_name) {
@@ -171,16 +229,15 @@ fn edit_branch_name(
                 .unwrap_or_else(|| get_branch_name_from_editor(branch_name))?;
 
             if non_validated_new_name == branch_name {
-                if let Some(out) = out.for_human() {
-                    writeln!(out, "Branch already named '{branch_name}' - nothing to do")?;
-                };
-                return Ok(());
+                return Ok(RewordOutcome::BranchNameUnchanged {
+                    name: branch_name.to_owned(),
+                });
             };
 
             let new_branch_name = {
                 let (repo, ws, _db) = ctx.workspace_and_db_with_perm(perm.read_permission())?;
                 BranchArg(non_validated_new_name)
-                    .resolve_for_creation(&repo, &ws)?
+                    .resolve_unused_local_name(&repo, &ws, Some(branch.reference.as_ref()))?
                     .shorten()
                     .to_string()
             };
@@ -193,10 +250,10 @@ fn edit_branch_name(
             .new_ref
             .shorten()
             .to_string();
-            if let Some(out) = out.for_human() {
-                writeln!(out, "Renamed branch '{branch_name}' to '{new_branch_name}'")?;
-            }
-            return Ok(());
+            return Ok(RewordOutcome::RenamedBranch {
+                old_name: branch_name.to_owned(),
+                new_name: new_branch_name,
+            });
         }
     }
 
@@ -258,25 +315,20 @@ pub(crate) fn get_commit_message_from_editor(
 fn edit_commit_message_by_id_and_reword_commit(
     ctx: &mut Context,
     commit_oid: gix::ObjectId,
-    out: &mut OutputChannel,
     message: Option<&str>,
     format: bool,
     show_diff_in_editor: ShowDiffInEditor,
     perm: &mut RepoExclusive,
-) -> Result<()> {
+) -> Result<RewordOutcome> {
     // Get commit details directly - no need to iterate through stacks
     let commit_details = but_api::diff::commit_details(ctx, commit_oid, ComputeLineStats::No)?;
     let current_message = commit_details.commit.inner.message.to_string();
 
-    // Get new message from provided argument, format flag, or editor
     let new_message = if format {
         if message.is_some() {
             bail!("Cannot use both --fix-formatting and --message flags together");
         }
-        // Format the current message without opening an editor
-        Some(but_action::commit_format::format_commit_message(
-            &current_message,
-        ))
+        Some(but_core::commit::format_commit_message(&current_message))
     } else if let Some(message) = message {
         Some(normalize_commit_message(message).to_owned())
     } else {
@@ -304,21 +356,12 @@ fn edit_commit_message_by_id_and_reword_commit(
             perm,
         )?;
 
-        if let Some(out) = out.for_human() {
-            let new_commit = crate::theme::Commit(change_id);
-            writeln!(out, "Updated commit message for {new_commit}")?;
-        } else if let Some(out) = out.for_json() {
-            out.write_value(serde_json::json!({
-                "new_commit_id": new_commit_oid.new_commit.to_string(),
-            }))?;
-        }
-
-        Ok(())
+        Ok(RewordOutcome::RewordedCommit {
+            change_id,
+            new_commit_id: new_commit_oid.new_commit,
+        })
     } else {
-        if let Some(out) = out.for_human() {
-            writeln!(out, "No changes to commit message - nothing to be done")?;
-        }
-        Ok(())
+        Ok(RewordOutcome::CommitMessageUnchanged)
     }
 }
 
@@ -376,7 +419,6 @@ fn actually_get_commit_message_from_editor(
     diff: Option<&[BString]>,
     comment_prefix: &str,
 ) -> Result<String> {
-    // Generate commit message template with current message
     let mut template = String::new();
     template.push_str(current_message);
     if !current_message.is_empty() && !current_message.ends_with('\n') {
@@ -404,7 +446,6 @@ fn actually_get_commit_message_from_editor(
         }
     }
 
-    // Read the result and strip comments
     let lossy_message = tui::get_text::from_editor_no_comments_as_patch(
         "commit_msg",
         &template,

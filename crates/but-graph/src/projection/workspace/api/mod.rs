@@ -20,13 +20,15 @@ pub type CommitOwnerIndexes = (usize, usize, CommitIndex);
 
 mod queries;
 
-/// Lifecycle
 impl Workspace {
-    /// Redo the graph traversal with the same settings as before, but use the latest
-    /// data from `repo`, `meta`, `project_meta` and `db` to do it.
+    /// Project the workspace seen from `HEAD` again from the
+    /// [nosegment graph](crate::nosegment::workspace()), with the same options as before, but use
+    /// the latest data from `repo`, `meta`, `project_meta` and `db` to do it.
     /// This is useful to make this instance represent changes to `repo` or `meta`.
     /// Worktree tips are [discovered](crate::init::Options::worktrees) afresh from
-    /// `db` rather than reusing the previous traversal's, as they may have changed.
+    /// `db` rather than reusing the previous ones, as they may have changed, and the
+    /// [extra refs](crate::init::Options::extra_refs) are walked where they point now, leaving out
+    /// those that are gone.
     ///
     /// Pass a freshly read `project_meta` to pick up target changes as well, or
     /// `self.graph.project_meta.clone()` to deliberately keep the current one,
@@ -44,16 +46,35 @@ impl Workspace {
         project_meta: but_core::ref_metadata::ProjectMeta,
         db: &mut but_db::DbHandle,
     ) -> anyhow::Result<()> {
-        let graph = Graph::from_head(repo, meta, project_meta, db, self.graph.options.clone())?;
-        *self = graph.into_workspace()?;
+        let options = self.graph.options.clone();
+        let head = repo.head()?;
+        // Like a traversal, the graph's extra refs join it, leaving out those that are gone.
+        let mut extra_heads = Vec::new();
+        for ref_name in &options.extra_refs {
+            if let Some(mut reference) = repo.try_find_reference(ref_name)? {
+                extra_heads.push(reference.peel_to_commit()?.id);
+            }
+        }
+        let mut workspace = crate::nosegment::workspace(
+            repo,
+            meta,
+            crate::init::Overlay::default(),
+            project_meta,
+            head.referent_name(),
+            head.id().map(|id| id.detach()),
+            extra_heads,
+            crate::init::discover_worktree_tips(repo, db, options.worktrees)?,
+            options.collect_tags,
+            options.commits_limit_hint,
+        )?;
+        // Workspaces refreshed from this one use the same options, extra refs included.
+        workspace.graph.options = options;
+        *self = workspace;
         Ok(())
     }
 }
 
-/// Query
 impl Workspace {
-    /// Return `true` if the workspace has workspace metadata associated with it.
-    /// This is relevant when creating references for example.
     pub fn has_metadata(&self) -> bool {
         self.metadata.is_some()
     }
@@ -71,7 +92,6 @@ impl Workspace {
     }
 }
 
-/// Utilities
 impl Workspace {
     /// Reconcile workspace metadata with the stacks in this projection using
     /// [`metadata.reconcile_projected_stacks()`](but_core::ref_metadata::Workspace::reconcile_projected_stacks).
@@ -171,55 +191,57 @@ impl Workspace {
         Ok(Some(metadata))
     }
 
-    /// Return the name of the remote to push workspace branches to: the configured
-    /// push remote, or else the remote of the [`Self::target_ref`].
+    /// Return the configured push remote, falling back to the local target's fetch remote.
+    /// Without a configured target, use the projected upstream's remote instead.
     ///
-    /// The caller *may* consider falling back to [`gix::Repository::remote_default_name()`],
-    /// but beware that one should handle ambiguity if there are more than one remotes.
-    pub fn push_remote_name(&self) -> Option<String> {
-        self.graph.project_meta.push_remote.clone().or_else(|| {
+    /// Return `None` when no remote is configured; repository configuration errors propagate.
+    /// The caller may consider falling back to [`gix::Repository::remote_default_name()`],
+    /// taking care to handle ambiguity.
+    pub fn push_remote_name(&self, repo: &gix::Repository) -> anyhow::Result<Option<String>> {
+        let project_meta = &self.graph.project_meta;
+        if project_meta.push_remote.is_some() || project_meta.target_ref.is_some() {
+            return project_meta.try_push_remote_name(repo);
+        }
+        Ok(self.target_ref.as_ref().and_then(|target| {
             let remote_names = self
                 .graph
                 .symbolic_remote_names
                 .iter()
                 .map(|name| name.as_str().into())
                 .collect();
-            let target_ref_name = self.target_ref.as_ref()?.ref_name.as_ref();
-            extract_remote_name_and_short_name(target_ref_name, &remote_names)
+            extract_remote_name_and_short_name(target.ref_name.as_ref(), &remote_names)
                 .map(|(remote_name, _)| remote_name)
-        })
+        }))
     }
 
-    /// Return the `(merge-base, target-commit-id)` of the merge-base between the `commit_to_merge`
-    /// and the tip of [`Self::target_ref`].
-    /// Return `None` without a target ref, or if there was no merge-base.
+    /// Return the merge-base with the selected workspace cutoff, together with that cutoff's ID.
     ///
-    /// Use this to get the merge-base for test-merges between `commit_to_merge` and the target,
-    /// whose commit is also returned as `target-commit-id`.
-    pub fn merge_base_with_target_branch(
+    /// Return `None` without a cutoff, if the input commit is absent from the graph,
+    /// or if the commits have no merge-base.
+    pub fn merge_base_with_target_commit(
         &self,
         commit_to_merge: impl Into<gix::ObjectId>,
     ) -> Option<(gix::ObjectId, gix::ObjectId)> {
+        let target = self.target_commit.as_ref()?;
         let commit_to_merge = commit_to_merge.into();
-        let commit_segment_index = self.graph.node_weights().find_map(|s| {
-            s.commits
-                .first()
-                .is_some_and(|c| c.id == commit_to_merge)
-                .then_some(s.id)
-        })?;
-
-        let target_segment_index = self.target_ref.as_ref()?.segment_index;
-
+        let commit_segment = self.graph.segment_by_commit_id(commit_to_merge).ok()?;
         let merge_base_segment_index = self
             .graph
-            .find_merge_base(commit_segment_index, target_segment_index)?;
+            .find_merge_base(commit_segment.id, target.segment_index)?;
 
-        self.tip_commit_by_segment_id(merge_base_segment_index)
-            .map(|c| c.id)
-            .zip(
-                self.tip_commit_by_segment_id(target_segment_index)
-                    .map(|c| c.id),
-            )
+        // Segment ancestry alone does not locate the base when an input is inside a segment.
+        let merge_base = if commit_segment.id == target.segment_index {
+            let commit_index = commit_segment.commit_index_of(commit_to_merge)?;
+            let target_index = commit_segment.commit_index_of(target.commit_id)?;
+            commit_segment.commits[commit_index.max(target_index)].id
+        } else if merge_base_segment_index == target.segment_index {
+            target.commit_id
+        } else if merge_base_segment_index == commit_segment.id {
+            commit_to_merge
+        } else {
+            self.tip_commit_by_segment_id(merge_base_segment_index)?.id
+        };
+        Some((merge_base, target.commit_id))
     }
 
     /// Every lane, i.e. each stack followed by each worktree.
@@ -230,7 +252,6 @@ impl Workspace {
             .chain(self.worktrees.iter().map(Lane::Worktree))
     }
 
-    /// Every segment of every lane.
     pub fn segments(&self) -> impl Iterator<Item = &StackSegment> + '_ {
         self.lanes().flat_map(|lane| lane.segments())
     }
@@ -240,44 +261,37 @@ impl Workspace {
         self.segments().flat_map(|segment| segment.commits.iter())
     }
 
-    /// Find the commit with `oid` in any lane.
     pub fn find_commit(&self, oid: impl Into<gix::ObjectId>) -> Option<&StackCommit> {
         let oid = oid.into();
         self.commits().find(|commit| commit.id == oid)
     }
 
-    /// Like [`Self::find_commit()`], but fails with an error.
-    pub fn try_find_commit(&self, oid: impl Into<gix::ObjectId>) -> anyhow::Result<&StackCommit> {
-        let oid = oid.into();
-        self.find_commit(oid)
-            .with_context(|| format!("Commit {oid} isn't part of the workspace"))
-    }
-
-    /// Return `true` if the branch with `name` is the workspace target or the targets local tracking branch.
-    pub fn is_branch_the_target_or_its_local_tracking_branch(
+    /// Return whether `name` is the configured local target or its derived upstream.
+    /// Repository configuration errors propagate.
+    pub fn is_target_or_upstream(
         &self,
         name: &gix::refs::FullNameRef,
-    ) -> bool {
-        let Some(t) = self.target_ref.as_ref() else {
-            return false;
-        };
-
-        t.ref_name == name
-            || self
-                .graph
-                .lookup_sibling_segment(t.segment_index)
-                .and_then(|local_tracking_segment| local_tracking_segment.ref_name())
-                .is_some_and(|local_tracking_ref| local_tracking_ref == name)
+        repo: &gix::Repository,
+    ) -> anyhow::Result<bool> {
+        let project_meta = &self.graph.project_meta;
+        if project_meta
+            .target_ref
+            .as_ref()
+            .is_some_and(|target| target.as_local_full_name_ref() == name)
+        {
+            return Ok(true);
+        }
+        Ok(project_meta
+            .remote_target_ref(repo)?
+            .is_some_and(|upstream| upstream.as_ref() == name))
     }
 
-    /// Find a stack with the given `id` or error.
     pub fn try_find_stack_by_id(&self, id: impl Into<Option<StackId>>) -> anyhow::Result<&Stack> {
         let id = id.into();
         self.find_stack_by_id(id)
             .with_context(|| format!("Couldn't find stack with id {id:?} in workspace"))
     }
 
-    /// Find a stack with the given `id`.
     pub fn find_stack_by_id(&self, id: impl Into<Option<StackId>>) -> Option<&Stack> {
         let id = id.into();
         self.stacks.iter().find(|s| s.id == id)
@@ -339,7 +353,6 @@ impl Workspace {
         })
     }
 
-    /// Try to find `name` in any named [`StackSegment`] and return it along with the lane containing it.
     pub fn find_segment_and_lane_by_refname(
         &self,
         name: &gix::refs::FullNameRef,
@@ -352,7 +365,6 @@ impl Workspace {
         })
     }
 
-    /// Try to find the [`StackSegment`] owning the commit `oid` and return it along with the lane containing it.
     pub fn find_segment_and_lane_by_commit_id(
         &self,
         oid: impl Into<gix::ObjectId>,
@@ -366,7 +378,6 @@ impl Workspace {
         })
     }
 
-    /// Try to find `name` in any named [`StackSegment`] and return it along with the stack containing it.
     pub fn find_segment_and_stack_by_refname(
         &self,
         name: &gix::refs::FullNameRef,
@@ -381,7 +392,6 @@ impl Workspace {
     }
 }
 
-/// Debugging
 impl Workspace {
     /// Produce a distinct and compressed debug string to show at a glance what the workspace is about.
     pub fn debug_string(&self) -> String {
@@ -439,7 +449,6 @@ impl Workspace {
     }
 }
 
-/// Utilities
 impl TargetRef {
     /// Visit all segments whose commits would be considered 'upstream', or part of the target branch
     /// whose tip is identified with `target_segment`. The `lower_bound_segment_and_generation` is another way

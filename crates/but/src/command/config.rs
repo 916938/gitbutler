@@ -1,16 +1,11 @@
-//! Command implementation for managing `but` configuration.
-//!
-//! Provides subcommands to view and modify configuration settings including
-//! user information, AI provider, forge accounts, and target branch.
-
 use std::fmt::{Display, Write};
 
 use anyhow::{Context as _, Result};
-#[cfg(feature = "legacy")]
 use but_core::{GitConfigSettings, GitHubStackingMode};
 use but_core::{
     RepositoryExt,
     git_config::{remove_config_value, set_config_value},
+    ref_metadata::{LocalRefName, UnresolvedLegacyTargetReason, UnresolvedLegacyTargetRefError},
 };
 use but_ctx::Context;
 use but_llm::{
@@ -24,20 +19,24 @@ use but_settings::{
     AppSettingsWithDiskSync,
     api::{FeatureFlagsUpdate, TelemetryUpdate},
 };
-use cfg_if::cfg_if;
 use serde::Serialize;
 
 use super::git_config::edit_git_config;
-#[cfg(feature = "legacy")]
 use crate::args::config::GitHubStacksStatus;
 use crate::{
+    CliResult,
     args::config::{
         AiKeyOption, AiSubcommand, FeatureFlag, FeatureStatus, ForgeSubcommand, MetricsStatus,
         Subcommands, UserSubcommand,
     },
-    theme::{self, Paint},
+    bad_input,
+    error::track_remote_target_hint,
+    theme::{self, Paint, Theme},
     tui,
-    utils::{ConfirmOrEmpty, InputOutputChannel, OutputChannel},
+    utils::{
+        CliOutput, CliOutputHuman, ConfirmOrEmpty, InputOutputChannel, OutputChannel,
+        WriteWithUtils,
+    },
 };
 
 impl From<AiKeyOption> for String {
@@ -77,85 +76,69 @@ impl AiScope {
 
 type AiConfigInfo = AiConfigurationSnapshot;
 
-/// Main entry point for config command
 pub async fn exec(
     ctx: &mut Context,
     out: &mut OutputChannel,
     cmd: Option<Subcommands>,
-) -> Result<()> {
+) -> CliResult<()> {
     match cmd {
-        Some(Subcommands::User { cmd }) => user_config(Some(ctx), out, cmd).await,
+        Some(Subcommands::User { cmd }) => out.print_cli_output(user_config(Some(ctx), cmd).await?),
         Some(Subcommands::Target {
             branch,
             push_remote,
         }) => target_config(ctx, out, branch, push_remote).await,
-        Some(Subcommands::PushRemote { remote }) => push_remote_config(ctx, out, remote),
-        #[cfg(feature = "legacy")]
+        Some(Subcommands::PushRemote { remote }) => {
+            out.print_cli_output(push_remote_config(ctx, remote)?)
+        }
         Some(Subcommands::Forge {
             cmd: Some(ForgeSubcommand::GithubStacks { status }),
-        }) => github_stacks_config(ctx, out, status),
+        }) => out.print_cli_output(github_stacks_config(ctx, status)?),
+        #[cfg(feature = "nightly")]
+        Some(Subcommands::Forge {
+            cmd: Some(ForgeSubcommand::_Move { destination }),
+        }) => crate::command::legacy::forge::move_repo::move_repo(ctx, out, destination).await,
         Some(Subcommands::Forge { cmd }) => forge_config(out, cmd).await,
-        Some(Subcommands::Metrics { status }) => metrics_config(out, status).await,
-        Some(Subcommands::Feature { flag, status }) => feature_config(out, flag, status),
+        Some(Subcommands::Metrics { status }) => {
+            out.print_cli_output(metrics_config(status).await?)
+        }
+        Some(Subcommands::Feature { flag, status }) => {
+            out.print_cli_output(feature_config(flag, status)?)
+        }
         Some(Subcommands::Ai { local, global, cmd }) => {
             ai_config_with_repo(ctx, out, cmd, local, global)
         }
-        None => show_overview(ctx, out).await,
+        None => out.print_cli_output(show_overview(ctx).await?),
     }
 }
 
 /// Handle AI config subcommand without repository context.
-///
-/// This supports global configuration from outside of a git repository.
 pub(crate) fn ai_config(
     out: &mut OutputChannel,
     cmd: Option<AiSubcommand>,
     local: bool,
     global: bool,
-) -> Result<()> {
+) -> CliResult<()> {
     if local {
-        anyhow::bail!("Local AI configuration requires running inside a git repository")
+        return Err(anyhow::anyhow!(
+            "Local AI configuration requires running inside a git repository"
+        )
+        .into());
     }
     ai_config_inner(None, out, cmd, local, global)
 }
 
-/// Show overview of important settings
-async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()> {
-    let t = theme::get();
-    #[derive(Serialize)]
-    struct ConfigOverview {
-        name: Option<String>,
-        email: Option<String>,
-        editor: Option<String>,
-        target_branch: Option<String>,
-        forge_accounts: Vec<ForgeAccountInfo>,
-    }
-
-    #[derive(Serialize)]
-    struct ForgeAccountInfo {
-        provider: String,
-        username: String,
-    }
-
-    // Get user info from git config
+async fn show_overview(ctx: &mut Context) -> Result<OverviewOutcome> {
     let user_info = {
         let repo = ctx.repo.get()?;
         let config = repo.config_snapshot();
         get_user_config_info(&config)
     };
 
-    // Get target branch
-    cfg_if! {
-        if #[cfg(feature = "legacy")] {
-            let mut guard = ctx.exclusive_worktree_access();
-            let target_branch = but_api::legacy::virtual_branches::get_base_branch_data(ctx, guard.write_permission())?
-                                    .map(|b| b.branch_name);
-        } else {
-            let target_branch = None::<String>;
-        }
-    };
+    let mut guard = ctx.exclusive_worktree_access();
+    let target_branch =
+        but_api::legacy::virtual_branches::get_base_branch_data(ctx, guard.write_permission())?
+            .map(|b| b.branch_name);
 
-    // Get forge accounts
     let known_accounts = but_api::github::list_known_github_accounts()?;
     let forge_accounts: Vec<ForgeAccountInfo> = known_accounts
         .iter()
@@ -165,15 +148,39 @@ async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()>
         })
         .collect();
 
-    if let Some(out) = out.for_human() {
+    Ok(OverviewOutcome {
+        user_info,
+        target_branch,
+        forge_accounts,
+    })
+}
+
+#[derive(Serialize)]
+struct ForgeAccountInfo {
+    provider: String,
+    username: String,
+}
+
+#[must_use]
+struct OverviewOutcome {
+    user_info: UserConfigInfo,
+    target_branch: Option<String>,
+    forge_accounts: Vec<ForgeAccountInfo>,
+}
+
+impl CliOutputHuman for OverviewOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        let Self {
+            user_info,
+            target_branch,
+            forge_accounts,
+        } = self;
         writeln!(out, "\n{}", t.important.paint("GitButler Configuration"))?;
         writeln!(out)?;
 
-        // User section
         writeln!(out, "{}:", t.important.paint("User"))?;
         write_user_config_human(out, &user_info)?;
 
-        // Target branch
         writeln!(out, "{}:", t.important.paint("Target Branch"))?;
         if let Some(branch) = &target_branch {
             writeln!(out, "    {}", t.config_value.paint(branch))?;
@@ -182,7 +189,6 @@ async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()>
         }
         writeln!(out)?;
 
-        // Forge
         writeln!(out, "{}:", t.important.paint("Forge"))?;
         if forge_accounts.is_empty() {
             writeln!(
@@ -203,7 +209,6 @@ async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()>
         }
         writeln!(out)?;
 
-        // Hints
         writeln!(out, "{}", t.hint.paint("Available subcommands:"))?;
         writeln!(
             out,
@@ -235,72 +240,41 @@ async fn show_overview(ctx: &mut Context, out: &mut OutputChannel) -> Result<()>
             "  {}      - AI provider settings",
             t.command_suggestion.paint("but config ai")
         )?;
-    } else if let Some(out) = out.for_json() {
-        out.write_value(serde_json::json!(ConfigOverview {
-            name: user_info.name,
-            email: user_info.email,
-            editor: user_info.editor,
-            target_branch,
-            forge_accounts,
-        }))?;
+        Ok(())
     }
+}
 
-    Ok(())
+impl CliOutput for OverviewOutcome {
+    fn on_json(self) -> impl Serialize {
+        #[derive(Serialize)]
+        struct ConfigOverview {
+            name: Option<String>,
+            email: Option<String>,
+            editor: Option<String>,
+            target_branch: Option<String>,
+            forge_accounts: Vec<ForgeAccountInfo>,
+        }
+        ConfigOverview {
+            name: self.user_info.name,
+            email: self.user_info.email,
+            editor: self.user_info.editor,
+            target_branch: self.target_branch,
+            forge_accounts: self.forge_accounts,
+        }
+    }
 }
 
 /// Handle metrics config subcommand (doesn't require repo context)
-pub(crate) async fn metrics_config(
-    out: &mut OutputChannel,
-    status: Option<MetricsStatus>,
-) -> Result<()> {
-    let t = theme::get();
+pub(crate) async fn metrics_config(status: Option<MetricsStatus>) -> Result<MetricsOutcome> {
     let app_settings_sync = load_app_settings_sync()?;
 
     match status {
         None => {
             let enabled = app_settings_sync.get()?.telemetry.app_metrics_enabled;
-            if let Some(out) = out.for_human() {
-                writeln!(out, "\n{}:", t.important.paint("Metrics Configuration"))?;
-                writeln!(out)?;
-                writeln!(
-                    out,
-                    "  {}",
-                    t.hint.paint(
-                        "GitButler uses metrics to help us know what is useful and improve it."
-                    )
-                )?;
-                writeln!(
-                    out,
-                    "  {} {}",
-                    t.hint.paint("Privacy policy:"),
-                    t.hint.paint("https://gitbutler.com/privacy")
-                )?;
-                writeln!(out)?;
-                writeln!(
-                    out,
-                    "  {}: {}",
-                    t.hint.paint("Metrics"),
-                    if enabled {
-                        t.success.paint("enabled")
-                    } else {
-                        t.error.paint("disabled")
-                    }
-                )?;
-                writeln!(out)?;
-                writeln!(out, "{}:", t.hint.paint("To change metrics"))?;
-                writeln!(
-                    out,
-                    "  {}",
-                    t.command_suggestion.paint("but config metrics enable")
-                )?;
-                writeln!(
-                    out,
-                    "  {}",
-                    t.command_suggestion.paint("but config metrics disable")
-                )?;
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({ "app_metrics_enabled": enabled }))?;
-            }
+            Ok(MetricsOutcome {
+                enabled,
+                changed: false,
+            })
         }
         Some(status) => {
             let enabled = status.enabled();
@@ -310,109 +284,184 @@ pub(crate) async fn metrics_config(
             };
 
             app_settings_sync.update_telemetry(update)?;
-
-            if let Some(out) = out.for_human() {
-                writeln!(
-                    out,
-                    "{} Metrics are now {}",
-                    t.sym().success,
-                    if enabled {
-                        t.success.paint("enabled")
-                    } else {
-                        t.error.paint("disabled")
-                    }
-                )?;
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({ "app_metrics_enabled": enabled }))?;
-            }
+            Ok(MetricsOutcome {
+                enabled,
+                changed: true,
+            })
         }
     }
-
-    Ok(())
 }
 
-/// Handle feature flag configuration without requiring a repository context.
-pub(crate) fn feature_config(
-    out: &mut OutputChannel,
-    flag: Option<FeatureFlag>,
-    status: Option<FeatureStatus>,
-) -> Result<()> {
-    let t = theme::get();
-    let app_settings_sync = load_app_settings_sync()?;
+#[must_use]
+pub(crate) struct MetricsOutcome {
+    enabled: bool,
+    /// Whether the command set the status rather than showing it.
+    changed: bool,
+}
 
-    if let Some(status) = status {
-        let flag = flag.context("A feature flag is required when setting its status")?;
-        let enabled = status.enabled();
-        app_settings_sync.update_feature_flags(feature_flag_update(flag, enabled))?;
-
-        if let Some(out) = out.for_human() {
+impl CliOutputHuman for MetricsOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        let Self { enabled, changed } = self;
+        if changed {
             writeln!(
                 out,
-                "{} Feature flag {} is now {}",
+                "{} Metrics are now {}",
                 t.sym().success,
-                t.config_value.paint(flag.as_str()),
                 if enabled {
                     t.success.paint("enabled")
                 } else {
                     t.error.paint("disabled")
                 }
             )?;
-        } else {
-            write_feature_flag_value(out, flag, enabled)?;
+            return Ok(());
         }
-        return Ok(());
+        writeln!(out, "\n{}:", t.important.paint("Metrics Configuration"))?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "  {}",
+            t.hint
+                .paint("GitButler uses metrics to help us know what is useful and improve it.")
+        )?;
+        writeln!(
+            out,
+            "  {} {}",
+            t.hint.paint("Privacy policy:"),
+            t.hint.paint("https://gitbutler.com/privacy")
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "  {}: {}",
+            t.hint.paint("Metrics"),
+            if enabled {
+                t.success.paint("enabled")
+            } else {
+                t.error.paint("disabled")
+            }
+        )?;
+        writeln!(out)?;
+        writeln!(out, "{}:", t.hint.paint("To change metrics"))?;
+        writeln!(
+            out,
+            "  {}",
+            t.command_suggestion.paint("but config metrics enable")
+        )?;
+        writeln!(
+            out,
+            "  {}",
+            t.command_suggestion.paint("but config metrics disable")
+        )?;
+        Ok(())
+    }
+}
+
+impl CliOutput for MetricsOutcome {
+    fn on_json(self) -> impl Serialize {
+        serde_json::json!({ "app_metrics_enabled": self.enabled })
+    }
+}
+
+/// Handle feature flag configuration without requiring a repository context.
+pub(crate) fn feature_config(
+    flag: Option<FeatureFlag>,
+    status: Option<FeatureStatus>,
+) -> Result<FeatureOutcome> {
+    let app_settings_sync = load_app_settings_sync()?;
+
+    if let Some(status) = status {
+        let flag = flag.context("A feature flag is required when setting its status")?;
+        let enabled = status.enabled();
+        app_settings_sync.update_feature_flags(feature_flag_update(flag, enabled))?;
+        return Ok(FeatureOutcome::Set { flag, enabled });
     }
 
     let settings = app_settings_sync.get()?;
     if let Some(flag) = flag {
         let enabled = feature_flag_value(&settings.feature_flags, flag);
-        if let Some(out) = out.for_human() {
-            writeln!(
-                out,
-                "{}: {}",
-                t.config_value.paint(flag.as_str()),
-                if enabled {
-                    t.success.paint("enabled")
-                } else {
-                    t.hint.paint("disabled")
-                }
-            )?;
-        } else {
-            write_feature_flag_value(out, flag, enabled)?;
-        }
-        return Ok(());
+        return Ok(FeatureOutcome::Get { flag, enabled });
     }
 
-    let flags: [(FeatureFlag, bool); _] = [
+    let flags: Vec<(FeatureFlag, bool)> = vec![
         // NOTE: write feature flags here
         // (
         //     FeatureFlag::SingleBranch,
         //     settings.feature_flags.single_branch,
         // )
     ];
-    if let Some(out) = out.for_human() {
-        writeln!(out, "\n{}:", t.important.paint("Feature Flags"))?;
-        writeln!(out)?;
-        for (flag, enabled) in flags {
-            writeln!(
-                out,
-                "  {}: {}",
-                t.config_value.paint(flag.as_str()),
-                if enabled {
-                    t.success.paint("enabled")
-                } else {
-                    t.hint.paint("disabled")
-                }
-            )?;
-        }
-    } else if let Some(out) = out.for_json() {
-        out.write_value(serde_json::json!({
-            // NOTE: write feature flags here
-            // "single_branch": settings.feature_flags.single_branch,
-        }))?;
-    }
+    Ok(FeatureOutcome::List(flags))
+}
 
-    Ok(())
+#[must_use]
+pub(crate) enum FeatureOutcome {
+    Set { flag: FeatureFlag, enabled: bool },
+    Get { flag: FeatureFlag, enabled: bool },
+    List(Vec<(FeatureFlag, bool)>),
+}
+
+impl CliOutputHuman for FeatureOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        match self {
+            FeatureOutcome::Set { flag, enabled } => {
+                writeln!(
+                    out,
+                    "{} Feature flag {} is now {}",
+                    t.sym().success,
+                    t.config_value.paint(flag.as_str()),
+                    if enabled {
+                        t.success.paint("enabled")
+                    } else {
+                        t.error.paint("disabled")
+                    }
+                )?;
+            }
+            FeatureOutcome::Get { flag, enabled } => {
+                writeln!(
+                    out,
+                    "{}: {}",
+                    t.config_value.paint(flag.as_str()),
+                    if enabled {
+                        t.success.paint("enabled")
+                    } else {
+                        t.hint.paint("disabled")
+                    }
+                )?;
+            }
+            FeatureOutcome::List(flags) => {
+                writeln!(out, "\n{}:", t.important.paint("Feature Flags"))?;
+                writeln!(out)?;
+                for (flag, enabled) in flags {
+                    writeln!(
+                        out,
+                        "  {}: {}",
+                        t.config_value.paint(flag.as_str()),
+                        if enabled {
+                            t.success.paint("enabled")
+                        } else {
+                            t.hint.paint("disabled")
+                        }
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CliOutput for FeatureOutcome {
+    fn on_json(self) -> impl Serialize {
+        match self {
+            FeatureOutcome::Set { flag, enabled } | FeatureOutcome::Get { flag, enabled } => {
+                serde_json::json!({ flag.as_json_key(): enabled })
+            }
+            FeatureOutcome::List(flags) => serde_json::Value::Object(
+                flags
+                    .into_iter()
+                    .map(|(flag, enabled)| (flag.as_json_key().to_owned(), enabled.into()))
+                    .collect(),
+            ),
+        }
+    }
 }
 
 #[expect(unused_variables)]
@@ -422,22 +471,9 @@ fn feature_flag_value(flags: &but_settings::app_settings::FeatureFlags, flag: Fe
 
 #[expect(unreachable_code, unused_variables, unused_mut)]
 fn feature_flag_update(flag: FeatureFlag, enabled: bool) -> FeatureFlagsUpdate {
-    let mut update = FeatureFlagsUpdate {
-        worktree_manipulation: None,
-    };
+    let mut update = FeatureFlagsUpdate::default();
     match flag {}
     update
-}
-
-fn write_feature_flag_value(
-    out: &mut OutputChannel,
-    flag: FeatureFlag,
-    enabled: bool,
-) -> Result<()> {
-    if let Some(out) = out.for_json() {
-        out.write_value(serde_json::json!({ flag.as_json_key(): enabled }))?;
-    }
-    Ok(())
 }
 
 pub(crate) fn load_app_settings_sync() -> Result<AppSettingsWithDiskSync> {
@@ -446,9 +482,8 @@ pub(crate) fn load_app_settings_sync() -> Result<AppSettingsWithDiskSync> {
     AppSettingsWithDiskSync::new_with_customization(config_dir, None)
 }
 
-/// User configuration information
 #[derive(serde::Serialize)]
-struct UserConfigInfo {
+pub(crate) struct UserConfigInfo {
     name: Option<String>,
     email: Option<String>,
     editor: Option<String>,
@@ -460,7 +495,6 @@ struct UserConfigInfo {
     editor_scope: Option<gix::config::Source>,
 }
 
-/// Get user configuration info from git config
 fn get_user_config_info(config: &gix::config::File) -> UserConfigInfo {
     let (name, name_scope) = get_config_string_and_scope(config, "user.name");
     let (email, email_scope) = get_config_string_and_scope(config, "user.email");
@@ -477,7 +511,6 @@ fn get_user_config_info(config: &gix::config::File) -> UserConfigInfo {
     }
 }
 
-/// Write user config info in human-readable format
 fn write_user_config_human(out: &mut dyn std::fmt::Write, info: &UserConfigInfo) -> Result<()> {
     let t = theme::get();
     writeln!(
@@ -512,24 +545,62 @@ fn write_user_config_human(out: &mut dyn std::fmt::Write, info: &UserConfigInfo)
     Ok(())
 }
 
-/// Handle user config subcommand
 pub(crate) async fn user_config(
     ctx: Option<&Context>,
-    out: &mut OutputChannel,
     cmd: Option<UserSubcommand>,
-) -> Result<()> {
-    let t = theme::get();
+) -> Result<UserConfigOutcome> {
     let repo = ctx.map(|ctx| ctx.repo.get()).transpose()?;
 
-    match cmd {
-        // View user config
+    let outcome = match cmd {
         None => {
             let user_info = match repo.as_deref() {
                 Some(repo) => get_user_config_info(&repo.config_snapshot()),
                 None => get_user_config_info(&gix::config(None, &gix::open::Options::default())?),
             };
+            UserConfigOutcome::Show(user_info)
+        }
+        Some(UserSubcommand::Set { key, value, global }) => {
+            let git_key = key.to_git_key();
+            edit_git_config(repo.as_deref(), global.into(), |config| {
+                set_config_value(config, git_key, &value)?;
+                Ok(())
+            })?;
+            UserConfigOutcome::Set {
+                git_key,
+                value,
+                global,
+            }
+        }
+        Some(UserSubcommand::Unset { key, global }) => {
+            let git_key = key.to_git_key();
+            edit_git_config(repo.as_deref(), global.into(), |config| {
+                remove_config_value(config, git_key)?;
+                Ok(())
+            })?;
+            UserConfigOutcome::Unset { git_key, global }
+        }
+    };
+    Ok(outcome)
+}
 
-            if let Some(out) = out.for_human() {
+#[must_use]
+pub(crate) enum UserConfigOutcome {
+    Show(UserConfigInfo),
+    Set {
+        git_key: &'static str,
+        value: String,
+        global: bool,
+    },
+    Unset {
+        git_key: &'static str,
+        global: bool,
+    },
+}
+
+impl CliOutputHuman for UserConfigOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        match self {
+            UserConfigOutcome::Show(user_info) => {
                 writeln!(out, "{}:", t.important.paint("\nUser Configuration"))?;
                 writeln!(out)?;
                 write_user_config_human(out, &user_info)?;
@@ -546,19 +617,12 @@ pub(crate) async fn user_config(
                     t.command_suggestion
                         .paint("but config user set --global email your@email.com")
                 )?;
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!(user_info))?;
             }
-        }
-        // Set user config
-        Some(UserSubcommand::Set { key, value, global }) => {
-            let git_key = key.to_git_key();
-            edit_git_config(repo.as_deref(), global.into(), |config| {
-                set_config_value(config, git_key, &value)?;
-                Ok(())
-            })?;
-
-            if let Some(out) = out.for_human() {
+            UserConfigOutcome::Set {
+                git_key,
+                value,
+                global,
+            } => {
                 writeln!(
                     out,
                     "{} Set {} {} {}",
@@ -570,23 +634,8 @@ pub(crate) async fn user_config(
                 if global {
                     writeln!(out, "  (configured globally)")?;
                 }
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({
-                    "key": git_key,
-                    "value": value,
-                    "scope": if global { "global" } else { "local" }
-                }))?;
             }
-        }
-        // Unset user config
-        Some(UserSubcommand::Unset { key, global }) => {
-            let git_key = key.to_git_key();
-            edit_git_config(repo.as_deref(), global.into(), |config| {
-                remove_config_value(config, git_key)?;
-                Ok(())
-            })?;
-
-            if let Some(out) = out.for_human() {
+            UserConfigOutcome::Unset { git_key, global } => {
                 writeln!(
                     out,
                     "{} Removed {}",
@@ -596,42 +645,62 @@ pub(crate) async fn user_config(
                 if global {
                     writeln!(out, "  (removed from global config)")?;
                 }
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({
-                    "key": git_key,
-                    "action": "unset",
-                    "scope": if global { "global" } else { "local" }
-                }))?;
             }
         }
+        Ok(())
     }
+}
 
-    Ok(())
+impl CliOutput for UserConfigOutcome {
+    fn on_json(self) -> impl Serialize {
+        let scope = |global| if global { "global" } else { "local" };
+        match self {
+            UserConfigOutcome::Show(user_info) => serde_json::json!(user_info),
+            UserConfigOutcome::Set {
+                git_key,
+                value,
+                global,
+            } => serde_json::json!({
+                "key": git_key,
+                "value": value,
+                "scope": scope(global)
+            }),
+            UserConfigOutcome::Unset { git_key, global } => serde_json::json!({
+                "key": git_key,
+                "action": "unset",
+                "scope": scope(global)
+            }),
+        }
+    }
 }
 
 /// Handle forge config subcommand (doesn't require repo context)
 pub(crate) async fn forge_config(
     out: &mut OutputChannel,
     cmd: Option<ForgeSubcommand>,
-) -> Result<()> {
+) -> CliResult<()> {
     match cmd {
-        Some(ForgeSubcommand::Auth) => forge_auth(out).await,
-        Some(ForgeSubcommand::ListUsers) => forge_show_overview(out).await,
-        Some(ForgeSubcommand::Forget { username }) => forge_forget(username, out).await,
-        #[cfg(feature = "legacy")]
+        Some(ForgeSubcommand::Auth) => forge_auth(out).await?,
+        Some(ForgeSubcommand::ListUsers) => forge_show_overview(out).await?,
+        Some(ForgeSubcommand::Forget { username }) => forge_forget(username, out).await?,
         Some(ForgeSubcommand::GithubStacks { .. }) => {
-            anyhow::bail!("GitHub stacks configuration requires a repository")
+            return Err(
+                anyhow::anyhow!("GitHub stacks configuration requires a repository").into(),
+            );
         }
-        None => forge_show_overview(out).await,
+        #[cfg(feature = "nightly")]
+        Some(ForgeSubcommand::_Move { .. }) => {
+            return Err(anyhow::anyhow!("Moving a repository requires a repository").into());
+        }
+        None => forge_show_overview(out).await?,
     }
+    Ok(())
 }
 
-#[cfg(feature = "legacy")]
 pub(crate) fn github_stacks_config(
     ctx: &mut Context,
-    out: &mut OutputChannel,
     status: Option<GitHubStacksStatus>,
-) -> Result<()> {
+) -> Result<GithubStacksOutcome> {
     let configured = {
         let repo = ctx.repo.get()?;
         match status {
@@ -653,9 +722,26 @@ pub(crate) fn github_stacks_config(
                 .unwrap_or(GitHubStackingMode::Auto),
         }
     };
-    if let Some(out) = out.for_human() {
-        let t = theme::get();
-        let symbol = if status.is_some() {
+    Ok(GithubStacksOutcome {
+        configured,
+        changed: status.is_some(),
+    })
+}
+
+#[must_use]
+pub(crate) struct GithubStacksOutcome {
+    configured: GitHubStackingMode,
+    /// Whether the command set the mode rather than showing it.
+    changed: bool,
+}
+
+impl CliOutputHuman for GithubStacksOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        let Self {
+            configured,
+            changed,
+        } = self;
+        let symbol = if changed {
             &t.sym().success
         } else {
             &t.sym().dot
@@ -687,25 +773,119 @@ pub(crate) fn github_stacks_config(
             )?,
             GitHubStackingMode::Disabled => {}
         }
-    } else if let Some(out) = out.for_json() {
-        out.write_value(serde_json::json!({ "mode": configured }))?;
+        Ok(())
     }
-    Ok(())
+}
+
+impl CliOutput for GithubStacksOutcome {
+    fn on_json(self) -> impl Serialize {
+        serde_json::json!({ "mode": self.configured })
+    }
 }
 
 /// Show overview of forge configuration (same as list-users)
-async fn forge_show_overview(out: &mut OutputChannel) -> Result<()> {
-    let t = theme::get();
+async fn forge_show_overview(out: &mut OutputChannel) -> CliResult<()> {
     let known_gh_accounts = but_api::github::list_known_github_accounts()?;
     let known_gl_accounts = but_api::gitlab::list_known_gitlab_accounts()?;
     let known_bb_accounts = but_api::bitbucket::list_known_bitbucket_accounts()?;
+    let known_code_accounts = but_api::gitbutler_code::list_known_accounts()?;
 
     let no_accounts = known_gh_accounts.is_empty()
         && known_gl_accounts.is_empty()
-        && known_bb_accounts.is_empty();
+        && known_bb_accounts.is_empty()
+        && known_code_accounts.is_empty();
 
-    if let Some(out) = out.for_human() {
-        if no_accounts {
+    // Checking credentials talks to each forge, and only the human output shows the result,
+    // one forge at a time as its checks finish.
+    let mut some_accounts_invalid = false;
+    if !no_accounts && let Some(writer) = out.for_human() {
+        let t = theme::get();
+        let section = check_github_accounts(&known_gh_accounts).await;
+        some_accounts_invalid |= write_forge_accounts_section(writer, t, &section)?;
+        if !known_gl_accounts.is_empty() {
+            let section = check_gitlab_accounts(&known_gl_accounts).await;
+            some_accounts_invalid |= write_forge_accounts_section(writer, t, &section)?;
+        }
+        if !known_bb_accounts.is_empty() {
+            let section = check_bitbucket_accounts(&known_bb_accounts).await;
+            some_accounts_invalid |= write_forge_accounts_section(writer, t, &section)?;
+        }
+        if !known_code_accounts.is_empty() {
+            let section = check_gitbutler_code_accounts(&known_code_accounts).await;
+            some_accounts_invalid |= write_forge_accounts_section(writer, t, &section)?;
+        }
+    }
+
+    out.print_cli_output(ForgeAccountsOutcome {
+        no_accounts,
+        accounts: extract_account_details(
+            known_gh_accounts,
+            known_gl_accounts,
+            known_bb_accounts,
+            known_code_accounts,
+        ),
+        some_accounts_invalid,
+    })
+}
+
+/// Write the authenticated accounts of one forge, returning whether any has invalid or missing
+/// credentials.
+fn write_forge_accounts_section(
+    out: &mut dyn WriteWithUtils,
+    t: &Theme,
+    section: &ForgeAccountsSection,
+) -> Result<bool> {
+    writeln!(
+        out,
+        "\n{}:",
+        t.important
+            .paint(format!("Authenticated {} accounts", section.forge))
+    )?;
+    writeln!(out)?;
+    let mut some_accounts_invalid = false;
+    for (account, status) in &section.accounts {
+        let message = match status {
+            CredentialStatus::Valid => t.success.paint("(valid credentials)"),
+            CredentialStatus::Invalid => {
+                some_accounts_invalid = true;
+                t.attention.paint("(invalid credentials)")
+            }
+            CredentialStatus::NoCredentials => {
+                some_accounts_invalid = true;
+                t.attention.paint("(no credentials)")
+            }
+            CredentialStatus::Unknown(err) => t.error.paint(format!("(unknown status: {err})")),
+        };
+        writeln!(out, "  • {account} {message}")?;
+    }
+    writeln!(out)?;
+    Ok(some_accounts_invalid)
+}
+
+#[must_use]
+struct ForgeAccountsOutcome {
+    no_accounts: bool,
+    accounts: Vec<ForgeAccount>,
+    /// Whether the credential checks the human output printed found a problem.
+    some_accounts_invalid: bool,
+}
+
+struct ForgeAccountsSection {
+    forge: &'static str,
+    accounts: Vec<(String, CredentialStatus)>,
+}
+
+enum CredentialStatus {
+    Valid,
+    Invalid,
+    NoCredentials,
+    /// Checking the credentials failed with this error.
+    Unknown(String),
+}
+
+impl CliOutputHuman for ForgeAccountsOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        if self.no_accounts {
             writeln!(out, "\n{}", t.hint.paint("No forge accounts configured"))?;
             writeln!(out)?;
             writeln!(
@@ -713,50 +893,44 @@ async fn forge_show_overview(out: &mut OutputChannel) -> Result<()> {
                 "Run {} to authenticate with GitHub, GitLab or Bitbucket.",
                 t.command_suggestion.paint("but config forge auth")
             )?;
-        } else {
-            let mut some_accounts_invalid =
-                display_authenticated_github_accounts(&known_gh_accounts, out).await?;
-            some_accounts_invalid |=
-                display_authenticated_gitlab_accounts(&known_gl_accounts, out).await?;
-            some_accounts_invalid |=
-                display_authenticated_bitbucket_accounts(&known_bb_accounts, out).await?;
+            return Ok(());
+        }
 
-            if some_accounts_invalid {
-                writeln!(
-                    out,
-                    "{}",
-                    t.attention
-                        .paint("Some accounts have invalid or missing credentials.")
-                )?;
-                writeln!(
-                    out,
-                    "Re-authenticate using: {}",
-                    t.command_suggestion.paint("but config forge auth")
-                )?;
-                writeln!(out)?;
-            }
-
-            writeln!(out, "{}:", t.hint.paint("Available commands"))?;
+        if self.some_accounts_invalid {
             writeln!(
                 out,
-                "  {} - Authenticate with a forge",
+                "{}",
+                t.attention
+                    .paint("Some accounts have invalid or missing credentials.")
+            )?;
+            writeln!(
+                out,
+                "Re-authenticate using: {}",
                 t.command_suggestion.paint("but config forge auth")
             )?;
-            writeln!(
-                out,
-                "  {} - Forget an authenticated account",
-                t.command_suggestion
-                    .paint("but config forge forget [username]")
-            )?;
+            writeln!(out)?;
         }
-    } else if let Some(out) = out.for_json() {
-        let accounts =
-            extract_account_details(known_gh_accounts, known_gl_accounts, known_bb_accounts);
 
-        out.write_value(serde_json::json!({ "accounts": accounts }))?;
+        writeln!(out, "{}:", t.hint.paint("Available commands"))?;
+        writeln!(
+            out,
+            "  {} - Authenticate with a forge",
+            t.command_suggestion.paint("but config forge auth")
+        )?;
+        writeln!(
+            out,
+            "  {} - Forget an authenticated account",
+            t.command_suggestion
+                .paint("but config forge forget [username]")
+        )?;
+        Ok(())
     }
+}
 
-    Ok(())
+impl CliOutput for ForgeAccountsOutcome {
+    fn on_json(self) -> impl Serialize {
+        serde_json::json!({ "accounts": self.accounts })
+    }
 }
 
 #[derive(Serialize)]
@@ -771,71 +945,94 @@ fn extract_account_details(
     known_gh_accounts: Vec<but_github::GithubAccountIdentifier>,
     known_gl_accounts: Vec<but_gitlab::GitlabAccountIdentifier>,
     known_bb_accounts: Vec<but_bitbucket::BitbucketAccountIdentifier>,
+    known_code_accounts: Vec<but_gitbutler_code::GitbutlerCodeAccountIdentifier>,
 ) -> Vec<ForgeAccount> {
-    let mut accounts: Vec<ForgeAccount> = Vec::new();
-
-    // Add GitHub accounts
-    for account in &known_gh_accounts {
-        let (username, account_type) = match account {
-            but_github::GithubAccountIdentifier::OAuthUsername { username } => {
-                (username.clone(), "OAuth".to_string())
-            }
-            but_github::GithubAccountIdentifier::PatUsername { username } => {
-                (username.clone(), "Personal Access Token".to_string())
-            }
-            but_github::GithubAccountIdentifier::Enterprise { username, host } => (
-                format!("{username}@{host}"),
-                "GitHub Enterprise".to_string(),
-            ),
-        };
-        accounts.push(ForgeAccount {
-            provider: "GitHub".to_string(),
-            username,
-            account_type,
-        });
-    }
-
-    // Add GitLab accounts
-    for account in &known_gl_accounts {
-        let (username, account_type) = match account {
-            but_gitlab::GitlabAccountIdentifier::PatUsername { username } => {
-                (username.clone(), "Personal Access Token".to_string())
-            }
-            but_gitlab::GitlabAccountIdentifier::SelfHosted { username, host } => (
-                format!("{username}@{host}"),
-                "GitLab Self-Hosted".to_string(),
-            ),
-        };
-        accounts.push(ForgeAccount {
-            provider: "GitLab".to_string(),
-            username,
-            account_type,
-        });
-    }
-
-    // Add Bitbucket accounts
-    for account in &known_bb_accounts {
-        let (username, account_type) = match account {
-            but_bitbucket::BitbucketAccountIdentifier::ApiToken { email } => {
-                (email.clone(), "API Token".to_string())
-            }
-        };
-        accounts.push(ForgeAccount {
-            provider: "Bitbucket".to_string(),
-            username,
-            account_type,
-        });
-    }
-    accounts
+    known_gh_accounts
+        .iter()
+        .map(ForgeAccount::github)
+        .chain(known_gl_accounts.iter().map(ForgeAccount::gitlab))
+        .chain(known_bb_accounts.iter().map(ForgeAccount::bitbucket))
+        .chain(known_code_accounts.iter().map(ForgeAccount::gitbutler_code))
+        .collect()
 }
 
-/// Authenticate with a forge provider (GitHub, GitLab, etc)
-async fn forge_auth(out: &mut OutputChannel) -> Result<()> {
+impl ForgeAccount {
+    fn github(account: &but_github::GithubAccountIdentifier) -> Self {
+        let (username, account_type) = match account {
+            but_github::GithubAccountIdentifier::OAuthUsername { username } => {
+                (username.clone(), "OAuth")
+            }
+            but_github::GithubAccountIdentifier::PatUsername { username } => {
+                (username.clone(), "Personal Access Token")
+            }
+            but_github::GithubAccountIdentifier::Enterprise { username, host } => {
+                (format!("{username}@{host}"), "GitHub Enterprise")
+            }
+        };
+        ForgeAccount {
+            provider: "GitHub".to_string(),
+            username,
+            account_type: account_type.to_string(),
+        }
+    }
+
+    fn gitlab(account: &but_gitlab::GitlabAccountIdentifier) -> Self {
+        let (username, account_type) = match account {
+            but_gitlab::GitlabAccountIdentifier::PatUsername { username } => {
+                (username.clone(), "Personal Access Token")
+            }
+            but_gitlab::GitlabAccountIdentifier::SelfHosted { username, host } => {
+                (format!("{username}@{host}"), "GitLab Self-Hosted")
+            }
+        };
+        ForgeAccount {
+            provider: "GitLab".to_string(),
+            username,
+            account_type: account_type.to_string(),
+        }
+    }
+
+    fn bitbucket(account: &but_bitbucket::BitbucketAccountIdentifier) -> Self {
+        let (username, account_type) = match account {
+            but_bitbucket::BitbucketAccountIdentifier::ApiToken { email } => {
+                (email.clone(), "API Token")
+            }
+        };
+        ForgeAccount {
+            provider: "Bitbucket".to_string(),
+            username,
+            account_type: account_type.to_string(),
+        }
+    }
+
+    fn gitbutler_code(account: &but_gitbutler_code::GitbutlerCodeAccountIdentifier) -> Self {
+        ForgeAccount {
+            provider: "GitButler Code".to_string(),
+            username: account.username().to_owned(),
+            account_type: "Device login".to_string(),
+        }
+    }
+}
+
+impl From<&AccountToForget> for ForgeAccount {
+    fn from(account: &AccountToForget) -> Self {
+        match account {
+            AccountToForget::GitHub(account) => ForgeAccount::github(account),
+            AccountToForget::GitLab(account) => ForgeAccount::gitlab(account),
+            AccountToForget::Bitbucket(account) => ForgeAccount::bitbucket(account),
+            AccountToForget::GitbutlerCode(account) => ForgeAccount::gitbutler_code(account),
+        }
+    }
+}
+
+async fn forge_auth(out: &mut OutputChannel) -> CliResult<()> {
     #[derive(Debug, Clone)]
     enum ForgeProvider {
         GitHub,
         GitLab,
         Bitbucket,
+        #[cfg(feature = "nightly")]
+        GitbutlerCode,
     }
 
     impl From<ForgeProvider> for String {
@@ -844,19 +1041,29 @@ async fn forge_auth(out: &mut OutputChannel) -> Result<()> {
                 ForgeProvider::GitHub => "GitHub".to_string(),
                 ForgeProvider::GitLab => "GitLab".to_string(),
                 ForgeProvider::Bitbucket => "Bitbucket".to_string(),
+                #[cfg(feature = "nightly")]
+                ForgeProvider::GitbutlerCode => "GitButler Code".to_string(),
             }
         }
     }
 
-    let auth_options = nonempty::nonempty![
+    #[cfg_attr(
+        not(feature = "nightly"),
+        expect(unused_mut, reason = "only nightly adds options")
+    )]
+    let mut auth_options = nonempty::nonempty![
         ("GitHub", ForgeProvider::GitHub),
         ("GitLab", ForgeProvider::GitLab),
         ("Bitbucket", ForgeProvider::Bitbucket)
     ];
+    #[cfg(feature = "nightly")]
+    auth_options.push(("GitButler Code", ForgeProvider::GitbutlerCode));
     let selected_option = {
-        let mut input = out
-            .prepare_for_terminal_input()
-            .context("Human input required - run this in a terminal")?;
+        let mut input = out.prepare_for_terminal_input().ok_or_else(|| {
+            bad_input("Human input required - run this in a terminal").hint(
+                "Ask the user to run `but config forge auth` in a terminal. It has no non-interactive form",
+            )
+        })?;
         input
             .prompt_select(
                 "Select a forge provider to authenticate with",
@@ -869,9 +1076,52 @@ async fn forge_auth(out: &mut OutputChannel) -> Result<()> {
     };
 
     match selected_option {
-        ForgeProvider::GitHub => github_auth(out).await,
-        ForgeProvider::GitLab => gitlab_auth(out).await,
-        ForgeProvider::Bitbucket => bitbucket_auth(out).await,
+        ForgeProvider::GitHub => github_auth(out).await?,
+        ForgeProvider::GitLab => gitlab_auth(out).await?,
+        ForgeProvider::Bitbucket => bitbucket_auth(out).await?,
+        #[cfg(feature = "nightly")]
+        ForgeProvider::GitbutlerCode => {
+            let mut inout = out
+                .prepare_for_terminal_input()
+                .context("Human input required - run this in a terminal")?;
+            gitbutler_code_login(&mut inout).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Sign in to GitButler Code with its device login: show the page that approves the code, then
+/// wait until the user has. Returns the username, with the account stored and its token in
+/// Git's credential store.
+#[cfg(feature = "nightly")]
+pub(crate) async fn gitbutler_code_login(inout: &mut InputOutputChannel<'_>) -> Result<String> {
+    use but_gitbutler_code::LoginStatus;
+
+    let login = but_api::gitbutler_code::start_login().await?;
+    writeln!(
+        inout,
+        "To sign in to GitButler Code, open this page and approve the code {}:\n\n    {}\n\nWaiting for you to approve it… (press Ctrl-C to cancel)",
+        login.user_code, login.verification_url
+    )?;
+    let interval = std::time::Duration::from_secs(login.interval.max(1));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(login.expires_in);
+    loop {
+        tokio::time::sleep(interval).await;
+        match but_api::gitbutler_code::check_login(login.device_code.clone()).await? {
+            LoginStatus::Pending if std::time::Instant::now() < deadline => continue,
+            LoginStatus::Pending | LoginStatus::Expired => {
+                anyhow::bail!("The sign-in code expired. Run `but config forge auth` to try again.")
+            }
+            LoginStatus::Denied => anyhow::bail!("The sign-in was declined."),
+            LoginStatus::Authorized(user) => {
+                writeln!(
+                    inout,
+                    "Signed in to GitButler Code as {}. Pushes to it no longer ask for a password.",
+                    user.username
+                )?;
+                return Ok(user.username);
+            }
+        }
     }
 }
 
@@ -923,7 +1173,6 @@ async fn bitbucket_auth(out: &mut OutputChannel) -> Result<()> {
     Ok(())
 }
 
-/// Authenticate with GitLab
 async fn gitlab_auth(out: &mut OutputChannel) -> Result<()> {
     #[derive(Debug, Clone)]
     enum AuthMethod {
@@ -959,7 +1208,6 @@ async fn gitlab_auth(out: &mut OutputChannel) -> Result<()> {
     }
 }
 
-/// Authenticate with GitLab using a Personal Access Token (PAT)
 async fn gitlab_pat(mut inout: InputOutputChannel<'_>) -> Result<()> {
     use but_gitlab::AuthStatusResponse;
 
@@ -975,7 +1223,6 @@ async fn gitlab_pat(mut inout: InputOutputChannel<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Authenticate with self-hosted GitLab
 async fn gitlab_self_hosted(mut inout: InputOutputChannel<'_>) -> Result<()> {
     use but_gitlab::AuthStatusResponse;
 
@@ -995,7 +1242,6 @@ async fn gitlab_self_hosted(mut inout: InputOutputChannel<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Authenticate with GitHub
 async fn github_auth(out: &mut OutputChannel) -> Result<()> {
     #[derive(Debug, Clone)]
     enum AuthMethod {
@@ -1035,7 +1281,6 @@ async fn github_auth(out: &mut OutputChannel) -> Result<()> {
     }
 }
 
-/// Authenticate with GitHub using a Personal Access Token (PAT)
 async fn github_pat(mut inout: InputOutputChannel<'_>) -> Result<()> {
     use but_github::AuthStatusResponse;
 
@@ -1051,7 +1296,6 @@ async fn github_pat(mut inout: InputOutputChannel<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Authenticate with GitHub Enterprise
 async fn github_enterprise(mut inout: InputOutputChannel<'_>) -> Result<()> {
     use but_github::AuthStatusResponse;
 
@@ -1100,132 +1344,84 @@ async fn github_oauth(mut inout: InputOutputChannel<'_>) -> Result<()> {
     Ok(())
 }
 
-async fn display_authenticated_github_accounts(
-    known_gh_accounts: &Vec<but_github::GithubAccountIdentifier>,
-    out: &mut dyn Write,
-) -> Result<bool, anyhow::Error> {
-    let t = theme::get();
-    writeln!(
-        out,
-        "\n{}:",
-        t.important.paint("Authenticated GitHub accounts")
-    )?;
-    writeln!(out)?;
-
-    let mut some_accounts_invalid = false;
-
+async fn check_github_accounts(
+    known_gh_accounts: &[but_github::GithubAccountIdentifier],
+) -> ForgeAccountsSection {
+    let mut accounts = Vec::new();
     for account in known_gh_accounts {
-        let account_status = but_api::github::check_github_credentials(account.clone())
-            .await
-            .ok();
-
-        let message = match account_status {
-            Some(but_github::CredentialCheckResult::Valid) => {
-                t.success.paint("(valid credentials)")
-            }
-            Some(but_github::CredentialCheckResult::Invalid) => {
-                some_accounts_invalid = true;
-                t.attention.paint("(invalid credentials)")
-            }
-            Some(but_github::CredentialCheckResult::NoCredentials) => {
-                some_accounts_invalid = true;
-                t.attention.paint("(no credentials)")
-            }
-            None => t.error.paint("(unknown status)"),
+        let status = match but_api::github::check_github_credentials(account.clone()).await {
+            Ok(but_github::CredentialCheckResult::Valid) => CredentialStatus::Valid,
+            Ok(but_github::CredentialCheckResult::Invalid) => CredentialStatus::Invalid,
+            Ok(but_github::CredentialCheckResult::NoCredentials) => CredentialStatus::NoCredentials,
+            Err(err) => CredentialStatus::Unknown(format!("{err:#}")),
         };
-
-        writeln!(out, "  • {account} {message}")?;
+        accounts.push((account.to_string(), status));
     }
-    writeln!(out)?;
-    Ok(some_accounts_invalid)
+    ForgeAccountsSection {
+        forge: "GitHub",
+        accounts,
+    }
 }
 
-async fn display_authenticated_gitlab_accounts(
-    known_gl_accounts: &Vec<but_gitlab::GitlabAccountIdentifier>,
-    out: &mut dyn Write,
-) -> Result<bool, anyhow::Error> {
-    let t = theme::get();
-    if known_gl_accounts.is_empty() {
-        return Ok(false);
-    }
-
-    writeln!(
-        out,
-        "\n{}:",
-        t.important.paint("Authenticated GitLab accounts")
-    )?;
-    writeln!(out)?;
-
-    let mut some_accounts_invalid = false;
-
+async fn check_gitlab_accounts(
+    known_gl_accounts: &[but_gitlab::GitlabAccountIdentifier],
+) -> ForgeAccountsSection {
+    let mut accounts = Vec::new();
     for account in known_gl_accounts {
-        let account_status = but_api::gitlab::check_gitlab_credentials(account.clone())
-            .await
-            .ok();
-
-        let message = match account_status {
-            Some(but_gitlab::CredentialCheckResult::Valid) => {
-                t.success.paint("(valid credentials)")
-            }
-            Some(but_gitlab::CredentialCheckResult::Invalid) => {
-                some_accounts_invalid = true;
-                t.attention.paint("(invalid credentials)")
-            }
-            Some(but_gitlab::CredentialCheckResult::NoCredentials) => {
-                some_accounts_invalid = true;
-                t.attention.paint("(no credentials)")
-            }
-            None => t.error.paint("(unknown status)"),
+        let status = match but_api::gitlab::check_gitlab_credentials(account.clone()).await {
+            Ok(but_gitlab::CredentialCheckResult::Valid) => CredentialStatus::Valid,
+            Ok(but_gitlab::CredentialCheckResult::Invalid) => CredentialStatus::Invalid,
+            Ok(but_gitlab::CredentialCheckResult::NoCredentials) => CredentialStatus::NoCredentials,
+            Err(err) => CredentialStatus::Unknown(format!("{err:#}")),
         };
-
-        writeln!(out, "  • {account} {message}")?;
+        accounts.push((account.to_string(), status));
     }
-    writeln!(out)?;
-    Ok(some_accounts_invalid)
+    ForgeAccountsSection {
+        forge: "GitLab",
+        accounts,
+    }
 }
 
-async fn display_authenticated_bitbucket_accounts(
-    known_bb_accounts: &Vec<but_bitbucket::BitbucketAccountIdentifier>,
-    out: &mut dyn Write,
-) -> Result<bool, anyhow::Error> {
-    let t = theme::get();
-    if known_bb_accounts.is_empty() {
-        return Ok(false);
-    }
-
-    writeln!(
-        out,
-        "\n{}:",
-        t.important.paint("Authenticated Bitbucket accounts")
-    )?;
-    writeln!(out)?;
-
-    let mut some_accounts_invalid = false;
-
+async fn check_bitbucket_accounts(
+    known_bb_accounts: &[but_bitbucket::BitbucketAccountIdentifier],
+) -> ForgeAccountsSection {
+    let mut accounts = Vec::new();
     for account in known_bb_accounts {
-        let account_status = but_api::bitbucket::check_bitbucket_credentials(account.clone())
-            .await
-            .ok();
-
-        let message = match account_status {
-            Some(but_bitbucket::CredentialCheckResult::Valid) => {
-                t.success.paint("(valid credentials)")
+        let status = match but_api::bitbucket::check_bitbucket_credentials(account.clone()).await {
+            Ok(but_bitbucket::CredentialCheckResult::Valid) => CredentialStatus::Valid,
+            Ok(but_bitbucket::CredentialCheckResult::Invalid) => CredentialStatus::Invalid,
+            Ok(but_bitbucket::CredentialCheckResult::NoCredentials) => {
+                CredentialStatus::NoCredentials
             }
-            Some(but_bitbucket::CredentialCheckResult::Invalid) => {
-                some_accounts_invalid = true;
-                t.attention.paint("(invalid credentials)")
-            }
-            Some(but_bitbucket::CredentialCheckResult::NoCredentials) => {
-                some_accounts_invalid = true;
-                t.attention.paint("(no credentials)")
-            }
-            None => t.error.paint("(unknown status)"),
+            Err(err) => CredentialStatus::Unknown(format!("{err:#}")),
         };
-
-        writeln!(out, "  • {account} {message}")?;
+        accounts.push((account.to_string(), status));
     }
-    writeln!(out)?;
-    Ok(some_accounts_invalid)
+    ForgeAccountsSection {
+        forge: "Bitbucket",
+        accounts,
+    }
+}
+
+async fn check_gitbutler_code_accounts(
+    known_accounts: &[but_gitbutler_code::GitbutlerCodeAccountIdentifier],
+) -> ForgeAccountsSection {
+    let mut accounts = Vec::new();
+    for account in known_accounts {
+        let status = match but_api::gitbutler_code::check_credentials(account.clone()).await {
+            Ok(but_gitbutler_code::CredentialCheckResult::Valid) => CredentialStatus::Valid,
+            Ok(but_gitbutler_code::CredentialCheckResult::Invalid) => CredentialStatus::Invalid,
+            Ok(but_gitbutler_code::CredentialCheckResult::NoCredentials) => {
+                CredentialStatus::NoCredentials
+            }
+            Err(err) => CredentialStatus::Unknown(format!("{err:#}")),
+        };
+        accounts.push((account.to_string(), status));
+    }
+    ForgeAccountsSection {
+        forge: "GitButler Code",
+        accounts,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1233,6 +1429,7 @@ enum AccountToForget {
     GitHub(but_github::GithubAccountIdentifier),
     GitLab(but_gitlab::GitlabAccountIdentifier),
     Bitbucket(but_bitbucket::BitbucketAccountIdentifier),
+    GitbutlerCode(but_gitbutler_code::GitbutlerCodeAccountIdentifier),
 }
 
 impl Display for AccountToForget {
@@ -1241,6 +1438,9 @@ impl Display for AccountToForget {
             AccountToForget::GitHub(account) => write!(f, "GitHub account '{account}'"),
             AccountToForget::GitLab(account) => write!(f, "GitLab account '{account}'"),
             AccountToForget::Bitbucket(account) => write!(f, "Bitbucket account '{account}'"),
+            AccountToForget::GitbutlerCode(account) => {
+                write!(f, "GitButler Code account '{account}'")
+            }
         }
     }
 }
@@ -1256,11 +1456,13 @@ fn forget_account(account: &AccountToForget) -> Result<()> {
         AccountToForget::Bitbucket(bb_account) => {
             but_api::bitbucket::forget_bitbucket_account(bb_account.clone())
         }
+        AccountToForget::GitbutlerCode(account) => {
+            but_api::gitbutler_code::forget_account(account.clone())
+        }
     }
 }
 
-/// Forget a GitHub account
-async fn forge_forget(username: Option<String>, out: &mut OutputChannel) -> Result<()> {
+async fn forge_forget(username: Option<String>, out: &mut OutputChannel) -> CliResult<()> {
     let known_gh_accounts = but_api::github::list_known_github_accounts()?;
     let known_gl_accounts = but_api::gitlab::list_known_gitlab_accounts()?;
     let known_bb_accounts = but_api::bitbucket::list_known_bitbucket_accounts()?;
@@ -1286,27 +1488,23 @@ async fn forge_forget(username: Option<String>, out: &mut OutputChannel) -> Resu
         }
     }
 
-    // Handle case where no matching account was found
-    if accounts_to_delete.is_empty() {
-        if let Some((username, out)) = username.zip(out.for_human()) {
-            writeln!(out, "No known forge account matching '{username}'")?;
+    for account in but_api::gitbutler_code::list_known_accounts()? {
+        if username.as_ref().is_none_or(|u| account.username() == u) {
+            accounts_to_delete.push(AccountToForget::GitbutlerCode(account));
         }
-        return Ok(());
     }
 
-    // Handle different scenarios based on number of accounts
-    match accounts_to_delete.as_slice() {
+    let outcome = match accounts_to_delete.as_slice() {
+        [] => ForgetOutcome::NoMatch { username },
         [single_account] => {
-            // Single account: delete automatically
             forget_account(single_account)?;
-            if let Some(out) = out.for_human() {
-                writeln!(out, "Forgot forge account '{single_account}'")?;
-            }
+            ForgetOutcome::Forgot(accounts_to_delete)
         }
         _ => {
-            // Multiple accounts: prompt user to select
             let Some(mut input) = out.prepare_for_terminal_input() else {
-                anyhow::bail!("Username ambiguous, got {accounts_to_delete:?}");
+                return Err(
+                    anyhow::anyhow!("Username ambiguous, got {accounts_to_delete:?}").into(),
+                );
             };
             let account_options = accounts_to_delete
                 .into_iter()
@@ -1323,18 +1521,60 @@ async fn forge_forget(username: Option<String>, out: &mut OutputChannel) -> Resu
                 .ok_or_else(|| anyhow::anyhow!("Could not determine which accounts to delete"))?;
 
             if selected_accounts.is_empty() {
-                writeln!(input, "No accounts were selected to forget.")?;
-                return Ok(());
-            }
-
-            for account in selected_accounts {
-                forget_account(account)?;
-                writeln!(input, "Forgot forge account '{account}'")?;
+                ForgetOutcome::NoneSelected
+            } else {
+                for account in &selected_accounts {
+                    forget_account(account)?;
+                }
+                ForgetOutcome::Forgot(selected_accounts.into_iter().cloned().collect())
             }
         }
-    }
+    };
+    out.print_cli_output(outcome)
+}
 
-    Ok(())
+#[must_use]
+enum ForgetOutcome {
+    /// No known account matched `username`, or there are no accounts if it's `None`.
+    NoMatch {
+        username: Option<String>,
+    },
+    /// Several accounts matched, and the user picked none of them.
+    NoneSelected,
+    Forgot(Vec<AccountToForget>),
+}
+
+impl CliOutputHuman for ForgetOutcome {
+    fn on_human(
+        self,
+        out: &mut dyn WriteWithUtils,
+        _agent: bool,
+        _t: &'static Theme,
+    ) -> Result<()> {
+        match self {
+            ForgetOutcome::NoMatch { username: None } => {}
+            ForgetOutcome::NoMatch {
+                username: Some(username),
+            } => writeln!(out, "No known forge account matching '{username}'")?,
+            ForgetOutcome::NoneSelected => writeln!(out, "No accounts were selected to forget.")?,
+            ForgetOutcome::Forgot(accounts) => {
+                for account in accounts {
+                    writeln!(out, "Forgot forge account '{account}'")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CliOutput for ForgetOutcome {
+    fn on_json(self) -> impl Serialize {
+        let forgotten: Vec<ForgeAccount> = match self {
+            ForgetOutcome::NoMatch { .. } | ForgetOutcome::NoneSelected => Vec::new(),
+            ForgetOutcome::Forgot(accounts) => accounts.iter().map(ForgeAccount::from).collect(),
+        };
+        serde_json::json!({ "forgotten": forgotten })
+    }
 }
 
 fn ai_config_with_repo(
@@ -1343,7 +1583,7 @@ fn ai_config_with_repo(
     cmd: Option<AiSubcommand>,
     local: bool,
     global: bool,
-) -> Result<()> {
+) -> CliResult<()> {
     let repo = ctx.repo.get()?;
     ai_config_inner(Some(&*repo), out, cmd, local, global)
 }
@@ -1354,126 +1594,157 @@ fn ai_config_inner(
     cmd: Option<AiSubcommand>,
     local: bool,
     global: bool,
-) -> Result<()> {
+) -> CliResult<()> {
     let scope = AiScope::from_flags(local, global)?;
 
     match cmd {
         None => {
             if out.can_prompt() {
-                return ai_config_interactive(repo, out, scope);
+                return Ok(ai_config_interactive(repo, out, scope)?);
             }
-            show_ai_config(repo, out, scope)
+            out.print_cli_output(show_ai_config(repo, scope)?)
         }
-        Some(AiSubcommand::Show) => show_ai_config(repo, out, scope),
-        Some(cmd) => ai_config_non_interactive(repo, out, scope, cmd),
+        Some(cmd) => out.print_cli_output(ai_config_non_interactive(repo, scope, cmd)?),
     }
 }
 
-fn show_ai_config(
-    repo: Option<&gix::Repository>,
-    out: &mut OutputChannel,
-    scope: AiScope,
-) -> Result<()> {
-    let t = theme::get();
+fn show_ai_config(repo: Option<&gix::Repository>, scope: AiScope) -> Result<AiConfigOutcome> {
     let info = get_ai_config_info(repo, scope)?;
+    Ok(AiConfigOutcome::Show {
+        info: Box::new(info),
+        scope,
+    })
+}
 
-    if let Some(out) = out.for_human() {
-        writeln!(
-            out,
-            "{} ({})",
-            t.important.paint("AI Configuration"),
-            t.hint.paint(scope.as_str())
-        )?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("Provider"),
-            info.provider
-                .as_deref()
-                .map(|provider| t.config_value.paint(provider))
-                .unwrap_or_else(|| t.error.paint("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("OpenAI key option"),
-            t.config_value
-                .paint(info.openai_key_option.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("OpenAI model"),
-            t.config_value
-                .paint(info.openai_model.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("OpenAI endpoint"),
-            t.config_value
-                .paint(info.openai_endpoint.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("Anthropic key option"),
-            t.config_value
-                .paint(info.anthropic_key_option.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("Anthropic model"),
-            t.config_value
-                .paint(info.anthropic_model.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("Ollama endpoint"),
-            t.config_value
-                .paint(info.ollama_endpoint.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("Ollama model"),
-            t.config_value
-                .paint(info.ollama_model.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("LM Studio endpoint"),
-            t.config_value
-                .paint(info.lmstudio_endpoint.as_deref().unwrap_or("(not set)"))
-        )?;
-        writeln!(
-            out,
-            "  {}: {}",
-            t.hint.paint("LM Studio model"),
-            t.config_value
-                .paint(info.lmstudio_model.as_deref().unwrap_or("(not set)"))
-        )?;
-    } else if let Some(out) = out.for_json() {
-        out.write_value(serde_json::json!(info))?;
+#[must_use]
+enum AiConfigOutcome {
+    Show {
+        info: Box<AiConfigInfo>,
+        scope: AiScope,
+    },
+    Set {
+        provider: LLMProviderKind,
+        scope: AiScope,
+    },
+}
+
+impl CliOutputHuman for AiConfigOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        match self {
+            AiConfigOutcome::Show { info, scope } => {
+                writeln!(
+                    out,
+                    "{} ({})",
+                    t.important.paint("AI Configuration"),
+                    t.hint.paint(scope.as_str())
+                )?;
+                writeln!(out)?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("Provider"),
+                    info.provider
+                        .as_deref()
+                        .map(|provider| t.config_value.paint(provider))
+                        .unwrap_or_else(|| t.error.paint("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("OpenAI key option"),
+                    t.config_value
+                        .paint(info.openai_key_option.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("OpenAI model"),
+                    t.config_value
+                        .paint(info.openai_model.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("OpenAI endpoint"),
+                    t.config_value
+                        .paint(info.openai_endpoint.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("Anthropic key option"),
+                    t.config_value
+                        .paint(info.anthropic_key_option.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("Anthropic model"),
+                    t.config_value
+                        .paint(info.anthropic_model.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("Ollama endpoint"),
+                    t.config_value
+                        .paint(info.ollama_endpoint.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("Ollama model"),
+                    t.config_value
+                        .paint(info.ollama_model.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("LM Studio endpoint"),
+                    t.config_value
+                        .paint(info.lmstudio_endpoint.as_deref().unwrap_or("(not set)"))
+                )?;
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    t.hint.paint("LM Studio model"),
+                    t.config_value
+                        .paint(info.lmstudio_model.as_deref().unwrap_or("(not set)"))
+                )?;
+            }
+            AiConfigOutcome::Set { provider, scope } => {
+                writeln!(
+                    out,
+                    "{} AI provider set to {} ({})",
+                    t.sym().success,
+                    t.config_value.paint(provider.display_name()),
+                    t.hint.paint(scope.as_str())
+                )?;
+            }
+        }
+        Ok(())
     }
+}
 
-    Ok(())
+impl CliOutput for AiConfigOutcome {
+    fn on_json(self) -> impl Serialize {
+        match self {
+            AiConfigOutcome::Show { info, scope: _ } => serde_json::json!(info),
+            AiConfigOutcome::Set { provider, scope } => serde_json::json!({
+                "provider": provider.as_git_config_value(),
+                "scope": scope.as_str(),
+            }),
+        }
+    }
 }
 
 fn ai_config_non_interactive(
     repo: Option<&gix::Repository>,
-    out: &mut OutputChannel,
     scope: AiScope,
     cmd: AiSubcommand,
-) -> Result<()> {
-    match cmd {
-        AiSubcommand::Show => {
-            return show_ai_config(repo, out, scope);
-        }
+) -> Result<AiConfigOutcome> {
+    let provider = match cmd {
+        AiSubcommand::Show => return show_ai_config(repo, scope),
         AiSubcommand::Openai {
             key_option,
             model,
@@ -1485,7 +1756,7 @@ fn ai_config_non_interactive(
             let secret = resolve_secret_input(api_key, api_key_env)?;
             require_non_interactive_secret_if_byok(selected_key_option, secret.as_ref(), "OpenAI")?;
             apply_openai_config(repo, scope, selected_key_option, model, endpoint, secret)?;
-            write_ai_config_success(out, scope, LLMProviderKind::OpenAi)?;
+            LLMProviderKind::OpenAi
         }
         AiSubcommand::Anthropic {
             key_option,
@@ -1501,15 +1772,15 @@ fn ai_config_non_interactive(
                 "Anthropic",
             )?;
             apply_anthropic_config(repo, scope, selected_key_option, model, secret)?;
-            write_ai_config_success(out, scope, LLMProviderKind::Anthropic)?;
+            LLMProviderKind::Anthropic
         }
         AiSubcommand::Ollama { endpoint, model } => {
             apply_ollama_config(repo, scope, endpoint, model)?;
-            write_ai_config_success(out, scope, LLMProviderKind::Ollama)?;
+            LLMProviderKind::Ollama
         }
         AiSubcommand::Lmstudio { endpoint, model } => {
             apply_lmstudio_config(repo, scope, endpoint, model)?;
-            write_ai_config_success(out, scope, LLMProviderKind::LMStudio)?;
+            LLMProviderKind::LMStudio
         }
         AiSubcommand::Openrouter {
             model,
@@ -1518,11 +1789,11 @@ fn ai_config_non_interactive(
         } => {
             let secret = resolve_secret_input(api_key, api_key_env)?;
             apply_openrouter_config(repo, scope, model, secret)?;
-            write_ai_config_success(out, scope, LLMProviderKind::OpenRouter)?;
+            LLMProviderKind::OpenRouter
         }
-    }
+    };
 
-    Ok(())
+    Ok(AiConfigOutcome::Set { provider, scope })
 }
 
 fn ai_config_interactive(
@@ -1627,29 +1898,6 @@ fn ai_config_interactive(
         t.config_value.paint(provider.display_name()),
         t.hint.paint(scope.as_str())
     )?;
-    Ok(())
-}
-
-fn write_ai_config_success(
-    out: &mut OutputChannel,
-    scope: AiScope,
-    provider: LLMProviderKind,
-) -> Result<()> {
-    let t = theme::get();
-    if let Some(out) = out.for_human() {
-        writeln!(
-            out,
-            "{} AI provider set to {} ({})",
-            t.sym().success,
-            t.config_value.paint(provider.display_name()),
-            t.hint.paint(scope.as_str())
-        )?;
-    } else if let Some(out) = out.for_json() {
-        out.write_value(serde_json::json!({
-            "provider": provider.as_git_config_value(),
-            "scope": scope.as_str(),
-        }))?;
-    }
     Ok(())
 }
 
@@ -1803,123 +2051,285 @@ fn get_ai_config_info(repo: Option<&gix::Repository>, scope: AiScope) -> Result<
     }
 }
 
-/// Handle target config subcommand
 async fn target_config(
     ctx: &mut Context,
     out: &mut OutputChannel,
     branch: Option<String>,
     push_remote: Option<String>,
-) -> Result<()> {
-    let t = theme::get();
-    match branch {
-        None => {
-            #[cfg(feature = "legacy")]
-            {
-                let target = {
-                    let mut guard = ctx.exclusive_worktree_access();
-                    but_api::legacy::virtual_branches::get_base_branch_data(
-                        ctx,
-                        guard.write_permission(),
-                    )?
-                };
+) -> CliResult<()> {
+    let outcome = match branch {
+        None => match read_target(ctx)? {
+            Some(target) => TargetOutcome::Shown(target),
+            None => TargetOutcome::Unset,
+        },
+        Some(new_branch) => {
+            set_target(ctx, &new_branch, push_remote)?;
+            let target = read_target(ctx)
+                .and_then(|target| target.context("The project has no target branch"))
+                .with_context(|| {
+                    format!("Set the target branch to '{new_branch}', but couldn't read it back")
+                })?;
+            TargetOutcome::Changed(target)
+        }
+    };
+    out.print_cli_output(outcome)
+}
 
-                if let Some(target_branch) = target {
-                    if let Some(out) = out.for_human() {
-                        writeln!(out, "{}", t.hint.paint("Used to determine common base to calculate commits unique to each branch (not yet integrated)\n"))?;
-                        writeln!(out, "{}:", t.important.paint("Target Branch"))?;
-                        writeln!(
-                            out,
-                            "\n  {}",
-                            t.config_value.paint(&target_branch.branch_name)
-                        )?;
-                        writeln!(out)?;
-                        writeln!(
-                            out,
-                            "  {}: {}",
-                            t.hint.paint("Remote"),
-                            target_branch.remote_url
-                        )?;
-                        writeln!(
-                            out,
-                            "  {}:    {}",
-                            t.hint.paint("SHA"),
-                            target_branch.base_sha
-                        )?;
-                        writeln!(
-                            out,
-                            "\n{}",
-                            t.hint.paint(
-                                "New commits on the remote arrive via `but pull` — the target setting is not what makes the workspace current."
-                            )
-                        )?;
-                        writeln!(
-                            out,
-                            "{}:",
-                            t.hint
-                                .paint("To point the workspace at a different branch entirely")
-                        )?;
-                        writeln!(
-                            out,
-                            "  {}",
-                            t.command_suggestion
-                                .paint("but config target <branch_name>")
-                        )?;
-                    } else if let Some(out) = out.for_json() {
-                        out.write_value(serde_json::json!({
-                            "branch": target_branch.branch_name.to_string(),
-                            "remote_url": target_branch.remote_url,
-                            "sha": target_branch.base_sha.to_string(),
-                        }))?;
-                    } // View current target
+/// The project's target branch, or `None` if it has none.
+fn read_target(ctx: &Context) -> Result<Option<Target>> {
+    let Some(target_ref) = ctx.project_meta()?.target_ref else {
+        return Ok(None);
+    };
+    let guard = ctx.shared_worktree_access();
+    let base_branch =
+        gitbutler_branch_actions::base::get_base_branch_data(ctx, guard.read_permission())
+            .with_context(|| {
+                format!(
+                    "Failed to read the target branch '{}'",
+                    target_ref.shorten()
+                )
+            })?;
+    Ok(Some(Target {
+        branch_name: base_branch.branch_name,
+        remote_url: base_branch.remote_url,
+        base_sha: base_branch.base_sha.to_string(),
+    }))
+}
+
+/// Make `branch` the target, as `but config target <branch>` does: a local branch, or a
+/// remote-tracking one, whose local tracking branch is created when no branch has its name.
+/// `push_remote` names the remote branches are pushed to when it's set.
+pub(crate) fn set_target(
+    ctx: &mut Context,
+    branch: &str,
+    push_remote: Option<String>,
+) -> CliResult<()> {
+    if let Some(push_remote) = push_remote.as_deref() {
+        ctx.repo
+            .get()?
+            .find_remote(push_remote)
+            .with_context(|| format!("Failed to find push remote '{push_remote}'"))?;
+    }
+
+    let mut guard = ctx.exclusive_worktree_access();
+    let (target_ref, created) = {
+        let repo = ctx.repo.get()?;
+        let ref_name: gix::refs::FullName = if branch.starts_with("refs/") {
+            branch.try_into().context("Invalid target branch name")?
+        } else {
+            let local_ref: gix::refs::FullName = format!("refs/heads/{branch}")
+                .try_into()
+                .context("Invalid target branch name")?;
+            if repo.try_find_reference(local_ref.as_ref())?.is_some() {
+                local_ref
+            } else {
+                format!("refs/remotes/{branch}")
+                    .try_into()
+                    .context("Invalid target branch name")?
+            }
+        };
+        if ref_name.category() == Some(gix::refs::Category::RemoteBranch) {
+            repo.try_find_reference(ref_name.as_ref())?
+                .with_context(|| format!("Target branch '{branch}' not found"))?;
+        }
+        match but_core::ref_metadata::resolve_local_target(ref_name.as_ref(), &repo) {
+            Ok(target_ref) => (target_ref, false),
+            // The remote name is shorthand for the local branch tracking it, not a stored
+            // legacy target, so the error describes the input rather than a migration.
+            Err(err) => {
+                if let Some(unresolved) = err.downcast_ref::<UnresolvedLegacyTargetRefError>()
+                    && unresolved.reason == UnresolvedLegacyTargetReason::NoTrackingBranch
+                {
+                    // The branch is left out of the undo timeline, as setting the target is:
+                    // a snapshot needs a target to read, and there is often none yet.
+                    match create_branch_to_track(&repo, ref_name.as_ref())? {
+                        Some(target_ref) => (target_ref, true),
+                        None => {
+                            let target_ref = ref_name.shorten();
+                            return Err(bad_input(format!("No local branch tracks {target_ref}"))
+                                .hint(track_remote_target_hint(unresolved))
+                                .into());
+                        }
+                    }
+                } else {
+                    return Err(err.into());
                 }
             }
         }
-        Some(new_branch) => {
-            if let Some(out) = out.for_human() {
-                writeln!(
-                    out,
-                    "{} Changing target branch to '{}'",
-                    t.sym().success,
-                    t.config_value.paint(&new_branch)
-                )?;
-            }
-
-            if let Some(push_remote) = push_remote.as_deref() {
-                ctx.repo
-                    .get()?
-                    .find_remote(push_remote)
-                    .with_context(|| format!("Failed to find push remote '{push_remote}'"))?;
-            }
-
-            let target_ref: gix::refs::FullName = format!("refs/remotes/{new_branch}")
-                .try_into()
-                .context("Invalid target branch name")?;
-            but_api::workspace::set_target_ref_and_init_project(
-                ctx,
-                target_ref.as_ref(),
-                push_remote,
-            )?;
-        }
+    };
+    if created {
+        // Setting the target makes a branch without an upstream track the default remote,
+        // so it must see the upstream the new branch got, which the cached repository
+        // reads only once reloaded.
+        ctx.reload_repo_and_invalidate_workspace(guard.write_permission())?;
     }
-
+    // Setting the target takes the lock itself.
+    drop(guard);
+    but_api::workspace::set_target_ref_and_init_project(
+        ctx,
+        target_ref.as_local_full_name_ref(),
+        push_remote,
+    )?;
     Ok(())
 }
 
-/// Handle push remote config subcommand.
-fn push_remote_config(
-    ctx: &mut Context,
-    out: &mut OutputChannel,
-    remote: Option<String>,
-) -> Result<()> {
-    let t = theme::get();
-    match remote {
+/// A project's target branch, as `but config target` shows it.
+struct Target {
+    branch_name: String,
+    remote_url: Option<String>,
+    base_sha: String,
+}
+
+/// What `but config target` shows or changed.
+#[must_use]
+enum TargetOutcome {
+    /// The project has no target branch.
+    Unset,
+    /// The current target branch.
+    Shown(Target),
+    /// The target branch was changed to this one.
+    Changed(Target),
+}
+
+impl CliOutputHuman for TargetOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        let Target {
+            branch_name,
+            remote_url,
+            base_sha,
+        } = match self {
+            TargetOutcome::Unset => {
+                writeln!(
+                    out,
+                    "No target branch is set. Set one with {}",
+                    t.command_suggestion
+                        .paint("but config target <branch_name>")
+                )?;
+                return Ok(());
+            }
+            TargetOutcome::Changed(Target { branch_name, .. }) => {
+                writeln!(
+                    out,
+                    "{} Changed target branch to '{}'",
+                    t.sym().success,
+                    t.config_value.paint(&branch_name)
+                )?;
+                return Ok(());
+            }
+            TargetOutcome::Shown(target) => target,
+        };
+        writeln!(out, "{}", t.hint.paint("Used to determine common base to calculate commits unique to each branch (not yet integrated)\n"))?;
+        writeln!(out, "{}:", t.important.paint("Target Branch"))?;
+        writeln!(out, "\n  {}", t.config_value.paint(&branch_name))?;
+        writeln!(out)?;
+        if let Some(remote_url) = &remote_url {
+            writeln!(out, "  {}: {}", t.hint.paint("Remote"), remote_url)?;
+        }
+        writeln!(out, "  {}:    {}", t.hint.paint("SHA"), base_sha)?;
+        writeln!(
+            out,
+            "\n{}",
+            t.hint.paint(
+                "New commits on the remote arrive via `but pull` — the target setting is not what makes the workspace current."
+            )
+        )?;
+        writeln!(
+            out,
+            "{}:",
+            t.hint
+                .paint("To point the workspace at a different branch entirely")
+        )?;
+        writeln!(
+            out,
+            "  {}",
+            t.command_suggestion
+                .paint("but config target <branch_name>")
+        )?;
+        Ok(())
+    }
+}
+
+impl CliOutput for TargetOutcome {
+    fn on_json(self) -> impl Serialize {
+        match self {
+            TargetOutcome::Unset => serde_json::json!({ "branch": null }),
+            TargetOutcome::Shown(Target {
+                branch_name,
+                remote_url,
+                base_sha,
+            })
+            | TargetOutcome::Changed(Target {
+                branch_name,
+                remote_url,
+                base_sha,
+            }) => serde_json::json!({
+                "branch": branch_name,
+                "remote_url": remote_url,
+                "sha": base_sha,
+            }),
+        }
+    }
+}
+
+/// Create the local branch named as the remote-tracking `target`, like main for origin/main, to
+/// track it as `git switch main` does. `None` if a branch has that name already, `target` is
+/// symbolic like origin/HEAD, or no single remote fetches into `target` to name one.
+fn create_branch_to_track(
+    repo: &gix::Repository,
+    target: &gix::refs::FullNameRef,
+) -> Result<Option<LocalRefName>> {
+    if matches!(
+        repo.find_reference(target)?.target(),
+        gix::refs::TargetRef::Symbolic(_)
+    ) {
+        return Ok(None);
+    }
+    let Ok(Some((local, _remote))) = repo.upstream_branch_and_remote_for_tracking_branch(target)
+    else {
+        return Ok(None);
+    };
+    if repo.try_find_reference(local.as_ref())?.is_some() {
+        return Ok(None);
+    }
+    let local = but_workspace::branch::local_tracking_branch(repo, target)?;
+    Ok(Some(LocalRefName::new(local)?))
+}
+
+fn push_remote_config(ctx: &mut Context, remote: Option<String>) -> Result<PushRemoteOutcome> {
+    let outcome = match remote {
         None => {
             let repo = ctx.repo.get()?;
             let project_meta = ctx.project_meta()?;
-            let explicitly_configured = project_meta.push_remote.is_some();
-            let push_remote = project_meta.push_remote_name(&repo)?;
+            PushRemoteOutcome::Show {
+                explicitly_configured: project_meta.push_remote.is_some(),
+                push_remote: project_meta.push_remote_name(&repo)?,
+            }
+        }
+        Some(remote) => {
+            but_api::workspace::set_push_remote(ctx, remote.clone())?;
+            PushRemoteOutcome::Set(remote)
+        }
+    };
+    Ok(outcome)
+}
 
-            if let Some(out) = out.for_human() {
+#[must_use]
+enum PushRemoteOutcome {
+    Show {
+        push_remote: String,
+        /// Whether the push remote is set rather than inherited from the target.
+        explicitly_configured: bool,
+    },
+    Set(String),
+}
+
+impl CliOutputHuman for PushRemoteOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        match self {
+            PushRemoteOutcome::Show {
+                push_remote,
+                explicitly_configured,
+            } => {
                 writeln!(out, "\n{}:", t.important.paint("Push Remote"))?;
                 writeln!(out)?;
                 write!(out, "  {}", t.config_value.paint(&push_remote))?;
@@ -1927,29 +2337,33 @@ fn push_remote_config(
                     write!(out, " {}", t.hint.paint("(inherited from target)"))?;
                 }
                 writeln!(out)?;
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({
-                    "push_remote": push_remote,
-                    "explicit": explicitly_configured,
-                }))?;
             }
-        }
-        Some(remote) => {
-            but_api::workspace::set_push_remote(ctx, remote.clone())?;
-
-            if let Some(out) = out.for_human() {
+            PushRemoteOutcome::Set(remote) => {
                 writeln!(
                     out,
                     "{} Push remote set to '{}'",
                     t.sym().success,
                     t.config_value.paint(&remote)
                 )?;
-            } else if let Some(out) = out.for_json() {
-                out.write_value(serde_json::json!({ "push_remote": remote }))?;
             }
         }
+        Ok(())
     }
-    Ok(())
+}
+
+impl CliOutput for PushRemoteOutcome {
+    fn on_json(self) -> impl Serialize {
+        match self {
+            PushRemoteOutcome::Show {
+                push_remote,
+                explicitly_configured,
+            } => serde_json::json!({
+                "push_remote": push_remote,
+                "explicit": explicitly_configured,
+            }),
+            PushRemoteOutcome::Set(remote) => serde_json::json!({ "push_remote": remote }),
+        }
+    }
 }
 
 fn get_config_string_and_scope(
@@ -1978,7 +2392,6 @@ fn config_source_scope(source: gix::config::Source) -> &'static str {
     }
 }
 
-/// Format the scope for display
 fn format_scope(scope: Option<gix::config::Source>) -> String {
     match scope {
         Some(source) => theme::get()
@@ -2002,3 +2415,6 @@ where
         None => serializer.serialize_none(),
     }
 }
+
+#[cfg(test)]
+mod tests;

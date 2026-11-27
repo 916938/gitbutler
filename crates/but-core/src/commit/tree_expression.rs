@@ -10,9 +10,7 @@ use smallvec::{SmallVec, smallvec};
 /// the count of sides is exactly one more than the count of bases.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TreeExpression {
-    /// Base tree IDs.
     pub base_tree_ids: Vec<gix::ObjectId>,
-    /// Side tree IDs.
     pub side_tree_ids: SmallVec<[gix::ObjectId; 1]>,
 }
 
@@ -46,7 +44,6 @@ impl From<gix::ObjectId> for TreeExpression {
     }
 }
 
-/// Arithmetic
 impl TreeExpression {
     /// Subtracts `base` then adds `side`. This extends self's bases with the
     /// sides of `base` and the bases of `side`, and then extends self's sides
@@ -63,14 +60,11 @@ impl TreeExpression {
     }
 }
 
-/// Outcome of [TreeExpression::merge].
 pub enum MergeOutcome<'repo> {
-    /// There were no merge conflicts.
     Unconflicted {
         /// The lone tree after simplifications and merges.
         tree_id: gix::ObjectId,
     },
-    /// There was at least one merge conflict.
     Conflicted {
         /// The tree as returned by the last merge (which resulted in a
         /// conflict).
@@ -84,7 +78,74 @@ pub enum MergeOutcome<'repo> {
     },
 }
 
-/// Simplification
+/// The tree a [TreeExpression::merge] arrives at, and the conflict a commit with it keeps.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedTree {
+    /// The merged tree, auto-resolved where it conflicts.
+    pub tree_id: gix::ObjectId,
+    /// What didn't merge, if anything.
+    pub conflict: Option<Conflict>,
+}
+
+/// What didn't merge: what a conflicted commit keeps to recreate the conflict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Conflict {
+    /// The trees that didn't merge.
+    pub tree_expression: TreeExpression,
+    /// The paths still conflicted after auto-resolution.
+    pub conflict_entries: super::ConflictEntries,
+}
+
+impl MergeOutcome<'_> {
+    /// The tree it arrived at, with the conflict entries of what didn't merge.
+    pub fn into_merged_tree(self) -> anyhow::Result<MergedTree> {
+        Ok(match self {
+            MergeOutcome::Unconflicted { tree_id } => MergedTree {
+                tree_id,
+                conflict: None,
+            },
+            MergeOutcome::Conflicted {
+                tree_id,
+                merge,
+                tree_expression,
+            } => MergedTree {
+                tree_id,
+                conflict: Some(Conflict {
+                    tree_expression,
+                    conflict_entries: super::conflict_entries_from_merge_outcome(
+                        &merge,
+                        gix::merge::tree::TreatAsUnresolved::forced_resolution(),
+                    )?,
+                }),
+            },
+        })
+    }
+}
+
+impl MergedTree {
+    /// Give `commit` this tree, writing it to `repo` as a conflicted tree and marking the
+    /// commit's message as conflicted if it has a conflict.
+    pub fn apply_to(
+        self,
+        repo: &gix::Repository,
+        commit: &mut gix::objs::Commit,
+    ) -> anyhow::Result<()> {
+        match self.conflict {
+            Some(conflict) => {
+                commit.tree = super::write_conflicted_tree(
+                    repo,
+                    self.tree_id,
+                    &conflict.tree_expression,
+                    &conflict.conflict_entries,
+                )?;
+                commit.message = super::add_conflict_markers(commit.message.as_ref());
+            }
+            None => commit.tree = self.tree_id,
+        }
+        Ok(())
+    }
+}
+
 impl TreeExpression {
     /// Cancel out terms in the bases and sides wherever possible, then
     /// repeatedly merge until only one side remains or a conflict is

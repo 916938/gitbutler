@@ -1,6 +1,3 @@
-//! Utilities for testing.
-#![deny(missing_docs)]
-
 use std::{collections::HashMap, io::Write, path::Path};
 
 use gix::{
@@ -38,7 +35,6 @@ pub fn hunk_header_raw(old: &str, new: &str) -> ((u32, u32), (u32, u32)) {
 
 /// Choose a slightly more obvious, yet easy to type syntax than a function with 4 parameters.
 /// i.e. `hunk_header("-1,10", "+1,10")`.
-/// Returns a [but_core::HunkHeader].
 pub fn hunk_header(old: &str, new: &str) -> but_core::HunkHeader {
     let ((old_start, old_lines), (new_start, new_lines)) = hunk_header_raw(old, new);
     but_core::HunkHeader {
@@ -152,30 +148,6 @@ pub fn hex_to_id(hex: &str) -> gix::ObjectId {
     gix::ObjectId::from_hex(hex.as_bytes()).expect("statically known to be valid")
 }
 
-/// Sets up an environment that assures commits are reproducible. This is particularly
-/// needed for `GITBUTLER_CHANGE_ID`.
-/// This needs the `testing` feature enabled in `but-core` as well to work.
-/// **This changes the process environment, be aware.**
-///
-/// ### DEPRECATION WARNING
-///
-/// Do not use this function unless it's interfacing with old code. Prefer [`open_repo()`] for instance.
-pub fn deprecated_stable_env_vars() {
-    let env = gix_testtools::Env::new()
-        // TODO(gix): once everything is ported, all these can be configured on `gix::Repository`.
-        //            CHANGE_ID now works with a single value.
-        //            Call `but_testsupport::open_repo()` for basic settings.
-        .set("GIT_AUTHOR_DATE", "2000-01-01 00:00:00 +0000")
-        .set("GIT_AUTHOR_EMAIL", "author@example.com")
-        .set("GIT_AUTHOR_NAME", "author (From Env)")
-        .set("GIT_COMMITTER_DATE", "2000-01-02 00:00:00 +0000")
-        .set("GIT_COMMITTER_EMAIL", "committer@example.com")
-        .set("GIT_COMMITTER_NAME", "committer (From Env)")
-        .set("GITBUTLER_CHANGE_ID", "change-id");
-    // assure it doesn't get racy.
-    _ = std::mem::ManuallyDrop::new(env);
-}
-
 /// Run `f` with `E2E_TEST_APP_DATA_DIR` pointing at a temporary directory, so code that
 /// resolves application-wide directories via `but_path` cannot read or write user-level files.
 ///
@@ -205,6 +177,15 @@ impl CommandExt for std::process::Command {
     }
 }
 
+fn uncolored_graph(log: std::process::Output) -> String {
+    assert!(log.status.success());
+    let graph = log.stdout.to_str().expect("no illformed UTF-8");
+    regex::Regex::new(r"\x1b\[[0-9;]*m")
+        .unwrap()
+        .replace_all(graph, "")
+        .into_owned()
+}
+
 /// Produce a graph of all commits reachable from `refspec`.
 pub fn visualize_commit_graph(
     repo: &gix::Repository,
@@ -221,8 +202,7 @@ pub fn visualize_commit_graph(
         ])
         .arg(refspec.to_string())
         .output()?;
-    assert!(log.status.success());
-    Ok(log.stdout.to_str().expect("no illformed UTF-8").to_string())
+    Ok(uncolored_graph(log))
 }
 
 /// Produce a graph of all commits reachable from all refs.
@@ -244,8 +224,7 @@ pub fn visualize_commit_graph_all_from_dir(dir: impl AsRef<Path>) -> std::io::Re
             "--all",
         ])
         .output()?;
-    assert!(log.status.success());
-    Ok(log.stdout.to_str().expect("no illformed UTF-8").to_string())
+    Ok(uncolored_graph(log))
 }
 
 /// Run a condensed status on `repo`.
@@ -276,7 +255,7 @@ pub fn visualize_index(index: &gix::index::State) -> String {
         writeln!(
             &mut buf,
             "{mode:o}:{id} {path}{stage}",
-            id = &entry.id.to_hex_with_len(7),
+            id = entry.id.to_hex_with_len(7),
             mode = entry.mode.bits(),
             stage = {
                 let stage = entry.flags.stage();
@@ -301,7 +280,7 @@ pub fn visualize_index_with_content(repo: &gix::Repository, index: &gix::index::
         writeln!(
             &mut buf,
             "{mode:o}:{id} {path} {content:?}",
-            id = &entry.id.to_hex_with_len(7),
+            id = entry.id.to_hex_with_len(7),
             mode = entry.mode.bits(),
             content = repo
                 .find_blob(entry.id)
@@ -323,7 +302,7 @@ pub fn visualize_tree(tree_id: gix::Id<'_>) -> termtree::Tree<String> {
         fn short_id(id: &gix::hash::oid) -> String {
             id.to_hex_with_len(7).to_string()
         }
-        let repo = id.repo;
+        let repo = id.repo();
         let entry_name =
             |id: &gix::hash::oid, name: Option<(&BStr, gix::object::tree::EntryMode)>| -> String {
                 match name {
@@ -673,10 +652,9 @@ pub fn id_at<'repo>(
         .find_reference(name)
         .expect("statically known reference exists");
     let id = rn.peel_to_id().expect("must be valid reference");
-    (id, rn.inner.name)
+    (id, rn.detach().name)
 }
 
-/// Return the commit by the given `revspec`.
 pub fn id_by_rev<'repo>(repo: &'repo gix::Repository, revspec: &str) -> gix::Id<'repo> {
     repo.rev_parse_single(revspec)
         .expect("well-known revspec when testing")
@@ -732,7 +710,10 @@ pub fn debug_str(input: &dyn std::fmt::Debug) -> String {
 }
 
 mod graph;
-pub use graph::{graph_tree, graph_workspace, graph_workspace_determinisitcally};
+pub use graph::{
+    graph_from_commit_traversal, graph_from_head, graph_tree, graph_workspace,
+    graph_workspace_determinisitcally,
+};
 
 mod prepare_cmd_env;
 pub use prepare_cmd_env::{isolate_env_std_cmd, isolate_env_std_cmd_with_additional_removals};

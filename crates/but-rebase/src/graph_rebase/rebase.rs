@@ -1,5 +1,3 @@
-//! Perform the actual rebase operations
-
 use std::{collections::HashMap, fmt::Write as _};
 
 use anyhow::{Context, Result, bail};
@@ -12,9 +10,9 @@ use crate::graph_rebase::{
     cherry_pick::{CherryPickOutcome, cherry_pick},
     util::{OrderedParentKind, collect_ordered_parents},
 };
+use crate::merge::ConflictErrorContext;
 
 impl<'ws, 'graph, M: RefMetadata> Editor<'ws, 'graph, M> {
-    /// Perform the rebase
     pub fn rebase(self) -> Result<SuccessfulRebase<'ws, 'graph, M>> {
         let mut ref_edits = vec![];
         let steps_to_pick = order_steps_picking(&self.graph)?;
@@ -28,7 +26,6 @@ impl<'ws, 'graph, M: RefMetadata> Editor<'ws, 'graph, M> {
         let mut history = self.history;
 
         for step_idx in steps_to_pick {
-            // Do the frikkin rebase man!
             let step = self.graph[step_idx].clone();
             let new_idx = match step {
                 Step::Pick(pick) if !pick.mutable => {
@@ -105,15 +102,19 @@ impl<'ws, 'graph, M: RefMetadata> Editor<'ws, 'graph, M> {
                             bases,
                             onto_merge_failed,
                             ontos,
+                            conflicting_paths,
                         } => {
                             // Exit early - the rebase failed because it encountered a commit it couldn't pick
-                            bail!(format_base_merge_error(
+                            return Err(anyhow::Error::msg(ConflictErrorContext {
+                                paths: conflicting_paths,
+                            })
+                            .context(format_base_merge_error(
                                 pick.id,
                                 base_merge_failed,
                                 bases,
                                 onto_merge_failed,
-                                ontos
-                            ));
+                                ontos,
+                            )));
                         }
                     }
                 }
@@ -210,6 +211,7 @@ impl<'ws, 'graph, M: RefMetadata> Editor<'ws, 'graph, M> {
             ref_edits,
             graph: output_graph,
             checkouts: self.checkouts.to_owned(),
+            extra_refs: self.extra_refs,
             history,
             workspace: self.workspace,
             meta: self.meta,

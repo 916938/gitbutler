@@ -280,6 +280,30 @@ git init modified-in-index-and-worktree-add-rename
   mv file file-renamed-in-wt
 )
 
+git init modified-in-index-and-worktree-add-rename-onto-deleted
+(cd modified-in-index-and-worktree-add-rename-onto-deleted
+  echo replaced-content >replaced
+  git add . && git commit -m "init"
+  git rm replaced
+  echo initial >file && git add file
+  mv file replaced
+)
+
+git init modified-in-index-and-worktree-rename-rename-roundtrip
+(cd modified-in-index-and-worktree-rename-rename-roundtrip
+  echo initial >file && git add . && git commit -m "init"
+  git mv file file-renamed-in-index
+  mv file-renamed-in-index file
+)
+
+git init modified-in-index-and-worktree-rename-rename-roundtrip-modified
+(cd modified-in-index-and-worktree-rename-rename-roundtrip-modified
+  printf 'one\ntwo\nthree\nfour\n' >file && git add . && git commit -m "init"
+  git mv file file-renamed-in-index
+  mv file-renamed-in-index file
+  echo wt-change >>file
+)
+
 git init submodule-added-unborn
 (cd submodule-added-unborn
   git submodule add ../modified-in-index submodule
@@ -394,5 +418,9 @@ EOF
 
 git init non-utf8-encodings
 (cd non-utf8-encodings
+  echo "windows1252-declared working-tree-encoding=WINDOWS-1252" >.gitattributes
+  git add .gitattributes && git commit -m "Declare the encoding of one file"
+  printf '\x1b\x24\x42\x46\x7c\x4b\x5c\x38\x6c\x1b\x28\x42\n' > iso2022jp
   printf '\x80\xc4\xc0' > windows1252
+  cp windows1252 windows1252-declared
 )

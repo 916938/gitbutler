@@ -1,12 +1,13 @@
 use std::{
     collections::HashMap,
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
 use but_error::AnyhowContextExt;
 use but_settings::AppSettings;
-use clap::ValueEnum;
+use clap::{CommandFactory, FromArgMatches, ValueEnum};
 use command_group::AsyncCommandGroup;
 use posthog_rs::Client;
 use rand::{Rng, distr::OpenClosed01};
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CliError,
-    args::{Subcommands, config, metrics::CommandName},
+    args::{Args, Subcommands, config, metrics::CommandName},
     command::CommandOutcome,
     utils::{ResultMetricsExt, binary_path},
 };
@@ -41,18 +42,10 @@ impl Subcommands {
         if !settings.telemetry.app_metrics_enabled {
             return None;
         }
-        // Comments are still experimental, completions are shell-startup noise, and MCP and the
-        // transport child own their own events.
-        if matches!(
-            self,
-            Subcommands::_Comment(_)
-                | Subcommands::Completions { .. }
-                | Subcommands::Mcp(_)
-                | Subcommands::Metrics { .. }
-        ) {
+        let cmd = self.to_metrics_command();
+        if !cmd.emits_cli_event() {
             return None;
         }
-        let cmd = self.to_metrics_command();
         let extra_props = self.to_metrics_extra_props();
         Some(OneshotMetricsContext::new(
             cmd,
@@ -68,80 +61,58 @@ impl Subcommands {
         use crate::args::{agent, alias as alias_args, branch, forge, skill, update, worktree};
         match self {
             Subcommands::_Comment(_) => Comment,
+            #[cfg(feature = "nightly")]
+            Subcommands::_Ui(_) => Ui,
             Subcommands::Completions { .. } => Completions,
             Subcommands::Mcp(_) => Mcp,
             Subcommands::Metrics { .. } => Metrics,
             Subcommands::Help { .. } => Help,
             Subcommands::Onboarding => Onboarding,
+            Subcommands::Setup { .. } => Setup,
             Subcommands::Init(_) => Init,
             Subcommands::AgentLog { .. } => AgentLog,
-            #[cfg(feature = "legacy")]
-            Subcommands::Actions(_) => Actions,
-            #[cfg(feature = "legacy")]
             Subcommands::Status { .. } => Status,
-            #[cfg(feature = "legacy")]
             Subcommands::Tui { .. } => Tui,
-            #[cfg(feature = "legacy")]
             Subcommands::Diff(..) => Diff,
-            #[cfg(feature = "legacy")]
             Subcommands::Show { .. } => Show,
-            #[cfg(feature = "legacy")]
             Subcommands::Pull { .. } => Pull,
-            #[cfg(feature = "legacy")]
-            Subcommands::Fetch => Pull,
-            Subcommands::Branch(branch::Platform { cmd }) => match cmd {
+            Subcommands::Fetch { .. } => Pull,
+            Subcommands::Branch(branch::Platform { cmd, json: _ }) => match cmd {
                 None => BranchList,
-                #[cfg(feature = "legacy")]
                 Some(branch::Subcommands::List { .. }) => BranchList,
-                #[cfg(feature = "legacy")]
                 Some(branch::Subcommands::New { .. }) => BranchNew,
-                #[cfg(feature = "legacy")]
                 Some(branch::Subcommands::Delete { .. }) => BranchDelete,
-                #[cfg(feature = "legacy")]
                 Some(branch::Subcommands::Show { .. }) => BranchShow,
                 Some(branch::Subcommands::Update { .. }) => BranchUpdate,
                 Some(branch::Subcommands::Move { .. }) => BranchMove,
             },
-            Subcommands::Worktree(worktree::Platform { cmd }) => match cmd {
+            Subcommands::Worktree(worktree::Platform { cmd, json: _ }) => match cmd {
                 None | Some(worktree::Subcommands::List { .. }) => WorktreeList,
                 Some(worktree::Subcommands::Archive { .. }) => WorktreeArchive,
                 Some(worktree::Subcommands::Unarchive { .. }) => WorktreeUnarchive,
                 Some(worktree::Subcommands::Remove { .. }) => WorktreeRemove,
                 Some(worktree::Subcommands::New { .. }) => WorktreeNew,
+                Some(worktree::Subcommands::Recycle) => WorktreeRecycle,
             },
-            #[cfg(feature = "legacy")]
             Subcommands::Unapply { .. } => BranchUnapply,
-            #[cfg(feature = "legacy")]
             Subcommands::Apply { .. } => BranchApply,
-            #[cfg(feature = "legacy")]
-            Subcommands::Open { .. } => Open,
-            #[cfg(feature = "legacy")]
             Subcommands::Switch(..) => Switch,
             Subcommands::Gui { .. } => Gui,
             #[cfg(feature = "nightly")]
             Subcommands::_Open { .. } => Open,
-            #[cfg(feature = "legacy")]
             Subcommands::Commit(..) => Commit,
-            #[cfg(feature = "legacy")]
             Subcommands::Push(_) => Push,
-            #[cfg(feature = "legacy")]
             Subcommands::Reword { .. } | Subcommands::_Reword2(..) => Reword,
-            #[cfg(feature = "legacy")]
-            Subcommands::Oplog(crate::args::oplog::Platform { cmd }) => match cmd {
+            Subcommands::Oplog(crate::args::oplog::Platform { cmd, json: _ }) => match cmd {
                 None => OplogList,
                 Some(crate::args::oplog::Subcommands::List { .. }) => OplogList,
                 Some(crate::args::oplog::Subcommands::Snapshot { .. }) => OplogSnapshot,
                 Some(crate::args::oplog::Subcommands::Restore { .. }) => Restore,
             },
-            #[cfg(feature = "legacy")]
             Subcommands::Undo(..) => Undo,
-            #[cfg(feature = "legacy")]
             Subcommands::Redo(..) => Redo,
-            #[cfg(feature = "legacy")]
             Subcommands::Absorb { .. } => Absorb,
-            #[cfg(feature = "legacy")]
             Subcommands::Discard(..) => Discard,
-            #[cfg(feature = "legacy")]
             Subcommands::Pr(forge::pr::Platform { cmd, .. }) => match cmd {
                 None | Some(forge::pr::Subcommands::New { .. }) => PrNew,
                 Some(forge::pr::Subcommands::Template { .. }) => PrTemplate,
@@ -155,11 +126,8 @@ impl Subcommands {
                 Some(forge::pr::Subcommands::SetDraft { .. }) => SetReviewDraft,
                 Some(forge::pr::Subcommands::SetReady { .. }) => SetReviewReady,
             },
-            #[cfg(feature = "legacy")]
-            Subcommands::Setup { .. } => Setup,
-            #[cfg(feature = "legacy")]
             Subcommands::Teardown { .. } => Teardown,
-            Subcommands::Config(config::Platform { cmd }) => match cmd {
+            Subcommands::Config(config::Platform { cmd, json: _ }) => match cmd {
                 Some(config::Subcommands::Forge {
                     cmd: Some(config::ForgeSubcommand::Auth),
                 }) => ForgeAuth,
@@ -173,35 +141,26 @@ impl Subcommands {
             },
             #[cfg(feature = "nightly")]
             Subcommands::_Expand { .. } => Expand,
-            Subcommands::Alias(alias_args::Platform { cmd }) => match cmd {
+            Subcommands::Alias(alias_args::Platform { cmd, json: _ }) => match cmd {
                 None | Some(alias_args::Subcommands::List) => AliasCheck,
                 Some(alias_args::Subcommands::Add { .. }) => AliasAdd,
                 Some(alias_args::Subcommands::Remove { .. }) => AliasRemove,
             },
             Subcommands::Update(update::Platform { cmd }) => match cmd {
-                update::Subcommands::Check => UpdateCheck,
+                update::Subcommands::Check { .. } => UpdateCheck,
                 update::Subcommands::Suppress { .. } => UpdateSuppress,
                 #[cfg(all(unix, not(feature = "packaged-but-distribution")))]
                 update::Subcommands::Install { .. } => UpdateInstall,
             },
-            #[cfg(feature = "legacy")]
             Subcommands::RefreshRemoteData { .. } => RefreshRemoteData,
-            #[cfg(feature = "legacy")]
             Subcommands::Resolve { .. } => Resolve,
-            #[cfg(feature = "legacy")]
             Subcommands::Uncommit { .. } => Uncommit,
-            #[cfg(feature = "legacy")]
             Subcommands::Amend(..) => Amend,
-            #[cfg(feature = "legacy")]
             Subcommands::Squash(..) => Squash,
-            #[cfg(feature = "legacy")]
             Subcommands::Move(..) => Move,
-            #[cfg(feature = "legacy")]
             Subcommands::Split(..) => Split,
-            #[cfg(feature = "legacy")]
             // Preserve the original event name for metrics continuity, including the `land` alias.
             Subcommands::Merge { .. } => Land,
-            #[cfg(feature = "legacy")]
             Subcommands::Pick(..) => Pick,
             Subcommands::Skill(skill::Platform { cmd, .. }) => match cmd {
                 Some(skill::Subcommands::Install { .. }) => SkillInstall,
@@ -211,9 +170,9 @@ impl Subcommands {
             // Bare `but agent` (None) runs the setup wizard, same as `agent setup`.
             Subcommands::Agent(agent::Platform { cmd }) => match cmd {
                 None | Some(agent::Subcommands::Setup { .. }) => AgentSetup,
+                Some(agent::Subcommands::Uninstall { .. }) => AgentUninstall,
             },
             Subcommands::Edit { .. } => Edit,
-            #[cfg(feature = "legacy")]
             Subcommands::Clean { .. } => Clean,
             Subcommands::External(_) => External,
         }
@@ -224,13 +183,11 @@ impl Subcommands {
     /// `sourceKind` and `targetKind` describe the kind a command expects, not a
     /// resolved runtime ID.
     pub(crate) fn to_metrics_extra_props(&self) -> Vec<(String, serde_json::Value)> {
-        #[cfg(feature = "legacy")]
         use crate::args::commit;
         use crate::args::skill;
 
         let mut props = Vec::new();
         match self {
-            #[cfg(feature = "legacy")]
             Subcommands::Commit(commit::Platform {
                 branch,
                 empty,
@@ -259,21 +216,17 @@ impl Subcommands {
                 push_prop(&mut props, "targetMode", target_mode);
                 push_prop(&mut props, "selectionMode", selection_mode);
             }
-            #[cfg(feature = "legacy")]
             Subcommands::Uncommit(..) => {
                 push_prop(&mut props, "sourceKind", "commitOrCommittedFile");
             }
-            #[cfg(feature = "legacy")]
             Subcommands::Amend(..) => {
                 push_prop(&mut props, "sourceKind", "fileOrHunk");
                 push_prop(&mut props, "targetKind", "commitOrBranch");
             }
-            #[cfg(feature = "legacy")]
             Subcommands::Squash(..) => {
                 push_prop(&mut props, "sourceKind", "commitOrBranch");
                 push_prop(&mut props, "targetKind", "commit");
             }
-            #[cfg(feature = "legacy")]
             Subcommands::Move(..) => {
                 push_prop(&mut props, "sourceKind", "commitOrBranch");
                 push_prop(&mut props, "targetKind", "commitOrBranchOrUnassigned");
@@ -370,7 +323,6 @@ fn command_outcome_props(outcome: &CommandOutcome) -> Vec<(String, serde_json::V
                 *manual_instructions_required,
             );
         }
-        #[cfg(feature = "legacy")]
         CommandOutcome::Commit(outcome) => {
             use crate::command::legacy::commit::BranchNameTarget;
 
@@ -439,10 +391,16 @@ impl Props {
             return props;
         };
 
+        if let Some(site) = error.site() {
+            props.insert("errorSite", site);
+        }
         match error {
             CliError::BadInput(bad_input) => {
                 props.insert("error", "Bad input");
                 props.insert("errorKind", "badInput");
+                if let Some(code) = bad_input.error_code() {
+                    props.insert("errorCode", code);
+                }
                 if let Some(arg_name) = bad_input.argument_name() {
                     props.insert("badInputArgName", arg_name);
                 }
@@ -464,10 +422,10 @@ impl Props {
                 props.insert("error", "External command failed");
                 props.insert("errorKind", "externalCommandFailed");
             }
-            CliError::Internal(error) => {
+            CliError::Internal(error, _) => {
                 props.insert_internal_error_details(error);
             }
-            CliError::Initialization(_) => {
+            CliError::Initialization(..) => {
                 props.insert("error", "Internal error");
                 props.insert("errorKind", "initialization");
             }
@@ -488,10 +446,7 @@ impl Props {
     }
 
     fn insert_internal_error_details(&mut self, error: &anyhow::Error) {
-        #[cfg(feature = "legacy")]
         let is_explained_rejection = error.is::<crate::utils::rejection::ExplainedRejection>();
-        #[cfg(not(feature = "legacy"))]
-        let is_explained_rejection = false;
         if is_explained_rejection {
             self.insert("error", "Command rejection");
             self.insert("errorKind", "commandRejection");
@@ -527,7 +482,15 @@ impl Props {
 }
 
 fn sample_props(mut props: Props, command: CommandName, failed: bool, draw: f32) -> Option<Props> {
-    let sampling_rate = if failed { 1.0 } else { command.sample_rate() };
+    // Running outside a repository fails the same way on every run, so a script that polls
+    // `but status` from the wrong directory is sampled like successful runs.
+    let outside_repo = props.values.get("errorCode").and_then(|code| code.as_str())
+        == Some(crate::setup::NO_GIT_REPOSITORY);
+    let sampling_rate = if failed && !outside_repo {
+        1.0
+    } else {
+        command.sample_rate()
+    };
     if sampling_rate < draw {
         return None;
     }
@@ -584,6 +547,44 @@ fn external_subcommand_metric_value(command_name: &std::ffi::OsStr) -> String {
         .collect()
 }
 
+/// Add `checkoutKind` and `workspaceMode` to `event` for the checkout at `current_dir`, as the
+/// command left it; a prop is absent when it can't be read, for example outside a repository.
+///
+/// This runs in the spun-off `but metrics` process and only reads refs, so it takes no
+/// worktree lock. A linked worktree reports the mode of the main worktree, which owns it.
+pub fn add_checkout_context(event: &mut Event, current_dir: &Path) {
+    let Ok(repo) = gix::discover(current_dir) else {
+        return;
+    };
+    if repo.workdir().is_none() {
+        return;
+    }
+    let is_linked = repo.git_dir() != repo.common_dir();
+    let checkout_kind = match (is_linked, repo.head_name()) {
+        (false, _) => "main",
+        (true, Ok(Some(_))) => "linkedWorktree",
+        (true, Ok(None)) => "detachedWorktree",
+        (true, Err(_)) => return,
+    };
+    event.insert_prop("checkoutKind", checkout_kind);
+    let Ok(main_head) = repo.main_repo().and_then(|main| main.head_name()) else {
+        return;
+    };
+    // Edit mode, entered by `but resolve`, is only reachable from the workspace.
+    let in_workspace = main_head.is_some_and(|name| {
+        but_core::is_workspace_ref_name(name.as_ref())
+            || name.as_bstr() == "refs/heads/gitbutler/edit"
+    });
+    event.insert_prop(
+        "workspaceMode",
+        if in_workspace {
+            "workspace"
+        } else {
+            "singleBranch"
+        },
+    );
+}
+
 /// Add lane and branch counts to `event`, read from the managed workspace at `current_dir`;
 /// on failure the props are simply absent.
 ///
@@ -630,31 +631,26 @@ pub fn add_workspace_shape(event: &mut Event, current_dir: &Path) {
     );
 }
 
-/// The workspace as seen from `HEAD`, built without rewriting `virtual_branches.toml`,
+/// The workspace as seen from `HEAD`, built without writing branch metadata,
 /// unlike the `Context::workspace_and_db()` family.
-///
-/// The caller guarantees the project database already exists, so borrowing it here
-/// cannot be what initializes a project.
 fn read_only_workspace(ctx: &but_ctx::Context) -> Option<but_graph::Workspace> {
     let repo = ctx.repo.get().ok()?;
-    let meta = but_meta::BranchOrderMetadata::from_paths_read_only(
-        ctx.project_data_dir().join("virtual_branches.toml"),
-        ctx.project_data_dir(),
-    )
-    .ok()?;
-    let mut db = ctx.db.get_cache_mut().ok()?;
-    let graph = but_graph::Graph::from_head(
+    let meta = but_meta::BranchOrderMetadata::from_path_read_only(ctx.project_data_dir()).ok()?;
+    let head_ref = repo.head_name().ok()?;
+    let head_id = repo.head_id().ok()?.detach();
+    but_graph::nosegment::workspace(
         &repo,
         &meta,
+        but_graph::init::Overlay::default(),
         ctx.project_meta().ok()?,
-        &mut db,
-        but_graph::init::Options {
-            worktrees: ctx.settings.feature_flags.worktree_manipulation,
-            ..but_graph::init::Options::limited()
-        },
+        head_ref.as_ref().map(|name| name.as_ref()),
+        Some(head_id),
+        [],
+        Vec::new(),
+        false,
+        but_graph::init::Options::limited().commits_limit_hint,
     )
-    .ok()?;
-    graph.into_workspace().ok()
+    .ok()
 }
 
 #[derive(Debug, Clone)]
@@ -721,28 +717,13 @@ async fn do_capture(
     event: Event,
     app_settings: &AppSettings,
 ) -> Result<(), posthog_rs::Error> {
-    let id = app_settings
-        .telemetry
-        .app_distinct_id
-        .clone()
-        .unwrap_or_else(machine);
+    let id = app_settings.telemetry.distinct_id();
     let mut posthog_event = posthog_rs::Event::new(event.event_name.to_string(), id);
     for (key, prop) in event.props {
         let _ = posthog_event.insert_prop(key, prop);
     }
     // The CLI exits right after this, so send inline instead of via the background queue.
     client.capture_immediate(posthog_event).await.map(|_| ())
-}
-
-fn machine() -> String {
-    if let Ok(id) = machine_uid::get() {
-        format!(
-            "machine_{:x}",
-            <sha2::Sha256 as sha2::Digest>::digest(format!("{}{}", id, "gitbutler").as_bytes())
-        )
-    } else {
-        "anonymous".to_string()
-    }
 }
 
 /// Creates a PostHog client if metrics are enabled and the API key is set.
@@ -798,23 +779,112 @@ impl<T> ResultMetricsExt<T, CliError> for Result<T, CliError> {
     }
 }
 
-/// Emit an event for a command line that never ran because the parser
-/// rejected it and a retired-syntax teaching hint was shown.
+/// Emit an event for a command line `args` that never ran because the parser rejected it
+/// with `err`.
 ///
-/// The event carries a `retiredSyntaxHint` prop, so remaining pre-revamp
-/// usage can be tracked to decide when the hints in `retired_syntax` can be
-/// removed. Root options like `-C` are not parsed on the failure paths that
-/// call this, so the event reports the process working directory.
-pub(crate) fn emit_retired_syntax_hint(command: CommandName) {
+/// `retired_syntax_hint` adds a `retiredSyntaxHint` prop for lines that got a retired-syntax
+/// teaching hint, so remaining pre-revamp usage can be tracked to decide when the hints in
+/// `retired_syntax` can be removed. Root options like `-C` are not parsed on this path, so
+/// the event reports the process working directory.
+pub(crate) fn emit_parse_error(args: &[OsString], err: &clap::Error, retired_syntax_hint: bool) {
     let Ok(settings) = crate::app_settings() else {
         return;
     };
     if !settings.telemetry.app_metrics_enabled {
         return;
     }
+    if let Some((command, props)) = parse_error_event(args, err, retired_syntax_hint) {
+        emit_metrics(command, props, Path::new("."), true);
+    }
+}
+
+/// The command and props to report for a rejected command line, or `None` if it names no
+/// command that emits CLI events.
+fn parse_error_event(
+    args: &[OsString],
+    err: &clap::Error,
+    retired_syntax_hint: bool,
+) -> Option<(CommandName, Props)> {
+    let command = rejected_command(args).filter(CommandName::emits_cli_event)?;
     let mut props = Props::new();
-    props.insert("retiredSyntaxHint", true);
-    emit_metrics(command, props, Path::new("."), true);
+    props.insert("error", "Parse error");
+    props.insert("errorKind", "parseError");
+    props.insert("errorCode", format!("{:?}", err.kind()));
+    if let Some(arg_name) = parse_error_arg_name(err) {
+        props.insert("badInputArgName", arg_name);
+    }
+    if let Some(word) = rejected_subcommand_word(err) {
+        props.insert("unrecognizedSubcommand", word);
+    }
+    if retired_syntax_hint {
+        props.insert("retiredSyntaxHint", true);
+    }
+    Some((command, props))
+}
+
+/// The command a rejected command line was meant to run.
+///
+/// The error-tolerant parser keeps what it matched before the first error. The command is
+/// exact when that error comes after the last subcommand word, as for an unknown flag, and is
+/// the parent's default otherwise, like `worktreeList` for `worktree add`. Without a required
+/// argument the command can't be built, so then the deepest subcommand words that spell a
+/// metric name are used. A command whose metric name differs from its words then reports a
+/// parent's name or, like `merge`, nothing.
+fn rejected_command(args: &[OsString]) -> Option<CommandName> {
+    let matches = Args::command()
+        .ignore_errors(true)
+        .try_get_matches_from(args)
+        .ok()?;
+    if let Ok(args) = Args::from_arg_matches(&matches) {
+        return args.cmd.as_ref().map(Subcommands::to_metrics_command);
+    }
+    let mut words = Vec::new();
+    let mut matches = &matches;
+    while let Some((word, sub_matches)) = matches.subcommand() {
+        words.push(word);
+        matches = sub_matches;
+    }
+    (1..=words.len())
+        .rev()
+        .find_map(|len| CommandName::from_str(&words[..len].join("-"), false).ok())
+}
+
+/// The name of the argument `err` rejected: as the CLI defines it, or as typed for an unknown
+/// flag.
+fn parse_error_arg_name(err: &clap::Error) -> Option<String> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+
+    let arg = match err.get(ContextKind::InvalidArg)? {
+        ContextValue::String(arg) => arg,
+        ContextValue::Strings(args) => args.first()?,
+        _ => return None,
+    };
+    // Drop the value placeholder, as in `--message <MESSAGE>`.
+    let name = arg.split(' ').next()?;
+    if err.kind() == ErrorKind::UnknownArgument {
+        // An unknown argument is the user's own text, so only flags are kept.
+        return name
+            .starts_with('-')
+            .then(|| unrecognized_subcommand_metric_value(name.as_ref()));
+    }
+    Some(name.to_owned())
+}
+
+/// The word `err` rejected as a subcommand, as in `but branch create`.
+///
+/// A single lowercase word shows which command was expected. Anything else is more likely the
+/// user's own text, like the branch name in `but branch my-feature`, so it's reported as invalid.
+fn rejected_subcommand_word(err: &clap::Error) -> Option<String> {
+    use clap::error::{ContextKind, ContextValue};
+
+    let ContextValue::String(word) = err.get(ContextKind::InvalidSubcommand)? else {
+        return None;
+    };
+    Some(if word.chars().all(|c| c.is_ascii_lowercase()) {
+        unrecognized_subcommand_metric_value(word.as_ref())
+    } else {
+        INVALID_UNRECOGNIZED_SUBCOMMAND.to_owned()
+    })
 }
 
 fn emit_metrics(command: CommandName, props: Props, current_dir: &Path, failed: bool) {

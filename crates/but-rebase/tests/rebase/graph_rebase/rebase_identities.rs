@@ -2,7 +2,6 @@
 //! graphs are returned.
 
 use anyhow::Result;
-use but_graph::Graph;
 use but_rebase::graph_rebase::Editor;
 use but_testsupport::{graph_tree, graph_workspace, visualize_commit_graph_all};
 use snapbox::prelude::*;
@@ -25,7 +24,7 @@ fn four_commits() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -34,7 +33,7 @@ fn four_commits() -> Result<()> {
     )?
     .validated()?;
 
-    let mut ws = graph.clone().into_workspace()?;
+    let mut ws = graph.into_workspace()?;
     let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
@@ -42,7 +41,7 @@ fn four_commits() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·120e3a9 (⌂)
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
@@ -81,8 +80,8 @@ fn four_commits_with_short_traversal() -> Result<()> {
 "#]]
     );
 
-    let options = standard_options().with_hard_limit(4);
-    let graph = Graph::from_head(
+    let options = standard_options().with_limit_hint(4);
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -90,7 +89,7 @@ fn four_commits_with_short_traversal() -> Result<()> {
         options,
     )?
     .validated()?;
-    let mut ws = graph.clone().into_workspace()?;
+    let mut ws = graph.into_workspace()?;
 
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
@@ -112,7 +111,7 @@ fn four_commits_with_short_traversal() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·120e3a9 (⌂)
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
@@ -155,7 +154,7 @@ fn merge_in_the_middle() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -164,7 +163,7 @@ fn merge_in_the_middle() -> Result<()> {
     )?
     .validated()?;
 
-    let mut ws = graph.clone().into_workspace()?;
+    let mut ws = graph.into_workspace()?;
     let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
@@ -172,17 +171,17 @@ fn merge_in_the_middle() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     └── ·e8ee978 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·2fc288c (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·add59d2 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -225,7 +224,7 @@ fn three_branches_merged() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -234,7 +233,7 @@ fn three_branches_merged() -> Result<()> {
     )?
     .validated()?;
 
-    let mut ws = graph.clone().into_workspace()?;
+    let mut ws = graph.into_workspace()?;
     let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
     let outcome = editor.rebase()?;
     let overlayed = graph_tree(&outcome.overlayed_graph()?).to_string();
@@ -242,21 +241,21 @@ fn three_branches_merged() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     └── ·1348870 (⌂)
-        ├── ►:1[1]:A
+        ├── ►[1]:A
         │   └── ·add59d2 (⌂)
-        │       └── ►:4[2]:anon:
+        │       └── ►[2]:anon:
         │           └── 🏁·8f0d338 (⌂) ►tags/base
-        ├── ►:2[1]:B
+        ├── ►[1]:B
         │   ├── ·a748762 (⌂)
         │   └── ·62e05ba (⌂)
-        │       └── →:4:
-        └── ►:3[1]:C
+        │       └── → segment ·8f0d338
+        └── ►[1]:C
             ├── ·930563a (⌂)
             ├── ·68a2fc3 (⌂)
             └── ·984fd1c (⌂)
-                └── →:4:
+                └── → segment ·8f0d338
 
 "#]]
     );

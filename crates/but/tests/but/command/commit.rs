@@ -1,8 +1,11 @@
 use super::util::{
-    add_dirty_worktree, enable_worktree_manipulation, find_branch, status_json,
+    add_dirty_detached_worktree, add_dirty_worktree, find_branch, status_json,
     status_json_with_files,
 };
 use crate::utils::{CommandExt as _, Sandbox};
+
+mod hooks;
+mod unborn;
 
 #[test]
 fn rejects_unnamed_segment_as_target() {
@@ -53,7 +56,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
 "#]]);
 
     let diff = env
-        .but("--json diff")
+        .but("diff --json")
         .allow_json()
         .output()
         .expect("diff should succeed");
@@ -451,6 +454,30 @@ fn non_agent_commit_json_uses_native_result() {
   "commitId": "ad3beae727eb9f82f063c32ccff084d97ad0fd5e",
   "changeId": "ssvtnomvyusxrxwspzwsqkssnkmsnylz"
 }
+
+"#]]);
+}
+
+#[test]
+fn commit_json_before_subcommand_still_prints_json_and_teaches_the_new_position() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.file("file.txt", "Some text");
+
+    env.but("--json commit --no-message")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+{
+  "commitId": "ad3beae727eb9f82f063c32ccff084d97ad0fd5e",
+  "changeId": "ssvtnomvyusxrxwspzwsqkssnkmsnylz"
+}
+
+"#]])
+        .stderr_eq(snapbox::str![[r#"
+
+note: `--json` now goes after the subcommand, as in `but commit --json`. Placing it before the subcommand will stop working in a future release.
 
 "#]]);
 }
@@ -939,7 +966,57 @@ fn create_commit_on_branch_that_is_not_applied_fails() {
         .stderr_eq(snapbox::str![[r#"
 Error: A branch named 'existing' exists but is not applied
 
-Hint: Run `but apply existing` to apply the branch first
+Hint: Pick another name, or run `but apply existing` if you meant that branch
+
+"#]]);
+}
+
+#[test]
+fn create_commit_on_branch_with_invalid_name_suggests_a_valid_one() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+
+    env.file("first", "Some text");
+
+    env.but("commit -m 'add first' -b 'bad name'")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Bad input 'bad name'
+
+Invalid branch name
+
+Hint: Try 'bad-name' instead
+
+"#]]);
+}
+
+#[test]
+fn create_commit_on_branch_with_name_that_cannot_be_created_says_what_to_do() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+    env.invoke_git("update-ref refs/remotes/origin/taken main");
+    env.invoke_git("branch fix");
+
+    env.file("first", "Some text");
+
+    env.but("commit -m 'add first' -b taken")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: A branch named 'taken' exists on remote 'origin'
+
+Hint: Pick another name, or run `but apply origin/taken` if you meant that branch
+
+"#]]);
+
+    env.but("commit -m 'add first' -b fix/first")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Branch name 'fix/first' collides with existing branch 'fix'
+
+Hint: Pick another name
 
 "#]]);
 }
@@ -970,6 +1047,61 @@ Hint: to apply these changes, create bar stacked on top of foo and try again:
 }
 
 #[test]
+fn rejected_specs_on_an_unnamed_new_branch_suggest_no_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.setup_metadata(&[]);
+
+    env.file("first", "Some text");
+
+    env.but("commit -m 'add first' -b foo").assert().success();
+
+    env.file("first", "changes");
+
+    // The made-up name the new branch would have had went with the rollback, so no command
+    // can name it.
+    env.but("commit -b -m 'add first'")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Cannot commit: 1 change could not be applied:
+  first
+    line 1 depends on foo (xsz)
+
+"#]]);
+}
+
+#[test]
+fn commit_switch_with_head_detached_is_refused_and_keeps_the_changes() {
+    let env = Sandbox::open_with_default_settings("single-branch-mode");
+    env.file("first", "Some text\n");
+    env.but("commit -b foo -m 'add first'").assert().success();
+    env.invoke_git("checkout --detach");
+    env.file("first", "changes\n");
+    env.file("new.txt", "new content\n");
+
+    // Without a branch checked out there's no workspace to set up, nor the checkpoint that
+    // takes a failed switch back, so it doesn't start.
+    env.but("commit --switch -b bar -m test sy")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: --switch needs a branch checked out (HEAD is detached)
+
+"#]]);
+
+    // No bar is made.
+    snapbox::assert_data_eq!(env.invoke_git("branch --list bar"), snapbox::str![]);
+    // Both changes stay uncommitted.
+    snapbox::assert_data_eq!(
+        env.invoke_git("status --porcelain"),
+        snapbox::str![[r#"
+M first
+?? new.txt
+"#]]
+    );
+}
+
+#[test]
 fn failed_commit_switch_preserves_selected_changes_in_single_branch_mode() {
     let env = Sandbox::open_with_default_settings("single-branch-mode");
     env.file("first", "Some text\n");
@@ -978,11 +1110,13 @@ fn failed_commit_switch_preserves_selected_changes_in_single_branch_mode() {
     env.file("new.txt", "new content\n");
 
     // sy selects only new.txt; the modification to foo's file blocks checkout.
-    env.but("commit --switch -b bar -m test sy").assert().failure().stderr_eq(snapbox::str![[r#"
-Error: Could not safely check out 'refs/heads/bar' from 4db633b4a785a1a47a416e428f82b57e1e4708dc to 87d6a1a51a0607ab42894ed0af2df2a2c1a0a6f6
+    env.but("commit --switch -b bar -m test sy")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Uncommitted files would be overwritten by checkout: "first"
 
-Caused by:
-    Uncommitted files would be overwritten by checkout: "first"
+Hint: Run `but commit -b <branch> <file>` to keep those files or `but discard <file>` to drop them, then retry
 
 "#]]);
 
@@ -1048,11 +1182,13 @@ fn failed_commit_switch_preserves_selected_changes_in_workspace_mode() {
     env.file("new.txt", "new content\n");
 
     // sy selects only new.txt; the modification to foo's file blocks checkout.
-    env.but("commit --switch -b bar -m test sy").assert().failure().stderr_eq(snapbox::str![[r#"
-Error: Could not safely check out 'refs/heads/bar' from 54743c4a9f97bd3ab109061a5a6c95fbe855ea9d to 87d6a1a51a0607ab42894ed0af2df2a2c1a0a6f6
+    env.but("commit --switch -b bar -m test sy")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Uncommitted files would be overwritten by checkout: "first"
 
-Caused by:
-    Uncommitted files would be overwritten by checkout: "first"
+Hint: Run `but commit -b <branch> <file>` to keep those files or `but discard <file>` to drop them, then retry
 
 "#]]);
 
@@ -1103,7 +1239,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   54743c4 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   8267892 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
 | * 4db633b (foo) add first
 |/  
@@ -1128,10 +1264,9 @@ fn failed_commit_switch_to_existing_branch_rolls_back_materialization() {
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Could not safely check out 'refs/heads/other' from [..] to [..]
+Error: Uncommitted files would be overwritten by checkout: "first"
 
-Caused by:
-    Uncommitted files would be overwritten by checkout: "first"
+Hint: Run `but commit -b <branch> <file>` to keep those files or `but discard <file>` to drop them, then retry
 
 "#]]);
 
@@ -1181,7 +1316,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   54743c4 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   8267892 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
 | * 4db633b (foo) add first
 |/  
@@ -1212,10 +1347,9 @@ fn failed_commit_switch_restores_ad_hoc_stack_refs() {
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Could not safely check out 'refs/heads/bottom' from [..] to [..]
+Error: Uncommitted files would be overwritten by checkout: "first.txt"
 
-Caused by:
-    Uncommitted files would be overwritten by checkout: "first.txt"
+Hint: Run `but commit -b <branch> <file>` to keep those files or `but discard <file>` to drop them, then retry
 
 "#]]);
 
@@ -1370,7 +1504,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   54743c4 (gitbutler/workspace) GitButler Workspace Commit
+*   8267892 (gitbutler/workspace) GitButler Workspace Commit
 |/  
 | * 4db633b (HEAD -> foo) add first
 |/  
@@ -2490,7 +2624,7 @@ fn committing_below_empty_branch_with_empty_branch_below() {
     env.file("one", "one content");
 
     env.but("branch new middle").assert().success();
-    env.but("branch new --anchor middle top").assert().success();
+    env.but("branch new --above middle top").assert().success();
     env.but("commit one -m 'add one' --below top")
         .assert()
         .success();
@@ -2527,10 +2661,10 @@ fn committing_below_non_top_empty_branch() {
     env.but("commit one -m 'add one' -b bottom")
         .assert()
         .success();
-    env.but("branch new --anchor bottom middle")
+    env.but("branch new --above bottom middle")
         .assert()
         .success();
-    env.but("branch new --anchor middle top").assert().success();
+    env.but("branch new --above middle top").assert().success();
     env.but("commit two -m 'add two' --below middle")
         .assert()
         .success();
@@ -2831,7 +2965,7 @@ hellooooo
         .stderr_eq(snapbox::str![[r#"
 Error: Ambiguous uncommitted change 'qs:7', matches multiple items
 
-Hint: Use a longer ID to disambiguate
+Hint: Use a longer ID to disambiguate. A path starting with `./` or `../` is read only from the current directory.
 
 "#]]);
 }
@@ -3130,6 +3264,64 @@ Hint: Most likely you want `but pull`, which updates the workspace and removes l
 }
 
 #[test]
+fn branch_flag_rejects_empty_merged_branch_when_local_target_lags() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("upstream-merged-empty-branch");
+    env.but("apply origin/document-but-pr-skill")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success();
+    env.invoke_git("update-ref refs/heads/main origin/main^");
+    env.file("file.txt", "Some text");
+
+    env.but("commit --no-message --branch document-but-pr-skill")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Branch 'document-but-pr-skill' is merged upstream
+
+Hint: Most likely you want `but pull`, which updates the workspace and removes landed work. In rare cases `--allow-merged` can bypass this check
+
+"#]]);
+}
+
+#[test]
+fn branch_flag_allows_empty_branch_without_target_upstream() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("upstream-merged-empty-branch");
+    env.but("apply origin/document-but-pr-skill")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success();
+    env.invoke_git("config branch.main.remote missing");
+    env.file("file.txt", "Some text");
+
+    // Local main contains the branch, but without an upstream that is not evidence of landing.
+    env.but("commit --no-message --branch document-but-pr-skill")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success();
+
+    env.but("status -f")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ do [document-but-pr-skill]
+┊●   opz (no commit message)
+┊│     opz:u A file.txt
+├╯
+┊
+┴ 080592b (common base) 2000-01-02 add document-but-pr-skill
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
 fn retired_syntax_is_translated_and_hinted() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
@@ -3279,7 +3471,6 @@ For more information, try '--help'.
 fn commit_a_file_from_a_linked_worktree() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     add_dirty_worktree(&env, "wt-feature", "A");
 
@@ -3355,7 +3546,6 @@ Hint: run `but help` for all commands
 fn commit_a_worktrees_whole_uncommitted_area() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     add_dirty_worktree(&env, "wt-feature", "A");
 
@@ -3404,7 +3594,6 @@ Hint: run `but help` for all commands
 fn commit_refuses_changes_from_several_checkouts() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     add_dirty_worktree(&env, "wt-feature", "A");
     env.file("main.txt", "dirty in the main worktree\n");
@@ -3481,7 +3670,6 @@ Hint: Run `but status` to show applicable targets
 fn commit_below_a_worktree_targets_its_branch_tip() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = crate::command::util::add_worktree_with_commit(&env, "wt-inside", "A");
     env.file("main.txt", "from the main checkout\n");
@@ -3524,7 +3712,6 @@ Created commit nuy on branch 'wt-inside'
 fn commit_above_a_worktree_is_refused() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     crate::command::util::add_worktree_with_commit(&env, "wt-inside", "A");
 
@@ -3547,7 +3734,6 @@ Hint: Use `--below` to target the tip of the worktree's branch
 fn commit_b_targets_a_worktree_by_id() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     crate::command::util::add_worktree_with_commit(&env, "wt-inside", "A");
     env.file("main.txt", "from the main checkout\n");
@@ -3569,7 +3755,6 @@ Created commit nuy on branch 'wt-inside'
 fn commit_b_targets_a_worktrees_branch_by_name() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt = env.app_data_dir().join("worktrees");
     but_testsupport::invoke_bash_at_dir(
@@ -3598,7 +3783,6 @@ Created commit szp on branch 'wt-branch'
 fn commit_from_a_worktree_defaults_to_its_own_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = crate::command::util::add_worktree_with_commit(&env, "wt-feature", "A");
     std::fs::write(wt_dir.join("note.txt"), "dirty\n").unwrap();
@@ -3667,7 +3851,6 @@ Hint: run `but help` for all commands
 fn bare_commit_in_a_linked_worktree_commits_its_changes_to_its_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = add_dirty_worktree(&env, "wt-feature", "A");
     env.file("main-file.txt", "main change");
@@ -3715,10 +3898,74 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
 }
 
 #[test]
+fn commit_to_a_new_branch_in_a_linked_worktree_is_refused() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    env.but("status").assert().success();
+    let wt_dir = add_dirty_worktree(&env, "wt-feature", "A");
+
+    for command in ["commit -b fresh -m 'from wt'", "commit -b -m 'from wt'"] {
+        env.but(command)
+            .current_dir(&wt_dir)
+            .assert()
+            .failure()
+            .stdout_eq(snapbox::str![])
+            .stderr_eq(snapbox::str![[r#"
+Error: Cannot commit to an unstacked branch from worktree wt-feature
+
+Hint: Omit `-b` to commit to wt-feature, the branch this worktree has checked out
+
+"#]]);
+    }
+    assert!(
+        wt_dir.join("note.txt").exists(),
+        "the worktree keeps its change"
+    );
+
+    // The hinted way commits to the worktree's own branch.
+    env.but("commit -m 'from wt'")
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+Created commit lpo on branch 'wt-feature'
+
+"#]]);
+    env.but("status -f")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊┊
+┊┊╭┄ wt:@ [uncommitted] {wt-feature} (no changes)
+┊┊├┄ wt [wt-feature]
+┊┊●   lpo from wt
+┊┊│     lpo:u A note.txt
+┊├╯
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┊╭┄ h0 [B]
+┊●   lrm add B
+┊│     lrm:p A B
+├╯
+┊
+┴ 0dc3733 (common base, main, origin/main) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
 fn empty_commit_in_a_linked_worktree_goes_to_its_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = add_dirty_worktree(&env, "wt-feature", "A");
 
@@ -3765,7 +4012,7 @@ Hint: run `but help` for all commands
 fn bare_commit_in_an_unmanaged_worktree_is_refused() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    let wt_dir = add_dirty_worktree(&env, "wt-feature", "A");
+    let wt_dir = super::util::add_unmanaged_worktree(&env, "wt-feature");
     env.file("main-file.txt", "main change");
 
     env.but("commit -m 'not from here'")
@@ -3785,7 +4032,7 @@ Hint: Run `but worktree list` to see the worktrees GitButler manages
 fn empty_commit_with_a_target_works_from_an_unmanaged_worktree() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    let wt_dir = add_dirty_worktree(&env, "wt-feature", "A");
+    let wt_dir = super::util::add_unmanaged_worktree(&env, "wt-feature");
 
     env.but("commit --empty -b B -m 'placeholder'")
         .current_dir(&wt_dir)
@@ -3808,7 +4055,6 @@ Created commit tux on branch 'B'
 fn commit_from_a_worktree_sharing_its_branch_tip_advances_only_the_worktree() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     add_dirty_worktree(&env, "wt-feature", "A");
 
@@ -3845,19 +4091,8 @@ Created commit lpo on branch 'wt-feature'
 fn commit_from_a_detached_worktree_is_refused() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
-    let wt = env.app_data_dir().join("worktrees");
-    but_testsupport::invoke_bash_at_dir(
-        &format!(
-            r#"
-        git worktree add -q --detach "{wt}/wt-detached" B
-        (cd "{wt}/wt-detached" && echo dirty >note.txt)
-        "#,
-            wt = wt.display()
-        ),
-        env.projects_root(),
-    );
+    add_dirty_detached_worktree(&env, "wt-detached", "B");
 
     env.but("commit wt-detached:@ -m 'nowhere to go'")
         .assert()
@@ -3865,6 +4100,106 @@ fn commit_from_a_detached_worktree_is_refused() {
         .stdout_eq(snapbox::str![])
         .stderr_eq(snapbox::str![[r#"
 Error: Worktree wt-detached has a detached HEAD, so there is no branch to commit to
+
+Hint: Run `but commit -b <new-branch>` inside that worktree to commit on a new branch at its HEAD
+
+"#]]);
+}
+
+/// Inside a detached worktree, `-b` names the branch it lacks: the branch starts at `HEAD`,
+/// is checked out there, and takes the commit, like `git switch -c` followed by a commit.
+#[test]
+fn commit_to_a_new_branch_in_a_detached_worktree_checks_it_out_there() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    env.but("status").assert().success();
+    let wt_dir = add_dirty_detached_worktree(&env, "wt-detached", "B");
+
+    env.but("commit -b fresh -m 'from wt'")
+        .current_dir(&wt_dir)
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+Created commit ulz on new branch 'fresh'
+
+"#]]);
+
+    // The worktree now has `fresh` checked out, holding the commit, with nothing left uncommitted.
+    env.but("status -f")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊●   tpm add A
+┊│     tpm:t A A
+├╯
+┊
+┊╭┄ h0 [B]
+┊┊
+┊┊╭┄ fr:@ [uncommitted] {wt-detached} (no changes)
+┊┊├┄ fr [fresh]
+┊┊●   ulz from wt
+┊┊│     ulz:u A note.txt
+┊├╯
+┊●   lrm add B
+┊│     lrm:p A B
+├╯
+┊
+┴ 0dc3733 (common base, main, origin/main) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    // Undo can't detach the worktree again, so it refuses rather than claim a restore.
+    env.but("undo")
+        .assert()
+        .failure()
+        .stdout_eq(snapbox::str![])
+        .stderr_eq(snapbox::str![[r#"
+Error: Cannot restore branch 'fresh' because it is checked out in worktrees: [..]
+
+Hint: Reverse the operation with its inverse instead, such as `but move <commit> --branch <branch>`, `but reword <commit>` or `but uncommit <commit>`
+
+"#]]);
+}
+
+/// A worktree detached at the workspace commit has every applied branch below its `HEAD`, so a
+/// branch started there would carry them all and is refused.
+#[test]
+fn commit_to_a_new_branch_in_a_worktree_detached_at_the_workspace_commit_is_refused() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    env.but("status").assert().success();
+    let wt_dir = add_dirty_detached_worktree(&env, "wt-detached", "gitbutler/workspace");
+
+    env.but("commit -b fresh -m 'from wt'")
+        .current_dir(&wt_dir)
+        .assert()
+        .failure()
+        .stdout_eq(snapbox::str![])
+        .stderr_eq(snapbox::str![[r#"
+Error: Worktree wt-detached is detached at a GitButler workspace commit, so a new branch there would contain every applied branch
+
+Hint: Run `but -C [..] commit wt-detached:@ -b <new-branch>` to commit its changes to a new branch in the workspace instead
+
+"#]]);
+    assert!(
+        env.invoke_git("branch --list fresh").is_empty(),
+        "no branch is created"
+    );
+
+    // The hinted command, run in the main worktree, puts the changes on a new workspace branch.
+    env.but("commit wt-detached:@ -b fresh -m 'from wt'")
+        .assert()
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+Created commit xol on new branch 'fresh'
 
 "#]]);
 }
@@ -3876,7 +4211,6 @@ fn commit_to_a_worktree_on_a_merged_branch_is_refused() {
     let env =
         Sandbox::init_scenario_with_target_and_default_settings("upstream-integrated-with-updates");
     env.setup_metadata_at_target(&["A", "B"], "refs/heads/base");
-    enable_worktree_manipulation(&env);
     env.but("status").env("NO_BG_TASKS", "1").assert().success();
     let wt = env.app_data_dir().join("worktrees");
     but_testsupport::invoke_bash_at_dir(
@@ -3929,7 +4263,7 @@ fn commit_uncommitted_area_with_a_file_named_at_is_ambiguous() {
         .stderr_eq(snapbox::str![[r#"
 Error: Ambiguous uncommitted change '@', matches multiple items
 
-Hint: Use a longer ID to disambiguate
+Hint: Use a longer ID to disambiguate. A path starting with `./` or `../` is read only from the current directory.
 
 "#]]);
 }
@@ -4059,6 +4393,8 @@ fn committing_above_another_branch_and_naming_the_new_branch_with_invalid_name()
         .stderr_eq(snapbox::str![[r#"
 Error: A branch named 'B' is already applied
 
+Hint: Pick another name
+
 "#]]);
 
     env.but("unapply B").assert().success();
@@ -4068,6 +4404,8 @@ Error: A branch named 'B' is already applied
         .failure()
         .stderr_eq(snapbox::str![[r#"
 Error: A branch named 'B' exists but is not applied
+
+Hint: Pick another name, or run `but apply B` if you meant that branch
 
 "#]]);
 }
@@ -4118,7 +4456,6 @@ Error: Cannot use `-b/--branch` when committing relative to commits
 fn cannot_split_worktree_by_committing_above_on_new_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
-    enable_worktree_manipulation(&env);
 
     env.but("wt new").assert().success();
 
@@ -4161,7 +4498,6 @@ Error: Cannot use `-b/--branch` when committing relative to worktrees
 fn commit_b_targets_a_lower_worktree_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     crate::command::util::add_worktree_with_lower_branch(&env, "wt-inside", "A");
     env.file("main.txt", "from the main checkout\n");
@@ -4192,39 +4528,71 @@ Created commit nuy on branch 'wt-lower'
     );
 }
 
-/// Below a lower worktree branch means a new branch there, like below a stack's branch, which
-/// worktrees can't order yet - rather than the tip of the worktree's checkout.
+/// Below a lower worktree branch means a new branch there, like below a stack's branch, ordered
+/// within the worktree's lane rather than at the tip of the worktree's checkout.
 #[test]
-fn commit_below_a_lower_worktree_branch_is_refused() {
+fn commit_below_a_lower_worktree_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     crate::command::util::add_worktree_with_lower_branch(&env, "wt-inside", "A");
     env.file("main.txt", "from the main checkout\n");
 
-    env.but("commit --below wt-lower -m 'nope'")
+    env.but("commit --below wt-lower -m 'below the lower branch'")
         .assert()
-        .stderr_eq(snapbox::str![[r#"
-Error: Cannot place 'a-branch-1' relative to worktree branch 'wt-lower': branches can't be ordered in worktrees yet
+        .success()
+        .stderr_eq(snapbox::str![])
+        .stdout_eq(snapbox::str![[r#"
+Created commit szp on new branch 'a-branch-1'
 
-"#]])
-        .stdout_eq(snapbox::str![""]);
+"#]]);
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   c128bce (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   b963596 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
-* | d3e2ba3 (B) add B
-| | * 3b0b265 (wt-inside) add W2
-| | * 580bef0 (wt-lower) add W
+| * d3e2ba3 (B) add B
+| | * 74136d7 (wt-inside) add W2
+| | * 49b730a (wt-lower) add W
+| | * dd4ddaf (a-branch-1) below the lower branch
 | |/  
-| * 9477ae7 (A) add A
+|/|   
+* | 9477ae7 (A) add A
 |/  
-* 0dc3733 (origin/main, origin/HEAD, main) add M
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
 "#]]
     );
+    env.but("status")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0 [A]
+┊┊
+┊┊╭┄ wt:@ [uncommitted] {wt-inside} (no changes)
+┊┊├┄ wt [wt-inside]
+┊┊●   ntk add W2
+┊┊│
+┊┊├┄ lo [wt-lower]
+┊┊●   nsn add W
+┊┊│
+┊┊├┄ br [a-branch-1]
+┊┊●   szp below the lower branch
+┊├╯
+┊●   tpm add A
+├╯
+┊
+┊╭┄ h0 [B]
+┊●   lrm add B
+├╯
+┊
+┴ 0dc3733 (common base, main, origin/main) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
 }
 
 #[test]
@@ -4409,7 +4777,7 @@ Hint: run `but help` for all commands
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   f2a31b0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   91864f5 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
 | * 2388a3a (top) on top
 | * 1c81de8 (middle) also on middle
@@ -4499,12 +4867,12 @@ Hint: run `but help` for all commands
         .stdout_eq(snapbox::str![[r#"
 ╭┄ @ [uncommitted] (no changes)
 ┊
-┊╭┄ on [one]
-┊●   l#0 on one (no changes)
+┊╭┄ tw [two]
+┊●   l#0 on two (no changes)
 ├╯
 ┊
-┊╭┄ tw [two]
-┊●   l#1 on two (no changes)
+┊╭┄ on [one]
+┊●   l#1 on one (no changes)
 ├╯
 ┊
 ┴ b1540e5 (common base, main, origin/main) 2000-01-02 M
@@ -4516,10 +4884,10 @@ Hint: run `but help` for all commands
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   db45286 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   df3d65b (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
-| * 5ec2cd8 (two) on two
-* | 26559e2 (one) on one
+| * 26559e2 (one) on one
+* | 5ec2cd8 (two) on two
 |/  
 * b1540e5 (origin/main, origin/HEAD, main, gitbutler/target) M
 * e31e6ca add init
@@ -4551,10 +4919,10 @@ Hint: run `but help` for all commands
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*   db45286 (gitbutler/workspace) GitButler Workspace Commit
+*   df3d65b (gitbutler/workspace) GitButler Workspace Commit
 |/  
-| * 5ec2cd8 (two) on two
-* | 26559e2 (one) on one
+| * 26559e2 (one) on one
+* | 5ec2cd8 (two) on two
 |/  
 | * 6e48c63 (HEAD -> three) on three
 |/  
@@ -4573,12 +4941,12 @@ Hint: run `but help` for all commands
         .stdout_eq(snapbox::str![[r#"
 ╭┄ @ [uncommitted] (no changes)
 ┊
-┊╭┄ on [one]
-┊●   l#0 on one (no changes)
+┊╭┄ tw [two]
+┊●   l#0 on two (no changes)
 ├╯
 ┊
-┊╭┄ tw [two]
-┊●   l#1 on two (no changes)
+┊╭┄ on [one]
+┊●   l#1 on one (no changes)
 ├╯
 ┊
 ┊╭┄ th [three]
@@ -4594,12 +4962,12 @@ Hint: run `but help` for all commands
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*-.   c1ed93d (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*-.   e637f72 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/ /  
 | | * 6e48c63 (three) on three
-| * | 5ec2cd8 (two) on two
+| * | 26559e2 (one) on one
 | |/  
-* / 26559e2 (one) on one
+* / 5ec2cd8 (two) on two
 |/  
 * b1540e5 (origin/main, origin/HEAD, main, gitbutler/target) M
 * e31e6ca add init
@@ -4632,13 +5000,13 @@ Hint: run `but help` for all commands
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-*-.   45db92d (gitbutler/workspace) GitButler Workspace Commit
+*-.   d6c3a92 (gitbutler/workspace) GitButler Workspace Commit
 |/ /  
 | | * 6e48c63 (three) on three
-| * | 5ec2cd8 (two) on two
+| * | 9791c42 (HEAD -> one) new commit on one
+| * | 26559e2 on one
 | |/  
-* | 9791c42 (HEAD -> one) new commit on one
-* | 26559e2 on one
+* / 5ec2cd8 (two) on two
 |/  
 * b1540e5 (origin/main, origin/HEAD, main, gitbutler/target) M
 * e31e6ca add init
@@ -4653,7 +5021,7 @@ Hint: run `but help` for all commands
         .stderr_eq(snapbox::str![[r#"
 Error: A branch named 'two' exists but is not applied
 
-Hint: Run `but apply two` to apply the branch first
+Hint: Pick another name, or run `but apply two` if you meant that branch
 
 "#]]);
 }
@@ -4736,5 +5104,111 @@ error: the argument '--switch' cannot be used with '--above <BRANCH_OR_COMMIT>'
 error: the argument '--switch' cannot be used with '--above <BRANCH_OR_COMMIT>'
 
 ...
+"#]]);
+}
+
+#[test]
+fn message_from_file() -> anyhow::Result<()> {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file("file.txt", "Some text");
+    // Outside the worktree, as a message file inside it would be committed too.
+    let message_dir = tempfile::tempdir()?;
+    let message_file = message_dir.path().join("msg.txt");
+    std::fs::write(&message_file, "subject\n\nbody line\n\n")?;
+
+    env.but("commit -F").arg(&message_file).assert().success();
+
+    // Surrounding blank lines are trimmed, and the message file is not part of the commit.
+    env.but("show ssv")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Commit:    59f9100b55ead469f581c03150de0cf0bddb10f0
+Change-ID: ssvtnomvyusxrxwspzwsqkssnkmsnylz
+Author:    author <author@example.com>
+Date:      2000-01-02 00:00:00 +0000 (26y ago)
+Committer: committer <committer@example.com>
+
+subject
+
+body line
+
+Files changed:
+  A file.txt
+
+"#]]);
+    Ok(())
+}
+
+#[test]
+fn message_from_stdin() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file("file.txt", "Some text");
+
+    env.but("commit -F -")
+        .stdin("from stdin\n")
+        .assert()
+        .success();
+
+    // `-` reads the message from stdin.
+    env.but("show ssv")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Commit:    502eb89b82cb51905d5532aaf6df58f4f1ba991e
+Change-ID: ssvtnomvyusxrxwspzwsqkssnkmsnylz
+Author:    author <author@example.com>
+Date:      2000-01-02 00:00:00 +0000 (26y ago)
+Committer: committer <committer@example.com>
+
+from stdin
+
+Files changed:
+  A file.txt
+
+"#]]);
+}
+
+#[test]
+fn message_file_missing_is_bad_input() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file("file.txt", "Some text");
+
+    // The path is shown as typed; the OS error text varies by platform.
+    env.but("commit -F nope.txt")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: Bad input for '--file'
+
+Could not read message from 'nope.txt': [..]
+
+"#]]);
+}
+
+#[test]
+fn message_file_conflicts_with_message() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    // Like `git commit`, only one message source may be given.
+    env.but("commit -F msg.txt -m x")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+error: the argument '--file <FILE>' cannot be used with '--message <MESSAGE>'
+
+Usage: but commit --file <FILE> [CHANGES]...
+
+For more information, try '--help'.
+
+Examples:
+  but commit -b <branch> -m "message"                    # commit onto a branch (created if needed)
+  but commit -b <branch> -m "message" <file-or-hunk>...  # commit only the given changes
+  but commit -m "message"                                # commit when only one stack is applied
+
 "#]]);
 }

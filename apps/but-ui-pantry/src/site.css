@@ -1,0 +1,660 @@
+/* The docs site and a story's frame. Plain classes, prefixed so they can't meet the components'
+   own. */
+
+@import "@gitbutler/but-ui/core";
+@import "@gitbutler/but-ui-react/base.css";
+
+body {
+	margin: 0;
+	background-color: var(--but-background);
+	color: var(--but-foreground);
+	font-family: var(--but-font-family-base);
+}
+
+/* A story alone, laid out as its `layout` parameter says. */
+body[data-layout="padded"] {
+	padding: 16px;
+}
+
+body[data-layout="centered"] {
+	display: grid;
+	place-items: center;
+	min-height: 100vh;
+}
+
+/* The sidebar and the page, side by side across the window's height (set inline, as the group
+   sets its own height there); each scrolls on its own. */
+.docs-site {
+	background-color: var(--but-canvas);
+}
+
+/* The search, the pages' cards and the theme, one under another on the window's ground. The search
+   and the theme are set in from the panel's sides as the cards are: the cards' room on each side is
+   the scroller's, so its scrollbar lies in the gutter beside them, never across their edge. */
+.docs-site-sidebar {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding-block: var(--but-space-xl);
+	gap: var(--but-gap-stack);
+	color: var(--but-foreground);
+	font-family: var(--but-font-family-base);
+
+	& > :not(.docs-site-scroll) {
+		margin-inline: var(--but-space-xl);
+	}
+}
+
+.docs-site-card {
+	flex-shrink: 0;
+	overflow: hidden;
+	border: 1px solid var(--but-border-subtle);
+	border-radius: var(--but-radius-card);
+	background-color: var(--but-background);
+}
+
+/* The search alone in its card: the line a popup's search draws over its list would double the
+   card's edge. Two classes' weight, so it wins whatever order the sheets load in. */
+.docs-site-search > [class] {
+	border-bottom: none;
+}
+
+/* The site's look, in a card as the pages' are: its leading row as the header, past a hairline the
+   settings. Folded, the header is the whole card. */
+.docs-site-appearance-head {
+	padding: var(--but-padding-list);
+}
+
+.docs-site-appearance-rows {
+	display: flex;
+	flex-direction: column;
+	padding: var(--but-padding-list);
+	gap: 1px;
+	border-top: 1px solid var(--but-border-subtle);
+}
+
+/* A colour's swatch, in a glyph's place. Its colour is its `color`; the row's own is the accent as
+   drawn, which for a colour typed in is the tokens' take on it. */
+.docs-site-swatch {
+	flex-shrink: 0;
+	width: 14px;
+	height: 14px;
+	border-radius: var(--but-radius-full);
+	background-color: currentColor;
+	color: var(--but-primary);
+}
+
+/* The cards scroll between the search and the theme, which stay put. */
+.docs-site-scroll {
+	flex: 1;
+	min-height: 0;
+}
+
+.docs-site-scroll-viewport {
+	padding-inline: var(--but-space-xl);
+}
+
+/* A card of pages, as but.dev's navigator draws a machine's: its leading row as the header, then
+   one group of pages after another, ruled off from the next.
+
+   Scrolled, the header sticks at the top while the pages pass under it, and as the card leaves it
+   shrinks from the bottom around the stuck header, so the frame stays whole. The card is drawn by
+   its parts for that: the header its top, the groups its sides, and a foot its bottom; a border on
+   the card would run on past a stuck header's rounded corners. The foot sticks the other way: a
+   card running on past the scroller's bottom keeps its bottom edge there, as the old single card
+   did, and over a header the card's end is cutting off it is that edge too. Over the card's last header height sticky
+   pushes the header up, the hold moves it down by as much, and the card clips it; over the last two
+   radii the corners flatten with it, so the top and bottom curves meet rather than cross. */
+@property --docs-section-roundness {
+	syntax: "<number>";
+	inherits: true;
+	initial-value: 1;
+}
+
+.docs-site-section {
+	--section-radius: calc(var(--but-radius-card) * var(--docs-section-roundness));
+	--section-head-height: calc(var(--but-size-control) + 2 * var(--but-padding-list) + 2px);
+
+	position: relative;
+	/* `clip` rather than `hidden`: hidden would make the card a scroller, and the header would stick
+	   to it instead. */
+	overflow: clip;
+	border-radius: var(--section-radius);
+	/* Measured against the scroller's own edge: a view timeline is otherwise inset by the
+	   scroller's scroll-padding. */
+	view-timeline: --docs-section block;
+	view-timeline-inset: 0;
+	animation: docs-section-flatten linear both;
+	animation-timeline: --docs-section;
+	animation-range: exit-crossing calc(100% - 2 * var(--but-radius-card)) exit-crossing 100%;
+
+	& + & {
+		margin-top: var(--but-gap-stack);
+	}
+}
+
+/* Square, on the panel's ground: a stuck header's rounded corners sit over the pages scrolling
+   under it, and this fills the notches outside them. The rounded top of the card is the header
+   inside. */
+.docs-site-section-head {
+	z-index: 1;
+	position: sticky;
+	top: 0;
+	background-color: var(--but-canvas);
+	animation: docs-section-hold linear both;
+	animation-timeline: --docs-section;
+	animation-range: exit-crossing calc(100% - var(--section-head-height)) exit-crossing 100%;
+}
+
+.docs-site-section-top {
+	padding: var(--but-padding-list);
+	border: 1px solid var(--but-border-subtle);
+	border-radius: var(--section-radius) var(--section-radius) 0 0;
+	background-color: var(--but-background);
+
+	/* Folded, the header is the whole card. */
+	[data-folded] & {
+		border-radius: var(--section-radius);
+	}
+}
+
+/* Each group's bottom edge is the hairline under it, but the last one's, which is the foot. A group
+   with another under it keeps a little more room before the line. */
+.docs-site-group {
+	display: flex;
+	flex-direction: column;
+	padding: var(--but-padding-list) var(--but-padding-list) var(--but-gap-stack);
+	gap: 1px;
+	border: 1px solid var(--but-border-subtle);
+	border-top: 0;
+	background-color: var(--but-background);
+
+	&:has(+ .docs-site-section-foot) {
+		padding-bottom: var(--but-padding-list);
+		border-bottom: 0;
+	}
+}
+
+/* The card's bottom edge, laid over the last group's padding so the card ends where it would. It is
+   see-through, so the pages scroll right down to it; only the ground outside its rounded corners is
+   painted. Over the header, at the card's own end, it draws over it as the header is cut off. */
+.docs-site-section-foot {
+	--corner: var(--section-radius);
+
+	z-index: 2;
+	position: sticky;
+	bottom: 0;
+	height: var(--corner);
+	margin-top: calc(-1 * var(--corner));
+	background:
+		radial-gradient(
+				circle at 100% 0,
+				transparent calc(var(--corner) - 0.5px),
+				var(--but-canvas) var(--corner)
+			)
+			left top / var(--corner) var(--corner) no-repeat,
+		radial-gradient(
+				circle at 0 0,
+				transparent calc(var(--corner) - 0.5px),
+				var(--but-canvas) var(--corner)
+			)
+			right top / var(--corner) var(--corner) no-repeat;
+	pointer-events: none;
+
+	/* The edge itself, apart from the ground: a background is clipped by its own box's corners. */
+	&::before {
+		position: absolute;
+		inset: 0;
+		border: 1px solid var(--but-border-subtle);
+		border-top: 0;
+		border-radius: 0 0 var(--corner) var(--corner);
+		content: "";
+	}
+}
+
+@keyframes docs-section-flatten {
+	to {
+		--docs-section-roundness: 0;
+	}
+}
+
+@keyframes docs-section-hold {
+	to {
+		translate: 0 var(--section-head-height);
+	}
+}
+
+/* The gap between the sidebar and the page is the scroller's gutter, so the handle takes no room:
+   its grab area lies just inside the page card's edge, clear of the sidebar's scrollbar, as
+   but.dev's does, with its grip 3px in. */
+.docs-site-handle {
+	z-index: 1;
+	margin-inline-end: -6px;
+}
+
+/* The page in a card of its own, set in from the window's edge as the sidebar's cards are, and from
+   them by the sidebar's gutter alone. The scrollbar's gutter is kept on a page too short to scroll,
+   so the column doesn't shift. */
+.docs-site-main {
+	box-sizing: border-box;
+	container-type: inline-size;
+	height: calc(100% - 2 * var(--but-space-xl));
+	margin: var(--but-space-xl) var(--but-space-xl) var(--but-space-xl) 0;
+	overflow: auto;
+	border: 1px solid var(--but-border-subtle);
+	border-radius: var(--but-radius-card);
+	background-color: var(--but-background);
+	scrollbar-gutter: stable;
+}
+
+/* The page, and right beside it its menu when the card has room for both: the page's column and
+   the menu's 300px, centred together, so the menu sits just past the page's widest content rather
+   than out at the card's edge. Narrower, the menu goes, its column closes, and the page centres
+   alone as before. */
+.docs-site-body {
+	display: grid;
+	grid-template-columns:
+		minmax(0, 1fr) minmax(0, calc(var(--but-size-prose-wide) + 64px))
+		auto minmax(0, 1fr);
+	min-height: 100%;
+}
+
+.docs-site-page {
+	grid-column: 2;
+	min-width: 0;
+}
+
+.docs-site-rail {
+	box-sizing: border-box;
+	grid-column: 3;
+	width: calc(300px + var(--but-space-xl));
+	padding: var(--but-space-xl) var(--but-space-xl) var(--but-space-xl) 0;
+}
+
+@container (width < 1220px) {
+	.docs-site-rail {
+		display: none;
+	}
+}
+
+/* The menu's card stays at the top while the page scrolls under it, and scrolls itself when the
+   page lists more than fits. */
+.docs-site-rail-card {
+	display: flex;
+	position: sticky;
+	top: var(--but-space-xl);
+	flex-direction: column;
+	max-height: calc(100dvh - 4 * var(--but-space-xl) - 2px);
+	padding: var(--but-padding-list);
+	overflow-y: auto;
+	gap: 1px;
+}
+
+.docs-site-rail-section {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+
+	& + & {
+		margin-top: var(--but-gap-stack);
+	}
+}
+
+/* Every page is laid out as rendered markdown is: a column as wide as its media, with the text kept
+   to the prose line centred in it, so the text starts at the same edge from page to page. The
+   design notes are Markdown itself, drawn as any app draws it. */
+.docs-site-prose,
+.docs-page {
+	max-width: calc(var(--but-size-prose-wide) + 64px);
+	margin: 0 auto;
+	padding: 48px 32px 64px;
+}
+
+/* A link to another page of notes stays on the site, so it goes without TextLink's arrow. */
+.docs-site-page-link {
+	color: inherit;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+/* A component's page. */
+
+.docs-page {
+	display: flex;
+	flex-direction: column;
+	gap: 40px;
+	color: var(--but-foreground);
+	font-family: var(--but-font-family-base);
+}
+
+/* The title over the Specs and Examples tabs. The tabs leave 10px below them, so the underline
+   sits on the header's rule, as Tabs asks of a header holding them. */
+.docs-page-header {
+	display: flex;
+	flex-direction: column;
+	padding-bottom: 10px;
+	gap: 16px;
+	border-bottom: 1px solid var(--but-border-subtle);
+}
+
+.docs-page-description {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+/* The title, a story's name and the text are set as the design notes' Markdown sets them, on its
+   prose line, as are a bar's card and a ground; a wide story and a window take the column's full
+   width, as its media does. */
+.docs-page-title,
+.docs-page-prose {
+	margin: 0;
+}
+
+/* A heading or a rule that can be linked to: its link button hangs in the margin before it, out
+   of the words' line, and shows under the pointer or the keyboard. A touch screen has no pointer
+   to bring it, so it always shows there. */
+.docs-linked {
+	position: relative;
+	scroll-margin-top: var(--but-space-xl);
+}
+
+/* The gutter is the block's first line tall, since it inherits the block's line height, and the
+   button centres in it, so it sits level with the first line at any text size. */
+.docs-linked-gutter {
+	display: flex;
+	position: absolute;
+	top: 0;
+	right: 100%;
+	align-items: center;
+	height: 1lh;
+	margin-right: var(--but-space-xs);
+}
+
+.docs-linked-button {
+	color: var(--but-muted-foreground);
+	opacity: 0;
+}
+
+/* The title a link opened, a heading's words or a rule's bold lead, lit in the accent's soft tint
+   on arrival and fading out. The tint reaches a little past the words, wrapping with them. It
+   gives a little wiggle as it lands, a nudge to the eye that reduced motion turns off: the title
+   is inline, where a transform does nothing, so it shifts by its relative `left`, which carries
+   every line of a wrapped title along. A keyframe animation, with its own timing. */
+.docs-linked > :is(.docs-linked-title, strong:first-of-type) {
+	position: relative;
+	box-decoration-break: clone;
+	margin-inline: calc(-1 * var(--but-space-xs));
+	padding-inline: var(--but-space-xs);
+	border-radius: var(--but-radius-xs);
+	transition: background-color var(--but-transition-medium) ease-out;
+}
+
+.docs-linked[data-lit] > :is(.docs-linked-title, strong:first-of-type) {
+	background-color: var(--but-primary-soft-hover);
+	animation: docs-linked-wiggle 450ms ease-out;
+}
+
+@keyframes docs-linked-wiggle {
+	20% {
+		left: -3px;
+	}
+
+	40% {
+		left: 3px;
+	}
+
+	60% {
+		left: -2px;
+	}
+
+	80% {
+		left: 1px;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.docs-linked[data-lit] > :is(.docs-linked-title, strong:first-of-type) {
+		animation: none;
+	}
+}
+
+.docs-linked:hover .docs-linked-button,
+.docs-linked-button:focus-visible,
+.docs-linked-button[data-popup-open] {
+	opacity: 1;
+}
+
+@media (hover: none) {
+	.docs-linked-button {
+		opacity: 1;
+	}
+}
+
+/* The component's design notes, under its description on the Specs tab. */
+.docs-page-guidelines {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.docs-page-header,
+.docs-page-description,
+.docs-page-guidelines,
+.docs-page-example > :is(.docs-page-example-title, .docs-page-prose) {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: var(--but-size-prose);
+	margin: 0 auto;
+}
+
+.docs-page-example {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+
+	/* The card stands apart from the words above it, which belong to it as a caption does. */
+	& > :last-child {
+		margin-top: 12px;
+	}
+}
+
+/* The ground an example stands on: tinted, with no border, so a component that draws its own card
+   isn't framed by a second one that looks the same. Muted, not bg/2: bg/2 is the components' own
+   inset (a code chip, a segmented control's track), which would vanish on it. In the dark, muted is
+   ten steps above the page and shouts, so the ground takes a third of the way there: still apart
+   from a bg/1 card and from bg/2 below it. */
+.docs-page-canvas {
+	align-self: center;
+	width: 100%;
+	padding: 24px;
+	overflow: auto;
+	border-radius: var(--but-radius-card);
+	background-color: light-dark(
+		var(--but-disabled),
+		color-mix(in srgb, var(--but-background) 65%, var(--but-disabled))
+	);
+
+	/* As in rendered markdown, a component reads with the text: its ground keeps to the prose line,
+	   with the story at its start, on the same edge as the words above it. A wide story, as a table
+	   or a diff, breaks out to the column's full width on both sides, as markdown's media does. */
+	&:not([data-layout="wide"]) {
+		max-width: var(--but-size-prose);
+	}
+}
+
+/* A bar the width of a window, edge to edge in its card: the card's border is the bar's. The card
+   is the pane the bar tops, so it is the size container a bar's own container queries ask. */
+.docs-page-canvas-bar {
+	container-type: inline-size;
+	overflow: hidden;
+
+	/* A bar's own edge line, as the location bar's border under it, would double the card's. Two
+	   classes' weight, so it wins over the component's own whatever order the sheets load in. */
+	& > [class] {
+		border-block: none;
+	}
+}
+
+.docs-page-frame {
+	display: block;
+	width: 100%;
+	height: 480px;
+	border: 0;
+	border-radius: inherit;
+}
+
+.docs-page-neighbours {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	padding-top: 32px;
+	gap: 12px;
+	border-top: 1px solid var(--but-border-subtle);
+}
+
+/* A story the GPUI client draws too: its ground in a bordered card, over a footer that switches
+   between the two. The card keeps to the prose line as a ground does. */
+.docs-page-card {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	align-self: center;
+	width: 100%;
+	overflow: hidden;
+	border: 1px solid var(--but-border-subtle);
+	border-radius: var(--but-radius-card);
+	background-color: var(--but-background);
+
+	&:not([data-layout="wide"]) {
+		max-width: var(--but-size-prose);
+	}
+
+	& > .docs-page-canvas {
+		max-width: none;
+		border-radius: 0;
+	}
+
+	/* The shot is the example on this ground with its own 24px of room, so it takes the padding's
+	   place. */
+	& > .docs-page-canvas:has(> .docs-gpui-shot:not([hidden])) {
+		padding: 0;
+	}
+}
+
+/* The view that isn't picked: both stay mounted, so switching doesn't wait on the shot loading. */
+.docs-gpui-shot[hidden],
+.docs-page-stage[hidden],
+.docs-page-frame[hidden],
+.docs-page-canvas-bar[hidden] {
+	display: none;
+}
+
+.docs-page-card-footer {
+	display: flex;
+	align-items: center;
+	padding: 12px;
+	gap: 12px;
+	border-top: 1px solid var(--but-border-subtle);
+}
+
+/* Why GPUI can't be picked, beside the switch, as a disabled segment asks. */
+.docs-page-card-hint {
+	color: var(--but-muted-foreground);
+}
+
+.docs-gpui-shot {
+	display: block;
+	max-width: none;
+}
+
+/* The Colours page. */
+
+.docs-colours-section,
+.docs-adoption-section {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+/* A token's colour in one scheme, over that scheme's page, so a see-through one shows as it would
+   there. The hairline keeps one the colour of the page from vanishing. */
+.docs-colours-swatch {
+	display: block;
+	width: 28px;
+	height: 28px;
+	border-radius: var(--but-radius-sm);
+	background:
+		linear-gradient(var(--docs-colours-swatch), var(--docs-colours-swatch)), var(--but-background);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--but-foreground) 10%, transparent);
+
+	&[data-scheme="light"] {
+		color-scheme: light;
+	}
+
+	&[data-scheme="dark"] {
+		color-scheme: dark;
+	}
+}
+
+/* The ramps: a row a hue, its name then a column a step. The steps share the column's width, and
+   scroll sideways only once they would be narrower than 20px. */
+.docs-colours-ramps {
+	display: flex;
+	flex-direction: column;
+	overflow-x: auto;
+	gap: 4px;
+	color: var(--but-muted-foreground);
+}
+
+.docs-colours-ramp {
+	display: grid;
+	grid-template-columns: 56px repeat(17, minmax(20px, 1fr));
+	align-items: center;
+	gap: 4px;
+
+	& .docs-colours-swatch {
+		width: 100%;
+	}
+}
+
+.docs-colours-ramp-name {
+	color: var(--but-foreground);
+}
+
+.docs-colours-step {
+	text-align: center;
+}
+
+.docs-colours-token {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	padding-block: 6px;
+	gap: 2px;
+}
+
+.docs-colours-alias {
+	white-space: nowrap;
+}
+
+.docs-colours-description {
+	color: var(--but-muted-foreground);
+}
+
+/* The Adoption page: the names a component's file is imported by, side by side. */
+.docs-adoption-names {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+/* A component's frame in Figma: one word and its arrow, kept on one line. */
+.docs-adoption-link {
+	white-space: nowrap;
+}
+
+/* A place that doesn't have the component yet, faint so the ones that do stand out. */
+.docs-adoption-none {
+	color: var(--but-subtle-foreground);
+}

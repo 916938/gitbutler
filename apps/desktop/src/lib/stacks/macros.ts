@@ -1,6 +1,9 @@
-import type { CreateCommitRequestWorktreeChanges } from "$lib/stacks/stackEndpoints";
+import {
+	rejectedChangesByPath,
+	toCommitCreatePlacement,
+	type CreateCommitRequestWorktreeChanges,
+} from "$lib/stacks/stackEndpoints";
 import type { StackService } from "$lib/stacks/stackService.svelte";
-import type { RejectionReason } from "$lib/state/uiState.svelte";
 import type { UiState } from "$lib/state/uiState.svelte";
 import type { DiffSpec } from "@gitbutler/but-sdk";
 
@@ -27,13 +30,13 @@ export default class StackMacros {
 	 * Optionally, a branch name and commit message can be provided.
 	 */
 	async branchChanges(params: BranchChangesParams) {
-		const { stack, outcome, branchName } = await this.createNewStackAndCommit(
+		const { stackId, outcome, branchName } = await this.createNewStackAndCommit(
 			params.worktreeChanges,
 			params.branchName,
 			params.commitMessage,
 		);
 		if (outcome.newCommit) {
-			this.uiState.lane(stack.id).selection.set({
+			this.uiState.lane(stackId).selection.set({
 				branchName,
 				commitId: outcome.newCommit,
 				previewOpen: true,
@@ -49,42 +52,35 @@ export default class StackMacros {
 		name?: string,
 		message?: string,
 	) {
-		const stack = await this.stackService.newStackMutation({
+		const normalizedName = name ? await this.stackService.normalizeBranchName(name) : undefined;
+		const created = await this.stackService.branchCreateMutation({
 			projectId: this.projectId,
-			branch: { name },
+			newRef: normalizedName ? `refs/heads/${normalizedName}` : null,
+			placement: { type: "independent", subject: { order: null } },
 		});
-		// The backend guarantees a non-empty heads array on freshly-created
-		// stacks (see StackEntryNoOpt + the "list is never empty" invariant
-		// on legacy ui::StackEntry).
-		const branchName = stack.heads[0]!.name;
+		const branchName = created.newRef.displayName;
+		const stack = created.workspace.headInfo.stacks.find((stack) =>
+			stack.segments.some((segment) => segment.refName?.displayName === branchName),
+		);
+		if (!stack?.id) throw new Error("Created branch has no workspace stack");
 		const outcome = await this.stackService.createCommitMutation({
 			projectId: this.projectId,
-			stackBranchName: branchName,
-			parentId: undefined,
+			...toCommitCreatePlacement({ stackBranchName: branchName }),
 			message: message ?? STUB_COMMIT_MESSAGE,
-			worktreeChanges,
-			dryRun: false,
+			changes: worktreeChanges,
 		});
 
 		if (outcome.rejectedChanges.length > 0) {
-			const pathsToRejectedChanges = outcome.rejectedChanges.reduce(
-				(acc: Record<string, RejectionReason>, { reason, path }) => {
-					acc[path] = reason;
-					return acc;
-				},
-				{},
-			);
-
 			this.uiState.global.modal.set({
 				type: "commit-failed",
 				projectId: this.projectId,
 				targetBranchName: branchName,
 				newCommitId: outcome.newCommit ?? undefined,
 				commitTitle: message ?? STUB_COMMIT_MESSAGE,
-				pathsToRejectedChanges,
+				pathsToRejectedChanges: rejectedChangesByPath(outcome),
 			});
 		}
-		return { stack, outcome, branchName };
+		return { stackId: stack.id, outcome, branchName };
 	}
 
 	/**

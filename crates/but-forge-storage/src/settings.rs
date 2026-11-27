@@ -17,14 +17,13 @@ pub struct CachedProfile {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ForgeSettings {
-    /// GitHub-specific settings.
     pub github: GitHubSettings,
-    /// GitLab-specific settings.
     #[serde(default)]
     pub gitlab: GitLabSettings,
-    /// Bitbucket-specific settings.
     #[serde(default)]
     pub bitbucket: BitbucketSettings,
+    #[serde(default)]
+    pub gitbutler_code: GitbutlerCodeSettings,
     /// Cached user profiles, keyed by account `access_token_key`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub cached_profiles: HashMap<String, CachedProfile>,
@@ -33,7 +32,6 @@ pub struct ForgeSettings {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubSettings {
-    /// GitHub-specific settings.
     #[serde(default, deserialize_with = "deserialize_lenient_vec")]
     pub known_accounts: Vec<GitHubAccount>,
 }
@@ -42,13 +40,11 @@ pub struct GitHubSettings {
 #[serde(tag = "type")]
 pub enum GitHubAccount {
     OAuth {
-        // Username associated with the OAuth account.
         username: String,
         // Key to retrieve the access token from secure storage.
         access_token_key: String,
     },
     Pat {
-        // Username associated with the PAT account.
         username: String,
         // Key to retrieve the access token from secure storage.
         access_token_key: String,
@@ -56,7 +52,6 @@ pub enum GitHubAccount {
     Enterprise {
         // Hostname of the GitHub Enterprise instance.
         host: String,
-        // Username associated with the PAT account.
         username: String,
         // Key to retrieve the access token from secure storage.
         access_token_key: String,
@@ -90,7 +85,6 @@ impl GitHubAccount {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitLabSettings {
-    /// GitLab-specific settings.
     #[serde(default, deserialize_with = "deserialize_lenient_vec")]
     pub known_accounts: Vec<GitLabAccount>,
 }
@@ -99,7 +93,6 @@ pub struct GitLabSettings {
 #[serde(tag = "type")]
 pub enum GitLabAccount {
     Pat {
-        // Username associated with the PAT account.
         username: String,
         // Key to retrieve the access token from secure storage.
         access_token_key: String,
@@ -107,7 +100,6 @@ pub enum GitLabAccount {
     SelfHosted {
         // Hostname of the self-hosted GitLab instance.
         host: String,
-        // Username associated with the PAT account.
         username: String,
         // Key to retrieve the access token from secure storage.
         access_token_key: String,
@@ -137,7 +129,6 @@ impl GitLabAccount {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BitbucketSettings {
-    /// Bitbucket-specific settings.
     #[serde(default, deserialize_with = "deserialize_lenient_vec")]
     pub known_accounts: Vec<BitbucketAccount>,
 }
@@ -166,6 +157,40 @@ impl BitbucketAccount {
     pub fn email(&self) -> &str {
         match self {
             BitbucketAccount::ApiToken { email, .. } => email,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitbutlerCodeSettings {
+    #[serde(default, deserialize_with = "deserialize_lenient_vec")]
+    pub known_accounts: Vec<GitbutlerCodeAccount>,
+}
+
+/// An account on GitButler Code (`code.gitbutler.com`), signed in through its device login.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum GitbutlerCodeAccount {
+    DeviceLogin {
+        username: String,
+        // Key to retrieve the access token from secure storage.
+        access_token_key: String,
+    },
+}
+
+impl GitbutlerCodeAccount {
+    pub fn access_token_key(&self) -> &str {
+        match self {
+            GitbutlerCodeAccount::DeviceLogin {
+                access_token_key, ..
+            } => access_token_key,
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        match self {
+            GitbutlerCodeAccount::DeviceLogin { username, .. } => username,
         }
     }
 }
@@ -252,6 +277,12 @@ mod tests {
                     access_token_key: "bitbucket_apitoken_bb@test.com".into(),
                 }],
             },
+            gitbutler_code: GitbutlerCodeSettings {
+                known_accounts: vec![GitbutlerCodeAccount::DeviceLogin {
+                    username: "codeuser".into(),
+                    access_token_key: "gitbutler_code_codeuser".into(),
+                }],
+            },
             cached_profiles: HashMap::new(),
         };
         let json = serde_json::to_string(&settings).unwrap();
@@ -259,6 +290,7 @@ mod tests {
         assert_eq!(roundtripped.github.known_accounts.len(), 1);
         assert_eq!(roundtripped.gitlab.known_accounts.len(), 1);
         assert_eq!(roundtripped.bitbucket.known_accounts.len(), 1);
+        assert_eq!(roundtripped.gitbutler_code.known_accounts.len(), 1);
     }
 
     #[test]

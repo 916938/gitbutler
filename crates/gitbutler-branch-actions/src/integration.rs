@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use but_ctx::{Context, access::RepoExclusive};
 use but_oxidize::{ObjectIdExt, OidExt};
-use gitbutler_branch::GITBUTLER_WORKSPACE_REFERENCE;
 use gitbutler_repo::{SignaturePurpose, commit_without_signature_gix, signature_gix};
 use tracing::instrument;
 
@@ -38,15 +37,6 @@ fn write_workspace_file(head_target: gix::ObjectId, path: PathBuf) -> Result<()>
     Ok(())
 }
 
-/// Update `gitbutler/workspace` using the current virtual branch state from `ctx`.
-pub fn update_workspace_commit(
-    ctx: &mut Context,
-    checkout_new_worktree: bool,
-) -> Result<gix::ObjectId> {
-    let mut guard = ctx.exclusive_worktree_access();
-    update_workspace_commit_with_perm(ctx, checkout_new_worktree, guard.write_permission())
-}
-
 /// Update `gitbutler/workspace` while reusing caller-held exclusive repository access.
 #[instrument(level = "debug", skip(ctx, perm), err(Debug))]
 pub fn update_workspace_commit_with_perm(
@@ -74,7 +64,6 @@ pub(crate) fn update_workspace_commit_from_workspace(
     let repo = &*ctx.git2_repo.get()?;
     let gix_repo = ctx.repo.get()?.clone();
 
-    // get current repo head for reference
     let head_ref = repo.head()?;
     let workspace_filepath = repo.path().join("workspace");
     let mut prev_branch = read_workspace_file(&workspace_filepath)?;
@@ -181,25 +170,13 @@ pub(crate) fn update_workspace_commit_from_workspace(
         None
     };
 
-    // Create or replace the workspace branch reference, then set as HEAD.
     repo.reference(
-        &GITBUTLER_WORKSPACE_REFERENCE.clone().to_string(),
+        but_core::WORKSPACE_REF_NAME,
         final_commit.to_git2(),
         true,
         "updated workspace commit",
     )?;
-    repo.set_head(&GITBUTLER_WORKSPACE_REFERENCE.clone().to_string())?;
-
-    // Install managed hooks to prevent accidental git commits on workspace branch
-    match gitbutler_repo::managed_hooks::install_managed_hooks(&gix_repo) {
-        Ok(gitbutler_repo::managed_hooks::HookInstallationResult::PartialSuccess { warnings }) => {
-            for warning in warnings {
-                tracing::warn!("Managed hooks installed with warnings: {warning}");
-            }
-        }
-        Ok(_) => {}
-        Err(e) => tracing::warn!("Failed to install managed hooks: {}", e),
-    }
+    repo.set_head(but_core::WORKSPACE_REF_NAME)?;
 
     let mut index = repo.index()?;
     index.read_tree(&repo.find_tree(workspace_tree.to_git2())?)?;

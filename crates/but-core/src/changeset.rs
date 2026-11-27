@@ -27,9 +27,7 @@ type ChangesetID = gix::ObjectId;
 /// A hash for select data in a commit to avoid copying it.
 type CommitDataId = gix::ObjectId;
 
-/// The version number for the changeset ID
 enum ChangesetVersion {
-    /// The initial version
     V1 = 1,
 }
 
@@ -41,13 +39,9 @@ const CURRENT_VERSION: ChangesetVersion = ChangesetVersion::V1;
 /// and, in `but-workspace`, for its richer `ref_info::Commit`, so neither side
 /// has to copy commit data into an intermediate struct.
 pub trait ChangesetCommit {
-    /// The commit's own id.
     fn id(&self) -> gix::ObjectId;
-    /// The id of the first parent, if any.
     fn first_parent_id(&self) -> Option<gix::ObjectId>;
-    /// The GitButler change-id, if the commit carries one.
     fn change_id(&self) -> Option<ChangeId>;
-    /// The commit's author signature.
     fn author(&self) -> &gix::actor::Signature;
     /// The commit message, with conflict markers stripped.
     fn message(&self) -> Cow<'_, BStr>;
@@ -278,13 +272,11 @@ pub fn create_similarity_lut<C: ChangesetCommit>(
                         let in_rx = in_rx.clone();
                         let out_tx = out_tx.clone();
                         let repo = repo.clone().into_sync();
-                        move || -> anyhow::Result<()> {
-                            let mut repo = repo.to_thread_local();
-                            repo.object_cache_size_if_unset(
-                                repo.compute_object_cache_size_for_tree_diffs(
-                                    &*repo.index_or_empty()?,
-                                ),
-                            );
+                        move || {
+                            // Workers run without an object cache. Commits next to each other
+                            // rarely go to the same worker, so a cache would seldom hit, and one
+                            // sized for a large index can grow to hundreds of megabytes per worker.
+                            let repo = repo.to_thread_local();
                             for (idx, lhs, rhs) in in_rx {
                                 let res = id_for_tree_diff(&repo, lhs, rhs)
                                     .map(|opt| opt.map(|cs_id| (idx, cs_id, rhs)));
@@ -292,7 +284,6 @@ pub fn create_similarity_lut<C: ChangesetCommit>(
                                     break;
                                 }
                             }
-                            Ok(())
                         }
                     })?;
             }
@@ -530,7 +521,6 @@ fn hash_change_state(h: &mut gix::hash::Hasher, ChangeState { id, kind }: Change
 /// One of the identities a commit can be matched by, from cheapest to most expensive.
 #[derive(Debug, Hash, Clone, Eq, PartialEq)]
 pub enum Identifier {
-    /// The GitButler change-id.
     ChangeId(ChangeId),
     /// A hash over select commit data (author + message).
     CommitData(CommitDataId),

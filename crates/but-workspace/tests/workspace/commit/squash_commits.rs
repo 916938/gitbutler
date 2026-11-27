@@ -448,6 +448,12 @@ fn squash_move_subject_above_target_out_of_order_for_shared_file_lineage() -> Re
         err.to_string(),
         "Cannot squash commits that would result in merge conflicts"
     );
+    assert_eq!(
+        err.downcast_ref::<but_error::Context>()
+            .map(|refusal| refusal.code),
+        Some(but_error::Code::PreconditionFailed),
+        "the state refuses the squash, nothing broke"
+    );
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -488,7 +494,7 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -532,7 +538,7 @@ fn squash_across_stacks_subject_into_target() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 └── ≡📙:B on 85efbe4 {2}
@@ -573,7 +579,7 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -617,7 +623,7 @@ fn squash_across_stacks_target_into_subject() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·80db672 (🏘️)
@@ -958,6 +964,36 @@ fn squash_all_c_commits_into_second_commit_of_b_keeps_new_file_content() -> Resu
 28
 29
 30
+
+"#]]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn squashing_the_last_commit_of_an_unnamed_lane_leaves_the_workspace() -> Result<()> {
+    let (_tmp, graph, repo, mut meta, mut db, unnamed) = super::workspace_with_an_unnamed_lane()?;
+    let c = repo.rev_parse_single("C")?.detach();
+
+    let mut ws = graph.into_workspace()?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
+    squash_commits(
+        editor,
+        vec![unnamed],
+        c,
+        but_workspace::commit::squash_commits::MessageCombinationStrategy::KeepTarget,
+    )?
+    .rebase
+    .materialize(Default::default())?;
+
+    // One stack is left, so `HEAD` is on its branch and the workspace commit is gone.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 9c26731 (HEAD -> C) C
+* c813d8d (B) B
+* 85efbe4 (origin/main, main) M
 
 "#]]
     );

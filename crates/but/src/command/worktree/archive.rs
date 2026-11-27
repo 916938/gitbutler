@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Result;
 use bstr::BString;
 use but_core::sync::RepoShared;
@@ -14,12 +16,13 @@ use crate::{
 
 pub fn set_archived(
     ctx: &Context,
+    current_dir: &Path,
     worktree: &CliIdArg,
     archived: bool,
 ) -> CliResult<ArchiveOutcome> {
     let guard = ctx.shared_worktree_access();
     let perm = guard.read_permission();
-    let op = ArchivalOperation::resolve(ctx, perm, worktree, archived)?;
+    let op = ArchivalOperation::resolve(ctx, perm, current_dir, worktree, archived)?;
     Ok(run(ctx, perm, op)?)
 }
 
@@ -33,11 +36,12 @@ impl ArchivalOperation {
     pub(crate) fn resolve(
         ctx: &Context,
         perm: &RepoShared,
+        current_dir: &Path,
         worktree: &CliIdArg,
         archived: bool,
     ) -> CliResult<Self> {
         Ok(Self {
-            worktree: resolve(ctx, worktree, perm)?,
+            worktree: resolve(ctx, current_dir, worktree, perm)?,
             archived,
         })
     }
@@ -50,10 +54,7 @@ pub fn run(ctx: &Context, perm: &RepoShared, op: ArchivalOperation) -> Result<Ar
         op.archived,
         perm,
     )?;
-    but_api::tags::signal_invalidation(
-        &ctx.project_data_dir,
-        but_api::worktrees::WORKTREE_SET_ARCHIVED_INVALIDATES,
-    );
+    but_project_handle::write_refresh_sentinel(&ctx.project_data_dir);
     Ok(ArchiveOutcome {
         name: op.worktree,
         archived: op.archived,

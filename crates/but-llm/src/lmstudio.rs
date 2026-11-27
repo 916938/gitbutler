@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_openai::{Client, config::OpenAIConfig};
-use but_tools::tool::Toolset;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
@@ -9,23 +8,13 @@ use crate::{
     client::LLMClient,
     openai_utils::{
         OpenAIClientProvider, response_blocking, stream_response_blocking,
-        structured_output_blocking, tool_calling_loop, tool_calling_loop_stream,
+        structured_output_blocking,
     },
 };
 
-const LMSTUDIO_API_BASE_DEFAULT: &str = "http://localhost:1234/v1";
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LMStudioConfig {
     pub api_base: String,
-}
-
-impl Default for LMStudioConfig {
-    fn default() -> Self {
-        Self {
-            api_base: LMSTUDIO_API_BASE_DEFAULT.to_string(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -35,14 +24,9 @@ pub struct LMStudioProvider {
 }
 
 impl LMStudioProvider {
-    pub fn with(config: Option<LMStudioConfig>, model: Option<String>) -> Option<Self> {
-        let mut config = config.unwrap_or_default();
+    pub fn new(mut config: LMStudioConfig, model: Option<String>) -> Self {
         config.api_base = normalize_api_base(&config.api_base);
-        Some(Self { config, model })
-    }
-
-    pub fn config(&self) -> &LMStudioConfig {
-        &self.config
+        Self { config, model }
     }
 }
 
@@ -61,42 +45,16 @@ impl OpenAIClientProvider for LMStudioProvider {
             .with_api_base(self.config.api_base.clone())
             .with_api_key("lm-studio");
 
-        Ok(Client::with_config(open_ai_config))
+        Ok(Client::build(
+            but_http::client_builder()?.build()?,
+            open_ai_config,
+        ))
     }
 }
 
 impl LLMClient for LMStudioProvider {
     fn model(&self) -> Option<String> {
         self.model.clone()
-    }
-
-    fn tool_calling_loop_stream(
-        &self,
-        system_message: &str,
-        chat_messages: Vec<ChatMessage>,
-        tool_set: &mut impl Toolset,
-        model: &str,
-        on_token: impl Fn(&str) + Send + Sync + 'static,
-    ) -> Result<(String, Vec<ChatMessage>)> {
-        let result = tool_calling_loop_stream(
-            self,
-            system_message,
-            chat_messages,
-            tool_set,
-            model,
-            on_token,
-        )?;
-        Ok((result.final_response, result.message_history))
-    }
-
-    fn tool_calling_loop(
-        &self,
-        system_message: &str,
-        chat_messages: Vec<ChatMessage>,
-        tool_set: &mut impl Toolset,
-        model: &str,
-    ) -> Result<String> {
-        tool_calling_loop(self, system_message, chat_messages, tool_set, model)
     }
 
     fn stream_response(

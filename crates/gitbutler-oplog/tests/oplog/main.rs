@@ -32,6 +32,19 @@ mod trailer {
         let result = Trailer::from_str(s);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn agent_round_trips() {
+        for agent in [Some("claude-code".to_owned()), None] {
+            let trailer = Trailer::Agent(agent);
+            assert_eq!(
+                Trailer::from_str(&trailer.to_string()).unwrap(),
+                trailer,
+                "a person reads back as no agent, not as one called `none`"
+            );
+        }
+        assert_eq!(Trailer::Agent(None).to_string(), "agent: none");
+    }
 }
 
 mod version {
@@ -111,7 +124,7 @@ mod snapshot_details {
             "Create a new snapshot\n\nBody text 1\nBody text2\n\nBody text 3\n\nVersion: 3\nOperation: CreateCommit\nFoo: Bar\n".to_string();
         let timezone_offset_does_not_matter = 1234;
         let created_at = gix::date::Time::new(1234567890, timezone_offset_does_not_matter * 60);
-        let details = SnapshotDetails::from_str(&commit_message.clone()).unwrap();
+        let details = SnapshotDetails::from_str(&commit_message).unwrap();
         let snapshot = Snapshot {
             commit_id: commit_sha,
             created_at,

@@ -2,8 +2,6 @@ use std::path::Path;
 
 use rusqlite::ErrorCode;
 
-/// Storage for cache tables, along with their types.
-///
 /// ### Usage
 ///
 /// Caches work the same as [`crate::table`]s.
@@ -14,11 +12,7 @@ use crate::M;
 mod handle;
 mod table;
 
-#[rustfmt::skip]
-pub use table::{
-    agent_skill_notice::AgentSkillNotice,
-    update::{CachedCheckResult, CheckUpdateStatus},
-};
+pub use table::update::{CachedCheckResult, CheckUpdateStatus};
 
 /// Just like [`crate::SchemaVersion`], but for project caches. Note that caches can always be created though
 /// as they are generated in memory in the worst case, particularly on migration failure.
@@ -39,7 +33,7 @@ pub enum SchemaVersion {
     One = 1,
 }
 
-/// Open `url` with migrations applied. However, we don't retry as:
+/// Doesn't retry, as:
 /// - if the database is locked, and we'd need to run migrations, we fall back to an in-memory DB just this time
 /// - if we don't need to run migrations, all is good anyway, and we figure this out in read-only mode of the migration.
 fn run_migrations<'m>(

@@ -1,7 +1,8 @@
-use gitbutler_commit::commit_ext::CommitMessageBstr as _;
 use snapbox::str;
 
+use super::util::add_worktree_with_commit;
 use crate::utils::Sandbox;
+use but_testsupport::CommandExt as _;
 
 #[test]
 fn names_an_anonymous_segment() {
@@ -42,6 +43,58 @@ Hint: run `but help` for all commands
 }
 
 #[test]
+fn names_the_anonymous_segment_of_a_detached_worktree() {
+    let env =
+        Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
+    env.setup_metadata(&["A"]);
+    env.but("worktree list").assert().success();
+    let worktree = add_worktree_with_commit(&env, "W", "A");
+    but_testsupport::git_at_dir(&worktree)
+        .args(["checkout", "-q", "--detach"])
+        .run();
+    env.invoke_git("branch -D W");
+
+    env.but("reword i0 -m named")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Named anonymous branch 'i0' as 'named'
+
+"#]]);
+
+    assert_eq!(
+        gix::open(&worktree)
+            .expect("worktree opens")
+            .head_name()
+            .expect("HEAD is readable")
+            .map(|name| name.shorten().to_string()),
+        Some("named".to_owned()),
+        "the worktree is attached to the branch naming its segment"
+    );
+    env.but("status").assert().success().stdout_eq(str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ g0
+┊●   sxu anonymous (no changes)
+┊│
+┊├┄ h0 [A]
+┊┊
+┊┊╭┄ na:@ [uncommitted] {W} (no changes)
+┊┊├┄ na [named]
+┊┊●   nsn add W
+┊├╯
+┊●   tpm add A
+├╯
+┊
+┴ 0dc3733 (common base, main, origin/main) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
 fn rejects_naming_an_anonymous_segment_after_an_existing_branch() {
     let env =
         Sandbox::init_scenario_with_target_and_default_settings("one-stack-anonymous-segment");
@@ -53,6 +106,8 @@ fn rejects_naming_an_anonymous_segment_after_an_existing_branch() {
         .stdout_eq(str![])
         .stderr_eq(str![[r#"
 Error: A branch named 'A' is already applied
+
+Hint: Pick another name
 
 "#]]);
 }
@@ -178,14 +233,109 @@ Updated commit message for [..]
             .object()
             .unwrap()
             .into_commit()
-            .message_bstr(),
+            .message_raw()
+            .unwrap(),
         "First line\n\n\tSecond paragraph with details"
     );
 }
 
-// Note: Branch rename test is omitted because the test scenario uses single-character
-// branch names ("A") which don't meet the 2-character minimum requirement for CLI IDs.
-// The branch rename functionality with -m flag is tested manually and works correctly.
+#[test]
+fn reword_commit_with_message_from_file() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file("sub/msg.txt", "\nFirst line\n\n\tSecond paragraph\n\n");
+
+    env.but("-C sub reword tpm -F msg.txt")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Updated commit message for [..]
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("log -1 --format=[%B] refs/heads/A"),
+        "[First line\n\n\tSecond paragraph]",
+        "the path resolves against -C, and the message keeps its body and loses surrounding whitespace"
+    );
+}
+
+#[test]
+fn reword_commit_with_message_from_stdin_for_json_output() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.but("reword tpm -F - --json")
+        .stdin("from stdin\n\nwith a body\n")
+        .assert()
+        .success()
+        .stdout_eq(str![[r#"
+{
+  "new_commit_id": [..]
+}
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("log -1 --format=[%B] refs/heads/A"),
+        "[from stdin\n\nwith a body]",
+        "JSON output has no editor to fall back to, and doesn't need one when stdin has the message"
+    );
+}
+
+#[test]
+fn reword_refuses_a_message_file_with_no_message() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file("blank.txt", " \n\n\t\n");
+
+    // Unlike `-m ''`, nothing here asks to erase the message: the write may have failed.
+    env.but("reword tpm -F blank.txt")
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: Bad input for '--file'
+
+Message from 'blank.txt' is empty
+
+"#]]);
+    env.but("reword tpm -F -")
+        .stdin("")
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: Bad input for '--file'
+
+Message from '-' is empty
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("log -1 --format=[%B] refs/heads/A"),
+        "[add A\n]",
+        "the commit keeps its message"
+    );
+}
+
+#[test]
+fn reword_branch_with_name_from_file() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file("name.txt", "renamed\n");
+
+    env.but("reword A -F name.txt")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Renamed branch 'A' to 'renamed'
+
+"#]]);
+}
+
 #[test]
 fn reword_branch_from_editor_trims_trailing_newlines_in_confirmation_output() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
@@ -260,7 +410,44 @@ fn reword_branch_rejects_branch_name_that_already_exists() {
         .stderr_eq(str![[r#"
 Error: A branch named 'existing' is already applied
 
+Hint: Pick another name
+
 "#]]);
+}
+
+#[test]
+fn reword_branch_rejects_name_nesting_with_another_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.invoke_git("branch fix");
+
+    env.but("reword A -m fix/thing")
+        .assert()
+        .failure()
+        .stdout_eq(str![[]])
+        .stderr_eq(str![[r#"
+Error: Branch name 'fix/thing' collides with existing branch 'fix'
+
+Hint: Pick another name
+
+"#]]);
+}
+
+#[test]
+fn reword_branch_may_take_names_that_creating_a_branch_refuses() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.invoke_git("update-ref refs/remotes/origin/taken main");
+
+    env.but("reword A -m taken")
+        .assert()
+        .success()
+        .stderr_eq(str![[]]);
+    // Nesting under its own name is fine, as the rename frees that name.
+    env.but("reword taken -m taken/nested")
+        .assert()
+        .success()
+        .stderr_eq(str![[]]);
 }
 
 #[test]
@@ -386,7 +573,6 @@ Hint: Most likely you want `but pull`, which updates the workspace and removes l
 fn reword_a_commit_in_a_linked_worktree() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
-    super::util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = super::util::add_worktree_with_commit(&env, "wt-feature", "A");
 
@@ -441,7 +627,6 @@ Updated commit message for nsn
 fn reword_renames_branches_in_a_linked_worktree() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
-    super::util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = super::util::add_worktree_with_lower_branch(&env, "wt-feature", "A");
 

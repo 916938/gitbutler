@@ -2,9 +2,9 @@
 
 - IDs for commits, branches, files, and hunks: `but help cli-ids`.
 - Terms (workspace, applied, stack, target, `@`): `but skill concepts`.
-- Every command accepts `--json`. Mutations accept `--status-after` to append the resulting workspace status.
-- History edits refuse branches and commits already merged upstream; `--allow-merged` overrides that.
-- Mutations are recorded in the operation log; `but undo` reverts the last one.
+- Workspace edits such as `commit`, `amend`, `squash`, `move`, `discard` and `undo` accept `--status-after` to append the resulting workspace status; `push`, `pull`, `merge`, `oplog` and `worktree` ignore it.
+- History edits and `push` refuse branches and commits already merged upstream; `--allow-merged` overrides that. `discard` and `branch delete` don't check.
+- Most mutations are recorded in the operation log, and `but undo` reverts the last one recorded; `push` and `worktree` commands are not recorded.
 - To run against another directory, put `-C <path>` before the command: `but -C <path> <cmd>`.
 - Examples and details: `but <cmd> --help`.
 
@@ -16,26 +16,30 @@ Show an overview of the workspace state
 - `-v, --verbose` Show verbose output with commit author and timestamp
 - `-u, --upstream` Show detailed list of upstream commits that haven't been integrated yet
 
-### but diff [TARGET]
+### but diff [TARGETS]...
 Show the diff of changes in the repo
-- `[TARGET]` What to diff, by CLI ID: a commit, branch, committed file or hunk, uncommitted file or hunk, path prefix, or a worktree's uncommitted area. A commit lists its files and hunks with their IDs. If omitted shows the diff of all uncommitted changes of the checkout but runs in, with file and hunk IDs. For more details about CLI IDs, see but help cli-ids.
+- `[TARGETS]...` What to diff, by CLI ID: a commit, branch, committed file or hunk, uncommitted file or hunk, path of an uncommitted file or directory, or a worktree's uncommitted area. A commit lists its files and hunks with their IDs. If omitted shows the diff of all uncommitted changes of the checkout but runs in, with file and hunk IDs. For more details about CLI IDs, see but help cli-ids.
+- `--stat` Show the changed files and their line counts instead of the patches
 
 ### but show <COMMIT_OR_BRANCH>
 Show details of a commit or branch
 - `<COMMIT_OR_BRANCH>` The commit ID (short or full SHA), branch name, or CLI ID to show details for
 - `-v, --verbose` Show full commit messages and files changed for each commit
+- `--stat` Show how many lines each changed file added and removed. For a branch, this is the same as --verbose
 
 ## Branching and Committing
 
 ### but commit [CHANGES]...
 Create a commit
-- `[CHANGES]...` The files or hunks to commit, by CLI ID from but diff. If omitted, everything uncommitted in the checkout but runs in is committed.
-- `-m, --message <MESSAGE>` The message to use for the commit. Can be supplied any amount of times, each value being appended to the preceding ones with a blank line in between. Without -m or --no-message, a terminal opens the editor and a non-interactive run commits with an empty message.
+- `[CHANGES]...` The files or hunks to commit, by CLI ID from but diff or by path. If omitted, everything uncommitted in the checkout but runs in is committed.
+- `-m, --message <MESSAGE>` The message to use for the commit. Can be supplied any amount of times, each value being appended to the preceding ones with a blank line in between. Without -m, -F or --no-message, a terminal opens the editor and a non-interactive run commits with an empty message.
 - `--no-message` Create the commit without a message
-- `-b, --branch [<BRANCH>]` Place the commit on the branch BRANCH. With --above or --below, name the new branch created relative to the target branch. The name must not already exist; omit it for a generated name. Cannot be combined with commit or worktree targets. Otherwise, if BRANCH does not exist, it is created as an unstacked branch. If BRANCH is omitted, an unstacked branch with a generated name is created. If BRANCH is a worktree or a branch checked out in one, the commit is placed on the tip of that worktree's branch. Attempting to place a commit on a branch that exists but is not applied is an error.
+- `-F, --file <FILE>` Read the commit message from FILE, or from stdin when FILE is -
+- `-b, --branch [<BRANCH>]` Place the commit on the branch BRANCH. With --above or --below, name the new branch created relative to the target branch. The name must not already exist; omit it for a generated name. Cannot be combined with commit or worktree targets. Otherwise, if BRANCH does not exist, it is created as an unstacked branch. If BRANCH is omitted, an unstacked branch with a generated name is created. If BRANCH is a worktree or a branch checked out in one, the commit is placed on the tip of that worktree's branch. Run from a linked worktree with a detached HEAD, a new BRANCH starts at that HEAD and is checked out there before the commit is placed on it. Attempting to place a commit on a branch that exists but is not applied is an error.
 - `-A, --above <BRANCH_OR_COMMIT>` Place the commit above BRANCH_OR_COMMIT, which must be an applied branch or commit. If BRANCH_OR_COMMIT is a commit, the new commit is placed on the same branch as the targeted commit. If BRANCH_OR_COMMIT is a branch, the new commit is placed on a new branch above the targeted branch. Use --branch <NAME> to name it; otherwise a name is generated.
 - `-B, --below <BRANCH_OR_COMMIT>` Place the commit below BRANCH_OR_COMMIT, which must be an applied branch or commit. If BRANCH_OR_COMMIT is a commit, the new commit is placed on the same branch as the targeted commit. If BRANCH_OR_COMMIT is a branch, the new commit is placed on a new branch below the targeted branch. Branches are treated as buckets, meaning that "below a branch" is treated as below the oldest ancestor on that branch. Use --branch <NAME> to name the new branch; otherwise a name is generated. If BRANCH_OR_COMMIT is a worktree, the new commit is placed on the tip of the branch that worktree has checked out.
 - `--empty` Create an empty commit even when there are changes
+- `-n, --no-hooks` Skip the pre-commit, commit-msg and post-commit hooks. Without this flag the hooks run for changes from the main worktree, but not for changes from a linked worktree. A hook's output shows only when it fails.
 - `-s, --switch` Switch to the target branch instead of remaining in the GitButler workspace
 
 ### but branch new [NAME]
@@ -45,7 +49,7 @@ Create a new branch
 - `-B, --below <BRANCH_OR_COMMIT>` Place the branch below BRANCH_OR_COMMIT, which must be an applied branch or commit. If BRANCH_OR_COMMIT is a commit, the new branch is created below the commit. If BRANCH_OR_COMMIT is a branch, the new branch is created below the targeted branch.
 
 ### but branch delete <BRANCHES>...
-Delete branches and their commits from the workspace
+Delete branches and their commits from the workspace, or local branches that aren't applied
 - `<BRANCHES>...` One or more branches to delete
 
 ### but branch list [FILTER]
@@ -53,7 +57,7 @@ List the branches in the repository
 - `[FILTER]` Filter branches by name (case-insensitive substring match)
 - `-l, --local` Show only local branches
 - `-r, --remote` Show only remote branches
-- `-a, --all` Show all branches (not just active + 20 most recent)
+- `-a, --all` Show all branches (not just active + 20 most recent); empty branches also need --empty
 
 ### but branch show <BRANCH>
 Show commits ahead of base for a specific branch
@@ -68,13 +72,39 @@ Integrate a branch's remote counterpart into the local branch
 - `--dry-run` Preview the resulting branch state without persisting changes
 - `-v, --verbose` Show additional dry-run details like the current divergence
 
+### but worktree list
+List worktrees, most recently updated first
+- `--archived` List all archived worktrees
+- `--active` List all active worktrees
+
+### but worktree new [NAME]
+Create a worktree on a new branch at the workspace base or above a commit, or on an existing branch that isn't in the workspace
+- `[NAME]` The branch to check out, created if it doesn't exist, or a generated one
+- `-A, --above <BRANCH_OR_COMMIT>` Start the new branch at BRANCH_OR_COMMIT instead of the workspace base. Accepts a branch by name or CLI ID, a commit by SHA or CLI ID, or any Git revision like origin/main. Conflicted commits and the GitButler workspace commit are refused.
+
+### but worktree recycle
+Reuse an archived worktree on a new branch at the local target branch, or create one there
+
+### but worktree archive <WORKTREE>
+Hide a worktree from the workspace until but runs inside it again
+- `<WORKTREE>` The worktree, by CLI ID (see but wt list), name, or path
+
+### but worktree unarchive <WORKTREE>
+Show an archived worktree in the workspace again
+- `<WORKTREE>` The worktree, by CLI ID (see but wt list), name, or path
+
+### but worktree remove <WORKTREE>
+Remove a worktree from disk, like git worktree remove
+- `<WORKTREE>` The worktree, by CLI ID (see but wt list), name, or path
+- `-f, --force` Remove the worktree even if it has uncommitted changes
+
 ### but discard [CHANGES]...
 Discard branches, commits, or changes
 - `[CHANGES]...` One or more branches, commits, or changes to discard. If omitted, all uncommitted changes of the checkout but runs in are discarded.
 
 ### but resolve [TARGETS]...
 Resolve conflicts in a commit or in uncommitted files
-- `[TARGETS]...` A commit to enter resolution mode for, or one or more conflicted uncommitted files (as listed by but status) to mark as resolved with their current worktree content. Resolution mode checks the commit out until finish or cancel; the conflicts and apply subcommands resolve a commit without it
+- `[TARGETS]...` A commit to enter resolution mode for, or one or more conflicted uncommitted files (as listed by but status) to mark as resolved with their current worktree content. Resolution mode checks the commit out until finish or cancel, and is refused while a single branch is checked out or for a commit on a worktree's branch; the conflicts and apply subcommands resolve a commit without it, in either case
 - `--ai` Resolve the conflicts with the configured AI model and apply the result. With a commit ID this resolves only that commit; without one it resolves all conflicted commits in the workspace, oldest first. Undo the result with but undo.
 
 ### but resolve conflicts [COMMIT]
@@ -88,7 +118,7 @@ Resolve conflicts of a conflicted commit, without entering resolution mode
 - `--ours` Take the ours side: the new base the commit was rebased onto
 - `--theirs` Take the theirs side: the commit's own version
 - `--ai` Let the configured AI model merge the targeted conflicts
-- `-F, --file <FILE>` Read the replacement content from this file (otherwise from stdin)
+- `-F, --file <FILE>` Read the replacement content from FILE, or from stdin when FILE is -. Without it, the content is read from stdin
 
 ### but resolve status
 Show the status of conflict resolution, listing remaining conflicted files
@@ -101,7 +131,7 @@ Cancel conflict resolution and return to workspace mode
 - `-f, --force` Discard any changes made during resolution
 
 ### but unapply <BRANCH_OR_STACK>
-Remove a branch from the workspace, keeping it to apply again later
+Remove a branch and the rest of its stack from the workspace, keeping them to apply again later
 - `<BRANCH_OR_STACK>` The branch or stack to unapply
 
 ### but apply <BRANCH>
@@ -129,6 +159,7 @@ Squash commits, branches, or changes
 - `[SOURCES]...` The sources to squash, all of one kind. Commits: squashed into the target. Branches: every commit on them is squashed into the target and the branches are removed; with no target and exactly one branch, that branch is squashed into a single commit. Uncommitted files or hunks, or @ for all of them: squashed into the target. Committed files and hunks from one commit: moved into the target. A target of @ uncommits the sources instead. With --target and no sources, the uncommitted area of the checkout but runs in is used: @, or a linked worktree's.
 - `-m, --message <MESSAGE>` The message to use for the new commit. Can be supplied any number of times, each value being appended to the preceding ones with a blank line in between. Without a message flag, squashing commits or branches opens the editor in a terminal; a non-interactive run skips the editor. This cannot be used when TARGET is the uncommitted area (@).
 - `--no-message` Create the commit without a message. This cannot be used when TARGET is the uncommitted area (@).
+- `-F, --file <FILE>` Read the message for the new commit from FILE, or from stdin when FILE is -. This cannot be used when TARGET is the uncommitted area (@).
 - `-u, --use-target-message` Use the message of the target. The message of the source(s) will be discarded. This cannot be used when TARGET is the uncommitted area (@).
 - `--use-source-message` Use the message of the source(s). The message of the target will be discarded. Cannot be used if <SOURCES> are not committed, if TARGET is the uncommitted area (@), or if moving committed changes between commits.
 - `-t, --target <TARGET>` The target to squash into. If TARGET is a commit the sources will be added to the commit. If TARGET is a branch the sources will be added to that branch's newest commit (its tip). If TARGET is the uncommitted area (@) the sources will be uncommitted. A commit owned by a worktree uncommits into that worktree's area instead, named by its ID (<id>:@).
@@ -142,11 +173,13 @@ Move commits and changes around
 - `--unstack` Unstack <SOURCES> from their current stacks. --unstack does not take an argument, so --unstack <SOURCES> and <SOURCES> --unstack are equivalent. If moving commits or committed changes, use --branch NAME to name the new branch.
 - `-s, --switch` Switch to the destination branch instead of remaining in the GitButler workspace. When moving a branch, switch to the moved branch.
 - `-m, --message <MESSAGE>` The message to use when moving changes into a new commit. Can be supplied any amount of times, each value being appended to the preceding ones with a blank line in between. Without -m, the new commit will get an empty message.
+- `-F, --file <FILE>` Read the new commit's message from FILE, or from stdin when FILE is -
 
 ### but split <SOURCES>...
 Split a commit in two
 - `<SOURCES>...` The committed files and hunks to move into a new commit
 - `-m, --message <MESSAGE>` The message to use for the new commit. Can be supplied any amount of times, each value being appended to the preceding ones with a blank line in between. Without -m, the new commit will get an empty message.
+- `-F, --file <FILE>` Read the new commit's message from FILE, or from stdin when FILE is -
 
 ### but absorb [SOURCE]
 Amend uncommitted changes into the commits they belong to
@@ -156,17 +189,18 @@ Amend uncommitted changes into the commits they belong to
 ### but reword <TARGET>
 Edit the commit message of the specified commit
 - `<TARGET>` Commit ID to edit, branch ID to rename, or anonymous branch ID to name
-- `-m, --message <MESSAGE>` The new commit message or branch name. Without it, a terminal opens the editor and a non-interactive run fails
+- `-m, --message <MESSAGE>` The new commit message or branch name. Without it or -F, a terminal opens the editor and a non-interactive run fails
+- `-F, --file <FILE>` Read the new commit message or branch name from FILE, or from stdin when FILE is -
 - `-f, --fix-formatting` Format the existing commit message to 72-char line wrapping without opening an editor
 
 ### but uncommit <SOURCES>...
 Move commits, branches, or committed changes back into the uncommitted area
-- `<SOURCES>...` One or more commits, branches, or committed changes to uncommit. Sources must all be the same category.
+- `<SOURCES>...` One or more commits, branches, or committed changes to uncommit. Sources must all be the same category. Uncommitting a branch also deletes it.
 
 ### but amend [SOURCES]...
 Amend uncommitted changes into a commit or branch
 - `[SOURCES]...` One or more uncommitted files or hunks to amend. If omitted, all uncommitted changes of the checkout but runs in are amended: @, or a linked worktree's.
-- `-t, --target <COMMIT_OR_BRANCH>` The commit to amend into; a branch means its newest commit
+- `-t, --target <COMMIT_OR_BRANCH>` The commit to amend into; a branch means its newest commit. If omitted, the changes go to the newest commit of the branch checked out where they are. With gitbutler/workspace checked out that takes exactly one applied branch, and --target is required otherwise.
 
 ## Operation History
 
@@ -196,15 +230,15 @@ Merge a branch directly onto the target branch, bypassing review
 - `<BRANCH>` Branch ID or name to merge onto the target branch
 - `--yes` Skip the confirmation prompt
 - `--no-ff` Always create a merge commit, even when the branch can be fast-forwarded
+- `--ff-only` Refuse to merge unless the target can be fast-forwarded to the branch tip
 - `--whole-stack` Merge the entire stack: BRANCH must be the top segment, and the segments below it are published to the target along with it
 
 ### but push [BRANCH]
 Push changes in a branch to remote
 - `[BRANCH]` Branch name or CLI ID to push; the branches below it in its stack are pushed with it. If omitted, a terminal prompts for a selection and a non-interactive run pushes every stack with unpushed commits
-- `-f, --with-force` Force push even if it's not fast-forward
 - `-s, --skip-force-push-protection` Skip force push protection checks
 - `--no-hooks` Bypass pre-push hooks
-- `-d, --dry-run` Show what would be pushed without actually pushing
+- `-d, --dry-run` Show what would be pushed without pushing, and exit non-zero if the push would be refused
 
 ### but pull
 Update applied branches and worktrees onto the latest target
@@ -219,7 +253,7 @@ Commands for creating and managing reviews on a forge, e.g. GitHub PRs or GitLab
 Create a new review for a branch, force-pushing it first
 - `[BRANCH]` The branch to create a review for. Without it, a terminal prompts for one (or confirms when only one branch lacks a review); a non-interactive run needs it
 - `-m, --message <MESSAGE>` Review title and description: the first line is the title, the rest is the description. A non-interactive run needs -m, -F, or -t
-- `-F, --file <FILE>` Read review title and description from file. The first line is the title, the rest is the description
+- `-F, --file <FILE>` Read review title and description from FILE, or from stdin when FILE is -. The first line is the title, the rest is the description
 - `-s, --skip-force-push-protection` Skip force push protection checks
 - `--no-hooks` Bypass pre-push hooks
 - `-t, --default` Use the default content for the review title and description, skipping any prompts. If the branch contains only a single commit, the commit message will be used
@@ -246,10 +280,7 @@ Configure the template to use for review descriptions
 
 ### but init
 Create an empty Git repository in the current directory
-
-### but setup
-Set up a GitButler project from the git repository in the current directory
-- `--init` Initialize a new git repository with an empty commit if one doesn't exist. Useful in non-interactive environments such as CI, where a repository may not exist yet.
+- `--commit` Also create an initial empty commit
 
 ### but update check
 Check if a new version of the GitButler CLI is available

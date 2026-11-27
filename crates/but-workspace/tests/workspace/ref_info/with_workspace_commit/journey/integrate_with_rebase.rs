@@ -1,5 +1,5 @@
 //! A loose collection of states that users typically encounter.
-use but_meta::VirtualBranchesTomlMetadata;
+use but_meta::VirtualBranchesMetadata;
 use but_testsupport::visualize_commit_graph_all;
 use snapbox::prelude::*;
 
@@ -56,7 +56,6 @@ Ok(
                 ),
                 segments: [
                     ref_info::ui::Segment {
-                        id: NodeIndex(3),
                         ref_name: "►A",
                         remote_tracking_ref_name: "refs/remotes/origin/A",
                         commits: [
@@ -74,21 +73,30 @@ Ok(
         target_ref: Some(
             TargetRef {
                 ref_name: FullName(
-                    "refs/remotes/origin/main",
+                    "refs/heads/main",
                 ),
-                segment_index: NodeIndex(1),
                 commits_ahead: 5,
             },
         ),
         target_commit: Some(
             TargetCommit {
                 commit_id: Sha1(eabf2989a998260c7fbe181b33d5772705d62907),
-                segment_index: NodeIndex(2),
             },
         ),
-        is_target_current: true,
+        target_upstream: Some(
+            TargetUpstream {
+                ref_name: FullName(
+                    "refs/remotes/origin/main",
+                ),
+                tip: Some(
+                    Sha1(eabf2989a998260c7fbe181b33d5772705d62907),
+                ),
+                cutoff_matches_tip: true,
+            },
+        ),
+        can_fast_forward_local_target: false,
         lower_bound: Some(
-            NodeIndex(5),
+            Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
         ),
         ancestor_workspace_commit: None,
         has_lanes_behind_target: true,
@@ -148,7 +156,6 @@ Ok(
                 ),
                 segments: [
                     ref_info::ui::Segment {
-                        id: NodeIndex(3),
                         ref_name: "►A",
                         remote_tracking_ref_name: "refs/remotes/origin/A",
                         commits: [
@@ -166,21 +173,30 @@ Ok(
         target_ref: Some(
             TargetRef {
                 ref_name: FullName(
-                    "refs/remotes/origin/main",
+                    "refs/heads/main",
                 ),
-                segment_index: NodeIndex(1),
                 commits_ahead: 5,
             },
         ),
         target_commit: Some(
             TargetCommit {
                 commit_id: Sha1(d89aadb67d5c32e6a63cad3d36020b5e8e192a91),
-                segment_index: NodeIndex(2),
             },
         ),
-        is_target_current: true,
+        target_upstream: Some(
+            TargetUpstream {
+                ref_name: FullName(
+                    "refs/remotes/origin/main",
+                ),
+                tip: Some(
+                    Sha1(d89aadb67d5c32e6a63cad3d36020b5e8e192a91),
+                ),
+                cutoff_matches_tip: true,
+            },
+        ),
+        can_fast_forward_local_target: false,
         lower_bound: Some(
-            NodeIndex(5),
+            Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
         ),
         ancestor_workspace_commit: None,
         has_lanes_behind_target: true,
@@ -238,7 +254,6 @@ Ok(
                 ),
                 segments: [
                     ref_info::ui::Segment {
-                        id: NodeIndex(3),
                         ref_name: "►A",
                         remote_tracking_ref_name: "refs/remotes/origin/A",
                         commits: [
@@ -256,21 +271,30 @@ Ok(
         target_ref: Some(
             TargetRef {
                 ref_name: FullName(
-                    "refs/remotes/origin/main",
+                    "refs/heads/main",
                 ),
-                segment_index: NodeIndex(1),
                 commits_ahead: 0,
             },
         ),
         target_commit: Some(
             TargetCommit {
                 commit_id: Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
-                segment_index: NodeIndex(2),
             },
         ),
-        is_target_current: true,
+        target_upstream: Some(
+            TargetUpstream {
+                ref_name: FullName(
+                    "refs/remotes/origin/main",
+                ),
+                tip: Some(
+                    Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
+                ),
+                cutoff_matches_tip: true,
+            },
+        ),
+        can_fast_forward_local_target: false,
         lower_bound: Some(
-            NodeIndex(2),
+            Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
         ),
         ancestor_workspace_commit: None,
     },
@@ -329,7 +353,6 @@ Ok(
                 ),
                 segments: [
                     ref_info::ui::Segment {
-                        id: NodeIndex(3),
                         ref_name: "►A",
                         remote_tracking_ref_name: "refs/remotes/origin/A",
                         commits: [
@@ -347,21 +370,30 @@ Ok(
         target_ref: Some(
             TargetRef {
                 ref_name: FullName(
-                    "refs/remotes/origin/main",
+                    "refs/heads/main",
                 ),
-                segment_index: NodeIndex(1),
                 commits_ahead: 5,
             },
         ),
         target_commit: Some(
             TargetCommit {
                 commit_id: Sha1(7a2d071f19ec7551996099943167460ff2c2dd9d),
-                segment_index: NodeIndex(2),
             },
         ),
-        is_target_current: true,
+        target_upstream: Some(
+            TargetUpstream {
+                ref_name: FullName(
+                    "refs/remotes/origin/main",
+                ),
+                tip: Some(
+                    Sha1(7a2d071f19ec7551996099943167460ff2c2dd9d),
+                ),
+                cutoff_matches_tip: true,
+            },
+        ),
+        can_fast_forward_local_target: false,
         lower_bound: Some(
-            NodeIndex(5),
+            Sha1(fafd9d08a839d99db60b222cd58e2e0bfaf1f7b2),
         ),
         ancestor_workspace_commit: None,
         has_lanes_behind_target: true,
@@ -378,7 +410,7 @@ pub fn scenario(
     name: &str,
 ) -> anyhow::Result<(
     gix::Repository,
-    std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+    std::mem::ManuallyDrop<VirtualBranchesMetadata>,
     String,
     but_db::DbHandle,
 )> {

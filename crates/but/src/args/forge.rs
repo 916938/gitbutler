@@ -25,9 +25,10 @@ pub mod pr {
             /// description. A non-interactive run needs `-m`, `-F`, or `-t`.
             #[clap(short = 'm', long = "message", conflicts_with_all = &["file", "default"])]
             message: Option<String>,
-            /// Read review title and description from file. The first line is the title, the rest is the description.
+            /// Read review title and description from `FILE`, or from stdin when `FILE` is `-`.
+            /// The first line is the title, the rest is the description.
             #[clap(short = 'F', long = "file", value_name = "FILE", conflicts_with_all = &["message", "default"])]
-            file: Option<std::path::PathBuf>,
+            file: Option<crate::args::atoms::MessageFileArg>,
             /// Force push even if it's not fast-forward. Always on; the flag is kept for
             /// compatibility.
             #[clap(long, short = 'f', default_value_t = true, hide = true)]
@@ -45,6 +46,8 @@ pub mod pr {
             /// Create the review as a draft.
             #[clap(long, short = 'd', default_value_t = false)]
             draft: bool,
+            #[clap(flatten)]
+            json: crate::args::atoms::JsonArg,
         },
         /// Enable or disable the automatic merging of reviews.
         AutoMerge {
@@ -83,42 +86,5 @@ pub mod pr {
             /// needs it.
             template_path: Option<String>,
         },
-    }
-}
-
-pub mod integration {
-    #[derive(Debug, clap::Parser)]
-    pub struct Platform {
-        #[clap(subcommand)]
-        pub cmd: Subcommands,
-    }
-    #[derive(Debug, clap::Subcommand)]
-    pub enum Subcommands {
-        /// Authenticate with your forge provider (at the moment, only GitHub is supported)
-        Auth,
-        /// List authenticated forge accounts known to GitButler
-        ListUsers,
-        /// Forget a previously authenticated forge account
-        Forget {
-            /// The username of the forge account to forget
-            /// If not provided, you'll be prompted to select which account(s) to forget. If only one account exists, it will be forgotten automatically.
-            username: Option<String>,
-        },
-    }
-}
-
-pub mod ci {
-    #[derive(Debug, clap::Parser)]
-    pub struct Platform {
-        #[clap(subcommand)]
-        pub cmd: Subcommands,
-    }
-    #[derive(Debug, clap::Subcommand)]
-    pub enum Subcommands {
-        /// Warm up the CI checks cache for all applied branches with PRs.
-        /// This command is hidden because it's spawned automatically during initialization
-        /// for background CI cache refresh. It also performs cleanup of stale cache entries.
-        #[clap(hide = true)]
-        Warm,
     }
 }

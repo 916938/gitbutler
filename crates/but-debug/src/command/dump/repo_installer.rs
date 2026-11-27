@@ -18,7 +18,6 @@ use super::{
     portable_file_options, sorted_children, stored_file_options,
 };
 
-/// Execute the `dump repo-installer` subcommand.
 pub(super) fn run(
     args: &Args,
     installer_args: &RepoInstallerArgs,
@@ -26,13 +25,13 @@ pub(super) fn run(
     err: &mut dyn io::Write,
 ) -> Result<()> {
     let current_dir = effective_current_dir(args)?;
-    let repo = setup::repo_from_args(args).with_context(|| {
+    let mut repo = setup::repo_from_args(args).with_context(|| {
         format!(
             "Could not discover Git repository at '{}'",
             current_dir.display()
         )
     })?;
-    let repo = gix::open_opts(repo.git_dir().canonicalize()?, repo.open_options().clone())?;
+    repo.make_paths_absolute()?;
     let workdir = repo
         .workdir()
         .context("Repository installers require a non-bare repository")?;
@@ -122,10 +121,13 @@ struct CloneRemote {
 fn clone_remote(repo: &gix::Repository, workdir: &Path) -> Result<CloneRemote> {
     let remote_names = repo.remote_names();
     let project_meta = but_core::ref_metadata::ProjectMeta::resolve(repo)?;
-    let target_remote = project_meta.target_ref.as_ref().and_then(|target| {
-        but_core::extract_remote_name_and_short_name(target.as_ref(), &remote_names)
-            .map(|(name, _branch)| name)
-    });
+    let target_remote = project_meta
+        .remote_target_ref(repo)?
+        .as_ref()
+        .and_then(|target| {
+            but_core::extract_remote_name_and_short_name(target.as_ref(), &remote_names)
+                .map(|(name, _branch)| name)
+        });
     let name = match target_remote {
         Some(name) if repo.find_remote(name.as_str()).is_ok() => name,
         _ => repo

@@ -51,7 +51,7 @@
 //! with the restore point.
 //!
 //! Non-legacy commands can use the [`UnmaterializedOplogSnapshot`] utility to insert the snapshot into the log on successful effects.
-#![forbid(unsafe_code, missing_docs)]
+#![forbid(unsafe_code)]
 
 /// This is just a sketch for an in-memory snapshot that isn't observable through the on-disk repository.
 /// It will be committed only if the main effect of a function was successfully applied.
@@ -82,7 +82,6 @@ mod oplog_snapshot {
 
     use crate::UnmaterializedOplogSnapshot;
 
-    /// Lifecycle
     impl UnmaterializedOplogSnapshot {
         /// Create a new instance from `details`, which is a snapshot that isn't committed to the oplog yet.
         /// When `dry_run` is enabled, return `None` instead of preparing
@@ -94,14 +93,19 @@ mod oplog_snapshot {
             perm: &RepoShared,
             dry_run: DryRun,
         ) -> Option<Self> {
-            Self::from_details_with_ref_and_perm(ctx, details, None, perm, dry_run)
+            Self::from_details_with_refs_and_perm(ctx, details, &[], perm, dry_run)
         }
 
-        /// Create a snapshot that also preserves `ref_name` for undo and redo.
-        pub fn from_details_with_ref_and_perm(
+        /// Create a snapshot that also preserves `ref_names` for undo and redo, restoring or,
+        /// if one did not exist yet, deleting each.
+        ///
+        /// If a linked worktree has one of `ref_names` checked out, undo moves it there too and
+        /// leaves that worktree's files alone. Only pass such a ref for an operation that leaves
+        /// those files alone too.
+        pub fn from_details_with_refs_and_perm(
             ctx: &but_ctx::Context,
             details: gitbutler_oplog::entry::SnapshotDetails,
-            ref_name: Option<&gix::refs::FullNameRef>,
+            ref_names: &[&gix::refs::FullNameRef],
             perm: &RepoShared,
             dry_run: DryRun,
         ) -> Option<Self> {
@@ -109,7 +113,7 @@ mod oplog_snapshot {
                 return None;
             }
 
-            match UnmaterializedOplogSnapshot::prepare(ctx, details, ref_name, perm) {
+            match UnmaterializedOplogSnapshot::prepare(ctx, details, ref_names, perm) {
                 Ok(snapshot) => Some(snapshot),
                 Err(err) => {
                     tracing::warn!(?err, "Failed to prepare unmaterialized oplog snapshot");
@@ -122,23 +126,27 @@ mod oplog_snapshot {
     impl UnmaterializedOplogSnapshot {
         /// Prepare a required checkpoint before a mutation that needs snapshot-based rollback.
         /// Unlike best-effort timeline recording, failure must prevent the mutation from starting.
+        /// `ref_names` are recorded too, even those that don't exist yet, so restoring the
+        /// checkpoint deletes a reference the mutation created.
         pub fn prepare_checkpoint(
             ctx: &Context,
             details: gitbutler_oplog::entry::SnapshotDetails,
+            ref_names: &[&gix::refs::FullNameRef],
             perm: &RepoShared,
         ) -> anyhow::Result<UnmaterializedOplogSnapshot> {
-            UnmaterializedOplogSnapshot::prepare(ctx, details, None, perm)
+            UnmaterializedOplogSnapshot::prepare(ctx, details, ref_names, perm)
         }
 
         fn prepare(
             ctx: &Context,
             details: gitbutler_oplog::entry::SnapshotDetails,
-            ref_name: Option<&gix::refs::FullNameRef>,
+            ref_names: &[&gix::refs::FullNameRef],
             perm: &RepoShared,
         ) -> anyhow::Result<UnmaterializedOplogSnapshot> {
-            let tree_id = match ref_name {
-                Some(ref_name) => ctx.prepare_snapshot_with_ref(ref_name, perm)?,
-                None => ctx.prepare_snapshot(perm)?,
+            let tree_id = if ref_names.is_empty() {
+                ctx.prepare_snapshot(perm)?
+            } else {
+                ctx.prepare_snapshot_with_refs(ref_names, perm)?
             };
             Ok(UnmaterializedOplogSnapshot { tree_id, details })
         }

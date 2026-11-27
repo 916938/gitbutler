@@ -1,4 +1,3 @@
-#![deny(missing_docs)]
 #![deny(clippy::indexing_slicing)]
 
 //! ### Terminology
@@ -32,11 +31,9 @@ pub mod legacy;
 
 pub mod init;
 
-/// Types specifically for the user-interface.
 pub mod ui;
 
 pub mod commit_engine;
-/// Tools for manipulating trees
 pub mod tree_manipulation;
 use indexmap::IndexMap;
 pub use tree_manipulation::discard_worktree_changes::discard_workspace_changes;
@@ -50,7 +47,6 @@ mod divergence;
 pub use but_core::branch::resolve_tracking_branch_ref_name;
 mod graph_manipulation;
 
-/// Utility types for the [`WorkspaceCommit`].
 pub mod commit;
 
 /// Types used only when obtaining head-information.
@@ -76,6 +72,8 @@ pub mod worktrees;
 
 pub mod workspace;
 
+pub mod editor_workspace;
+
 /// Information about refs, as seen from within or outsie of a workspace.
 ///
 /// We always try to deduce a set of stacks that are currently applied to a workspace,
@@ -94,27 +92,28 @@ pub struct RefInfo {
     /// This is an empty array if the `HEAD` is unborn.
     /// Otherwise, there is one or more stacks.
     pub stacks: Vec<branch::Stack>,
-    /// The target to integrate workspace stacks into.
+    /// The projected target reference, retained for UI conversion.
     ///
-    /// If `None`, this is a local workspace that doesn't know when possibly pushed branches are considered integrated.
-    /// This happens when there is a local branch checked out without a remote tracking branch.
-    pub target_ref: Option<but_graph::workspace::TargetRef>,
-    /// A commit reachable by [`Self::target_ref`] which we chose to keep as base. That way we can extend the workspace
-    /// past its computed lower bound.
+    /// This field is intentionally private: It describes what the UI shows, not the project's
+    /// target configuration. Use `ProjectMeta` to get the configured local target branch and its
+    /// upstream.
+    target_ref: Option<but_graph::workspace::TargetRef>,
+    /// The workspace projection's selected cutoff commit.
     ///
-    /// Indeed, it's valid to not set the reference, and to only set the commit which should act as an integration base.
+    /// It can exist without a projected target reference and need not be reachable from the local target.
     pub target_commit: Option<TargetCommit>,
-    /// Whether the stored target commit is where [`Self::target_ref`] points right now.
-    ///
-    /// Only a workspace update advances the stored target, so `false` means an update has work to do.
-    pub is_target_current: bool,
+    /// The target's derived upstream, including its availability and relation to the stored cutoff.
+    pub target_upstream: Option<TargetUpstream>,
+    /// Whether pull can safely advance the local target to its upstream tip.
+    /// False for equal, ahead, diverged, missing, or checked-out local targets.
+    pub can_fast_forward_local_target: bool,
     /// Whether a stack, or a worktree with something of its own to rebase onto the target, lacks
     /// the stored target commit.
     ///
     /// Updating only some lanes advances the stored target past the others, so `true` means an
-    /// update has work to do even while [`Self::is_target_current`] holds.
+    /// update has work to do even when the stored cutoff matches the upstream tip.
     pub has_lanes_behind_target: bool,
-    /// The bound can be imagined as the segment from which all other commits in the workspace originate.
+    /// The bound can be imagined as the commit from which all other commits in the workspace originate.
     /// It can also be imagined to be the delimiter at the bottom beyond which nothing belongs to the workspace,
     /// as antagonist to the first commit in tip of the segment with `id`, serving as first commit that is
     /// inside the workspace.
@@ -125,13 +124,13 @@ pub struct RefInfo {
     /// following all incoming connections and stopping at the tip of the workspace.
     ///
     /// It is `None` there is only a single stack and no target, so nothing was integrated.
-    pub lower_bound: Option<SegmentIndex>,
+    pub lower_bound: Option<gix::ObjectId>,
     /// The workspace commit as it exists in the past of `workspace_ref_name`.
     ///
     /// **Warning**: If `Some()`, only fixing this issue should be allowed.
     pub ancestor_workspace_commit: Option<AncestorWorkspaceCommit>,
     /// The active linked worktrees along with the commits they own, or empty if the traversal
-    /// wasn't seeded with worktree tips (i.e. the `worktreeManipulation` flag is off).
+    /// wasn't seeded with worktree tips.
     pub worktrees: Vec<worktrees::WorktreeInfo>,
 }
 
@@ -144,7 +143,8 @@ impl std::fmt::Debug for RefInfo {
             stacks,
             target_ref,
             target_commit,
-            is_target_current,
+            target_upstream,
+            can_fast_forward_local_target,
             has_lanes_behind_target,
             lower_bound,
             ancestor_workspace_commit,
@@ -155,7 +155,11 @@ impl std::fmt::Debug for RefInfo {
             .field("stacks", stacks)
             .field("target_ref", target_ref)
             .field("target_commit", target_commit)
-            .field("is_target_current", is_target_current)
+            .field("target_upstream", target_upstream)
+            .field(
+                "can_fast_forward_local_target",
+                can_fast_forward_local_target,
+            )
             .field("lower_bound", lower_bound)
             .field("ancestor_workspace_commit", ancestor_workspace_commit);
         if *has_lanes_behind_target {
@@ -168,6 +172,17 @@ impl std::fmt::Debug for RefInfo {
     }
 }
 
+/// The upstream derived from the local target's tracking configuration.
+#[derive(Debug, Clone)]
+pub struct TargetUpstream {
+    /// The configured tracking ref, retained even when it is missing.
+    pub ref_name: gix::refs::FullName,
+    /// Its locally available tip, or `None` when it cannot be resolved.
+    pub tip: Option<gix::ObjectId>,
+    /// Whether an explicitly stored cutoff equals the available upstream tip.
+    pub cutoff_matches_tip: bool,
+}
+
 /// Describes a workspace commit that is in the ancestry of a managed workspace reference,
 /// probably because it was advanced by user commits.
 #[derive(Debug, Clone)]
@@ -175,7 +190,6 @@ pub struct AncestorWorkspaceCommit {
     /// The commits along the first parent that are between the managed workspace reference and the managed workspace commit.
     /// The vec *should* not be empty, but it can be empty in practice for reasons yet to be discovered.
     pub commits_outside: Vec<ref_info::Commit>,
-    /// The index of the segment that actually holds the managed workspace commit.
     pub segment_with_managed_commit: SegmentIndex,
     /// The index of the workspace commit within the `commits` array in its parent segment.
     pub commit_index_of_managed_commit: but_graph::CommitIndex,
@@ -185,9 +199,7 @@ pub struct AncestorWorkspaceCommit {
 /// possibly in its managed form in which it merges two or more stacks together, and we can rewrite it at will.
 #[derive(Debug, Clone)]
 pub struct WorkspaceCommit<'repo> {
-    /// The id of the commit itself.
     pub id: gix::Id<'repo>,
-    /// The decoded commit for direct access.
     pub inner: gix::objs::Commit,
 }
 

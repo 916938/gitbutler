@@ -11,7 +11,7 @@ use but_core::{
     open_repo_for_merging,
     ref_metadata::{Branch, ValueInfo, Workspace},
 };
-use but_meta::VirtualBranchesTomlMetadata;
+use but_meta::VirtualBranchesMetadata;
 use gix::prelude::ObjectIdExt as _;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -332,10 +332,10 @@ fn worktree_paths(repo: &gix::Repository) -> anyhow::Result<PathList> {
 }
 
 fn workspace_snapshot(repo: &gix::Repository) -> anyhow::Result<WorkspaceObservation> {
-    let metadata_path = repo.gitbutler_storage_path()?.join("virtual_branches.toml");
-    let legacy_metadata_exists = legacy_metadata_exists(&metadata_path);
+    let storage_dir = repo.gitbutler_storage_path()?;
+    let legacy_metadata_exists = legacy_metadata_exists(&storage_dir);
     if legacy_metadata_exists
-        && let Ok(meta) = VirtualBranchesTomlMetadata::from_path_read_only(&metadata_path)
+        && let Ok(meta) = VirtualBranchesMetadata::from_path_read_only(&storage_dir)
     {
         return workspace_snapshot_with_current_branch_fallback(repo, &meta);
     }
@@ -347,11 +347,8 @@ fn workspace_snapshot(repo: &gix::Repository) -> anyhow::Result<WorkspaceObserva
     Ok(observation)
 }
 
-fn legacy_metadata_exists(metadata_path: &Path) -> bool {
-    metadata_path.is_file()
-        || metadata_path
-            .parent()
-            .is_some_and(|storage_path| storage_path.join("but.sqlite").is_file())
+fn legacy_metadata_exists(storage_dir: &Path) -> bool {
+    storage_dir.join("but.sqlite").is_file()
 }
 
 fn workspace_snapshot_with_current_branch_fallback(
@@ -434,7 +431,7 @@ fn workspace_snapshot_with_meta(
 
     // Enrich active associations from the forge cache while retaining durable
     // stored identity for integrated branches.
-    info.apply_forge_review_associations(repo, &forge_prs_by_head(repo));
+    info.apply_forge_review_associations(&forge_prs_by_head(repo));
 
     let mut observed_targets = ObservedTargets::default();
     let mut stacks = Vec::new();
@@ -517,7 +514,7 @@ fn workspace_snapshot_with_meta(
     })
 }
 
-/// Best-effort forge PR association map (`pushed short name -> ReviewAssociation`,
+/// Best-effort forge PR association map (`remote-tracking short name -> ReviewAssociation`,
 /// i.e. `(PR number, is open, merged head)`), read
 /// from the project's cached review list. Opened read-only and returns empty when
 /// the project database is absent or unreadable, so the observation degrades to
@@ -527,7 +524,7 @@ fn forge_prs_by_head(repo: &gix::Repository) -> HashMap<String, but_forge::Revie
         return HashMap::new();
     };
     match but_db::DbHandle::open_existing_read_only_in_directory(&storage_dir) {
-        Ok(Some(db)) => but_forge::review_associations_by_head(&db).unwrap_or_default(),
+        Ok(Some(db)) => but_forge::review_associations_by_head(&db, repo).unwrap_or_default(),
         _ => HashMap::new(),
     }
 }
@@ -536,8 +533,7 @@ fn forge_prs_by_head(repo: &gix::Repository) -> HashMap<String, but_forge::Revie
 /// remote-tracking short name against `prs_by_head`.
 ///
 /// Deliberately looser than the workspace projection resolver: any review
-/// state is accepted (capture is observational), and there is no
-/// `owner:branch` prefixed-head fallback.
+/// state is accepted (capture is observational).
 fn resolve_branch_pr(
     repo: &gix::Repository,
     ref_name: &gix::refs::FullNameRef,
@@ -548,14 +544,10 @@ fn resolve_branch_pr(
         .transpose()
         .ok()
         .flatten()?;
-    let (_, short) = but_core::extract_remote_name_and_short_name(
-        remote_tracking.as_ref(),
-        &repo.remote_names(),
-    )?;
     // Observational capture: the association is wanted whatever became of the
     // review, so turns recorded after a merge still carry its target.
     prs_by_head
-        .get(short.to_str().ok()?)
+        .get(remote_tracking.shorten().to_str().ok()?)
         .map(|(number, ..)| *number)
 }
 
@@ -785,14 +777,6 @@ impl RefMetadata for EmptyRefMetadata {
 
     fn remove(&mut self, _ref_name: &gix::refs::FullNameRef) -> anyhow::Result<bool> {
         Ok(false)
-    }
-
-    fn rename(
-        &mut self,
-        _old_ref_name: &gix::refs::FullNameRef,
-        _new_ref_name: &gix::refs::FullNameRef,
-    ) -> anyhow::Result<()> {
-        Ok(())
     }
 }
 

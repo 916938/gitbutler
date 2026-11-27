@@ -9,10 +9,7 @@ use but_ctx::{Context, ProjectHandleOrLegacyProjectId};
 use but_db::HunkAssignmentsHandleMut;
 use but_hunk_assignment::HunkAssignment;
 use but_hunk_dependency::ui::hunk_dependencies_for_workspace_changes_by_worktree_dir;
-use but_project_handle::{
-    INVALIDATION_SENTINEL_PATH, REFRESH_SENTINEL_PATH, invalidation_by_others,
-    process_sentinel_token,
-};
+use but_project_handle::{REFRESH_SENTINEL_PATH, process_sentinel_token};
 use but_settings::{AppSettings, AppSettingsWithDiskSync};
 use gitbutler_filemonitor::{
     Checkout, FETCH_HEAD, HEAD, HEAD_ACTIVITY, INDEX, InternalEvent, LINKED_WORKTREE_GITDIR,
@@ -153,14 +150,14 @@ impl Handler {
             context_lines,
         )?;
 
-        let mut worktree_changes: but_core::ui::WorktreeChanges = wt_changes.clone().into();
+        let mut worktree_changes: but_core::ui::WorktreeChanges = wt_changes.into();
         worktree_changes.modification_times =
             but_core::diff::ui::modification_times(&repo, &worktree_changes);
 
         let changes = but_hunk_assignment::WorktreeChanges {
             worktree_changes,
-            assignments: assignments.clone(),
-            assignments_error: assignments_error.clone(),
+            assignments,
+            assignments_error,
             dependencies: dependencies.as_ref().ok().cloned(),
             dependencies_error: dependencies
                 .as_ref()
@@ -191,14 +188,22 @@ impl Handler {
             .with_context(|| format!("linked worktree {worktree} does not exist"))?
             .into_repo()?;
 
-        let mut changes: but_core::ui::WorktreeChanges =
-            but_core::diff::worktree_changes(&repo)?.into();
+        let wt_changes = but_core::diff::worktree_changes(&repo)?;
+        let assignments = but_hunk_assignment::unassigned(
+            &repo,
+            wt_changes.changes.clone(),
+            ctx.settings.context_lines,
+        );
+        let mut changes: but_core::ui::WorktreeChanges = wt_changes.into();
         changes.modification_times = but_core::diff::ui::modification_times(&repo, &changes);
 
         self.emit_app_event(Change::LinkedWorktreeChanges {
             project_id,
             worktree: worktree.to_str_lossy().into_owned(),
-            changes: changes.into(),
+            changes: but_hunk_assignment::WorktreeChanges {
+                assignments,
+                ..changes.into()
+            },
             changed_paths: Arc::from(paths),
         })
     }
@@ -213,7 +218,12 @@ impl Handler {
         let (head_ref_name, head_sha) = head_info(ctx)?;
         let mut saw_workspace_activity = false;
         for path in paths {
-            let Some(file_name) = path.to_str() else {
+            // Paths come with the platform's separators, but the names they are matched against use `/`.
+            let Ok(file_name) = gix::path::into_bstr(&path) else {
+                continue;
+            };
+            let file_name = gix::path::to_unix_separators_on_windows(file_name);
+            let Ok(file_name) = file_name.to_str() else {
                 continue;
             };
             match file_name {
@@ -243,23 +253,12 @@ impl Handler {
                 REFRESH_SENTINEL_PATH => {
                     // Skip the echo of our own write (its pid is already handled
                     // in-process); a different pid, or a read error, means refresh.
-                    let sentinel = ctx.repo.get()?.path().join(file_name);
+                    let sentinel = ctx.repo.get()?.path().join(&path);
                     let wrote_by_us = std::fs::read_to_string(sentinel)
                         .map(|content| content.trim() == process_sentinel_token())
                         .unwrap_or(false);
                     if !wrote_by_us {
                         saw_workspace_activity = true;
-                    }
-                }
-                INVALIDATION_SENTINEL_PATH => {
-                    let sentinel = ctx.repo.get()?.path().join(file_name);
-                    let content = std::fs::read_to_string(sentinel).unwrap_or_default();
-                    let tags = invalidation_by_others(&content, &process_sentinel_token());
-                    if !tags.is_empty() {
-                        self.emit_app_event(Change::ExternalInvalidation {
-                            project_id: project_id.clone(),
-                            tags,
-                        })?;
                     }
                 }
                 HEAD_ACTIVITY => {

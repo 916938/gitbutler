@@ -1,7 +1,7 @@
 use anyhow::Result;
-use but_graph::{Graph, init::Tip};
 use but_rebase::graph_rebase::{Editor, GraphEditorOptions, testing::Testing as _};
-use but_testsupport::{StackState, graph_tree, visualize_commit_graph_all};
+use but_testsupport::{CommandExt as _, StackState, git, graph_tree, visualize_commit_graph_all};
+use gix::prelude::ObjectIdExt as _;
 use snapbox::IntoData;
 
 use crate::{
@@ -24,7 +24,7 @@ fn four_commits() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -69,7 +69,7 @@ fn merge_in_the_middle() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -125,7 +125,7 @@ fn three_branches_merged() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -177,7 +177,7 @@ fn many_references() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -190,7 +190,7 @@ fn many_references() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·120e3a9 (⌂)
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂) ►X, ►Y, ►Z
@@ -240,7 +240,7 @@ fn first_parent_leg_long() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -253,19 +253,19 @@ fn first_parent_leg_long() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     └── ·6ac5745 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·d20f547 (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   ├── ·198d2e4 (⌂)
                 │   ├── ·7325853 (⌂)
                 │   └── ·add59d2 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -317,7 +317,7 @@ fn second_parent_leg_long() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -330,19 +330,19 @@ fn second_parent_leg_long() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     └── ·a6775ea (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·b85214b (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·add59d2 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     ├── ·f87f875 (⌂)
                     ├── ·cb181a0 (⌂)
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -398,7 +398,7 @@ fn workspace_with_empty_stack() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         target_meta(&repo),
@@ -411,21 +411,21 @@ fn workspace_with_empty_stack() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-├── 👉📕►►►:0[0]:gitbutler/workspace[🌳]
+├── 👉📕►►►[0]:gitbutler/workspace[🌳]
 │   └── ·74bcc92 (⌂|🏘)
-│       ├── 📙►:3[1]:stack-1
+│       ├── 📙►[1]:stack-1
 │       │   ├── ·2169646 (⌂|🏘)
 │       │   └── ·46ef828 (⌂|🏘)
-│       │       └── ►:4[2]:anon:
+│       │       └── ►[2]:anon:
 │       │           ├── ·f555940 (⌂|🏘|✓)
 │       │           ├── ·d664be0 (⌂|🏘|✓)
 │       │           └── 🏁·fafd9d0 (⌂|🏘|✓)
-│       └── 📙►:5[1]:stack-2
-│           └── →:4:
-└── ►:1[0]:origin/main
-    └── ►:2[1]:main <> origin/main
+│       └── 📙►[1]:stack-2
+│           └── → segment ·f555940
+└── ►[0]:origin/main
+    └── ►[1]:main <> origin/main
         └── ·a0f2ac5 (⌂|✓)
-            └── →:4:
+            └── → segment ·f555940
 
 "#]]
     );
@@ -476,7 +476,7 @@ fn workspace_with_three_empty_stacks() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         target_meta(&repo),
@@ -489,19 +489,19 @@ fn workspace_with_three_empty_stacks() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-├── 👉📕►►►:0[0]:gitbutler/workspace[🌳]
+├── 👉📕►►►[0]:gitbutler/workspace[🌳]
 │   └── ·a26ae77 (⌂|🏘)
-│       ├── 📙►:4[1]:stack-1
-│       │   └── ►:3[2]:anon:
+│       ├── 📙►[1]:stack-1
+│       │   └── ►[2]:anon:
 │       │       └── 🏁·fafd9d0 (⌂|🏘|✓)
-│       ├── 📙►:5[1]:stack-2
-│       │   └── →:3:
-│       └── 📙►:6[1]:stack-3
-│           └── →:3:
-└── ►:1[0]:origin/main
-    └── ►:2[1]:main <> origin/main
+│       ├── 📙►[1]:stack-2
+│       │   └── → segment ·fafd9d0
+│       └── 📙►[1]:stack-3
+│           └── → segment ·fafd9d0
+└── ►[0]:origin/main
+    └── ►[1]:main <> origin/main
         └── ·1cf9cf4 (⌂|✓)
-            └── →:3:
+            └── → segment ·fafd9d0
 
 "#]]
     );
@@ -550,7 +550,7 @@ fn commit_with_two_parents() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -563,11 +563,11 @@ fn commit_with_two_parents() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     └── ·d70d863 (⌂)
-        ├── ►:1[1]:anon:
+        ├── ►[1]:anon:
         │   └── 🏁·35b8235 (⌂)
-        └── →:1:
+        └── → segment ·35b8235
 
 "#]]
     );
@@ -596,7 +596,7 @@ fn includes_extra_refs_in_editor_creation() -> Result<()> {
     let main_ref = gix::refs::FullName::try_from("refs/heads/main")?;
 
     {
-        let graph = Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &*meta,
             target_meta(&repo),
@@ -630,7 +630,7 @@ fn includes_extra_refs_in_editor_creation() -> Result<()> {
     }
 
     {
-        let graph = Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &*meta,
             target_meta(&repo),
@@ -645,7 +645,7 @@ fn includes_extra_refs_in_editor_creation() -> Result<()> {
             &repo,
             &mut db,
             &GraphEditorOptions {
-                extra_mutable_refs: vec![main_ref.clone()],
+                extra_mutable_refs: vec![main_ref],
                 ..<_>::default()
             },
         )?;
@@ -700,7 +700,7 @@ fn merge_first_parent_older_than_second() -> Result<()> {
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -713,19 +713,19 @@ fn merge_first_parent_older_than_second() -> Result<()> {
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-└── 👉►:0[0]:first-parent[🌳]
+└── 👉►[0]:first-parent[🌳]
     └── ·738ea18 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·408ca26 (⌂)
-                ├── ►:3[2]:anon:
+                ├── ►[2]:anon:
                 │   └── ·2854fa2 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·793a434 (⌂) ►tags/base
-                └── ►:2[2]:second-parent
+                └── ►[2]:second-parent
                     ├── ·75369b0 (⌂)
                     ├── ·553bbf7 (⌂)
                     └── ·72614bb (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -775,50 +775,55 @@ fn immutable_entrypoints_propogate_until_mutable_entrypoints() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_commit_traversal_tips(
-        &repo,
-        [
-            Tip::entrypoint(
-                repo.rev_parse_single("refs/heads/implicit-mut")?.detach(),
-                Some("refs/heads/implicit-mut".try_into()?),
-            ),
-            Tip::reachable(
-                repo.rev_parse_single("refs/heads/explicit-const")?.detach(),
-                Some("refs/heads/explicit-const".try_into()?),
-            ),
-            Tip::reachable(
-                repo.rev_parse_single("refs/heads/explicit-const-2")?
-                    .detach(),
-                Some("refs/heads/explicit-const-2".try_into()?),
-            ),
+    let options = but_graph::init::Options {
+        extra_refs: vec![
+            "refs/heads/explicit-const".try_into()?,
+            "refs/heads/explicit-const-2".try_into()?,
         ],
+        ..standard_options()
+    };
+    let extra_heads = options
+        .extra_refs
+        .iter()
+        .map(|ref_name| Ok(repo.rev_parse_single(ref_name.as_bstr())?.detach()))
+        .collect::<Result<Vec<_>>>()?;
+    let mut graph = but_graph::nosegment::workspace(
+        &repo,
         &*meta,
+        but_graph::init::Overlay::default(),
         Default::default(),
-        &mut db,
-        standard_options(),
+        Some("refs/heads/implicit-mut".try_into()?),
+        Some(repo.rev_parse_single("refs/heads/implicit-mut")?.detach()),
+        extra_heads,
+        Vec::new(),
+        options.collect_tags,
+        options.commits_limit_hint,
     )?
+    .graph
     .validated()?;
+    // The editor walks the extra refs again.
+    graph.options = options;
 
     snapbox::assert_data_eq!(
         graph_tree(&graph).to_string(),
         snapbox::str![[r#"
 
-├── ►:0[0]:explicit-const
+├── ►[0]:explicit-const
 │   └── ·be4ae80 (⌂) ►main
-│       └── ►:3[1]:implicit-const
+│       └── ►[1]:implicit-const
 │           └── ·120e3a9 (⌂)
-│               └── ►:6[2]:explicit-mut
+│               └── ►[2]:explicit-mut
 │                   └── ·a96434e (⌂)
-│                       └── ►:5[3]:foo
+│                       └── ►[3]:foo
 │                           ├── ·d591dfe (⌂)
 │                           └── 🏁·35b8235 (⌂)
-└── ►:1[0]:explicit-const-2
+└── ►[0]:explicit-const-2
     └── ·d9fa122 (⌂)
-        └── ►:4[1]:implicit-const-2
+        └── ►[1]:implicit-const-2
             └── ·85bccf0 (⌂)
-                └── 👉►:2[2]:implicit-mut
+                └── 👉►[2]:implicit-mut
                     └── ·c8dd361 (⌂)
-                        └── →:5: (foo)
+                        └── → segment foo
 
 "#]]
     );
@@ -854,4 +859,255 @@ fn immutable_entrypoints_propogate_until_mutable_entrypoints() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[test]
+fn extra_refs_keep_their_new_names_in_the_overlayed_graph() -> Result<()> {
+    let (repo, mut meta, mut db) = fixture("extra-refs-to-include")?;
+    let extra_ref: gix::refs::FullName = "refs/heads/explicit-const-2".try_into()?;
+    let extra_ref_commit = repo.rev_parse_single(extra_ref.as_bstr())?.detach();
+    let options = but_graph::init::Options {
+        extra_refs: vec![extra_ref.clone()],
+        ..standard_options()
+    };
+    let mut graph = but_graph::nosegment::workspace(
+        &repo,
+        &*meta,
+        but_graph::init::Overlay::default(),
+        Default::default(),
+        Some("refs/heads/implicit-mut".try_into()?),
+        Some(repo.rev_parse_single("refs/heads/implicit-mut")?.detach()),
+        [extra_ref_commit],
+        Vec::new(),
+        options.collect_tags,
+        options.commits_limit_hint,
+    )?
+    .graph
+    .validated()?;
+    // The rebase walks the extra ref again, under the name it has then.
+    graph.options = options;
+    let mut ws = graph.into_workspace()?;
+    let mut editor = Editor::create_with_opts(
+        &mut ws,
+        &mut *meta,
+        &repo,
+        &mut db,
+        &GraphEditorOptions {
+            extra_mutable_refs: vec![extra_ref.clone()],
+            ..Default::default()
+        },
+    )?;
+
+    let renamed: gix::refs::FullName = "refs/heads/renamed".try_into()?;
+    editor.replace_reference(
+        editor.select_reference(extra_ref.as_ref())?,
+        renamed.clone(),
+    )?;
+    let overlayed = editor.rebase()?.overlayed_graph()?;
+
+    assert!(
+        overlayed
+            .segment_and_commit_by_ref_name(extra_ref.as_ref())
+            .is_none(),
+        "the old name is gone"
+    );
+    let (_, commit) = overlayed
+        .segment_and_commit_by_ref_name(renamed.as_ref())
+        .expect("HEAD doesn't reach it, so only the extra ref under its new name brings it in");
+    assert_eq!(commit.id, extra_ref_commit, "the rename didn't move it");
+    Ok(())
+}
+
+#[test]
+fn a_padding_commit_is_left_out() -> Result<()> {
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits-one-file")?;
+    let (_c, padding) = pad_conflicted_main(&repo, &mut *meta, &mut db)?;
+
+    // main points at the padding commit on the conflicted c.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 45942da (HEAD -> main) GitButler Padding Commit
+* 04d1892 (c) [conflict] c
+* 5e0ba46 (b, a) a
+* 6155f21 (base) base
+
+"#]]
+    );
+
+    let graph = but_testsupport::graph_from_head(
+        &repo,
+        &*meta,
+        Default::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    let mut ws = graph.into_workspace()?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
+
+    // main sits directly on the conflicted c, as the padding commit has no step.
+    snapbox::assert_data_eq!(
+        editor.steps_ascii(),
+        snapbox::str![[r#"
+◎  refs/heads/main
+◎  refs/heads/c
+●  04d1892 [conflict] c
+◎  refs/heads/a
+◎  refs/heads/b
+●  5e0ba46 a
+◎  refs/heads/base
+●  6155f21 base
+"#]]
+    );
+    assert!(
+        editor.select_commit(padding).is_err(),
+        "a padding commit can't be selected as it isn't part of the editor"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_commit_on_a_padding_commit_is_rebased_onto_the_conflicted_commit() -> Result<()> {
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits-one-file")?;
+    let (_c, padding) = pad_conflicted_main(&repo, &mut *meta, &mut db)?;
+    let mut d = but_core::Commit::from_id(padding.attach(&repo))?;
+    d.parents = [padding].into();
+    d.message = "d\n".into();
+    let d = repo.write_object(d.inner)?.detach();
+    repo.reference(
+        "refs/heads/main",
+        d,
+        gix::refs::transaction::PreviousValue::Any,
+        "commit d on padding",
+    )?;
+
+    let graph = but_testsupport::graph_from_head(
+        &repo,
+        &*meta,
+        Default::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    let mut ws = graph.into_workspace()?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
+
+    // d sits directly on the conflicted c, as the padding commit has no step.
+    snapbox::assert_data_eq!(
+        editor.steps_ascii(),
+        snapbox::str![[r#"
+◎  refs/heads/main
+●  28cf0e5 d
+◎  refs/heads/c
+●  04d1892 [conflict] c
+◎  refs/heads/a
+◎  refs/heads/b
+●  5e0ba46 a
+◎  refs/heads/base
+●  6155f21 base
+"#]]
+    );
+
+    editor.rebase()?.materialize_without_checkout()?;
+
+    // d was rewritten onto c, dropping the padding commit for good.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* de74ff3 (HEAD -> main) d
+* 04d1892 (c) [conflict] c
+* 5e0ba46 (b, a) a
+* 6155f21 (base) base
+
+"#]]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn detached_checkouts_on_a_padding_commit_check_out_the_conflicted_commit() -> Result<()> {
+    let (repo, tmpdir, mut meta, mut db) = fixture_writable("four-commits-one-file")?;
+    let (c, padding) = pad_conflicted_main(&repo, &mut *meta, &mut db)?;
+    repo.reference(
+        "refs/heads/main",
+        c,
+        gix::refs::transaction::PreviousValue::Any,
+        "unpad main",
+    )?;
+    repo.reference(
+        "HEAD",
+        padding,
+        gix::refs::transaction::PreviousValue::Any,
+        "detach at padding",
+    )?;
+    git(&repo)
+        .args(["worktree", "add", "--detach"])
+        .arg(tmpdir.path().join("wt-detached"))
+        .arg(padding.to_string())
+        .run();
+    db.worktree_meta_mut().mark_adopted()?;
+
+    let graph = but_testsupport::graph_from_head(
+        &repo,
+        &*meta,
+        Default::default(),
+        &mut db,
+        but_graph::init::Options {
+            worktrees: true,
+            ..standard_options()
+        },
+    )?
+    .validated()?;
+    let mut ws = graph.into_workspace()?;
+    let editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
+
+    // The padding commit both checkouts sit on has no step of its own.
+    snapbox::assert_data_eq!(
+        editor.steps_ascii(),
+        snapbox::str![[r#"
+◎  refs/heads/c
+◎  refs/heads/main
+●  04d1892 [conflict] c
+◎  refs/heads/a
+◎  refs/heads/b
+●  5e0ba46 a
+◎  refs/heads/base
+●  6155f21 base
+"#]]
+    );
+    assert_eq!(
+        editor.head(),
+        Some(editor.select_commit(c)?),
+        "HEAD checks out the conflicted commit the padding commit sits on"
+    );
+    assert_eq!(
+        editor.worktree_head("wt-detached".into()),
+        Some(editor.select_commit(c)?),
+        "the worktree checks out the conflicted commit the padding commit sits on"
+    );
+
+    Ok(())
+}
+
+fn pad_conflicted_main(
+    repo: &gix::Repository,
+    meta: &mut impl but_core::RefMetadata,
+    db: &mut but_db::DbHandle,
+) -> Result<(gix::ObjectId, gix::ObjectId)> {
+    let graph =
+        but_testsupport::graph_from_head(repo, &*meta, Default::default(), db, standard_options())?
+            .validated()?;
+    let mut ws = graph.into_workspace()?;
+    let mut editor = Editor::create(&mut ws, meta, repo, db)?;
+    let b = editor.select_commit(repo.rev_parse_single("b")?.detach())?;
+    editor.replace_with_none(b)?;
+    editor.rebase()?.materialize_without_checkout()?;
+
+    Ok((
+        repo.rev_parse_single("main~1")?.detach(),
+        repo.rev_parse_single("main")?.detach(),
+    ))
 }

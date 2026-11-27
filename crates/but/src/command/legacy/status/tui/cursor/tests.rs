@@ -18,7 +18,7 @@ use crate::{
             app::{
                 BranchMode, CommitMessageComposer, CommitMode, CommitSource, MoveMode, MoveSource,
                 MoveStackMode, ReorderStackSource,
-                mark::{MarkStore, MarkableRef, Marks},
+                mark::{CommittedMark, MarkStore, MarkableRef, Marks},
             },
         },
     },
@@ -183,6 +183,9 @@ where
             MarkableRef::Uncommitted(hunk) => marks.insert_mark(hunk.clone()).unwrap(),
             MarkableRef::Commit(commit) => marks.insert_mark(commit.to_owned()).unwrap(),
             MarkableRef::CommittedFile(file) => marks.insert_mark(file.to_owned()).unwrap(),
+            MarkableRef::CommittedHunk(hunk) => marks
+                .insert_mark(CommittedMark::Hunk(hunk.clone()))
+                .unwrap(),
             MarkableRef::Branch(branch) => marks.insert_mark(branch.to_owned()).unwrap(),
         }
     }
@@ -287,14 +290,6 @@ fn move_commit_mode(hex: &str) -> Mode {
     Mode::Move(MoveMode {
         source: MoveSource::Commit(commit_id(hex)),
         insert_side: InsertSide::Below,
-    })
-}
-
-#[expect(dead_code)]
-fn stack_cli_id(id: &str, stack_id: StackId) -> Arc<CliId> {
-    Arc::new(CliId::Stack {
-        id: id.into(),
-        stack_id,
     })
 }
 

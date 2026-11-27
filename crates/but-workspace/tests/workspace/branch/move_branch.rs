@@ -55,7 +55,7 @@ fn move_top_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -78,7 +78,14 @@ fn move_top_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -98,7 +105,7 @@ fn move_top_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:C on 85efbe4 {1}
 │   ├── 📙:C
 │   │   └── ·f2cc60d (🏘️)
@@ -178,7 +185,7 @@ fn move_bottom_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -200,7 +207,14 @@ fn move_bottom_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -220,7 +234,7 @@ fn move_bottom_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:B on 85efbe4 {1}
 │   ├── 📙:B
 │   │   └── ·f9061ed (🏘️)
@@ -265,7 +279,7 @@ fn move_single_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -288,13 +302,19 @@ fn move_single_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 4c58dd4 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 148f8f3 (A) A
+* 148f8f3 (HEAD -> A) A
 * 09bc93e (C) C
 * c813d8d (B) B
 * 85efbe4 (origin/main, main) M
@@ -305,14 +325,14 @@ fn move_single_branch_to_top_of_another_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:A on 85efbe4 {2}
-    ├── 📙:A
-    │   └── ·148f8f3 (🏘️)
-    ├── 📙:C
-    │   └── ·09bc93e (🏘️)
-    └── 📙:B
-        └── ·c813d8d (🏘️)
+⌂:A[🌳] <> ✓refs/heads/main on 85efbe4
+└── ≡:A[🌳] on 85efbe4 {1}
+    ├── :A[🌳]
+    │   └── ·148f8f3
+    ├── :C
+    │   └── ·09bc93e
+    └── :B
+        └── ·c813d8d
 
 "#]]
     );
@@ -349,7 +369,7 @@ fn reorder_branch_in_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -372,7 +392,14 @@ fn reorder_branch_in_stack() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
@@ -392,7 +419,7 @@ fn reorder_branch_in_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -437,7 +464,7 @@ fn insert_branch_in_the_middle_of_a_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -460,13 +487,19 @@ fn insert_branch_in_the_middle_of_a_stack() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 0c5cde5 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 3e7ff55 (C) C
+* 3e7ff55 (HEAD -> C) C
 * 4dfe841 (A) A
 * c813d8d (B) B
 * 85efbe4 (origin/main, main) M
@@ -477,14 +510,14 @@ fn insert_branch_in_the_middle_of_a_stack() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:C on 85efbe4 {2}
-    ├── 📙:C
-    │   └── ·3e7ff55 (🏘️)
-    ├── 📙:A
-    │   └── ·4dfe841 (🏘️)
-    └── 📙:B
-        └── ·c813d8d (🏘️)
+⌂:C[🌳] <> ✓refs/heads/main on 85efbe4
+└── ≡:C[🌳] on 85efbe4 {1}
+    ├── :C[🌳]
+    │   └── ·3e7ff55
+    ├── :A
+    │   └── ·4dfe841
+    └── :B
+        └── ·c813d8d
 
 "#]]
     );
@@ -516,7 +549,7 @@ fn move_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -536,13 +569,19 @@ fn move_empty_branch() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 2c820f0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 09d8e52 (B, A) A
+* 09d8e52 (HEAD -> B, A) A
 * 85efbe4 (origin/main, main) M
 
 "#]]
@@ -551,11 +590,10 @@ fn move_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:B on 85efbe4 {1}
-    ├── 📙:B
-    └── 📙:A
-        └── ·09d8e52 (🏘️)
+⌂:B[🌳] <> ✓refs/heads/main on 85efbe4
+└── ≡:B[🌳] on 85efbe4 {1}
+    └── :B[🌳]
+        └── ·09d8e52 ►A
 
 "#]]
     );
@@ -586,7 +624,7 @@ fn move_branch_on_top_of_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -606,13 +644,19 @@ fn move_branch_on_top_of_empty_branch() -> anyhow::Result<()> {
     // Materialize the operation
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 2c820f0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 09d8e52 (A) A
+* 09d8e52 (HEAD -> A) A
 * 85efbe4 (origin/main, main, B) M
 
 "#]]
@@ -621,11 +665,10 @@ fn move_branch_on_top_of_empty_branch() -> anyhow::Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
-└── ≡📙:A on 85efbe4 {2}
-    ├── 📙:A
-    │   └── ·09d8e52 (🏘️)
-    └── 📙:B
+⌂:A[🌳] <> ✓refs/heads/main on 85efbe4
+└── ≡:A[🌳] on 85efbe4 {1}
+    └── :A[🌳]
+        └── ·09d8e52
 
 "#]]
     );
@@ -637,23 +680,27 @@ fn move_empty_branch_on_top_of_empty_branch_in_same_stack() -> anyhow::Result<()
     let (_tmp, repo, mut meta, _description, mut db) =
         named_writable_scenario_with_description("empty-workspace-target-advanced")?;
     invoke_bash(
-        "git branch A gitbutler/target\ngit branch B gitbutler/target\n",
+        "git branch A gitbutler/target\ngit branch B gitbutler/target\ngit branch C gitbutler/target\n",
         &repo,
     );
     add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &["A"]);
+    // A second stack keeps the workspace, which records the order of empty branches.
+    add_stack_with_segments(&mut meta, 2, "C", StackState::InWorkspace, &[]);
 
     let project_meta = project_meta(&repo)?;
     let graph =
-        but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
+        but_testsupport::graph_from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
 
     let mut ws = graph.into_workspace()?;
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
-└── ≡📙:B on 3183e43 {1}
-    ├── 📙:B
-    └── 📙:A
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 3183e43
+├── ≡📙:B on 3183e43 {1}
+│   ├── 📙:B
+│   └── 📙:A
+└── ≡📙:C on 3183e43 {2}
+    └── 📙:C
 
 "#]]
     );
@@ -666,15 +713,24 @@ fn move_empty_branch_on_top_of_empty_branch_in_same_stack() -> anyhow::Result<()
 
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
-└── ≡📙:A on 3183e43 {1}
-    ├── 📙:A
-    └── 📙:B
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 3183e43
+├── ≡📙:A on 3183e43 {1}
+│   ├── 📙:A
+│   └── 📙:B
+└── ≡📙:C on 3183e43 {2}
+    └── 📙:C
 
 "#]]
     );
@@ -695,13 +751,13 @@ fn move_empty_branch_on_top_of_empty_branch_across_stacks() -> anyhow::Result<()
 
     let project_meta = project_meta(&repo)?;
     let graph =
-        but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
+        but_testsupport::graph_from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
 
     let mut ws = graph.into_workspace()?;
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 3183e43
 ├── ≡📙:A on 3183e43 {1}
 │   └── 📙:A
 └── ≡📙:B on 3183e43 {2}
@@ -718,15 +774,21 @@ fn move_empty_branch_on_top_of_empty_branch_across_stacks() -> anyhow::Result<()
 
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
-└── ≡📙:A on 3183e43 {2}
-    ├── 📙:A
-    └── 📙:B
+⌂:A[🌳] <> ✓refs/heads/main⇣1 on 3183e43
+└── ≡:A[🌳] on 3183e43 {1}
+    └── :A[🌳]
 
 "#]]
     );
@@ -764,7 +826,7 @@ fn non_empty_move_updates_metadata_and_keeps_display_order_aligned() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -798,7 +860,7 @@ fn non_empty_move_updates_metadata_and_keeps_display_order_aligned() -> anyhow::
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:C on 85efbe4 {1}
 │   ├── 📙:C
 │   │   └── ·f2cc60d (🏘️)
@@ -811,12 +873,19 @@ fn non_empty_move_updates_metadata_and_keeps_display_order_aligned() -> anyhow::
 "#]]
     );
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
     // Reading the operation's own metadata back changes nothing.
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:C on 85efbe4 {1}
 │   ├── 📙:C
 │   │   └── ·f2cc60d (🏘️)
@@ -893,7 +962,14 @@ fn empty_move_keeps_display_order_aligned_with_metadata() -> anyhow::Result<()> 
 
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     let after_display_order = stack_display_order(&ws);
 
@@ -951,10 +1027,24 @@ fn move_branch_when_base_segment_has_no_ref_name() -> anyhow::Result<()> {
     );
 
     let mut ws = graph.into_workspace()?;
+    // The header describes local main; incoming history still comes from its upstream.
+    assert_eq!(
+        ws.graph
+            .project_meta
+            .remote_target_ref(&repo)?
+            .map(|name| name.to_string()),
+        Some("refs/remotes/origin/main".to_owned()),
+        "the fixture must configure the target upstream"
+    );
+    assert_eq!(
+        ws.incoming_target_commit_ids(&repo)?,
+        Vec::from([repo.rev_parse_single("origin/main")?.detach()]),
+        "incoming upstream commits must remain visible independently of the local target count"
+    );
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -974,29 +1064,40 @@ fn move_branch_when_base_segment_has_no_ref_name() -> anyhow::Result<()> {
 
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
 * 148c87a (origin/main) M2
-| * 0db3c2f (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-| * f9061ed (B) B
+| * f9061ed (HEAD -> B) B
 | * 09d8e52 (A) A
 |/  
 * 85efbe4 (main) M
 
 "#]]
     );
+    assert_eq!(
+        ws.incoming_target_commit_ids(&repo)?,
+        Vec::from([repo.rev_parse_single("origin/main")?.detach()]),
+        "the upstream commit must remain incoming after the operation"
+    );
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 85efbe4
-└── ≡📙:B on 85efbe4 {1}
-    ├── 📙:B
-    │   └── ·f9061ed (🏘️)
-    └── 📙:A
-        └── ·09d8e52 (🏘️)
+⌂:B[🌳] <> ✓refs/heads/main on 85efbe4
+└── ≡:B[🌳] on 85efbe4 {1}
+    ├── :B[🌳]
+    │   └── ·f9061ed
+    └── :A
+        └── ·09d8e52
 
 "#]]
     );
@@ -1038,7 +1139,7 @@ fn move_empty_branch_onto_non_empty_branch_with_advanced_target() -> anyhow::Res
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -1057,13 +1158,19 @@ fn move_empty_branch_onto_non_empty_branch_with_advanced_target() -> anyhow::Res
 
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 2c820f0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 09d8e52 (B, A) A
+* 09d8e52 (HEAD -> B, A) A
 | * e1bbad3 (origin/main, main) add X
 |/  
 * 85efbe4 (gitbutler/target) M
@@ -1073,11 +1180,10 @@ fn move_empty_branch_onto_non_empty_branch_with_advanced_target() -> anyhow::Res
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 85efbe4
-└── ≡📙:B on 85efbe4 {1}
-    ├── 📙:B
-    └── 📙:A
-        └── ·09d8e52 (🏘️)
+⌂:B[🌳] <> ✓refs/heads/main⇣1 on 85efbe4
+└── ≡:B[🌳] on 85efbe4 {1}
+    └── :B[🌳]
+        └── ·09d8e52 ►A
 
 "#]]
     );
@@ -1116,7 +1222,7 @@ fn move_non_empty_branch_onto_empty_branch_with_advanced_target() -> anyhow::Res
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -1135,13 +1241,19 @@ fn move_non_empty_branch_onto_empty_branch_with_advanced_target() -> anyhow::Res
 
     rebase.materialize(Default::default())?;
     let project_meta = ws.graph.project_meta.clone();
-    ws.refresh_from_head(&repo, &meta, project_meta, &mut db)?;
+    ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta,
+        &mut db,
+        ws.graph.options.clone(),
+    )?
+    .into_workspace()?;
 
     snapbox::assert_data_eq!(
         visualize_commit_graph_all(&repo)?,
         snapbox::str![[r#"
-* 2c820f0 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-* 09d8e52 (A) A
+* 09d8e52 (HEAD -> A) A
 | * e1bbad3 (origin/main, main) add X
 |/  
 * 85efbe4 (gitbutler/target, B) M
@@ -1151,11 +1263,10 @@ fn move_non_empty_branch_onto_empty_branch_with_advanced_target() -> anyhow::Res
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 85efbe4
-└── ≡📙:A on 85efbe4 {2}
-    ├── 📙:A
-    │   └── ·09d8e52 (🏘️)
-    └── 📙:B
+⌂:A[🌳] <> ✓refs/heads/main⇣1 on 85efbe4
+└── ≡:A[🌳] on 85efbe4 {1}
+    └── :A[🌳]
+        └── ·09d8e52
 
 "#]]
     );
@@ -1208,7 +1319,7 @@ mod single_branch_mode {
     use crate::utils::r;
 
     fn branch_order_meta(repo: &gix::Repository) -> anyhow::Result<BranchOrderMetadata> {
-        BranchOrderMetadata::from_paths(repo.path().join("virtual-branches.toml"), repo.path())
+        BranchOrderMetadata::from_path(repo.path())
     }
 
     fn project_meta(repo: &gix::Repository) -> but_core::ref_metadata::ProjectMeta {
@@ -1248,8 +1359,9 @@ mod single_branch_mode {
         subject: &gix::refs::FullNameRef,
         target: &gix::refs::FullNameRef,
     ) -> anyhow::Result<()> {
-        let mut ws = but_graph::Graph::from_head(repo, meta, project_meta, db, Options::limited())?
-            .into_workspace()?;
+        let mut ws =
+            but_testsupport::graph_from_head(repo, meta, project_meta, db, Options::limited())?
+                .into_workspace()?;
         let editor = Editor::create(&mut ws, meta, repo, db)?;
         let rebase = move_branch_above(editor, subject, target)?;
         rebase.materialize(Default::default())?;
@@ -1262,8 +1374,9 @@ mod single_branch_mode {
         project_meta: but_core::ref_metadata::ProjectMeta,
         db: &mut but_db::DbHandle,
     ) -> anyhow::Result<String> {
-        let ws = but_graph::Graph::from_head(repo, meta, project_meta, db, Options::limited())?
-            .into_workspace()?;
+        let ws =
+            but_testsupport::graph_from_head(repo, meta, project_meta, db, Options::limited())?
+                .into_workspace()?;
         Ok(graph_workspace(&ws).to_string())
     }
 
@@ -1339,14 +1452,15 @@ mod single_branch_mode {
     )> {
         let (tmp, repo, _legacy_meta, mut db) =
             named_writable_scenario("single-branch-with-3-commits")?;
-        let project_meta =
-            crate::ref_info::with_workspace_commit::utils::project_meta_with_target_at(
-                &repo, "main~2",
-            )?;
+        // Exercise branch ordering with a stored cutoff, not a configured target branch.
+        let project_meta = but_core::ref_metadata::ProjectMeta {
+            target_commit_id: Some(repo.rev_parse_single("main~2")?.detach()),
+            ..Default::default()
+        };
         let mut meta = branch_order_meta(&repo)?;
 
         let main_ref = r("refs/heads/main");
-        let mut ws = but_graph::Graph::from_head(
+        let mut ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta.clone(),
@@ -1382,7 +1496,7 @@ mod single_branch_mode {
             ad_hoc_workspace_with_two_empty_branches()?;
         let main_ref = r("refs/heads/main");
 
-        let mut ws = but_graph::Graph::from_head(
+        let mut ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta.clone(),
@@ -1422,9 +1536,14 @@ mod single_branch_mode {
         let (_tmp, repo, mut meta, project_meta, mut db) =
             ad_hoc_workspace_with_two_empty_branches()?;
 
-        let mut ws =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?
-                .into_workspace()?;
+        let mut ws = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?
+        .into_workspace()?;
         let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
         let rebase = move_branch_above(
             editor,
@@ -1446,7 +1565,7 @@ mod single_branch_mode {
         let (_tmp, repo, mut meta, project_meta, mut db) =
             ad_hoc_workspace_with_two_empty_branches()?;
 
-        let mut ws = but_graph::Graph::from_head(
+        let mut ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta.clone(),
@@ -1712,7 +1831,7 @@ mod single_branch_mode {
         let (_tmp, repo, mut meta, project_meta, mut db) =
             ad_hoc_workspace_with_two_empty_branches()?;
 
-        let mut ws = but_graph::Graph::from_head(
+        let mut ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta.clone(),
@@ -1754,7 +1873,7 @@ mod single_branch_mode {
         repo.reference(r("refs/heads/x"), tip, PreviousValue::Any, "test")?;
         repo.reference(r("refs/heads/y"), tip, PreviousValue::Any, "test")?;
 
-        let mut ws = but_graph::Graph::from_head(
+        let mut ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta.clone(),
@@ -1819,7 +1938,7 @@ mod worktree_lanes {
     struct Fixture {
         _tmp: but_testsupport::gix_testtools::tempfile::TempDir,
         repo: gix::Repository,
-        meta: but_meta::VirtualBranchesTomlMetadata,
+        meta: but_meta::VirtualBranchesMetadata,
         db: but_db::DbHandle,
         ws: but_graph::Workspace,
     }
@@ -1845,7 +1964,7 @@ git worktree add -q -b wt wt-dir A
             &repo,
         );
         db.worktree_meta_mut().mark_adopted()?;
-        let ws = but_graph::Graph::from_head(
+        let ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1894,8 +2013,15 @@ git worktree add -q -b wt wt-dir A
             )?;
             rebase.materialize(Default::default())?;
             let project_meta = self.ws.graph.project_meta.clone();
-            self.ws
-                .refresh_from_head(&self.repo, &self.meta, project_meta, &mut self.db)
+            self.ws = but_testsupport::graph_from_head(
+                &self.repo,
+                &self.meta,
+                project_meta,
+                &mut self.db,
+                self.ws.graph.options.clone(),
+            )?
+            .into_workspace()?;
+            Ok(())
         }
 
         fn worktree_status(&self) -> anyhow::Result<String> {
@@ -1912,7 +2038,7 @@ git worktree add -q -b wt wt-dir A
         snapbox::assert_data_eq!(
             graph_workspace(&fixture.ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -1954,7 +2080,7 @@ git worktree add -q -b wt wt-dir A
         snapbox::assert_data_eq!(
             graph_workspace(&fixture.ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -2007,7 +2133,7 @@ git worktree add -q -b wt wt-dir A
         snapbox::assert_data_eq!(
             graph_workspace(&fixture.ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -2053,7 +2179,7 @@ git worktree add -q -b wt wt-dir A
         snapbox::assert_data_eq!(
             graph_workspace(&fixture.ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -2093,22 +2219,60 @@ git worktree add -q -b wt wt-dir A
     }
 
     #[test]
-    fn an_empty_branch_cannot_move_into_a_worktree() -> anyhow::Result<()> {
+    fn an_empty_branch_moves_into_a_worktree() -> anyhow::Result<()> {
         let mut fixture = workspace_with_worktree("git branch empty main")?;
         add_stack_with_segments(&mut fixture.meta, 3, "empty", StackState::InWorkspace, &[]);
+        fixture.meta.write_unreconciled()?;
+        let mut meta = but_meta::BranchOrderMetadata::from_path(fixture.repo.path())?;
         let project_meta = fixture.ws.graph.project_meta.clone();
-        fixture.ws.refresh_from_head(
+        fixture.ws = but_testsupport::graph_from_head(
             &fixture.repo,
-            &fixture.meta,
+            &meta,
+            project_meta.clone(),
+            &mut fixture.db,
+            fixture.ws.graph.options.clone(),
+        )?
+        .into_workspace()?;
+
+        let editor = Editor::create(&mut fixture.ws, &mut meta, &fixture.repo, &mut fixture.db)?;
+        let (relative_to, side) = above("wt-lower")?;
+        but_workspace::branch::move_branch(
+            editor,
+            "refs/heads/empty".try_into()?,
+            relative_to,
+            side,
+        )?
+        .materialize(Default::default())?;
+        fixture.ws = but_testsupport::graph_from_head(
+            &fixture.repo,
+            &meta,
             project_meta,
             &mut fixture.db,
-        )?;
-        let err = fixture
-            .move_branch("empty", above("wt-lower")?)
-            .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "Cannot place empty branch 'empty' in worktree 'wt-dir': branches can't be ordered in worktrees yet"
+            fixture.ws.graph.options.clone(),
+        )?
+        .into_workspace()?;
+
+        // `empty` left its stack and sits between the worktree's branches, as its order says.
+        snapbox::assert_data_eq!(
+            graph_workspace(&fixture.ws).to_string(),
+            snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on 85efbe4
+├── ≡📙:A on 85efbe4 {1}
+│   └── 📙:A
+│       └── ·09d8e52 (🏘️)
+├── ≡📙:C on 85efbe4 {2}
+│   ├── 📙:C
+│   │   └── ·09bc93e (🏘️)
+│   └── 📙:B
+│       └── ·c813d8d (🏘️)
+└── 📁wt-dir on 09d8e52 (🏘️)
+    ├── :wt[📁wt-dir]
+    │   └── ·7f04017
+    ├── :empty
+    └── :wt-lower
+        └── ·e9b62b2
+
+"#]]
         );
         Ok(())
     }

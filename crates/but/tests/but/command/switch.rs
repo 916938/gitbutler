@@ -3,8 +3,74 @@ use snapbox::{assert_data_eq, str};
 use crate::utils::CommandExt as _;
 use crate::utils::Sandbox;
 
+#[test]
+fn switch_runs_post_checkout() {
+    for hooks_path in [".git/hooks", ".custom-hooks"] {
+        let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+        env.setup_metadata(&["A"]);
+        env.invoke_git(&format!("config core.hooksPath {hooks_path}"));
+        env.file(
+            format!("{hooks_path}/post-checkout"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > .git/checkout-args\ngit symbolic-ref HEAD >> .git/checkout-args\n",
+        );
+        env.invoke_bash(format!("chmod +x {hooks_path}/post-checkout"));
+
+        for target in ["A", "A", "main", "--workspace"] {
+            let old_head = env.invoke_git("rev-parse HEAD");
+            env.but(format!("switch {target}")).assert().success();
+            let new_head = env.invoke_git("rev-parse HEAD");
+            let head_ref = env.invoke_git("symbolic-ref HEAD");
+            assert_eq!(
+                std::fs::read_to_string(env.projects_root().join(".git/checkout-args")).unwrap(),
+                format!("{old_head}\n{new_head}\n1\n{head_ref}\n"),
+                "hook receives checkout arguments and runs after HEAD changes"
+            );
+        }
+    }
+}
+
+#[test]
+fn switch_does_not_run_post_checkout_when_checkout_fails_or_workspace_is_unchanged() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file(
+        ".git/hooks/post-checkout",
+        "#!/bin/sh\ntouch .git/hook-ran\n",
+    );
+    env.invoke_bash("chmod +x .git/hooks/post-checkout");
+
+    env.but("switch --workspace").assert().success();
+    env.but("switch nonexistent").assert().failure();
+    env.file("A", "uncommitted changes");
+    env.but("switch main").assert().failure();
+    assert!(
+        !env.projects_root().join(".git/hook-ran").exists(),
+        "neither a failed checkout nor an unchanged workspace should run hooks"
+    );
+}
+
+#[test]
+fn switch_post_checkout_failure_keeps_checkout() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.file(
+        ".git/hooks/post-checkout",
+        "#!/bin/sh\necho hook-failed >&2\nexit 1\n",
+    );
+    env.invoke_bash("chmod +x .git/hooks/post-checkout");
+    env.but("switch A").assert().failure().stderr_eq(str![[r#"
+Error: Post-checkout hook failed (exit status: 1): hook-failed
+
+"#]]);
+    assert_eq!(
+        env.invoke_git("symbolic-ref HEAD"),
+        "refs/heads/A",
+        "hook failure must not undo checkout"
+    );
+}
+
 fn status_json(env: &crate::utils::Sandbox) -> serde_json::Value {
-    let output = env.but("--json status").allow_json().output().unwrap();
+    let output = env.but("status --json").allow_json().output().unwrap();
     serde_json::from_slice(&output.stdout)
         .map_err(|err| anyhow::anyhow!("status output should be valid JSON: {err}"))
         .unwrap()
@@ -297,7 +363,7 @@ fn rejects_remote_branch() {
         .failure()
         .stdout_eq(str![])
         .stderr_eq(str![[r#"
-Error: Can only switch to local branches, got 'origin/main'
+Error: Can only use local branches, got 'origin/main'
 
 "#]]);
 }
@@ -479,7 +545,7 @@ Hint: run `but help` for all commands
     assert_data_eq!(
         env.git_log(),
         str![[r#"
-*   6154bb8 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   6769ac6 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
 | * d3e2ba3 (B) add B
 * | e1df4fe (A) two
@@ -649,7 +715,7 @@ Hint: run `but help` for all commands
     assert_data_eq!(
         env.git_log(),
         str![[r#"
-* de5dad6 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 24b9239 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 * f41568d (a-branch-1) 
 * 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
@@ -693,7 +759,7 @@ Hint: run `but help` for all commands
     assert_data_eq!(
         env.git_log(),
         str![[r#"
-* 0bbfbfd (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* d4b6a25 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 * 9477ae7 (A) add A
 * 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
@@ -770,7 +836,7 @@ Hint: run `but branch new` to create a new branch to work on
     assert_data_eq!(
         env.git_log(),
         str![[r#"
-* 60080ce (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 979750e (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 * 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
 "#]]
@@ -803,11 +869,13 @@ Hint: run `but branch new` to create a new branch to work on
     // intentionally dont commit this file to cause conflicts
     env.file("one", "different content of one");
 
+    // The workspace is entered even though the uncommitted file conflicts with `one`.
     env.but("switch --workspace")
         .assert()
-        .failure()
-        .stderr_eq(str![[r#"
-Error: Uncommitted files would be overwritten by checkout: "one"
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Switched to workspace
 
 "#]]);
 
@@ -817,20 +885,39 @@ Error: Uncommitted files would be overwritten by checkout: "one"
         .stderr_eq(str![])
         .stdout_eq(str![[r#"
 ╭┄ @ [uncommitted]
-┊   kl A one
+┊    one {conflicted}
 ┊
-┴ 0dc3733 (common base, main, origin/main, HEAD) 2000-01-02 add M
+┊╭┄ on [one]
+┊●   unl add one
+┊│     unl:k A one
+├╯
+┊
+┴ 0dc3733 (common base, main, origin/main) 2000-01-02 add M
+⚠ Uncommitted file conflicts: edit each file to the wanted contents (or delete it), then run `but resolve <path>...` to mark it resolved.
 
-Hint: run `but branch new` to create a new branch to work on
+Hint: run `but help` for all commands
 
 "#]]);
 
     assert_data_eq!(
         env.git_log(),
         str![[r#"
-* bdda79c (gitbutler/workspace) GitButler Workspace Commit
+* f5353ae (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 * 72aceac (one) add one
-* 0dc3733 (HEAD -> main, origin/main, origin/HEAD, gitbutler/target) add M
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
+
+"#]]
+    );
+
+    // Nothing is lost: the uncommitted content stays in the worktree, next to the committed one.
+    assert_data_eq!(
+        std::fs::read_to_string(env.projects_root().join("one")).unwrap(),
+        str![[r#"
+<<<<<<< ours
+different content of one
+=======
+content of one
+>>>>>>> theirs
 
 "#]]
     );
@@ -887,5 +974,40 @@ Hint: run `but help` for all commands
 * e31e6ca add init
 
 "#]]
+    );
+}
+
+#[test]
+fn switching_in_a_linked_worktree_is_refused() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
+    env.setup_metadata(&["A", "B"]);
+    let wt_dir = super::util::add_dirty_worktree(&env, "wt-feature", "A");
+
+    for command in ["switch B", "switch --workspace"] {
+        env.but(command)
+            .current_dir(&wt_dir)
+            .assert()
+            .failure()
+            .stdout_eq(str![])
+            .stderr_eq(str![[r#"
+Error: Cannot switch from worktree wt-feature
+
+Hint: Run `but switch` from the main worktree
+
+"#]]);
+    }
+
+    assert_eq!(
+        env.invoke_git("rev-parse --abbrev-ref HEAD"),
+        "gitbutler/workspace",
+        "the main checkout stays on the workspace"
+    );
+    assert_eq!(
+        env.invoke_git(&format!(
+            "-C '{}' rev-parse --abbrev-ref HEAD",
+            wt_dir.display()
+        )),
+        "wt-feature",
+        "the worktree stays on its branch"
     );
 }

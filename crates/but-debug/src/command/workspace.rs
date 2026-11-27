@@ -3,10 +3,6 @@
 use std::io;
 
 use anyhow::{Context as _, Result};
-use but_workspace::branch::{
-    OnWorkspaceMergeConflict,
-    apply::{WorkspaceMerge, WorkspaceReferenceNaming},
-};
 
 use crate::args::{ApplyArgs, Args, DebugWorkspaceArgs, UnapplyArgs};
 
@@ -20,26 +16,24 @@ pub(crate) fn apply(
     let mut ctx = but_ctx::Context::discover(&args.current_dir)?;
     let mut guard = ctx.exclusive_worktree_access();
     let mut meta = ctx.meta()?;
-    let (repo, ws, _) = ctx.workspace_mut_and_db_mut_with_perm(guard.write_permission())?;
+    let (repo, mut ws, mut db) =
+        ctx.workspace_mut_and_db_mut_with_perm(guard.write_permission())?;
     let branch = ref_name(&repo, &mutation_args.ref_name)?;
 
-    let outcome = but_workspace::branch::apply(
-        branch.as_ref(),
-        ws.clone(),
-        &repo,
-        &mut meta,
-        but_workspace::branch::apply::Options {
-            workspace_merge: WorkspaceMerge::MergeIfNeeded,
-            on_workspace_conflict: OnWorkspaceMergeConflict::AbortAndReportConflictingStacks,
-            workspace_reference_naming: WorkspaceReferenceNaming::Default,
-            order: None,
-            new_stack_id: None,
-            ..Default::default()
-        },
-    )?;
+    let editor = but_rebase::graph_rebase::Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
+    let but_workspace::branch::apply::ApplyStackOutcome {
+        rebase,
+        status,
+        applied_branches,
+        tracking,
+    } = but_workspace::branch::apply_stack(editor, branch.as_ref(), None)?;
+    rebase.materialize(Default::default())?;
+    if let Some(tracking) = tracking {
+        tracking.write(&repo)?;
+    }
 
-    writeln!(out, "{outcome:#?}")?;
-    emit_after(&outcome.workspace, &mutation_args.debug, err)
+    writeln!(out, "{status:?} {applied_branches:#?}")?;
+    emit_after(&ws, &mutation_args.debug, err)
 }
 
 /// Unapply a branch through `but-workspace`, bypassing app/API wiring.
@@ -52,21 +46,26 @@ pub(crate) fn unapply(
     let mut ctx = but_ctx::Context::discover(&args.current_dir)?;
     let mut guard = ctx.exclusive_worktree_access();
     let mut meta = ctx.meta()?;
-    let (repo, ws, _) = ctx.workspace_mut_and_db_mut_with_perm(guard.write_permission())?;
+    let (repo, mut ws, mut db) =
+        ctx.workspace_mut_and_db_mut_with_perm(guard.write_permission())?;
     let branch = ref_name(&repo, &mutation_args.ref_name)?;
 
-    let outcome = but_workspace::branch::unapply(
+    let editor = but_rebase::graph_rebase::Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
+    let rebase = but_workspace::branch::unapply_stack(
+        editor,
         branch.as_ref(),
-        &ws,
-        &repo,
-        &mut meta,
         but_workspace::branch::unapply::Options {
             workspace_disposition: mutation_args.disposition.into(),
         },
     )?;
+    let workspace_changed = rebase.references_updated()?;
+    rebase.materialize(Default::default())?;
 
-    writeln!(out, "{outcome:#?}")?;
-    emit_after(&outcome.workspace, &mutation_args.debug, err)
+    let head = repo
+        .head_name()?
+        .map_or_else(|| "detached".into(), |name| name.to_string());
+    writeln!(out, "workspace_changed: {workspace_changed}, HEAD: {head}")?;
+    emit_after(&ws, &mutation_args.debug, err)
 }
 
 pub(crate) fn emit_after(

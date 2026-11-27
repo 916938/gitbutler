@@ -1,6 +1,5 @@
 //! These tests exercise the insert operation.
 use anyhow::{Context, Result};
-use but_graph::Graph;
 use but_rebase::graph_rebase::{Editor, Step, mutate::InsertSide};
 use but_testsupport::{git_status, graph_tree, visualize_commit_graph_all};
 use snapbox::prelude::*;
@@ -28,7 +27,7 @@ fn insert_below_merge_commit() -> Result<()> {
     );
     snapbox::assert_data_eq!(git_status(&repo)?, snapbox::str![""]);
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -61,18 +60,18 @@ fn insert_below_merge_commit() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     ├── ·f699c45 (⌂)
     └── ·16b7c68 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·8ca0053 (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·add59d2 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -131,7 +130,7 @@ fn insert_below_merge_commit_excluded_mappings() -> Result<()> {
     );
     snapbox::assert_data_eq!(git_status(&repo)?, snapbox::str![""]);
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -168,18 +167,18 @@ fn insert_below_merge_commit_excluded_mappings() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     ├── ·f699c45 (⌂)
     └── ·16b7c68 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·8ca0053 (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·add59d2 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -237,7 +236,7 @@ fn insert_above_commit_with_two_children() -> Result<()> {
     );
     snapbox::assert_data_eq!(git_status(&repo)?, snapbox::str![""]);
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -270,18 +269,18 @@ fn insert_above_commit_with_two_children() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     └── ·42f9ff4 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·5219d30 (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·72d9d9b (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           ├── ·3dc4e45 (⌂)
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·df0cf44 (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );

@@ -14,12 +14,12 @@ use but_path::AppChannel;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+fn http_client() -> Result<reqwest::Client> {
+    but_http::client_builder()?
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
-        .expect("failed to build HTTP client")
+        .context("Failed to build GitButler API HTTP client")
 }
 
 /// Error returned when the upstream API rejects a request with an HTTP error status.
@@ -30,8 +30,6 @@ pub struct ApiHttpError {
     pub body: String,
 }
 
-/// Returns the GitButler API base URL.
-///
 /// Resolution order:
 /// 1. `GITBUTLER_API_URL` env var at runtime (backend-specific escape hatch)
 /// 2. `PUBLIC_API_BASE_URL` env var at runtime (shared with the desktop frontend)
@@ -88,7 +86,7 @@ pub fn fetch_login_token() -> Result<LoginToken> {
     let api_url = default_api_url();
     run_async(async move {
         let url = format!("{api_url}/api/login/token.json");
-        let client = http_client();
+        let client = http_client()?;
         let resp = client
             .post(&url)
             .send()
@@ -115,7 +113,7 @@ pub fn fetch_user_by_token(token: &str) -> Result<serde_json::Value> {
     let token = token.to_string();
     run_async(async move {
         let url = format!("{api_url}/api/login/whoami");
-        let client = http_client();
+        let client = http_client()?;
         let resp = client
             .get(&url)
             .header("X-Auth-Token", &token)
@@ -131,7 +129,6 @@ pub fn fetch_user_by_token(token: &str) -> Result<serde_json::Value> {
     })
 }
 
-/// Read the stored user's access token from disk.
 fn stored_access_token() -> Result<String> {
     let user = crate::get_user()?.context("No logged-in user")?;
     Ok(user.access_token()?.0)
@@ -145,7 +142,7 @@ pub fn fetch_user_profile() -> Result<serde_json::Value> {
     let token = stored_access_token()?;
     run_async(async move {
         let url = format!("{api_url}/api/user.json");
-        let client = http_client();
+        let client = http_client()?;
         let resp = client
             .get(&url)
             .header("X-Auth-Token", &token)
@@ -193,7 +190,7 @@ pub fn update_user_profile(params: UpdateUserParams) -> Result<serde_json::Value
     let token = stored_access_token()?;
     run_async(async move {
         let url = format!("{api_url}/api/user.json");
-        let client = http_client();
+        let client = http_client()?;
 
         let mut form = reqwest::multipart::Form::new();
         if let Some(name) = params.name {
@@ -247,81 +244,6 @@ pub fn update_user_profile(params: UpdateUserParams) -> Result<serde_json::Value
         resp.json()
             .await
             .context("Failed to parse profile update response")
-    })
-}
-
-/// Largest file the uploads endpoint accepts, mirroring the desktop app's limit.
-///
-/// Rejecting oversized files here keeps a doomed multipart body off the wire, and
-/// gives the caller a message instead of an opaque server-side rejection.
-pub const UPLOAD_SIZE_LIMIT: usize = 10 * 1024 * 1024;
-
-/// Parameters for uploading a file to the GitButler API.
-#[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Deserialize)]
-pub struct UploadFileParams {
-    /// Original filename, used as the multipart part's filename.
-    pub filename: String,
-    /// MIME type of the file, when the caller knows it.
-    pub content_type: Option<String>,
-    /// Base64-encoded file bytes.
-    pub data_base64: String,
-}
-#[cfg(feature = "export-schema")]
-but_schemars::register_sdk_type!(UploadFileParams);
-
-/// Upload a file to the GitButler API and return its public URL.
-///
-/// Calls `POST /api/uploads` with multipart form data using the stored user's
-/// access token. The upload is marked public, because its whole purpose is to be
-/// linked from a review body that the forge renders for anyone who can see it.
-///
-/// Errors when no user is signed in, or when the decoded file exceeds
-/// [`UPLOAD_SIZE_LIMIT`].
-pub fn upload_file(params: UploadFileParams) -> Result<serde_json::Value> {
-    let api_url = default_api_url();
-    let token = stored_access_token()?;
-
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&params.data_base64)
-        .context("Invalid base64 in file data")?;
-    if bytes.len() > UPLOAD_SIZE_LIMIT {
-        anyhow::bail!(
-            "{} is {:.1} MB, over the {} MB upload limit",
-            params.filename,
-            bytes.len() as f64 / (1024.0 * 1024.0),
-            UPLOAD_SIZE_LIMIT / (1024 * 1024)
-        );
-    }
-
-    run_async(async move {
-        let url = format!("{api_url}/api/uploads");
-        let client = http_client();
-
-        let mut part = reqwest::multipart::Part::bytes(bytes).file_name(params.filename);
-        if let Some(content_type) = params.content_type {
-            part = part
-                .mime_str(&content_type)
-                .context("Invalid content type for upload")?;
-        }
-        let form = reqwest::multipart::Form::new()
-            .part("file", part)
-            .text("public", "true");
-
-        let resp = client
-            .post(&url)
-            .header("X-Auth-Token", &token)
-            .multipart(form)
-            .send()
-            .await
-            .context("Failed to reach GitButler API for file upload")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ApiHttpError { status, body }.into());
-        }
-        resp.json().await.context("Failed to parse upload response")
     })
 }
 

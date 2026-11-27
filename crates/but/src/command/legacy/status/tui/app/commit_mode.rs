@@ -44,7 +44,6 @@ pub struct CommitMode {
     /// Used when committing changes staged to a specific stack
     // TODO: remove this when we no dont support assignments
     pub scope_to_stack: Option<StackId>,
-    /// How to compose the commit message.
     pub message_composer: CommitMessageComposer,
 }
 
@@ -55,7 +54,6 @@ pub enum CommitMessageComposer {
     Editor,
     /// Use an inline editor to compose the commit message.
     Inline,
-    /// Create the commit with an empty message.
     Empty,
 }
 
@@ -269,7 +267,7 @@ impl App {
                     ]);
                 }
                 MarksRef::Commits { .. }
-                | MarksRef::CommittedFiles { .. }
+                | MarksRef::Committed { .. }
                 | MarksRef::Branches { .. } => {}
             },
             Mode::Squash(squash_mode) => match &squash_mode.source {
@@ -284,11 +282,11 @@ impl App {
                         self.handle_commit_start_source(CommitSource::Marks(hunks.clone()));
                     }
                     SquashMarks::Commits(..)
-                    | SquashMarks::CommittedFiles(..)
+                    | SquashMarks::Committed(..)
                     | SquashMarks::Branches(..) => {}
                 },
                 SquashSource::Branch(..)
-                | SquashSource::CommittedFile(..)
+                | SquashSource::CommittedChange(..)
                 | SquashSource::Commit(..) => {}
             },
             _ => {}
@@ -554,20 +552,14 @@ where
         .then(|| terminal_guard.suspend())
         .transpose()?;
 
-    let (
-        commit::CommitOutcome {
-            new_commit,
-            branch_name: _,
-            ..
-        },
-        _ws,
-    ) = commit::run(
+    let (commit::CommitOutcome { new_commit, .. }, _ws) = commit::run(
         ctx,
         &mut meta,
         guard.write_permission(),
         commit_op,
         commit_selection,
         reword_op,
+        false,
     )?;
 
     drop(_suspend_guard);

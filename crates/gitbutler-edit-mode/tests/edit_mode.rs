@@ -7,13 +7,13 @@ use but_core::{
     },
 };
 use but_ctx::Context;
-use but_meta::VirtualBranchesTomlMetadata;
+use but_meta::VirtualBranchesMetadata;
 use but_testsupport::{gix_testtools, open_repo, visualize_commit_graph};
 use gitbutler_edit_mode::commands::{
     abort_and_return_to_workspace, enter_edit_mode, save_and_return_to_workspace,
 };
 use gitbutler_operating_modes::{
-    EditModeMetadata, INTEGRATION_BRANCH_REF, read_edit_mode_metadata, write_edit_mode_metadata,
+    EditModeMetadata, read_edit_mode_metadata, write_edit_mode_metadata,
 };
 use gitbutler_oplog::OplogExt as _;
 use snapbox::prelude::*;
@@ -26,7 +26,7 @@ fn command_ctx(folder: &str) -> Result<(Context, TempDir)> {
         "edit_mode.sh",
         None::<String>,
         gix_testtools::Creation::Execute,
-        2,
+        3,
         move |fixture| {
             if fixture.is_uninitialized() {
                 let repo = open_repo(&fixture.path().join(&folder_for_post))?;
@@ -42,9 +42,7 @@ fn command_ctx(folder: &str) -> Result<(Context, TempDir)> {
 }
 
 fn seed_metadata(repo: &gix::Repository) -> Result<()> {
-    let mut meta = VirtualBranchesTomlMetadata::from_path(
-        repo.gitbutler_storage_path()?.join("virtual_branches.toml"),
-    )?;
+    let mut meta = VirtualBranchesMetadata::from_path(repo.gitbutler_storage_path()?)?;
     let mut ws = meta.workspace("refs/heads/gitbutler/workspace".try_into()?)?;
     ws.stacks.clear();
     ws.stacks.push(WorkspaceStack {
@@ -59,7 +57,9 @@ fn seed_metadata(repo: &gix::Repository) -> Result<()> {
     meta.set_changed_to_necessitate_write();
     meta.write_unreconciled()?;
     ProjectMeta {
-        target_ref: Some("refs/remotes/origin/main".try_into()?),
+        target_ref: Some(but_core::ref_metadata::LocalRefName::new(
+            "refs/heads/main".try_into()?,
+        )?),
         target_commit_id: Some(repo.rev_parse_single("refs/remotes/origin/main")?.detach()),
         push_remote: Some("origin".to_owned()),
     }
@@ -160,6 +160,44 @@ created during edit mode
 }
 
 #[test]
+fn uncommitted_workspace_changes_return_after_leaving_edit_mode() -> Result<()> {
+    let (mut ctx, _tempdir) = command_ctx("conficted_entries_get_written_when_leaving_edit_mode")?;
+    let repo = ctx.repo.get()?;
+    let foobar = repo.head_commit()?.decode()?.parents().next().unwrap();
+    let worktree_dir = repo.workdir().unwrap().to_owned();
+    drop(repo);
+
+    std::fs::write(worktree_dir.join("file"), "changed in the workspace\n")?;
+    std::fs::write(worktree_dir.join("untracked"), "added in the workspace\n")?;
+    let mut guard = ctx.exclusive_worktree_access();
+    let stack_id = {
+        let (_repo, ws, _db) = ctx.workspace_and_db_with_perm(guard.read_permission())?;
+        stack_id(&ws)?
+    };
+    enter_edit_mode(&mut ctx, foobar, stack_id, guard.write_permission())?;
+    assert!(
+        !worktree_dir.join("untracked").exists(),
+        "edit mode checks out the edited commit without the workspace's changes"
+    );
+
+    std::fs::write(worktree_dir.join("newfile"), "created during edit mode\n")?;
+    save_and_return_to_workspace(&mut ctx, guard.write_permission())?;
+
+    let read = |name: &str| std::fs::read_to_string(worktree_dir.join(name));
+    // The workspace's own changes are carried over the rewritten commit.
+    snapbox::assert_data_eq!(
+        read("file")? + &read("untracked")? + &read("newfile")?,
+        snapbox::str![[r#"
+changed in the workspace
+added in the workspace
+created during edit mode
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
 fn locked_index_rejects_enter_edit_mode_without_changes() -> Result<()> {
     assert_locked_index_rejects_enter_edit_mode(false)
 }
@@ -216,7 +254,7 @@ fn assert_locked_index_rejects_enter_edit_mode(symlink_index: bool) -> Result<()
         &locked_index_path,
         gix::lock::acquire::Fail::Immediately,
         None,
-        0,
+        gix::fs::SharedPermissions::Umask,
     )?;
     let mut guard = ctx.exclusive_worktree_access();
     let stack_id = {
@@ -660,53 +698,6 @@ Some(
     );
     // Leaving edit mode cleans up every edit-mode artifact instead of leaving them dangling.
     assert_edit_mode_cleaned_up(&ctx)?;
-
-    Ok(())
-}
-
-#[test]
-fn enter_edit_mode_works_with_only_integration_ref_present() -> Result<()> {
-    let (mut ctx, _tempdir) = command_ctx("conficted_entries_get_written_when_leaving_edit_mode")?;
-    let foobar = {
-        let repo = ctx.repo.get()?;
-        let workspace_head = repo.head_commit()?;
-        let foobar = workspace_head.decode()?.parents().next().unwrap();
-        repo.reference(
-            INTEGRATION_BRANCH_REF,
-            workspace_head.id(),
-            gix::refs::transaction::PreviousValue::Any,
-            "",
-        )?;
-        repo.edit_reference(gix::refs::transaction::RefEdit::update(
-            "HEAD".try_into().unwrap(),
-            gix::refs::FullName::try_from(INTEGRATION_BRANCH_REF)?,
-            gix::refs::transaction::PreviousValue::Any,
-            b"arbitrary message".as_slice(),
-        ))?;
-        repo.find_reference("refs/heads/gitbutler/workspace")?
-            .delete()
-            .context("expected workspace ref to exist")?;
-        foobar
-    };
-
-    let mut guard = ctx.exclusive_worktree_access();
-    let stack_id = {
-        let (_repo, ws, _db) = ctx.workspace_and_db_with_perm(guard.read_permission())?;
-        stack_id(&ws)?
-    };
-    enter_edit_mode(&mut ctx, foobar, stack_id, guard.write_permission())?;
-
-    snapbox::assert_data_eq!(
-        ctx.repo.get()?.head_name()?.to_debug(),
-        snapbox::str![[r#"
-Some(
-    FullName(
-        "refs/heads/gitbutler/edit",
-    ),
-)
-
-"#]]
-    );
 
     Ok(())
 }

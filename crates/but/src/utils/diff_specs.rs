@@ -1,11 +1,9 @@
 use anyhow::Context as _;
-use bstr::{BStr, BString};
-use but_core::{DiffSpec, HunkHeader};
+use bstr::BStr;
+use but_core::DiffSpec;
 
 use crate::{
-    CliId,
-    args::atoms::anonymous_segment_error,
-    id::{CommitId, CommittedFileId, IdAndHunk, UncommittedHunkOrFile},
+    id::{CommittedHunk, IdAndHunk, UncommittedHunkOrFile},
     utils::change_source::{ChangeSourceId, ChangeSourceRepo},
 };
 
@@ -16,6 +14,8 @@ pub struct DiffSpecBuilder<'a> {
     source: ChangeSourceId,
     context_lines: u32,
     worktree_changes: Option<Vec<but_core::ui::TreeChange>>,
+    /// The changes of the commit that committed hunks were last pushed from.
+    commit_changes: Option<(gix::ObjectId, Vec<but_core::ui::TreeChange>)>,
     diff_specs: Vec<DiffSpec>,
 }
 
@@ -28,6 +28,7 @@ impl<'a> DiffSpecBuilder<'a> {
             source: ChangeSourceId::Head,
             context_lines,
             worktree_changes: None,
+            commit_changes: None,
             diff_specs: Default::default(),
         }
     }
@@ -44,63 +45,8 @@ impl<'a> DiffSpecBuilder<'a> {
             source: source_repo.source(),
             context_lines,
             worktree_changes: None,
+            commit_changes: None,
             diff_specs: Default::default(),
-        }
-    }
-
-    #[expect(dead_code)]
-    pub fn push_changes_from_id(&mut self, id: &CliId) -> anyhow::Result<()> {
-        match id {
-            CliId::UncommittedHunkOrFile(uncommitted) => {
-                self.push_changes_from_uncommitted(uncommitted)
-            }
-            CliId::PathPrefix {
-                id: _,
-                hunks,
-                source: _,
-            } => self.push_changes_from_path_prefix(hunks),
-            CliId::CommittedFile {
-                committed_file:
-                    CommittedFileId {
-                        commit_id,
-                        path,
-                        change_id: _,
-                    },
-                id: _,
-            } => self.push_changes_from_committed_file(*commit_id, path.as_ref()),
-            CliId::Branch(branch) => {
-                anyhow::bail!("Cannot compute diff specs for branch `{}`", branch.name)
-            }
-            CliId::AnonymousSegment(segment) => {
-                anyhow::bail!("{}", anonymous_segment_error(&segment.id))
-            }
-            CliId::Commit {
-                commit:
-                    CommitId {
-                        commit_id,
-                        change_id: _,
-                    },
-                id: _,
-            } => self.push_changes_from_commit(*commit_id),
-            CliId::UncommittedArea {
-                source: ChangeSourceId::Head,
-                ..
-            } => self.push_changes_from_uncommitted_area(),
-            // A worktree's uncommitted area is expanded into its files during
-            // resolution, so the builder only ever sees hunks that already come from
-            // its own repo.
-            CliId::UncommittedArea {
-                source: ChangeSourceId::Worktree(name),
-                ..
-            } => {
-                anyhow::bail!("Cannot compute diff specs for worktree `{name}`")
-            }
-            CliId::Stack { .. } => {
-                anyhow::bail!("Cannot compute diff specs for stacks")
-            }
-            CliId::CommittedHunk(_) => {
-                anyhow::bail!("Cannot compute diff specs for committed hunks")
-            }
         }
     }
 
@@ -142,6 +88,36 @@ impl<'a> DiffSpecBuilder<'a> {
         self.push_changes_from_path_in_commit(path, commit_id, "First parent")
     }
 
+    /// Pushes a hunk of a committed file, as it changed from the commit's first parent.
+    pub fn push_changes_from_committed_hunk(&mut self, hunk: &CommittedHunk) -> anyhow::Result<()> {
+        let commit_id = hunk.committed_file.commit_id;
+        if self
+            .commit_changes
+            .as_ref()
+            .is_none_or(|(cached_id, _)| *cached_id != commit_id)
+        {
+            let commit = self.repo.find_commit(commit_id)?;
+            let changes = but_core::diff::tree_changes(
+                self.repo,
+                commit.parent_ids().next().map(|id| id.detach()),
+                commit_id,
+            )?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+            self.commit_changes = Some((commit_id, changes));
+        }
+        let (_, changes) = self
+            .commit_changes
+            .as_ref()
+            .expect("changes of the hunk's commit were cached above");
+        self.diff_specs.extend(but_core::diff_specs_with_changes(
+            [hunk.hunk.clone()],
+            changes,
+        ));
+        Ok(())
+    }
+
     pub fn push_changes_from_path_in_commit(
         &mut self,
         path: &BStr,
@@ -149,12 +125,6 @@ impl<'a> DiffSpecBuilder<'a> {
         parent_context: &'static str,
     ) -> anyhow::Result<()> {
         let specs = self.diff_specs_for_path_in_commit(path, commit_id, parent_context)?;
-        self.diff_specs.extend(specs);
-        Ok(())
-    }
-
-    pub fn push_changes_from_commit(&mut self, commit_id: gix::ObjectId) -> anyhow::Result<()> {
-        let specs = self.diff_specs_for_commit(commit_id, "First parent")?;
         self.diff_specs.extend(specs);
         Ok(())
     }
@@ -173,15 +143,6 @@ impl<'a> DiffSpecBuilder<'a> {
         let changes = self.worktree_changes()?.to_vec();
         self.push_hunks_with_changes(hunks, &changes);
         Ok(())
-    }
-
-    #[expect(dead_code)]
-    pub fn push_changes_from_single_hunk(&mut self, path: BString, header: HunkHeader) {
-        self.diff_specs.push(DiffSpec {
-            previous_path: None,
-            path,
-            hunk_headers: Vec::from([header]),
-        });
     }
 
     pub fn into_diff_specs(self) -> Vec<DiffSpec> {
@@ -303,21 +264,5 @@ impl<'a> DiffSpecBuilder<'a> {
             .filter(|tc| tc.path == path)
             .map(Into::into)
             .collect())
-    }
-
-    fn diff_specs_for_commit(
-        &self,
-        source_id: gix::ObjectId,
-        parent_context: &'static str,
-    ) -> anyhow::Result<Vec<DiffSpec>> {
-        let source_commit = self.repo.find_commit(source_id)?;
-        let source_commit_parent_id = source_commit.parent_ids().next().context(parent_context)?;
-
-        let tree_changes = but_core::diff::tree_changes(
-            self.repo,
-            Some(source_commit_parent_id.detach()),
-            source_id,
-        )?;
-        Ok(tree_changes.into_iter().map(Into::into).collect())
     }
 }

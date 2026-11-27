@@ -10,8 +10,6 @@ use crate::{
     utils::WriteWithUtils,
 };
 
-/// Print one line of status output.
-///
 /// Works by translating the ratatui lines and spans into `colored` text and printing it.
 pub(super) fn render_oneshot(
     line: StatusOutputLine,
@@ -79,11 +77,7 @@ pub(super) fn render_oneshot(
             spans.append(&mut decoration_end);
             spans.append(&mut suffix);
         }
-        StatusOutputContent::MergeBase(MergeBaseLineContent {
-            mut id,
-            mut suffix,
-            commit_id: _,
-        }) => {
+        StatusOutputContent::MergeBase(MergeBaseLineContent { mut id, mut suffix }) => {
             spans.append(&mut id);
             spans.append(&mut suffix);
         }

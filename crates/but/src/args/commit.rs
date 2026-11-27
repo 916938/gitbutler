@@ -2,7 +2,7 @@
 
 #![deny(missing_docs)]
 
-use crate::args::atoms::{AllowMergedArg, CliIdArg};
+use crate::args::atoms::{AllowMergedArg, CliIdArg, JsonArg, MessageFileArg};
 
 /// Create a commit.
 ///
@@ -19,9 +19,12 @@ use crate::args::atoms::{AllowMergedArg, CliIdArg};
 /// `--above` and `--below` are mutually exclusive; combine either with `--branch` to name a new
 /// branch when targeting a branch.
 ///
-/// The commit is expected to have a commit message unless `--no-message` is provided. If neither of
-/// `--no-message` nor `--message` is provided, the user's preferred editor is opened to input a
-/// message.
+/// The commit is expected to have a commit message unless `--no-message` is provided. If none of
+/// `--no-message`, `--message` or `--file` is provided, the user's preferred editor is opened to
+/// input a message.
+///
+/// The repository's pre-commit, commit-msg and post-commit hooks run unless `--no-hooks` is
+/// provided. A failing pre-commit or commit-msg hook aborts the commit.
 ///
 /// For more details about CLI IDs, see `but help cli-ids`.
 #[derive(Debug, clap::Parser)]
@@ -30,14 +33,18 @@ pub struct Platform {
     /// The message to use for the commit.
     ///
     /// Can be supplied any amount of times, each value being appended to the preceding ones with a
-    /// blank line in between. Without `-m` or `--no-message`, a terminal opens the editor and a
-    /// non-interactive run commits with an empty message.
+    /// blank line in between. Without `-m`, `-F` or `--no-message`, a terminal opens the editor
+    /// and a non-interactive run commits with an empty message.
     #[clap(short, long, group = "commit_message")]
     pub message: Option<Vec<String>>,
 
     /// Create the commit without a message.
     #[clap(long, group = "commit_message")]
     pub no_message: bool,
+
+    /// Read the commit message from `FILE`, or from stdin when `FILE` is `-`.
+    #[clap(short = 'F', long, value_name = "FILE", group = "commit_message")]
+    pub file: Option<MessageFileArg>,
 
     /// Place the commit on the branch `BRANCH`.
     ///
@@ -50,6 +57,9 @@ pub struct Platform {
     ///
     /// If `BRANCH` is a worktree or a branch checked out in one, the commit is placed
     /// on the tip of that worktree's branch.
+    ///
+    /// Run from a linked worktree with a detached HEAD, a new `BRANCH` starts at that HEAD
+    /// and is checked out there before the commit is placed on it.
     ///
     /// Attempting to place a commit on a branch that exists but is not applied is an error.
     #[clap(short, long, value_name = "BRANCH")]
@@ -98,11 +108,18 @@ pub struct Platform {
     #[clap(short, long, group = "changes_to_commit", help_heading = "Interactive")]
     pub interactive: bool,
 
-    /// The files or hunks to commit, by CLI ID from `but diff`.
+    /// The files or hunks to commit, by CLI ID from `but diff` or by path.
     ///
     /// If omitted, everything uncommitted in the checkout `but` runs in is committed.
     #[clap(group = "changes_to_commit")]
     pub changes: Vec<CliIdArg>,
+
+    /// Skip the pre-commit, commit-msg and post-commit hooks.
+    ///
+    /// Without this flag the hooks run for changes from the main worktree, but not for changes
+    /// from a linked worktree. A hook's output shows only when it fails.
+    #[clap(short = 'n', long = "no-hooks", visible_alias = "no-verify")]
+    pub no_hooks: bool,
 
     #[clap(flatten)]
     #[allow(missing_docs)]
@@ -111,6 +128,10 @@ pub struct Platform {
     /// Switch to the target branch instead of remaining in the GitButler workspace.
     #[clap(long, short, group = "targeting")]
     pub switch: bool,
+
+    #[clap(flatten)]
+    #[allow(missing_docs)]
+    pub json: JsonArg,
 }
 
 /// Example invocations appended to a `but commit` parse error.

@@ -18,9 +18,7 @@ pub(crate) struct EmptyRefMetadata;
 pub(crate) struct EmptyRefMetadataHandle<T> {
     /// Whether the value was synthesized because no metadata existed.
     pub(crate) is_default: bool,
-    /// The reference name the metadata is associated with.
     pub(crate) ref_name: gix::refs::FullName,
-    /// The metadata value itself.
     pub(crate) value: T,
 }
 
@@ -86,13 +84,5 @@ impl RefMetadata for EmptyRefMetadata {
 
     fn remove(&mut self, _ref_name: &gix::refs::FullNameRef) -> anyhow::Result<bool> {
         Ok(false)
-    }
-
-    fn rename(
-        &mut self,
-        _old_ref_name: &gix::refs::FullNameRef,
-        _new_ref_name: &gix::refs::FullNameRef,
-    ) -> anyhow::Result<()> {
-        Ok(())
     }
 }

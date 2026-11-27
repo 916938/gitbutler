@@ -14,7 +14,7 @@ use axum::{
     response::IntoResponse,
     routing::{MethodRouter, any, post},
 };
-use but_api::{commit, diff, github, gitlab, json, legacy, open, platform, workspace};
+use but_api::{commit, diff, github, gitlab, json, legacy, open, platform, workspace, worktrees};
 use but_ctx::ProjectHandleOrLegacyProjectId;
 
 mod broadcaster;
@@ -109,7 +109,6 @@ async fn pick_directory(_params: serde_json::Value) -> anyhow::Result<serde_json
     }
 }
 
-/// Shell out to a platform-native directory picker.
 fn native_pick_directory() -> anyhow::Result<Option<String>> {
     #[cfg(target_os = "macos")]
     {
@@ -236,8 +235,6 @@ fn cmd_result_to_json(res: anyhow::Result<serde_json::Value>) -> Json<serde_json
     }
 }
 
-/// Check if an origin byte string is from localhost.
-///
 /// Matches `http(s)://localhost`, `http(s)://127.0.0.1`, and
 /// `http(s)://[::1]`, each optionally followed by `:<port>`.
 pub(crate) fn is_localhost_origin(origin: &[u8]) -> bool {
@@ -258,8 +255,6 @@ pub(crate) fn is_localhost_origin(origin: &[u8]) -> bool {
     false
 }
 
-/// Check if a `Host` header value is a localhost address.
-///
 /// Matches `localhost`, `127.0.0.1`, and `[::1]`, each optionally followed
 /// by `:<port>`. Used to defend against DNS rebinding: browsers always set
 /// `Host` to the *domain name* being requested (not the resolved IP), so a
@@ -283,9 +278,9 @@ fn is_localhost_host(host: &[u8]) -> bool {
 /// Configuration for the but-server, populated from CLI args.
 #[derive(Debug, Default)]
 pub struct Config {
-    /// Port to listen on. `but-server` defaults to 6978.
+    /// `but-server` defaults to 6978.
     pub port: Option<u16>,
-    /// Address to bind to. Defaults to 127.0.0.1. Override with --bind-addr if needed
+    /// Defaults to 127.0.0.1. Override with --bind-addr if needed
     /// (e.g. 0.0.0.0 in a container environment).
     pub bind_addr: Option<String>,
     /// Prefix all API routes with this path (e.g. `/api`).
@@ -370,8 +365,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let broadcaster = Arc::new(Mutex::new(Broadcaster::new()));
     let archival = Arc::new(but_feedback::Archival {
-        cache_dir: app_data_dir.join("cache").clone(),
-        logs_dir: app_data_dir.join("logs").clone(),
+        cache_dir: app_data_dir.join("cache"),
+        logs_dir: app_data_dir.join("logs"),
     });
     let extra = Extra {
         active_projects: Arc::new(Mutex::new(ActiveProjects::new())),
@@ -380,7 +375,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let app_settings = AppSettingsWithDiskSync::new_with_customization(config_dir.clone(), None)
         .expect("failed to create app settings");
 
-    // If a project path was provided, auto-activate that project.
     if let Some(ref project_path) = config.project_path {
         match but_ctx::Context::discover(project_path) {
             Ok(mut ctx) => {
@@ -446,6 +440,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             but_post(legacy::git::git_get_global_config_cmd),
         )
         .route("/tree_change_diffs", but_post(diff::tree_change_diffs_cmd))
+        .route(
+            "/tree_change_diffs_from_source",
+            but_post(diff::tree_change_diffs_from_source_cmd),
+        )
         .route("/get_workspace", but_post(workspace::get_workspace_cmd))
         .route(
             "/commit_details_with_line_stats",
@@ -517,6 +515,13 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             "/stash_into_branch",
             but_post(legacy::workspace::stash_into_branch_cmd),
         )
+        .route("/worktrees_list", but_post(worktrees::worktrees_list_cmd))
+        .route(
+            "/worktree_set_archived",
+            but_post(worktrees::worktree_set_archived_cmd),
+        )
+        .route("/worktree_remove", but_post(worktrees::worktree_remove_cmd))
+        .route("/worktree_new", but_post(worktrees::worktree_new_cmd))
         .route(
             "/workspace_branch_and_ancestors_push",
             but_post_async(legacy::workspace::workspace_branch_and_ancestors_push_cmd),
@@ -574,20 +579,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             but_post(legacy::virtual_branches::normalize_branch_name_cmd),
         )
         .route(
-            "/create_virtual_branch",
-            but_post(legacy::virtual_branches::create_virtual_branch_cmd),
-        )
-        .route(
-            "/delete_local_branch",
-            but_post(legacy::virtual_branches::delete_local_branch_cmd),
-        )
-        .route(
             "/get_base_branch_data",
             but_post(legacy::virtual_branches::get_base_branch_data_cmd),
-        )
-        .route(
-            "/set_base_branch",
-            but_post(legacy::virtual_branches::set_base_branch_cmd),
         )
         .route(
             "/switch_back_to_workspace",
@@ -605,6 +598,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             "/commit_insert_blank",
             but_post(commit::insert_blank::commit_insert_blank_cmd),
         )
+        .route("/branch_list", but_post(but_api::branch::branch_list_cmd))
         .route(
             "/list_branches",
             but_post(legacy::virtual_branches::list_branches_cmd),
@@ -621,7 +615,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             "/operating_mode",
             but_post(legacy::modes::operating_mode_cmd),
         )
-        .route("/head_sha", but_post(legacy::modes::head_sha_cmd))
         .route(
             "/enter_edit_mode",
             but_post(legacy::modes::enter_edit_mode_cmd),
@@ -651,15 +644,10 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             but_post_async(legacy::repo::git_clone_repository_cmd),
         )
         .route(
-            "/get_commit_file",
-            but_post(legacy::repo::get_commit_file_cmd),
-        )
-        .route(
             "/get_workspace_file",
             but_post(legacy::repo::get_workspace_file_cmd),
         )
         .route("/get_blob_file", but_post(legacy::repo::get_blob_file_cmd))
-        .route("/find_files", but_post(legacy::repo::find_files_cmd))
         .route(
             "/pre_commit_hook_diffspecs",
             but_post(legacy::repo::pre_commit_hook_diffspecs_cmd),
@@ -695,8 +683,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             "/get_author_info",
             but_post(legacy::config::get_author_info_cmd),
         )
-        .route("/list_remotes", but_post(legacy::remotes::list_remotes_cmd))
-        .route("/add_remote", but_post(legacy::remotes::add_remote_cmd))
         .route(
             "/forget_github_account",
             but_post(github::forget_github_account_cmd),
@@ -737,6 +723,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .route("/open_url", but_post(open::open_url_cmd))
         .route("/open_in_terminal", but_post(open::open_in_terminal_cmd))
         .route("/show_in_finder", but_post(open::show_in_finder_cmd))
+        .route("/workdir_path", but_post(open::workdir_path_cmd))
         .route(
             "/get_terminal_options_for_platform",
             but_post(open::terminal::get_terminal_options_for_platform_cmd),
@@ -971,7 +958,7 @@ async fn handle_command(
             legacy::settings::update_reviews(&app_settings_sync, params).map(|r| json!(r))
         }),
         // Project management (need extra or app)
-        "list_projects" => projects::list_projects(&extra).await,
+        "list_projects" => projects::list_projects(),
         "set_project_active" => {
             projects::set_project_active(&broadcaster, &extra, app_settings_sync, request.params)
                 .await

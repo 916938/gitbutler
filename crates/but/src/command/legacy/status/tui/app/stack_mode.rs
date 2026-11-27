@@ -598,10 +598,12 @@ impl App {
         let updates = new_stack_order
             .into_iter()
             .enumerate()
-            .map(|(order, stack)| gitbutler_branch::BranchUpdateRequest {
-                id: Some(stack),
-                order: Some(order),
-            })
+            .map(
+                |(order, stack)| but_api::legacy::virtual_branches::BranchUpdateRequest {
+                    id: Some(stack),
+                    order: Some(order),
+                },
+            )
             .collect();
 
         but_api::legacy::virtual_branches::update_stack_order(ctx, updates)?;
@@ -746,6 +748,7 @@ fn row_stack_ids(lines: &[StatusOutputLine]) -> Vec<Option<StackId>> {
                     committed_file: CommittedFileId { commit_id, .. },
                     id: _,
                     hunk: _,
+                    tree_status: _,
                 }) => {
                     let stack_id = commit_stack_ids
                         .get(commit_id)

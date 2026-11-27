@@ -1,4 +1,3 @@
-#![deny(missing_docs)]
 //! One graph based engine to rule them all,
 //! one vector based to find them,
 //! one mess of git2 code to bring them all,
@@ -7,15 +6,24 @@
 mod creation;
 pub mod rebase;
 pub mod traverse;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result, bail};
 use but_core::ChangeId;
 use but_core::commit::CommitIdentifiers;
-use but_core::{RefMetadata, commit::SignCommit};
+use but_core::{
+    RefMetadata,
+    commit::{SignCommit, padding},
+};
 use but_graph::init::Overlay;
 pub use creation::GraphEditorOptions;
-use gix::refs::transaction::RefEdit;
+use gix::{
+    prelude::ObjectIdExt as _,
+    refs::{
+        Target,
+        transaction::{Change, PreviousValue, RefEdit},
+    },
+};
 
 use crate::graph_rebase::util::{OrderedParentKind, collect_ordered_parents};
 
@@ -26,19 +34,17 @@ pub mod cherry_pick;
 pub mod commit;
 pub mod materialize;
 pub mod merge_commit_changes;
+mod merge_tree;
 pub mod mutate;
 pub mod ordering;
 pub(crate) mod util;
 pub mod workspace;
 pub use workspace::{GraphWorkspace, Subgraph};
 
-/// Utilities for testing
 pub mod testing;
 
-/// Represents a commit to be cherry-picked in a rebase operation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pick {
-    /// The ID of the commit getting picked
     pub id: gix::ObjectId,
     /// If we are dealing with a sub-graph with an incomplete history, we
     /// need to represent the bottom most commits in a way that we preserve
@@ -47,10 +53,7 @@ pub struct Pick {
     /// If this is Some, the commit WILL NOT be picked onto the parents the
     /// graph implies but instead on to the parents listed here.
     pub preserved_parents: Option<Vec<gix::ObjectId>>,
-    /// Controls under what circumstances the commit is cherry-picked.
     pub pick_mode: PickMode,
-    /// Controls whether the resulting commit is signed.
-    ///
     /// Note that signing a parent commit only causes descendants to be signed if those descendants
     /// are also picked with a `sign_commit` value that enables signing (e.g. [`SignCommit::Yes`]
     /// or [`SignCommit::IfSignCommitsEnabled`] with config enabled).
@@ -64,11 +67,7 @@ pub struct Pick {
     /// conflicted state. The cherry-pick still runs and creates the
     /// conflicted commit — this check happens afterwards in [`Editor::rebase`].
     pub conflictable: bool,
-    /// Controls how parent trees are merged during cherry-pick.
-    /// See [`TreeMergeMode`] for details.
     pub tree_merge_mode: TreeMergeMode,
-    /// Whether the editor may rewrite this commit.
-    ///
     /// The editor contains every commit in the workspace graph, but only those
     /// reachable from a mutable entrypoint (e.g. `HEAD`) should be rewritten.
     /// When `false`, the rebase copies the pick verbatim instead of
@@ -77,7 +76,6 @@ pub struct Pick {
 }
 
 impl Pick {
-    /// Creates a pick with the expected defaults
     pub fn new_pick(id: gix::ObjectId) -> Self {
         Self {
             id,
@@ -101,7 +99,6 @@ impl Pick {
         pick
     }
 
-    /// Creates a pick with the defaults set for a workspace commit
     pub fn new_workspace_pick(id: gix::ObjectId) -> Self {
         Self {
             id,
@@ -116,17 +113,12 @@ impl Pick {
     }
 }
 
-/// Describes what action the engine should take
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
-    /// Cherry picks the given commit into the new location in the graph
     Pick(Pick),
-    /// Represents applying a reference to the commit found at it's first parent
+    /// Points at the commit found at its first parent
     Reference {
-        /// The refname
         refname: gix::refs::FullName,
-        /// Whether the editor may move or delete this reference.
-        ///
         /// Only references reachable from a mutable entrypoint (e.g. `HEAD`)
         /// are updated during materialization. When `false`, the reference is
         /// kept in the graph for traversal but never written.
@@ -137,7 +129,6 @@ pub enum Step {
 }
 
 impl Step {
-    /// Creates a pick with the expected defaults
     pub fn new_pick(id: gix::ObjectId) -> Self {
         Self::Pick(Pick::new_pick(id))
     }
@@ -163,7 +154,6 @@ impl Step {
     }
 }
 
-/// Used to represent a connection between a given commit.
 #[derive(Debug, Clone)]
 pub(crate) struct Edge {
     /// Represents in which order the `parent` fields should be written out
@@ -176,27 +166,23 @@ pub(crate) struct Edge {
 type StepGraphIndex = petgraph::stable_graph::NodeIndex;
 type StepGraph = petgraph::stable_graph::StableDiGraph<Step, Edge>;
 
-/// Convert a structure to a selector for a particular editor.
-///
 /// `ToSelector` does _not_ normalize a selector.
 pub trait ToSelector {
-    /// Converts a given object into a selector. Calling `to_selector` on an
+    /// Calling `to_selector` on an
     /// object asserts that the reciever was a object that is selectable in the
     /// graph.
     fn to_selector(&self, editor: &Editor<impl RefMetadata>) -> Result<Selector>;
 }
 
-/// Convert a type to a selector, and ensures that it is type commit.
 pub trait ToCommitSelector {
-    /// Converts a given object into a selector. Calling `to_commit_selector` on
+    /// Calling `to_commit_selector` on
     /// an object asserts that the reciever has a selectable pick step in the
     /// graph.
     fn to_commit_selector(&self, editor: &Editor<impl RefMetadata>) -> Result<Selector>;
 }
 
-/// Convert a type to a selector, and ensures that it is type reference.
 pub trait ToReferenceSelector {
-    /// Converts a given object into a selector. Calling `to_reference_selector` on
+    /// Calling `to_reference_selector` on
     /// an object asserts that the reciever has a selectable reference step in
     /// the graph.
     fn to_reference_selector(&self, editor: &Editor<impl RefMetadata>) -> Result<Selector>;
@@ -246,6 +232,18 @@ impl ToSelector for Selector {
     }
 }
 
+/// How `HEAD` came to check out what it does, which decides what materializing may do there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum HeadPlacement {
+    /// It follows the rewrite: uncommitted changes that conflict stay with markers, and a
+    /// conflicted commit is checked out.
+    #[default]
+    Followed,
+    /// It was asked for: materializing refuses to overwrite uncommitted changes, or to check
+    /// out a conflicted commit.
+    Switched,
+}
+
 /// Represents places where `safe_checkout` should be called from
 #[derive(Debug, Clone)]
 pub(crate) enum Checkout {
@@ -257,6 +255,7 @@ pub(crate) enum Checkout {
         /// 3-way snapshot merge uses this as the base so consumed hunks cancel
         /// and don't reappear as uncommitted changes.
         merge_base_override: Option<gix::ObjectId>,
+        placement: HeadPlacement,
     },
     /// A visible linked worktree whose `HEAD` should follow this edit.
     Worktree {
@@ -275,23 +274,21 @@ pub(crate) enum Checkout {
     },
 }
 
-/// Used to manipulate a set of picks.
 #[derive(Debug)]
 pub struct Editor<'ws, 'meta, M: RefMetadata> {
-    /// The internal graph of steps
     graph: StepGraph,
-    /// Initial references. This is used to track any references that might need
+    /// Used to track any references that might need
     /// deleted.
     initial_references: Vec<gix::refs::FullName>,
     /// Worktrees that we might need to perform `safe_checkout` on.
     checkouts: Vec<Checkout>,
+    /// The steps of the graph's [extra refs](but_graph::init::Options::extra_refs), so
+    /// re-traversals keep them under the names they have then.
+    extra_refs: Vec<Selector>,
     /// The in-memory repository that the rebase engine works with.
     repo: gix::Repository,
-    /// Provides data about how the editor instance was transformed.
     history: RevisionHistory,
-    /// A reference to the workspace that the editor was created for.
     workspace: &'ws mut but_graph::Workspace,
-    /// A reference to the metadata that the editor was created for.
     meta: &'meta mut M,
     /// A handle to the project database, shared with the resulting
     /// [`SuccessfulRebase`]. It re-uses the `'meta` lifetime to avoid growing
@@ -304,17 +301,12 @@ pub struct Editor<'ws, 'meta, M: RefMetadata> {
 pub struct SuccessfulRebase<'ws, 'meta, M: RefMetadata> {
     pub(crate) repo: gix::Repository,
     pub(crate) initial_references: Vec<gix::refs::FullName>,
-    /// Any reference edits that need to be committed as a result of the history
-    /// rewrite
     pub(crate) ref_edits: Vec<RefEdit>,
-    /// The new step graph
     pub(crate) graph: StepGraph,
     pub(crate) checkouts: Vec<Checkout>,
-    /// Provides data about how the editor instance was transformed.
+    pub(crate) extra_refs: Vec<Selector>,
     pub history: RevisionHistory,
-    /// A reference to the workspace that the editor was created for.
     workspace: &'ws mut but_graph::Workspace,
-    /// A reference to the metadata that the editor was created for.
     meta: &'meta mut M,
     /// The database handle inherited from the [`Editor`], so [`Self::into_editor`]
     /// can hand it back.
@@ -339,7 +331,6 @@ impl<'ws, 'meta, M: RefMetadata> SuccessfulRebase<'ws, 'meta, M> {
         (&self.repo, self.meta)
     }
 
-    /// Returns the database handle the editor was created with.
     pub fn db(&self) -> &but_db::DbHandle {
         self.db
     }
@@ -391,16 +382,134 @@ impl<'ws, 'meta, M: RefMetadata> SuccessfulRebase<'ws, 'meta, M> {
         })
     }
 
-    fn worktree_tips_after_rebase(&self) -> Result<Vec<but_graph::init::WorktreeTip>> {
-        Ok(self
-            .linked_checkout_specs()?
+    /// Makes materializing leave the files of every checkout untouched while its `HEAD`
+    /// and index still follow the rewrite, so what the rewrite took out of a checked out
+    /// commit surfaces as uncommitted changes.
+    pub fn keep_worktrees_unchanged(&mut self) -> Result<()> {
+        let trees = self
+            .padded_checkouts()?
             .into_iter()
-            .map(|spec| but_graph::init::WorktreeTip {
-                name: spec.name,
-                ref_name: spec.ref_name,
-                id: spec.target,
+            .map(|PaddedCheckout { tip, .. }| {
+                tip.map(|tip| {
+                    anyhow::Ok(tip.target().attach(&self.repo).object()?.peel_to_tree()?.id)
+                })
+                .transpose()
             })
-            .collect())
+            .collect::<Result<Vec<_>>>()?;
+        for (checkout, tree) in self.checkouts.iter_mut().zip(trees) {
+            let (Checkout::Head {
+                merge_base_override,
+                ..
+            }
+            | Checkout::Worktree {
+                merge_base_override,
+                ..
+            }) = checkout;
+            *merge_base_override = tree;
+        }
+        Ok(())
+    }
+
+    fn padded_checkouts(&self) -> Result<Vec<PaddedCheckout<'_>>> {
+        self.checkouts
+            .iter()
+            .map(|checkout| {
+                let (Checkout::Head { selector, .. } | Checkout::Worktree { selector, .. }) =
+                    checkout;
+                let tip = self
+                    .checkout_target(*selector)?
+                    .map(|(commit, ref_name)| {
+                        let conflicted = but_core::Commit::from_id(commit.attach(&self.repo))?;
+                        let padding = conflicted
+                            .is_conflicted()
+                            .then(|| padding::create(&conflicted))
+                            .transpose()
+                            .context(but_error::Code::ConflictedCommitCheckout)?;
+                        anyhow::Ok(PaddedTip {
+                            commit,
+                            padding,
+                            ref_name,
+                        })
+                    })
+                    .transpose()?;
+                Ok(PaddedCheckout { checkout, tip })
+            })
+            .collect()
+    }
+
+    fn padded_ref_edits(&self, checkouts: &[PaddedCheckout<'_>]) -> Result<Vec<RefEdit>> {
+        let mut edits = self.ref_edits.clone();
+        let padded_refs = checkouts.iter().filter_map(|checkout| match &checkout.tip {
+            Some(PaddedTip {
+                commit,
+                padding: Some(padding),
+                ref_name: Some(ref_name),
+            }) => Some((*commit, *padding, ref_name)),
+            _ => None,
+        });
+        for (commit, padding, ref_name) in padded_refs {
+            match edits.iter_mut().find(|edit| &edit.name == ref_name) {
+                Some(RefEdit {
+                    change: Change::Update { new, .. },
+                    ..
+                }) => *new = Target::Object(padding),
+                Some(RefEdit {
+                    change: Change::Delete { .. },
+                    ..
+                }) => bail!("BUG: the checked out reference {ref_name} is deleted"),
+                None => edits.push(RefEdit::update(
+                    ref_name.clone(),
+                    padding,
+                    PreviousValue::MustExistAndMatch(Target::Object(commit)),
+                    "",
+                )),
+            }
+        }
+        edits.retain(|edit| {
+            !matches!(
+                &edit.change,
+                Change::Update {
+                    expected: PreviousValue::MustExistAndMatch(previous),
+                    new,
+                    ..
+                } if previous == new
+            )
+        });
+        Ok(edits)
+    }
+
+    fn worktree_tips_after_rebase(&self) -> Result<Vec<but_graph::init::WorktreeTip>> {
+        self.checkouts
+            .iter()
+            .filter_map(|checkout| match checkout {
+                Checkout::Worktree {
+                    worktree_name,
+                    selector,
+                    ..
+                } => Some((worktree_name, selector)),
+                Checkout::Head { .. } => None,
+            })
+            .map(|(worktree_name, selector)| {
+                let (id, ref_name) = self.checkout_target(*selector)?.with_context(|| {
+                    format!("Visible worktree {worktree_name} HEAD was removed")
+                })?;
+                Ok(but_graph::init::WorktreeTip {
+                    name: worktree_name.clone(),
+                    ref_name,
+                    id,
+                })
+            })
+            .collect()
+    }
+
+    fn extra_refs_after_rebase(&self) -> Result<Vec<gix::refs::FullName>> {
+        let mut names = Vec::new();
+        for selector in &self.extra_refs {
+            if let Step::Reference { refname, .. } = self.lookup_step(*selector)? {
+                names.push(refname);
+            }
+        }
+        Ok(names)
     }
 
     /// Return the commit targeted by `ref_name` in the post-rebase step graph.
@@ -490,7 +599,7 @@ impl<'ws, 'meta, M: RefMetadata> SuccessfulRebase<'ws, 'meta, M> {
         let mut overlay = Overlay::default()
             .with_references(updated_refs)
             .with_dropped_references(dropped_refs)
-            .with_entrypoint(entrypoint_id, entrypoint_refname)
+            .with_entrypoint(entrypoint_id, entrypoint_refname.clone())
             .with_branch_metadata_override(branch_metadata)
             .with_workspace_metadata_override(
                 workspace_metadata
@@ -504,9 +613,27 @@ impl<'ws, 'meta, M: RefMetadata> SuccessfulRebase<'ws, 'meta, M> {
                 overlay = overlay.with_branch_stack_order_override(stack);
             }
         }
-        let mut graph = self.workspace.graph.clone();
-        graph.worktree_tips = self.worktree_tips_after_rebase()?;
-        graph.redo_traversal_with_overlay(&self.repo, self.meta, overlay)
+        let graph = &self.workspace.graph;
+        // The graph's extra refs bring in what the entrypoint doesn't reach, under the names
+        // they have after the rebase.
+        let extra_heads = self
+            .extra_refs_after_rebase()?
+            .iter()
+            .map(|ref_name| self.reference_target(ref_name.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(but_graph::nosegment::workspace(
+            &self.repo,
+            self.meta,
+            overlay,
+            graph.project_meta.clone(),
+            entrypoint_refname.as_ref().map(|name| name.as_ref()),
+            Some(entrypoint_id),
+            extra_heads,
+            self.worktree_tips_after_rebase()?,
+            graph.options.collect_tags,
+            graph.options.commits_limit_hint,
+        )?
+        .graph)
     }
 
     /// Resolve `selector` to the identifiers of its commit pick including the change id.
@@ -529,65 +656,78 @@ impl<'ws, 'meta, M: RefMetadata> SuccessfulRebase<'ws, 'meta, M> {
     ///
     /// Materialization will be a no-op
     pub fn references_updated(&self) -> Result<bool> {
-        if !self.ref_edits.is_empty() {
-            return Ok(true);
-        }
+        let checkouts = self.padded_checkouts()?;
+        let ref_edits = self.padded_ref_edits(&checkouts)?;
+        Ok(self.updates_references(&checkouts, &ref_edits))
+    }
 
-        for co in &self.checkouts {
-            match co {
-                Checkout::Head { selector, .. } => {
-                    let target = self.checkout_target(*selector)?;
-                    let head = self
-                        .repo()
-                        .head_id()
-                        .ok()
-                        .map(|id| (id.detach(), self.repo().head_name().ok().flatten()));
-
-                    if target != head {
-                        return Ok(true);
+    fn updates_references(&self, checkouts: &[PaddedCheckout<'_>], ref_edits: &[RefEdit]) -> bool {
+        !ref_edits.is_empty()
+            || checkouts.iter().any(|PaddedCheckout { checkout, tip }| {
+                let target = tip.as_ref().map(|tip| (tip.target(), tip.ref_name.clone()));
+                match checkout {
+                    Checkout::Head { .. } => {
+                        let head = self
+                            .repo()
+                            .head_id()
+                            .ok()
+                            .map(|id| (id.detach(), self.repo().head_name().ok().flatten()));
+                        target != head
                     }
+                    Checkout::Worktree {
+                        ref_name,
+                        initial_head,
+                        ..
+                    } => target != Some((*initial_head, ref_name.clone())),
                 }
-                Checkout::Worktree {
-                    selector,
-                    ref_name,
-                    initial_head,
-                    ..
-                } => {
-                    if self.checkout_target(*selector)? != Some((*initial_head, ref_name.clone())) {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-
-        Ok(false)
+            })
     }
 }
 
-/// The outcome of a materialize
+struct PaddedCheckout<'a> {
+    checkout: &'a Checkout,
+    tip: Option<PaddedTip>,
+}
+
+struct PaddedTip {
+    commit: gix::ObjectId,
+    padding: Option<gix::ObjectId>,
+    ref_name: Option<gix::refs::FullName>,
+}
+
+impl PaddedTip {
+    fn target(&self) -> gix::ObjectId {
+        self.padding.unwrap_or(self.commit)
+    }
+}
+
 #[derive(Debug)]
 pub struct MaterializeOutcome<'ws, 'meta, M: RefMetadata> {
     pub(crate) graph: StepGraph,
-    /// Provides data about how the editor instance was transformed.
     pub history: RevisionHistory,
-    /// A reference to the workspace that the editor was created for.
     pub workspace: &'ws mut but_graph::Workspace,
-    /// A reference to the metadata that the editor was created for.
     pub meta: &'meta mut M,
-    /// The database handle the editor was created with.
     pub db: &'meta mut but_db::DbHandle,
-    /// True if a conflict occurred during checkout. This is always false if
-    /// `allow_uncommitted_changes_to_conflict_with_new_head` in the options
-    /// struct passed to the materialize call is false.
-    pub checkout_conflict_occurred: bool,
+    /// The checkouts whose uncommitted changes now carry conflict markers.
+    pub conflicted_checkouts: Vec<ConflictedCheckout>,
 }
 
-/// Provides lookup for different steps that a selector might point to.
+/// A checkout whose uncommitted changes conflicted with the commit it moved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConflictedCheckout {
+    /// The editor's own worktree.
+    Head,
+    /// The linked worktree `name`, checked out at `path`.
+    Worktree {
+        /// The directory name under `$GIT_COMMON_DIR/worktrees/`.
+        name: gix::bstr::BString,
+        path: std::path::PathBuf,
+    },
+}
+
 pub trait LookupStep {
-    /// Look up the step that a given selector corresponds to.
     fn lookup_step(&self, selector: Selector) -> Result<Step>;
 
-    /// Look up the step a given selector and assert it's a pick.
     fn lookup_pick(&self, selector: Selector) -> Result<gix::ObjectId> {
         match self.lookup_step(selector)? {
             Step::Pick(Pick { id, .. }) => Ok(id),
@@ -595,7 +735,6 @@ pub trait LookupStep {
         }
     }
 
-    /// Look up the step a given selector and assert it's a pick.
     fn lookup_reference(&self, selector: Selector) -> Result<gix::refs::FullName> {
         match self.lookup_step(selector)? {
             Step::Reference { refname, .. } => Ok(refname),
@@ -627,7 +766,69 @@ fn lookup_step(graph: &StepGraph, history: &RevisionHistory, selector: Selector)
     Ok(graph[normalized.id].clone())
 }
 
-/// Provides data about how the editor instance was transformed.
+/// How commits were rewritten, as pairs of an original commit and a commit that succeeds it.
+///
+/// An original can have several successors, and several originals can share one. A pair is
+/// held once however often it is given.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct CommitMappings(BTreeSet<(gix::ObjectId, gix::ObjectId)>);
+
+impl FromIterator<(gix::ObjectId, gix::ObjectId)> for CommitMappings {
+    fn from_iter<T: IntoIterator<Item = (gix::ObjectId, gix::ObjectId)>>(pairs: T) -> Self {
+        Self(pairs.into_iter().collect())
+    }
+}
+
+impl std::fmt::Debug for CommitMappings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl CommitMappings {
+    /// Every pair of an original and one of its successors, ordered by original.
+    pub fn iter(&self) -> impl Iterator<Item = (gix::ObjectId, gix::ObjectId)> + '_ {
+        self.0.iter().copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The commits that succeed `original`, none if it wasn't rewritten.
+    pub fn successors(&self, original: gix::ObjectId) -> impl Iterator<Item = gix::ObjectId> + '_ {
+        self.0
+            .range((original, gix::ObjectId::null(original.kind()))..)
+            .take_while(move |(from, _)| *from == original)
+            .map(|(_, successor)| *successor)
+    }
+
+    /// The commit `original` is now: itself if it wasn't rewritten, else its successor.
+    ///
+    /// Fails if it has several successors, as none of them is `original` more than another.
+    pub fn current(&self, original: gix::ObjectId) -> Result<gix::ObjectId> {
+        let mut successors = self.successors(original);
+        let current = successors.next().unwrap_or(original);
+        if successors.next().is_some() {
+            bail!("Commit {original} was rewritten into several commits");
+        }
+        Ok(current)
+    }
+
+    /// Each original that has exactly one successor, with that successor.
+    pub fn sole_successors(&self) -> BTreeMap<gix::ObjectId, gix::ObjectId> {
+        let mut sole = BTreeMap::new();
+        let mut shared = BTreeSet::new();
+        for (original, successor) in self.iter() {
+            if sole.insert(original, successor).is_some() {
+                shared.insert(original);
+            }
+        }
+        sole.retain(|original, _| !shared.contains(original));
+        sole
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RevisionHistory {
     mappings: Vec<HashMap<StepGraphIndex, StepGraphIndex>>,
@@ -637,7 +838,6 @@ pub struct RevisionHistory {
     /// Unintuatively, the values are the original values, and the keys are the
     /// _new_ values that they have been mapped to.
     commit_mappings: BTreeMap<gix::ObjectId, gix::ObjectId>,
-    /// Conflicted commits that were created.
     pub conflicted_commits: Vec<(gix::ObjectId, ChangeId)>,
 }
 
@@ -672,8 +872,7 @@ impl RevisionHistory {
         };
     }
 
-    /// Provides a mapping between commits that were rewritten as part of the transformation.
-    pub fn commit_mappings(&self) -> BTreeMap<gix::ObjectId, gix::ObjectId> {
+    pub fn commit_mappings(&self) -> CommitMappings {
         self.commit_mappings
             .iter()
             .filter_map(|(k, v)| if k == v { None } else { Some((*v, *k)) })
@@ -696,6 +895,53 @@ impl RevisionHistory {
 }
 
 /// I wanted to assert _somewhere_ the defaults for non-workspace & workspace commits. It doesn't feel like the right place to do it in integration tests because we should assert behaviour rather than details there.
+#[cfg(test)]
+mod commit_mappings {
+    use super::CommitMappings;
+
+    fn id(hex: char) -> gix::ObjectId {
+        gix::ObjectId::from_hex(hex.to_string().repeat(40).as_bytes()).expect("valid hex")
+    }
+
+    #[test]
+    fn many_to_many() -> anyhow::Result<()> {
+        let (a, b, c, d) = (id('a'), id('b'), id('c'), id('d'));
+        let mappings: CommitMappings = [(a, c), (a, c), (b, c), (b, d)].into_iter().collect();
+
+        // The repeated `a -> c` is held once, and `c` is shared by both originals.
+        snapbox::assert_data_eq!(
+            format!("{mappings:#?}"),
+            snapbox::str![[r#"
+{
+    Sha1(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa): Sha1(cccccccccccccccccccccccccccccccccccccccc),
+    Sha1(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): Sha1(cccccccccccccccccccccccccccccccccccccccc),
+    Sha1(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): Sha1(dddddddddddddddddddddddddddddddddddddddd),
+}
+"#]]
+        );
+        assert_eq!(
+            mappings.current(a)?,
+            c,
+            "a single successor is what `a` is now"
+        );
+        assert_eq!(
+            mappings.current(d)?,
+            d,
+            "a commit that wasn't rewritten is itself"
+        );
+        assert!(
+            mappings.current(b).is_err(),
+            "neither of two successors is `b` more than the other"
+        );
+        assert_eq!(
+            mappings.sole_successors(),
+            [(a, c)].into_iter().collect(),
+            "only `a` has exactly one successor"
+        );
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::str::FromStr;

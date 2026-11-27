@@ -105,7 +105,7 @@ fn discard_tip_commit_in_workspace_stack() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -124,7 +124,7 @@ fn discard_tip_commit_in_workspace_stack() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(outcome.workspace).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -190,7 +190,7 @@ fn discard_bottom_commit_in_workspace_stack() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -209,7 +209,7 @@ fn discard_bottom_commit_in_workspace_stack() -> Result<()> {
     snapbox::assert_data_eq!(
         graph_workspace(outcome.workspace).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 85efbe4
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 85efbe4
 ├── ≡📙:A on 85efbe4 {1}
 │   └── 📙:A
 │       └── ·09d8e52 (🏘️)
@@ -268,7 +268,7 @@ fn can_discard_conflicted_commit() -> Result<()> {
     );
 
     // A plain single-branch repository without a target.
-    let graph = but_graph::Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -398,6 +398,28 @@ fn discard_both_commits_in_workspace_stack() -> Result<()> {
 
     let tip_of_c = repo.rev_parse_single("C")?;
     assert_eq!(tip_of_c, main, "C should also point to main");
+
+    Ok(())
+}
+
+#[test]
+fn discarding_the_last_commit_of_an_unnamed_lane_leaves_the_workspace() -> Result<()> {
+    let (_tmp, graph, repo, mut meta, mut db, unnamed) = super::workspace_with_an_unnamed_lane()?;
+
+    let mut ws = graph.into_workspace()?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
+    discard_commits(editor, [unnamed])?.materialize(Default::default())?;
+
+    // One stack is left, so `HEAD` is on its branch and the workspace commit is gone.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 09bc93e (HEAD -> C) C
+* c813d8d (B) B
+* 85efbe4 (origin/main, main) M
+
+"#]]
+    );
 
     Ok(())
 }

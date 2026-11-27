@@ -6,12 +6,66 @@ use termtree::Tree;
 
 type StringTree = Tree<String>;
 
-/// Visualize `graph` as a tree.
+/// Build the [nosegment graph](but_graph::nosegment::workspace()) seen from `HEAD`, with the
+/// linked worktrees if `options.worktrees` is set.
+pub fn graph_from_head(
+    repo: &gix::Repository,
+    meta: &impl but_core::RefMetadata,
+    project_meta: but_core::ref_metadata::ProjectMeta,
+    db: &mut but_db::DbHandle,
+    options: but_graph::init::Options,
+) -> anyhow::Result<Graph> {
+    let head = repo.head()?;
+    let mut graph = but_graph::nosegment::workspace(
+        repo,
+        meta,
+        but_graph::init::Overlay::default(),
+        project_meta,
+        head.referent_name(),
+        head.id().map(|id| id.detach()),
+        [],
+        but_graph::init::discover_worktree_tips(repo, db, options.worktrees)?,
+        options.collect_tags,
+        options.commits_limit_hint,
+    )?
+    .graph;
+    graph.options = options;
+    Ok(graph)
+}
+
+/// Build the [nosegment graph](but_graph::nosegment::workspace()) seen from `ref_name` at `tip`,
+/// with the linked worktrees if `options.worktrees` is set.
+pub fn graph_from_commit_traversal(
+    tip: gix::Id<'_>,
+    ref_name: impl Into<Option<gix::refs::FullName>>,
+    meta: &impl but_core::RefMetadata,
+    project_meta: but_core::ref_metadata::ProjectMeta,
+    db: &mut but_db::DbHandle,
+    options: but_graph::init::Options,
+) -> anyhow::Result<Graph> {
+    let ref_name = ref_name.into();
+    let mut graph = but_graph::nosegment::workspace(
+        tip.repo(),
+        meta,
+        but_graph::init::Overlay::default(),
+        project_meta,
+        ref_name.as_ref().map(|name| name.as_ref()),
+        Some(tip.detach()),
+        [],
+        but_graph::init::discover_worktree_tips(tip.repo(), db, options.worktrees)?,
+        options.collect_tags,
+        options.commits_limit_hint,
+    )?
+    .graph;
+    graph.options = options;
+    Ok(graph)
+}
+
 pub fn graph_workspace(workspace: &but_graph::Workspace) -> StringTree {
     graph_workspace_inner(workspace, None)
 }
 
-/// Visualize `graph` as a tree, and remap random stack ids to something deterministic.
+/// Remaps random stack ids to something deterministic.
 pub fn graph_workspace_determinisitcally(workspace: &but_graph::Workspace) -> StringTree {
     graph_workspace_inner(workspace, Some(Default::default()))
 }
@@ -82,7 +136,6 @@ fn tree_for_stack_segment(
     root
 }
 
-/// Visualize `graph` as a tree.
 pub fn graph_tree(graph: &Graph) -> StringTree {
     let mut root = Tree::new("".to_string());
     let mut seen = Default::default();
@@ -125,6 +178,22 @@ fn tree_for_commit(
         )
         .into()
 }
+
+/// Name the segment at `sidx` for a reference to it: by its reference, or by its first commit
+/// if it has none, so references don't depend on how the graph numbered its segments.
+/// Only an empty segment without a reference falls back to its index.
+fn segment_label(graph: &Graph, sidx: SegmentIndex) -> String {
+    let segment = &graph[sidx];
+    match (segment.ref_info.as_ref(), segment.commits.first()) {
+        (Some(ri), _) => format!(
+            "segment {}",
+            graph.ref_debug_string_with_graph_context(ri.ref_name.as_ref(), ri.worktree.as_ref())
+        ),
+        (None, Some(commit)) => format!("segment ·{}", commit.id.to_hex_with_len(7)),
+        (None, None) => format!("segment :{}", sidx.index()),
+    }
+}
+
 fn recurse_segment(
     graph: &but_graph::Graph,
     sidx: SegmentIndex,
@@ -133,23 +202,20 @@ fn recurse_segment(
     let segment = &graph[sidx];
     if seen.contains(&sidx) {
         return format!(
-            "→:{sidx}:{name}",
-            sidx = sidx.index(),
-            name = graph[sidx]
+            "→ {label}{maybe_sibling}",
+            label = segment_label(graph, sidx),
+            maybe_sibling = segment
                 .ref_info
                 .as_ref()
-                .map(|ri| format!(
-                    " ({}{maybe_sibling})",
-                    graph.ref_debug_string_with_graph_context(
-                        ri.ref_name.as_ref(),
-                        ri.worktree.as_ref(),
-                    ),
-                    maybe_sibling = segment
+                .and(
+                    segment
                         .remote_tracking_branch_segment_id
                         .or(segment.sibling_segment_id)
-                        .map_or_else(String::new, |sid| format!(" →:{}:", sid.index()))
+                )
+                .map_or_else(String::new, |sid| format!(
+                    " (→ {})",
+                    segment_label(graph, sid)
                 ))
-                .unwrap_or_default()
         )
         .into();
     }
@@ -179,7 +245,7 @@ fn recurse_segment(
     };
 
     let mut root = Tree::new(format!(
-        "{entrypoint}{meta}{arrow}:{id}[{generation}]:{ref_name_and_remote}",
+        "{entrypoint}{meta}{arrow}{id}[{generation}]:{ref_name_and_remote}",
         meta = match segment.metadata {
             None => {
                 ""
@@ -191,7 +257,12 @@ fn recurse_segment(
                 "📙"
             }
         },
-        id = segment.id.index(),
+        // Only a segment that `segment_label()` can't name otherwise shows its index.
+        id = if segment.ref_info.is_none() && segment.commits.is_empty() {
+            format!(":{}", sidx.index())
+        } else {
+            String::new()
+        },
         generation = segment.generation,
         arrow = if segment.workspace_metadata().is_some() {
             "►►►"

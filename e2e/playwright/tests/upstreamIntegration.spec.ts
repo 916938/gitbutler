@@ -1,4 +1,4 @@
-import { createNewBranch } from "../src/branch.ts";
+import { assertRefDoesNotExist, assertSymbolicHead, createNewBranch } from "../src/branch.ts";
 import { expect } from "../src/expect.ts";
 import { applyUpstream, openWorkspace } from "../src/setup.ts";
 import { test } from "../src/test.ts";
@@ -28,25 +28,14 @@ async function expectWorkspaceCommitParentToBeOriginMaster(pathToRepo: string) {
 		.toBe(git(pathToRepo, ["rev-parse", "origin/master"]));
 }
 
-async function expectWorkspaceCommitToStayParentedToRemainingStack(pathToRepo: string) {
+async function expectCheckoutToReachOriginMaster(pathToRepo: string) {
 	await expect
-		.poll(() => git(pathToRepo, ["rev-parse", "gitbutler/workspace^@"]).split("\n").length, {
-			message: "Expected the workspace commit to have only the remaining stack as parent",
+		.poll(() => git(pathToRepo, ["rev-parse", "HEAD"]), {
+			message: "Expected HEAD to land on origin/master once the last stack integrated",
 			intervals: [100, 200, 500, 1000],
 		})
-		.toBe(1);
-
-	await expect
-		.poll(
-			() =>
-				git(pathToRepo, ["rev-parse", "gitbutler/workspace^"]) ===
-				git(pathToRepo, ["rev-parse", "origin/master"]),
-			{
-				message: "Expected the workspace commit not to be reparented to origin/master",
-				intervals: [100, 200, 500, 1000],
-			},
-		)
-		.toBe(false);
+		.toBe(git(pathToRepo, ["rev-parse", "origin/master"]));
+	expect(git(pathToRepo, ["branch", "--list", "gitbutler/workspace"])).toBe("");
 }
 
 function git(pathToRepo: string, args: string[]): string {
@@ -120,7 +109,7 @@ test("should handle the update of workspace with integrated branch gracefully", 
 	await waitForTestIdToNotExist(page, "stack");
 });
 
-test("should reparent workspace commit to advanced target after integrating all stacks", async ({
+test("should check out the advanced target after integrating all stacks", async ({
 	page,
 	gitbutler,
 }) => {
@@ -138,10 +127,8 @@ test("should reparent workspace commit to advanced target after integrating all 
 	await syncAndIntegrate(page);
 
 	await waitForTestIdToNotExist(page, "stack");
-	await expectWorkspaceCommitParentToBeOriginMaster(localClone);
-	expect(git(localClone, ["rev-parse", "master"])).toBe(
-		git(localClone, ["rev-parse", "origin/master"]),
-	);
+	await expectCheckoutToReachOriginMaster(localClone);
+	expect(git(localClone, ["symbolic-ref", "--short", "HEAD"])).toBe("master");
 });
 
 test("should preserve a diverged local target branch during upstream integration", async ({
@@ -174,12 +161,13 @@ test("should preserve a diverged local target branch during upstream integration
 	);
 	await syncAndIntegrate(page);
 
-	await waitForTestIdToNotExist(page, "stack");
+	await expectCheckoutToReachOriginMaster(localClone);
+	expect(git(localClone, ["symbolic-ref", "--short", "HEAD"])).not.toBe("master");
 	expect(git(localClone, ["rev-parse", "master"])).toBe(localMaster);
 	expect(git(localClone, ["rev-parse", "origin/master"])).not.toBe(localMaster);
 });
 
-test("should reparent workspace commit to advanced merge target after integrating all stacks", async ({
+test("should check out the advanced merge target after integrating all stacks", async ({
 	page,
 	gitbutler,
 }) => {
@@ -197,7 +185,8 @@ test("should reparent workspace commit to advanced merge target after integratin
 	await syncAndIntegrate(page);
 
 	await waitForTestIdToNotExist(page, "stack");
-	await expectWorkspaceCommitParentToBeOriginMaster(localClone);
+	await expectCheckoutToReachOriginMaster(localClone);
+	expect(git(localClone, ["symbolic-ref", "--short", "HEAD"])).toBe("master");
 });
 
 test("should handle the update of workspace with integrated parent branch in stack gracefully", async ({
@@ -260,7 +249,11 @@ test("should keep the remaining stack when only one of two stacks is integrated"
 	await expect(stack(page)).toHaveCount(1);
 	await expect(getByTestId(page, "branch-card")).toHaveCount(1);
 	await expect(getByTestId(page, "branch-card")).toContainText("branch2");
-	await expectWorkspaceCommitToStayParentedToRemainingStack(localClone);
+	await assertSymbolicHead("branch2", localClone);
+	await assertRefDoesNotExist("refs/heads/gitbutler/workspace", localClone);
+	expect(git(localClone, ["rev-parse", "HEAD"])).not.toBe(
+		git(localClone, ["rev-parse", "origin/master"]),
+	);
 });
 
 test("should leave no applied stacks when both stacks are integrated", async ({

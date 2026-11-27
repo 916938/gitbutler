@@ -12,13 +12,10 @@ use gix::refs::{Category, FullName, PartialName};
 /// A trivial in-memory implementation of the ref-metadata trait, and one that ideally works correctly.
 #[derive(Debug, Default)]
 pub struct InMemoryRefMetadata {
-    /// All the workspaces that should be available. Manipulate directly.
     pub workspaces: Vec<(gix::refs::FullName, Workspace)>,
-    /// All the branches that should be available. Manipulate directly.
     pub branches: Vec<(gix::refs::FullName, Branch)>,
 }
 
-/// The handle used in the [InMemoryRefMetadata] implementation.
 pub struct InMemoryRefMetadataHandle<T> {
     is_default: bool,
     ref_name: gix::refs::FullName,
@@ -156,56 +153,14 @@ impl but_core::RefMetadata for InMemoryRefMetadata {
         };
         Ok(res)
     }
-
-    fn rename(
-        &mut self,
-        old_ref_name: &gix::refs::FullNameRef,
-        new_ref_name: &gix::refs::FullNameRef,
-    ) -> anyhow::Result<()> {
-        if old_ref_name == new_ref_name {
-            return Ok(());
-        }
-        // Refuse to rename onto an existing key rather than creating a duplicate entry: readers
-        // match the first entry, so a duplicate would make later reads/updates/removals act on the
-        // wrong one.
-        let new_exists = self
-            .branches
-            .iter()
-            .any(|(rn, _)| rn.as_ref() == new_ref_name)
-            || self
-                .workspaces
-                .iter()
-                .any(|(rn, _)| rn.as_ref() == new_ref_name);
-        if new_exists {
-            anyhow::bail!(
-                "Cannot rename to '{}': metadata for that ref already exists",
-                new_ref_name.shorten()
-            );
-        }
-        // Rename in place, keeping each entry's value and position.
-        for (rn, _v) in self.branches.iter_mut() {
-            if rn.as_ref() == old_ref_name {
-                *rn = new_ref_name.to_owned();
-            }
-        }
-        for (rn, _v) in self.workspaces.iter_mut() {
-            if rn.as_ref() == old_ref_name {
-                *rn = new_ref_name.to_owned();
-            }
-        }
-        Ok(())
-    }
 }
 
-/// A more descriptive way of showing if the stack is included in the workspace or not.
 pub enum StackState {
-    /// The stack is suppsoed to be in the workspace, and applied.
     InWorkspace,
     /// The stack is supposed to be outside the workspace, and unapplied.
     Inactive,
 }
 
-/// Utilities
 impl InMemoryRefMetadata {
     /// For now, we work like `vb.toml` which creates branches for each stack segment,
     /// along with a workspace that represents the branches.

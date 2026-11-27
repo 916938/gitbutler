@@ -1,7 +1,6 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use async_openai::{Client, config::OpenAIConfig};
 use but_secret::{Sensitive, secret};
-use but_tools::tool::Toolset;
 use reqwest::header::{HeaderMap, HeaderValue};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -12,45 +11,36 @@ use crate::{
     client::LLMClient,
     openai_utils::{
         OpenAIClientProvider, response_blocking, stream_response_blocking,
-        structured_output_blocking, tool_calling_loop, tool_calling_loop_stream,
+        structured_output_blocking,
     },
 };
 
 pub const GB_OPENAI_API_BASE: &str = "https://app.gitbutler.com/api/proxy/openai";
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, strum::Display)]
+#[derive(Debug, Clone)]
 pub enum CredentialsKind {
-    EnvVarOpenAiKey,
     OwnOpenAiKey,
     GitButlerProxied,
 }
 
 #[derive(Debug, Clone)]
 pub struct OpenAiProvider {
-    /// The API endpoint to use, if any. As configured in the git global config
+    /// As configured in the git global config.
     custom_endpoint: Option<String>,
-    /// The preferred model to use, as configured in the git global config
+    /// As configured in the git global config.
     model: Option<String>,
     credentials: (CredentialsKind, Sensitive<String>),
 }
 
 impl OpenAiProvider {
     pub fn with(
-        preferred_creds: Option<CredentialsKind>,
+        kind: CredentialsKind,
         model: Option<String>,
         custom_endpoint: Option<String>,
     ) -> Option<Self> {
-        let credentials = if let Some(kind) = preferred_creds {
-            match kind {
-                CredentialsKind::EnvVarOpenAiKey => OpenAiProvider::openai_env_var_creds(),
-                CredentialsKind::OwnOpenAiKey => OpenAiProvider::openai_own_key_creds(),
-                CredentialsKind::GitButlerProxied => OpenAiProvider::gitbutler_proxied_creds(),
-            }
-        } else {
-            OpenAiProvider::gitbutler_proxied_creds()
-                .or_else(|_| OpenAiProvider::openai_own_key_creds())
-                .or_else(|_| OpenAiProvider::openai_env_var_creds())
-                .context("No OpenAI credentials found. This can be configured in the app or read from a OPENAI_API_KEY environment variable")
+        let credentials = match kind {
+            CredentialsKind::OwnOpenAiKey => OpenAiProvider::openai_own_key_creds(),
+            CredentialsKind::GitButlerProxied => OpenAiProvider::gitbutler_proxied_creds(),
         };
 
         match credentials {
@@ -66,17 +56,12 @@ impl OpenAiProvider {
         }
     }
 
-    /// Configure a custom endpoint if set in the provider, if any.
     fn configure_custom_endpoint(&self, config: OpenAIConfig) -> OpenAIConfig {
         if let Some(custom_endpont) = &self.custom_endpoint {
             config.with_api_base(custom_endpont)
         } else {
             config
         }
-    }
-
-    pub fn credentials_kind(&self) -> CredentialsKind {
-        self.credentials.0.clone()
     }
 
     fn gitbutler_proxied_creds() -> Result<(CredentialsKind, Sensitive<String>)> {
@@ -95,31 +80,16 @@ impl OpenAiProvider {
         )?;
         Ok((CredentialsKind::OwnOpenAiKey, creds))
     }
-
-    fn openai_env_var_creds() -> Result<(CredentialsKind, Sensitive<String>)> {
-        let creds = Sensitive(
-            std::env::var_os("OPENAI_API_KEY")
-                .ok_or(anyhow::anyhow!(
-                    "Environment variable OPENAI_API_KEY is not set"
-                ))?
-                .into_string()
-                .map_err(|_| anyhow::anyhow!("Invalid UTF-8 in OPENAI_API_KEY"))?,
-        );
-        Ok((CredentialsKind::EnvVarOpenAiKey, creds))
-    }
 }
 
 impl OpenAIClientProvider for OpenAiProvider {
     fn client(&self) -> Result<Client<OpenAIConfig>> {
+        let http_builder = but_http::client_builder()?;
         match &self.credentials {
-            (CredentialsKind::EnvVarOpenAiKey, _) => {
-                let config = self.configure_custom_endpoint(OpenAIConfig::new());
-                Ok(Client::with_config(config))
-            }
             (CredentialsKind::OwnOpenAiKey, key) => {
                 let config =
                     self.configure_custom_endpoint(OpenAIConfig::new().with_api_key(key.0.clone()));
-                Ok(Client::with_config(config))
+                Ok(Client::build(http_builder.build()?, config))
             }
 
             (CredentialsKind::GitButlerProxied, key) => {
@@ -133,10 +103,8 @@ impl OpenAIClientProvider for OpenAiProvider {
                     "X-Auth-Token",
                     key.0.parse().unwrap_or(HeaderValue::from_static("")),
                 );
-                let http_client = reqwest::Client::builder()
-                    .default_headers(headers)
-                    .build()?;
-                Ok(Client::with_config(config).with_http_client(http_client))
+                let http_client = http_builder.default_headers(headers).build()?;
+                Ok(Client::build(http_client, config))
             }
         }
     }
@@ -145,35 +113,6 @@ impl OpenAIClientProvider for OpenAiProvider {
 impl LLMClient for OpenAiProvider {
     fn model(&self) -> Option<String> {
         self.model.clone()
-    }
-
-    fn tool_calling_loop_stream(
-        &self,
-        system_message: &str,
-        chat_messages: Vec<ChatMessage>,
-        tool_set: &mut impl Toolset,
-        model: &str,
-        on_token: impl Fn(&str) + Send + Sync + 'static,
-    ) -> Result<(String, Vec<ChatMessage>)> {
-        let result = tool_calling_loop_stream(
-            self,
-            system_message,
-            chat_messages,
-            tool_set,
-            model,
-            on_token,
-        )?;
-        Ok((result.final_response, result.message_history))
-    }
-
-    fn tool_calling_loop(
-        &self,
-        system_message: &str,
-        chat_messages: Vec<ChatMessage>,
-        tool_set: &mut impl Toolset,
-        model: &str,
-    ) -> Result<String> {
-        tool_calling_loop(self, system_message, chat_messages, tool_set, model)
     }
 
     fn stream_response(

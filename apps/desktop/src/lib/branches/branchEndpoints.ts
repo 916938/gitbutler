@@ -9,7 +9,9 @@ import { createEntityAdapter, type EntityState } from "@reduxjs/toolkit";
 import type { ForgeProvider, RemoteBranchInfo } from "$lib/baseBranch/baseBranch";
 import type { BackendEndpointBuilder } from "$lib/state/backendApi";
 import type { BaseBranch, WorkspaceFetchStatus } from "@gitbutler/but-sdk";
-import type { BranchListing, BranchListingDetails } from "@gitbutler/but-sdk";
+import type { BranchListing, BranchListingDetails, ListedStack } from "@gitbutler/but-sdk";
+
+export type LocalTargetBranch = { name: string; refName: string; isTarget: boolean };
 
 export function buildBranchEndpoints(build: BackendEndpointBuilder) {
 	return {
@@ -43,24 +45,7 @@ export function buildBranchEndpoints(build: BackendEndpointBuilder) {
 				invalidatesList(ReduxTag.StackDetails),
 			],
 		}),
-		setTarget: build.mutation<
-			BaseBranch,
-			{ projectId: string; branch: string; pushRemote?: string; stashUncommitted?: boolean }
-		>({
-			extraOptions: { command: "set_base_branch" },
-			query: (args) => args,
-			invalidatesTags: [
-				invalidatesType(ReduxTag.ForgeProvider),
-				// The review listing follows the target remote: a stopped
-				// (unrecognized-forge) listing must retry once it changes.
-				invalidatesList(ReduxTag.PullRequests),
-				invalidatesType(ReduxTag.BaseBranchData),
-				invalidatesList(ReduxTag.Stacks),
-				invalidatesList(ReduxTag.StackDetails),
-			],
-		}),
-		// Like setTarget, but only writes project metadata: the user stays on the
-		// current branch instead of being moved into the GitButler workspace.
+		// Only writes project metadata: the user stays on the current branch.
 		setTargetRef: build.mutation<
 			void,
 			{ projectId: string; targetRef: string; pushRemote?: string }
@@ -76,6 +61,9 @@ export function buildBranchEndpoints(build: BackendEndpointBuilder) {
 				// No branch is checked out, so no `git/head` event refreshes the
 				// operating mode - invalidate it explicitly.
 				invalidatesList(ReduxTag.HeadMetadata),
+				// They fail while a legacy target is unresolved, and only start
+				// following the watcher once they load.
+				invalidatesList(ReduxTag.WorktreeChanges),
 			],
 		}),
 		switchBackToWorkspace: build.mutation<BaseBranch, { projectId: string }>({
@@ -97,6 +85,24 @@ export function buildBranchEndpoints(build: BackendEndpointBuilder) {
 					.sort((a, b) => a.localeCompare(b))
 					.map((name) => ({ name }));
 			},
+		}),
+
+		localTargetBranches: build.query<LocalTargetBranch[], { projectId: string }>({
+			extraOptions: { command: "branch_list" },
+			query: (args) => args,
+			providesTags: [providesList(ReduxTag.BranchListing), providesType(ReduxTag.BaseBranchData)],
+			transformResponse: (stacks: ListedStack[]) =>
+				stacks
+					.flatMap((stack) =>
+						stack.branches
+							.filter((branch) => branch.hasLocal)
+							.map((branch) => ({
+								name: branch.displayName,
+								refName: branch.refName.full,
+								isTarget: stack.status === "target",
+							})),
+					)
+					.sort((a, b) => a.name.localeCompare(b.name)),
 		}),
 
 		// ── Branch Listing ──────────────────────────────────────────

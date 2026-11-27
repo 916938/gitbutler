@@ -5,7 +5,6 @@ use gitbutler_operating_modes::OperatingMode;
 
 /// An event telling the receiver something about the state of the application which just changed.
 #[derive(Debug, Clone)]
-#[expect(missing_docs)]
 pub enum Change {
     /// Emitted when a fetch updates the repository's fetched state.
     GitFetch(ProjectHandleOrLegacyProjectId),
@@ -25,12 +24,6 @@ pub enum Change {
     /// commits and branches compose the GitButler workspace.
     WorkspaceActivity {
         project_id: ProjectHandleOrLegacyProjectId,
-    },
-    /// Emitted when another process writes the invalidation sentinel: a mutation of its made
-    /// cache tags stale. Carries the tag names as the SDK spells them.
-    ExternalInvalidation {
-        project_id: ProjectHandleOrLegacyProjectId,
-        tags: Vec<String>,
     },
     /// Emitted after worktree files or the index change. Carries freshly computed file diffs
     /// together with hunk assignment and dependency information.

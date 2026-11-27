@@ -1,10 +1,12 @@
 mod branch;
 mod change_id;
+mod changeset;
 mod cmd;
 mod commit;
 mod diff;
 mod extract_remote_name_and_short_name;
 mod git_config;
+mod index;
 mod json_samples;
 mod ref_metadata;
 mod settings;

@@ -1,5 +1,3 @@
-//! Implementation of the `but unapply` command.
-
 use anyhow::Context as _;
 use but_core::{ref_metadata::StackId, sync::RepoExclusive};
 use but_ctx::Context;
@@ -68,7 +66,7 @@ pub fn unapply(
     args: Platform,
 ) -> CliResult<UnapplyOutcome> {
     let mut guard = ctx.exclusive_worktree_access();
-    let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
+    let id_map = IdMap::new_from_context(ctx, guard.read_permission(), None)?;
     let head_info = but_api::legacy::workspace::head_info(ctx)?;
 
     let operation = {
@@ -85,7 +83,7 @@ fn resolve(
     repo: &gix::Repository,
     head_info: &RefInfo,
 ) -> CliResult<UnapplyOperation> {
-    let Platform { target } = args;
+    let Platform { target, json: _ } = args;
 
     let stack = match target
         .resolve_in_workspace(repo, id_map, Purpose::Source, Some(Priority::Branch))?

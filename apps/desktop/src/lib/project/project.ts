@@ -3,7 +3,7 @@ import { showToast, showWarning } from "$lib/notifications/toasts";
 import { projectPath } from "$lib/routes/routes.svelte";
 import { TestId } from "@gitbutler/ui-svelte";
 // Inlined to avoid circular import with forge/.
-type ForgeName = "github" | "gitlab" | "bitbucket" | "azure" | "default";
+type ForgeName = "github" | "gitlab" | "bitbucket" | "azure" | "gitbutler" | "default";
 import type { ApiProject, ForgeUser } from "@gitbutler/but-sdk";
 
 export type Project = {
@@ -18,8 +18,6 @@ export type Project = {
 	husky_hooks_enabled: boolean;
 	omit_certificate_check: boolean | undefined;
 	use_diff_context: boolean | undefined;
-	// Produced just for the frontend to determine if the project is open in any window.
-	is_open: boolean;
 	forge_override: ForgeName | undefined;
 	preferred_forge_user: ForgeUser | null;
 	// Gerrit mode enabled for this project, derived from git configuration

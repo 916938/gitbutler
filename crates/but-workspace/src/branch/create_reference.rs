@@ -53,7 +53,6 @@ pub enum Anchor<'a> {
 }
 
 impl<'a> Anchor<'a> {
-    /// Create a new instance with an object ID as anchor.
     pub fn at_id(commit_id: impl Into<gix::ObjectId>, position: Position) -> Self {
         Anchor::AtCommit {
             commit_id: commit_id.into(),
@@ -61,7 +60,6 @@ impl<'a> Anchor<'a> {
         }
     }
 
-    /// Create a new instance with a segment name as anchor.
     pub fn at_segment(ref_name: &'a gix::refs::FullNameRef, position: Position) -> Self {
         Anchor::AtSegment {
             ref_name: Cow::Borrowed(ref_name),
@@ -69,7 +67,6 @@ impl<'a> Anchor<'a> {
         }
     }
 
-    /// Create a new instance with a reference name as anchor.
     pub fn at_reference(ref_name: &'a gix::refs::FullNameRef, position: Position) -> Self {
         Anchor::AtReference {
             ref_name: Cow::Borrowed(ref_name),
@@ -80,17 +77,18 @@ impl<'a> Anchor<'a> {
 
 pub(super) mod function {
     use anyhow::Context as _;
-    use bstr::ByteSlice as _;
-    use but_core::{RefMetadata, branch::find_unique_refname_excluding};
+    use but_core::{
+        RefMetadata,
+        branch::{find_unique_refname_excluding, refuse_colliding_refname},
+    };
     use but_error::bail_precondition;
     use but_rebase::graph_rebase::{
-        Editor, LookupStep, Pick, Selector, Step, SuccessfulRebase, mutate::InsertSide,
+        Editor, LookupStep, Selector, Step, SuccessfulRebase, mutate::InsertSide,
     };
 
     use crate::{
-        WorkspaceCommit,
         branch::create_reference::{Anchor, Position},
-        commit::Stack,
+        editor_workspace::{enter_workspace, leave_unnecessary_workspace},
     };
 
     enum Placement {
@@ -102,8 +100,9 @@ pub(super) mod function {
     /// or as a new independent branch on the workspace base if `anchor` is `None`.
     ///
     /// An independent branch becomes a parent of the workspace commit at `order`, or its last parent
-    /// if `order` is `None`, and can't be created outside of a workspace. A workspace commit is
-    /// created if `HEAD` is on the workspace reference without one.
+    /// if `order` is `None`. The workspace is entered for that, see
+    /// [`enter_workspace()`](crate::editor_workspace::enter_workspace()), and left again if the
+    /// new branch is all it would hold, so `HEAD` is on the new branch then.
     ///
     /// Fail if `ref_name` is already taken, in the repository or in the editor.
     pub fn create_reference<'ws, 'meta, 'anchor, M: RefMetadata>(
@@ -120,16 +119,12 @@ pub(super) mod function {
         let workspace = rebase.overlayed_graph()?.into_workspace()?;
         let mut editor = rebase.into_editor();
         let placement = placement(&editor, &workspace, ref_name, anchor.into())?;
-        let workspace_commit = ensure_workspace_commit(&mut editor)?;
         let reference = Step::new_reference(ref_name.to_owned());
         match placement {
             Placement::Independent { base } => {
-                let Some(workspace_commit) = workspace_commit else {
-                    bail_precondition!(
-                        "Cannot create independent branch '{}' outside of a workspace",
-                        ref_name.shorten()
-                    );
-                };
+                let was_outside_workspace = editor.workspace_reference().is_none();
+                let (successful_rebase, workspace_commit) = enter_workspace(editor)?;
+                editor = successful_rebase.into_editor();
                 if workspace.stacks.is_empty() {
                     for (placeholder, _) in editor.direct_parents(workspace_commit)? {
                         editor.remove_edges(workspace_commit, placeholder)?;
@@ -138,37 +133,20 @@ pub(super) mod function {
                 let reference = editor.add_step(reference)?;
                 editor.add_edge(reference, base, 0)?;
                 editor.insert_parent(workspace_commit, reference, order.into())?;
+                if was_outside_workspace {
+                    return leave_unnecessary_workspace(editor.rebase()?.into_editor());
+                }
             }
             Placement::Relative { target, side } => {
                 editor.insert(target, reference, side)?;
             }
         }
-        let rebase = editor.rebase()?;
-        let target = rebase.reference_target(ref_name)?;
-        if starts_worktree_segment(&workspace, target) {
-            bail_precondition!(
-                "Cannot place '{}' at {target}: a worktree branch or checkout already points there, \
-                 and branches can't be ordered in worktrees yet",
-                ref_name.shorten()
-            );
-        }
-        Ok(rebase)
+        editor.rebase()
     }
 
-    fn starts_worktree_segment(workspace: &but_graph::Workspace, id: gix::ObjectId) -> bool {
-        workspace
-            .worktrees
-            .iter()
-            .flat_map(|worktree| &worktree.segments)
-            .any(|segment| {
-                segment
-                    .commits
-                    .first()
-                    .is_some_and(|commit| commit.id == id)
-            })
-    }
-
-    fn ensure_name_is_available<M: RefMetadata>(
+    /// Fail if `ref_name` is taken, in the repository, by a remote's branch or in `editor`, or
+    /// if it nests with another reference's name.
+    pub fn ensure_name_is_available<M: RefMetadata>(
         editor: &Editor<'_, '_, M>,
         ref_name: &gix::refs::FullNameRef,
     ) -> anyhow::Result<()> {
@@ -178,34 +156,13 @@ pub(super) mod function {
         if available.as_ref() != ref_name {
             bail_precondition!("Reference '{}' already exists", ref_name.shorten());
         }
-        if let Some(colliding) = colliding_ref_ancestor(editor.repo(), ref_name)? {
-            bail_precondition!(
-                "Branch name '{}' collides with existing branch '{}'",
-                ref_name.shorten(),
-                colliding.shorten()
-            );
-        }
-        Ok(())
-    }
-
-    fn colliding_ref_ancestor(
-        repo: &gix::Repository,
-        ref_name: &gix::refs::FullNameRef,
-    ) -> anyhow::Result<Option<gix::refs::FullName>> {
-        let full_name = ref_name.as_bstr().to_str_lossy();
-        for slash_idx in full_name.match_indices('/').map(|(idx, _)| idx).skip(2) {
-            let ancestor = gix::refs::FullName::try_from(full_name[..slash_idx].to_owned())?;
-            if repo.try_find_reference(ancestor.as_ref())?.is_some() {
-                return Ok(Some(ancestor));
-            }
-        }
-        Ok(None)
+        refuse_colliding_refname(editor.repo(), ref_name, None)
     }
 
     fn placement<M: RefMetadata>(
         editor: &Editor<'_, '_, M>,
         workspace: &but_graph::Workspace,
-        new_ref: &gix::refs::FullNameRef,
+        ref_name: &gix::refs::FullNameRef,
         anchor: Option<Anchor<'_>>,
     ) -> anyhow::Result<Placement> {
         let independent = || {
@@ -218,10 +175,20 @@ pub(super) mod function {
             anyhow::Ok(Placement::Independent { base })
         };
         let placement = match anchor {
-            None => independent()?,
+            None if editor.workspace_reference().is_some() => independent()?,
+            None => match checked_out_branch_to_stack_on(editor, ref_name)? {
+                Some(checked_out) => Placement::Relative {
+                    target: checked_out,
+                    side: InsertSide::Above,
+                },
+                None => independent()?,
+            },
             Some(Anchor::AtCommit { commit_id, .. })
                 if Some(commit_id) == workspace.lower_bound =>
             {
+                if editor.workspace_reference().is_none() {
+                    return Err(outside_of_workspace(ref_name));
+                }
                 independent()?
             }
             Some(Anchor::AtCommit {
@@ -243,14 +210,14 @@ pub(super) mod function {
                     position: position @ Position::Above,
                 },
             ) => Placement::Relative {
-                target: select_anchor(editor, workspace, new_ref, &ref_name)?,
+                target: select_anchor(editor, &ref_name)?,
                 side: side(position),
             },
             Some(Anchor::AtSegment {
                 ref_name,
                 position: Position::Below,
             }) => {
-                let anchor = select_anchor(editor, workspace, new_ref, &ref_name)?;
+                let anchor = select_anchor(editor, &ref_name)?;
                 let oldest_commit = workspace
                     .try_find_segment_by_refname(&ref_name)?
                     .commits
@@ -271,23 +238,44 @@ pub(super) mod function {
         Ok(placement)
     }
 
+    /// The branch `HEAD` is on outside of a workspace, if a branch without an anchor goes on
+    /// top of it rather than into a lane of its own in a workspace entered for it: there's no
+    /// target to base a workspace on, or it's the target's own branch with commits, which is
+    /// no lane of a workspace.
+    ///
+    /// Fail if `HEAD` is detached, as it's no lane of a workspace either.
+    fn checked_out_branch_to_stack_on<M: RefMetadata>(
+        editor: &Editor<'_, '_, M>,
+        ref_name: &gix::refs::FullNameRef,
+    ) -> anyhow::Result<Option<Selector>> {
+        let checked_out = editor
+            .head()
+            .context("HEAD has no checkout recorded in the editor")?;
+        let Step::Reference { refname, .. } = editor.lookup_step(checked_out)? else {
+            return Err(outside_of_workspace(ref_name));
+        };
+        let Some(target_ref) = editor.target_ref() else {
+            return Ok(Some(checked_out));
+        };
+        let has_commits =
+            Some(editor.find_commit_target(checked_out)?.0) != editor.target_selector();
+        Ok((refname.as_ref() == target_ref && has_commits).then_some(checked_out))
+    }
+
+    fn outside_of_workspace(ref_name: &gix::refs::FullNameRef) -> anyhow::Error {
+        anyhow::anyhow!(
+            but_error::Context::new(format!(
+                "Cannot create independent branch '{}' outside of a workspace",
+                ref_name.shorten()
+            ))
+            .with_code(but_error::Code::PreconditionFailed)
+        )
+    }
+
     fn select_anchor<M: RefMetadata>(
         editor: &Editor<'_, '_, M>,
-        workspace: &but_graph::Workspace,
-        new_ref: &gix::refs::FullNameRef,
         anchor: &gix::refs::FullNameRef,
     ) -> anyhow::Result<Selector> {
-        if workspace
-            .find_segment_and_stack_by_refname(anchor)
-            .is_none()
-            && workspace.refname_is_segment(anchor)
-        {
-            bail_precondition!(
-                "Cannot place '{}' relative to worktree branch '{}': branches can't be ordered in worktrees yet",
-                new_ref.shorten(),
-                anchor.shorten()
-            );
-        }
         match editor.try_select_reference(anchor) {
             Some(selector) => Ok(selector),
             None => bail_precondition!(
@@ -319,28 +307,5 @@ pub(super) mod function {
             Position::Above => InsertSide::Above,
             Position::Below => InsertSide::Below,
         }
-    }
-
-    fn ensure_workspace_commit<M: RefMetadata>(
-        editor: &mut Editor<'_, '_, M>,
-    ) -> anyhow::Result<Option<Selector>> {
-        if let Some(workspace_commit) = editor.workspace_commit() {
-            return Ok(Some(workspace_commit));
-        }
-        let Some(workspace_reference) = editor.workspace_reference() else {
-            return Ok(None);
-        };
-        let (_, below) = editor.find_reference_target(workspace_reference)?;
-        let mut commit =
-            WorkspaceCommit::new_from_stacks(Vec::<Stack>::new(), editor.repo().object_hash());
-        commit.tree = below.inner.tree;
-        commit.parents = vec![below.id].into();
-        WorkspaceCommit::fixup_times(&mut commit, editor.repo());
-        let commit = editor.repo().write_object(&commit)?.detach();
-        Ok(Some(editor.insert(
-            workspace_reference,
-            Step::Pick(Pick::new_workspace_pick(commit)),
-            InsertSide::Below,
-        )?))
     }
 }

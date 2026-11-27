@@ -23,7 +23,7 @@ const PULL_FIRST_HINT: &str = "Most likely you want `but pull`, which updates th
 
 /// The branches and commits of the workspace that have already landed in the
 /// target branch. Mirrors the strongest signals behind the `(merged upstream)`
-/// marker in `but status`, using only data present on [`RefInfo`] segments.
+/// marker in `but status`, using [`RefInfo`] segments and the configured upstream.
 pub struct MergedUpstream {
     integrated_commits: gix::hashtable::HashSet<gix::ObjectId>,
     merged_branches: std::collections::BTreeSet<FullName>,
@@ -41,7 +41,12 @@ impl MergedUpstream {
             return Ok(Self::permissive());
         }
         let head_info = but_api::legacy::workspace::head_info(ctx)?;
-        Ok(Self::new(&*ctx.repo.get()?, &head_info, allow_merged))
+        Ok(Self::new(
+            &*ctx.repo.get()?,
+            &ctx.project_meta()?,
+            &head_info,
+            allow_merged,
+        ))
     }
 
     /// Collect merged branches and integrated commits from `head_info`, for
@@ -50,7 +55,12 @@ impl MergedUpstream {
     ///
     /// `repo` is only read to classify empty branches, whose merged state
     /// cannot be derived from `head_info` alone.
-    pub fn new(repo: &gix::Repository, head_info: &RefInfo, allow_merged: AllowMergedArg) -> Self {
+    pub fn new(
+        repo: &gix::Repository,
+        project_meta: &but_core::ref_metadata::ProjectMeta,
+        head_info: &RefInfo,
+        allow_merged: AllowMergedArg,
+    ) -> Self {
         let mut this = Self::permissive();
         if allow_merged.allow_merged {
             return this;
@@ -82,16 +92,21 @@ impl MergedUpstream {
                 this.merged_branches.insert(ref_name.clone());
             }
         }
-        this.collect_merged_empty_branches(repo, head_info);
+        this.collect_merged_empty_branches(repo, project_meta, head_info);
         this
     }
 
     /// Empty segments have no commits to classify, so detect landed ones the
-    /// way `but status` does: their remote tip is reachable from the target
-    /// tip. Only the bottom-most segment of each stack is considered — it
+    /// way `but status` does: their remote tip is reachable from the target's
+    /// upstream tip. Only the bottom-most segment of each stack is considered — it
     /// rests on the workspace base, where ancestry is meaningful. Best-effort:
     /// lookup failures leave the branch unguarded rather than erroring.
-    fn collect_merged_empty_branches(&mut self, repo: &gix::Repository, head_info: &RefInfo) {
+    fn collect_merged_empty_branches(
+        &mut self,
+        repo: &gix::Repository,
+        project_meta: &but_core::ref_metadata::ProjectMeta,
+        head_info: &RefInfo,
+    ) {
         fn peel(repo: &gix::Repository, name: &FullNameRef) -> Option<gix::ObjectId> {
             repo.try_find_reference(name)
                 .ok()
@@ -100,10 +115,8 @@ impl MergedUpstream {
                 .map(|id| id.detach())
         }
 
-        let target_ref_name = head_info
-            .target_ref
-            .as_ref()
-            .map(|target| target.ref_name.as_ref());
+        let upstream_ref = project_meta.remote_target_ref(repo).ok().flatten();
+        let target_ref_name = upstream_ref.as_ref().map(AsRef::as_ref);
         let Some(target_tip) = target_ref_name.and_then(|name| peel(repo, name)) else {
             return;
         };
@@ -111,6 +124,8 @@ impl MergedUpstream {
             .target_commit
             .as_ref()
             .map(|target| target.commit_id);
+        let cache = std::cell::OnceCell::new();
+        let mut graph = None;
 
         for stack in &head_info.stacks {
             let Some(segment) = stack
@@ -136,11 +151,13 @@ impl MergedUpstream {
             if stored_target_base == Some(remote_tip) && remote_tip != target_tip {
                 continue;
             }
+            let Ok(cache) = cache.get_or_init(|| repo.commit_graph_if_enabled()) else {
+                return;
+            };
+            let graph = graph.get_or_insert_with(|| repo.revision_graph(cache.as_ref()));
             if repo
-                .merge_base(remote_tip, target_tip)
-                .is_ok_and(|merge_base| {
-                    merge_base.is_some_and(|merge_base| merge_base == remote_tip)
-                })
+                .is_ancestor_with_graph(remote_tip, target_tip, graph)
+                .unwrap_or(false)
             {
                 self.merged_branches.insert(ref_info.ref_name.clone());
             }

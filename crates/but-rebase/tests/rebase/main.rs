@@ -823,7 +823,7 @@ RebaseOutput {
 
 pub mod utils {
     use anyhow::Result;
-    use but_meta::VirtualBranchesTomlMetadata;
+    use but_meta::VirtualBranchesMetadata;
     use but_rebase::RebaseOutput;
     use gix::{ObjectId, prelude::ObjectIdExt};
 
@@ -832,15 +832,11 @@ pub mod utils {
         fixture_name: &str,
     ) -> anyhow::Result<(
         gix::Repository,
-        std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        std::mem::ManuallyDrop<VirtualBranchesMetadata>,
         but_db::DbHandle,
     )> {
         let repo = but_testsupport::read_only_in_memory_scenario(fixture_name)?;
-        let meta = VirtualBranchesTomlMetadata::from_path(
-            repo.path()
-                .join(".git")
-                .join("should-never-be-written.toml"),
-        )?;
+        let meta = VirtualBranchesMetadata::from_path(repo.path().join(".git"))?;
         // The fixture is shared and read-only, so its database cannot live on disk.
         let db = but_testsupport::in_memory_db();
         Ok((repo, std::mem::ManuallyDrop::new(meta), db))
@@ -852,16 +848,12 @@ pub mod utils {
     ) -> Result<(
         gix::Repository,
         tempfile::TempDir,
-        std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        std::mem::ManuallyDrop<VirtualBranchesMetadata>,
         but_db::DbHandle,
     )> {
         // TODO: remove the need for this, impl everything in `gitoxide`, allowing this to be in-memory entirely.
         let (repo, tmp) = but_testsupport::writable_scenario(fixture_name);
-        let meta = VirtualBranchesTomlMetadata::from_path(
-            repo.path()
-                .join(".git")
-                .join("should-never-be-written.toml"),
-        )?;
+        let meta = VirtualBranchesMetadata::from_path(repo.path().join(".git"))?;
         let db = but_testsupport::project_db(&repo)?;
         Ok((repo, tmp, std::mem::ManuallyDrop::new(meta), db))
     }
@@ -872,15 +864,11 @@ pub mod utils {
     ) -> Result<(
         gix::Repository,
         tempfile::TempDir,
-        std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        std::mem::ManuallyDrop<VirtualBranchesMetadata>,
         but_db::DbHandle,
     )> {
         let (repo, tmp) = but_testsupport::writable_scenario_with_ssh_key(fixture_name);
-        let meta = VirtualBranchesTomlMetadata::from_path(
-            repo.path()
-                .join(".git")
-                .join("should-never-be-written.toml"),
-        )?;
+        let meta = VirtualBranchesMetadata::from_path(repo.path().join(".git"))?;
         let db = but_testsupport::project_db(&repo)?;
         Ok((repo, tmp, std::mem::ManuallyDrop::new(meta), db))
     }
@@ -972,15 +960,12 @@ pub mod utils {
         but_graph::init::Options {
             collect_tags: true,
             commits_limit_hint: None,
-            commits_limit_recharge_location: vec![],
-            hard_limit: None,
-            dangerously_skip_postprocessing_for_debugging: false,
             worktrees: false,
+            extra_refs: vec![],
         }
     }
 
-    /// The target is `origin/main` with its tip as the stored target commit, like a project set
-    /// up by GitButler.
+    /// The target is local `main`, with `origin/main`'s tip as the stored target commit.
     pub fn target_meta(repo: &gix::Repository) -> but_core::ref_metadata::ProjectMeta {
         let target_ref: gix::refs::FullName = "refs/remotes/origin/main"
             .try_into()
@@ -992,7 +977,12 @@ pub mod utils {
                 .flatten()
                 .and_then(|mut r| r.peel_to_id().ok())
                 .map(|id| id.detach()),
-            target_ref: Some(target_ref),
+            target_ref: Some(
+                but_core::ref_metadata::LocalRefName::new(
+                    "refs/heads/main".try_into().expect("valid local ref"),
+                )
+                .expect("local branch"),
+            ),
             ..Default::default()
         }
     }

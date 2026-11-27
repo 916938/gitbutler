@@ -1,6 +1,5 @@
 //! These tests exercise the replace operation.
 use anyhow::{Context, Result};
-use but_graph::Graph;
 use but_rebase::graph_rebase::Editor;
 use but_testsupport::{git_status, graph_tree, visualize_commit_graph_all, visualize_tree};
 use snapbox::prelude::*;
@@ -29,7 +28,7 @@ fn reword_a_commit() -> Result<()> {
 
     let head_tree = repo.head_tree()?.id;
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -63,17 +62,17 @@ fn reword_a_commit() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     └── ·78aaae2 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·53af95a (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·6de6b92 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );
@@ -141,7 +140,7 @@ f766d1f
 
 "#]].raw());
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -186,17 +185,17 @@ f766d1f
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:with-inner-merge[🌳]
+└── 👉►[0]:with-inner-merge[🌳]
     └── ·e7221b5 (⌂)
-        └── ►:1[1]:anon:
+        └── ►[1]:anon:
             └── ·8101192 (⌂)
-                ├── ►:2[2]:A
+                ├── ►[2]:A
                 │   └── ·f1905a8 (⌂)
-                │       └── ►:4[3]:main
+                │       └── ►[3]:main
                 │           └── 🏁·8f0d338 (⌂) ►tags/base
-                └── ►:3[2]:B
+                └── ►[2]:B
                     └── ·984fd1c (⌂)
-                        └── →:4: (main)
+                        └── → segment main
 
 "#]]
     );

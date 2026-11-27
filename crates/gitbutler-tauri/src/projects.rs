@@ -14,12 +14,9 @@ use tracing::instrument;
 use crate::{WindowState, window, window::state::ProjectAccessMode};
 
 #[tauri::command(async)]
-#[instrument(skip(window_state), err(Debug))]
-pub fn list_projects(
-    window_state: State<'_, WindowState>,
-) -> Result<Vec<but_api::legacy::projects::ProjectForFrontend>, json::Error> {
-    let open_projects = window_state.open_projects();
-    but_api::legacy::projects::list_projects(open_projects).map_err(Into::into)
+#[instrument(err(Debug))]
+pub fn list_projects() -> Result<Vec<gitbutler_project::api::Project>, json::Error> {
+    but_api::legacy::projects::list_projects().map_err(Into::into)
 }
 
 /// Reports capabilities that vary by how the backend was launched.
@@ -161,7 +158,8 @@ fn assure_database_valid(data_dir: PathBuf) -> anyhow::Result<Option<String>> {
     Ok(None)
 }
 
-/// Return an error message that
+/// Return a heads-up listing the files worktree filters convert, as editing or resolving a commit
+/// still writes them without the filters, or `None` if no file uses a filter.
 fn warn_about_filters_and_git_lfs(repo: &gix::Repository) -> anyhow::Result<Option<String>> {
     let index = repo.index_or_empty()?;
     let mut cache = repo.attributes_only(
@@ -194,15 +192,16 @@ fn warn_about_filters_and_git_lfs(repo: &gix::Repository) -> anyhow::Result<Opti
     let has_lfs = all_filters.contains("lfs");
     let mut msg = format!(
         "Worktree filter(s) detected: {comma_separated}\n\
-Filters will silently not be applied during workspace operations to the files listed below.\n\
-Ensure these aren't touched by GitButler or avoid using it in this repository.",
+GitButler applies them when it checks out files, except while editing or resolving a commit, \
+which writes the files listed below without them.\n\
+Avoid editing or resolving commits with GitButler in this repository.",
         comma_separated = Vec::from_iter(all_filters).join(", ")
     );
     if has_lfs {
         msg.push_str(
             r#"
 
-`git lfs pull --include="*"` can be used to restore git-lfs files after GitButler touched them."#,
+`git lfs pull --include="*"` can be used to restore git-lfs files after editing or resolving a commit."#,
         );
     }
     let max_files = 10;

@@ -6,19 +6,6 @@ set -euo pipefail
 # on branch W resting on B.
 bash "$(dirname "$0")/project-in-single-branch-three-branch-stack.sh"
 
-python3 - "$E2E_TEST_APP_DATA_DIR/gitbutler/settings.json" <<'PYTHON'
-import json
-import os
-import sys
-
-path = sys.argv[1]
-settings = json.load(open(path)) if os.path.exists(path) else {}
-settings.setdefault("featureFlags", {})["worktreeManipulation"] = True
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w") as file:
-    json.dump(settings, file)
-PYTHON
-
 pushd local-clone
 # Worktrees on disk when adoption first runs are adopted as archived, so it has already run.
 python3 - .git/gitbutler/but.sqlite <<'PYTHON'

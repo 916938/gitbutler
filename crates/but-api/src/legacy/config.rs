@@ -6,14 +6,14 @@ use gix::bstr::BString;
 use serde::Serialize;
 use tracing::instrument;
 
-#[but_api(napi, provides = [GbConfig])]
+#[but_api]
 #[instrument(err(Debug))]
 pub fn get_gb_config(ctx: &but_ctx::Context) -> Result<GitConfigSettings> {
     let repo = ctx.repo.get()?;
     repo.git_settings().map(Into::into)
 }
 
-#[but_api(napi, invalidates = [GbConfig, SigningSettings])]
+#[but_api(refreshes)]
 #[instrument(err(Debug))]
 pub fn set_gb_config(ctx: &but_ctx::Context, config: GitConfigSettings) -> Result<()> {
     ctx.repo.get()?.set_git_settings(&config.try_into()?)
@@ -35,13 +35,10 @@ pub fn store_author_globally_if_unset(
     Ok(())
 }
 
-/// Represents the author information from the git configuration.
 #[derive(Clone, Serialize)]
 pub struct AuthorInfo {
-    /// The name of the author.
     #[serde(with = "bstring_lossy_opt")]
     pub name: Option<BString>,
-    /// The email of the author.
     #[serde(with = "bstring_lossy_opt")]
     pub email: Option<BString>,
 }

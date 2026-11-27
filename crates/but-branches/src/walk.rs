@@ -11,51 +11,42 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bstr::BString;
 use but_core::RefMetadata;
-use but_graph::{CommitFlags, Graph, SegmentIndex, Workspace, init::Tip};
+use but_graph::{CommitFlags, Graph, SegmentIndex, Workspace};
 
 use gix::refs::{Category, FullName};
 
 use crate::display_identity;
 
-/// Build the workspace graph from `head`, additionally traversing the given
-/// `(tip, ref name)` pairs, and report whether a traversal limit cut it short.
+/// Build the workspace graph seen from `head` and `head_ref`, walked from `head` and the
+/// given `(tip, ref name)` pairs.
 pub(crate) fn build_workspace(
-    head: gix::Id<'_>,
+    repo: &gix::Repository,
+    head: gix::ObjectId,
     head_ref: Option<FullName>,
     extra_tips: impl IntoIterator<Item = (gix::ObjectId, FullName)>,
     meta: &impl RefMetadata,
     project_meta: but_core::ref_metadata::ProjectMeta,
-    db: &mut but_db::DbHandle,
-    traversal: but_graph::init::Options,
-) -> anyhow::Result<(Workspace, bool)> {
-    let graph = Graph::from_commit_traversal_with_extra_tips(
-        head,
-        head_ref,
-        extra_tips
-            .into_iter()
-            .map(|(tip, ref_name)| Tip::reachable(tip, Some(ref_name))),
+) -> anyhow::Result<Workspace> {
+    but_graph::nosegment::workspace(
+        repo,
         meta,
+        but_graph::init::Overlay::default(),
         project_meta,
-        db,
-        traversal,
-    )?;
-    let incomplete = graph.hard_limit_hit();
-    Ok((graph.into_workspace()?, incomplete))
+        head_ref.as_ref().map(|name| name.as_ref()),
+        Some(head),
+        extra_tips.into_iter().map(|(tip, _ref_name)| tip),
+        Vec::new(),
+        false,
+        None,
+    )
 }
 
-/// The target branch tip and the segment owning it, if there is a target.
-pub(crate) fn target_of(ws: &Workspace) -> Option<(gix::ObjectId, SegmentIndex)> {
-    ws.target_ref
-        .as_ref()
-        .and_then(|target| {
-            ws.graph
-                .resolve_to_unambiguously_pointed_to_commit(target.segment_index)
-                .map(|(commit, segment)| (commit.id, segment))
-        })
-        .or(ws
-            .target_commit
-            .as_ref()
-            .map(|target| (target.commit_id, target.segment_index)))
+/// The configured local target's tip and owning segment, without upstream or cutoff fallback.
+pub(crate) fn local_target_of(ws: &Workspace) -> Option<(gix::ObjectId, SegmentIndex)> {
+    let target = ws.graph.project_meta.target_ref.as_ref()?;
+    ws.graph
+        .segment_and_commit_by_ref_name(target.as_local_full_name_ref())
+        .map(|(segment, commit)| (commit.id, segment.id))
 }
 
 /// How a ref relates to the segment the [`ref_index()`] maps it to.
@@ -83,7 +74,6 @@ impl Anchor {
         }
     }
 
-    /// The segment the ref maps to, whatever its relation.
     pub(crate) fn segment(&self) -> SegmentIndex {
         match *self {
             Anchor::OwnsTip(segment) | Anchor::MidHistory(segment) | Anchor::Unreached(segment) => {
@@ -186,16 +176,18 @@ pub(crate) struct OwnedHistory {
 }
 
 /// Walk down the first-parent history of `start`, owned by the branch named
-/// `identity`, until its exclusive history ends: at workspace or integrated
-/// commits, at the target tip, at a segment named after another branch, or at
-/// history shared with other branches. This is the single definition of where
-/// one branch ends, used for both commit counts and stack inference.
+/// `identity`, until its exclusive history ends: at integrated commits, at workspace
+/// commits while the workspace is checked out (`in_workspace`), at the selected cutoff,
+/// at a segment named after another branch, or at history shared with other branches.
+/// This is the single definition of where one branch ends, used for both commit counts
+/// and stack inference.
 pub(crate) fn owned_history(
     graph: &Graph,
     start: SegmentIndex,
     identity: &BString,
     remote_names: &gix::remote::Names,
-    target_tip: Option<gix::ObjectId>,
+    cutoff_id: Option<gix::ObjectId>,
+    in_workspace: bool,
 ) -> OwnedHistory {
     let mut out = OwnedHistory {
         commit_count: 0,
@@ -203,7 +195,7 @@ pub(crate) fn owned_history(
         clipped: false,
     };
     graph.visit_segments_downward_along_first_parent_include_start(start, |seg| {
-        if boundary_flags(seg, target_tip) {
+        if boundary_flags(seg, cutoff_id, in_workspace) {
             return true;
         }
         if seg.id != start {
@@ -245,20 +237,10 @@ pub(crate) fn segment_tip(segment: &but_graph::workspace::StackSegment) -> Optio
 /// Return `true` if traversal stopped at `segment` due to a limit or a shallow
 /// boundary, meaning history below it exists but is not part of the graph.
 pub(crate) fn traversal_was_clipped(graph: &Graph, segment: SegmentIndex) -> bool {
-    use but_graph::{StopCondition, petgraph::Direction};
-    if graph.stop_condition(segment).is_some_and(|condition| {
+    use but_graph::StopCondition;
+    graph.stop_condition(segment).is_some_and(|condition| {
         condition.intersects(StopCondition::Limit | StopCondition::ShallowBoundary)
-    }) {
-        return true;
-    }
-    // An empty segment without connections is a tip whose commit was never walked,
-    // which only happens when the traversal was cut short before reaching it.
-    graph.hard_limit_hit()
-        && graph[segment].commits.is_empty()
-        && graph
-            .edges_directed(segment, Direction::Outgoing)
-            .next()
-            .is_none()
+    })
 }
 
 /// Return `true` if `segment` is named after a branch other than `identity`.
@@ -273,21 +255,25 @@ fn segment_has_foreign_name(
     segment
         .ref_info
         .as_ref()
-        .is_some_and(|info| display_identity(&info.ref_name, remote_names) != *identity)
+        .is_some_and(|info| display_identity(info.ref_name.as_ref(), remote_names) != *identity)
 }
 
-/// Return `true` if `segment` starts history that belongs to the workspace or target.
+/// Return `true` if `segment` starts history that belongs to the target, or to the workspace
+/// while `in_workspace`, which is `false` while another branch is checked out: the
+/// workspace's branches then own their commits as any other branch does.
 ///
-/// The comparison with `target_tip` matters when the target tip is also reachable
-/// as local history, where its commit carries no integrated flag.
-fn boundary_flags(segment: &but_graph::Segment, target_tip: Option<gix::ObjectId>) -> bool {
+/// The cutoff can also be reachable as local history, where it carries no integrated flag.
+fn boundary_flags(
+    segment: &but_graph::Segment,
+    cutoff_id: Option<gix::ObjectId>,
+    in_workspace: bool,
+) -> bool {
     let Some(first_commit) = segment.commits.first() else {
         return false;
     };
-    first_commit
-        .flags
-        .intersects(CommitFlags::InWorkspace | CommitFlags::Integrated)
-        || Some(first_commit.id) == target_tip
+    let mut boundary = CommitFlags::Integrated;
+    boundary.set(CommitFlags::InWorkspace, in_workspace);
+    first_commit.flags.intersects(boundary) || Some(first_commit.id) == cutoff_id
 }
 
 /// Return `true` if `segment` is history shared with other branches, i.e. more than

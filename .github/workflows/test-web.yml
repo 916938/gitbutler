@@ -16,7 +16,8 @@ on:
 jobs:
   test:
     name: web-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Playwright 1.58 does not support Ubuntu 26.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -34,6 +35,11 @@ jobs:
       - name: Install Playwright browsers
         working-directory: apps/web
         run: pnpm exec playwright install --with-deps chromium
+
+      # The dev server renders the marketing pages on the server, so the
+      # workspace packages they import must be built first.
+      - name: Package workspace dependencies
+        run: pnpm exec turbo run package --filter=@gitbutler/web
 
       - name: Run Playwright e2e tests
         working-directory: apps/web

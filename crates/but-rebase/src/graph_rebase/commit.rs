@@ -1,5 +1,3 @@
-//! Provides some slightly higher level tools to help with manipulating commits, in preparation for use in the editor.
-
 use anyhow::{Context, Result, bail};
 use but_core::commit::SignCommit;
 use but_core::{RefMetadata, commit::Headers};
@@ -103,6 +101,26 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
         bail!("HEAD has no checkout recorded in the editor")
     }
 
+    /// Like [`Self::set_head_checkout()`] for a checkout that was asked for: materializing
+    /// fails before changing anything if it would overwrite uncommitted changes, or check out
+    /// a conflicted commit.
+    pub fn switch_head(&mut self, target: impl ToSelector) -> Result<()> {
+        let target = target.to_selector(self)?;
+        for checkout in &mut self.checkouts {
+            if let super::Checkout::Head {
+                selector,
+                placement,
+                ..
+            } = checkout
+            {
+                *selector = target;
+                *placement = super::HeadPlacement::Switched;
+                return Ok(());
+            }
+        }
+        bail!("HEAD has no checkout recorded in the editor")
+    }
+
     /// Finds a commit from inside the editor's in memory repository.
     pub fn find_commit(&self, id: gix::ObjectId) -> Result<but_core::CommitOwned> {
         but_core::Commit::from_id(id.attach(&self.repo)).map(|c| c.detach())
@@ -125,26 +143,37 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
         Ok((selector, self.find_commit(*id)?))
     }
 
+    /// Finds the commit `selector` stands for: a pick is its own commit, while a reference
+    /// or a removed step resolves to its first pick parent.
+    pub fn find_commit_target(
+        &self,
+        selector: impl ToSelector,
+    ) -> Result<(Selector, but_core::CommitOwned)> {
+        let selector = self
+            .history
+            .normalize_selector(selector.to_selector(self)?)?;
+        let target = match &self.graph[selector.id] {
+            Step::Pick(_) => selector.id,
+            Step::Reference { .. } | Step::None => {
+                *collect_ordered_parents(&self.graph, selector.id, OrderedParentKind::CommitOnly)
+                    .first()
+                    .context("Failed to find a parent for selected step in the step graph.")?
+            }
+        };
+
+        let Step::Pick(pick) = &self.graph[target] else {
+            bail!("BUG: collect_ordered_parents provided a non-pick return value");
+        };
+
+        Ok((self.new_selector(target), self.find_commit(pick.id)?))
+    }
+
     /// Finds the first pick parent of a reference
     pub fn find_reference_target(
         &self,
         selector: impl ToReferenceSelector,
     ) -> Result<(Selector, but_core::CommitOwned)> {
-        let selector = self
-            .history
-            .normalize_selector(selector.to_reference_selector(self)?)?;
-
-        let parents =
-            collect_ordered_parents(&self.graph, selector.id, OrderedParentKind::CommitOnly);
-        let first_parent = parents
-            .first()
-            .context("Failed to find a parent for selected reference in the step graph.")?;
-
-        let Step::Pick(pick) = &self.graph[*first_parent] else {
-            bail!("BUG: collect_ordered_parents provided a non-pick return value");
-        };
-
-        Ok((self.new_selector(*first_parent), self.find_commit(pick.id)?))
+        self.find_commit_target(selector.to_reference_selector(self)?)
     }
 
     /// Writes a commit with correct signing to the in memory repository.

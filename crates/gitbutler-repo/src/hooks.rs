@@ -23,7 +23,6 @@ pub struct ErrorData {
     pub error: String,
 }
 
-/// Hook result indicating either success or failure.
 #[derive(Serialize, PartialEq, Debug, Clone)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum HookResult {
@@ -32,8 +31,6 @@ pub enum HookResult {
     Failure(ErrorData),
 }
 
-/// Message hook result indicating either success, message, or failure.
-///
 /// A message hook can optionally mutate the message, so this special type is
 /// needed to distinguish between success, and success with message.
 #[derive(Serialize, PartialEq, Debug, Clone)]
@@ -81,6 +78,16 @@ pub fn commit_msg(ctx: &Context, mut message: String) -> Result<MessageHookResul
     }
 }
 
+/// Whether a `pre-commit` hook exists, so callers can skip building the tree it would check.
+pub fn has_pre_commit(ctx: &Context) -> Result<bool> {
+    #[expect(deprecated, reason = "libgit2 hook adapter boundary")]
+    Ok(git2_hooks::hook_available(
+        &*ctx.git2_repo.get()?,
+        husky_search_paths(ctx),
+        git2_hooks::HOOK_PRE_COMMIT,
+    )?)
+}
+
 pub fn pre_commit_with_tree(ctx: &Context, tree_id: gix::ObjectId) -> Result<HookResult> {
     #[expect(deprecated, reason = "libgit2 hook/index adapter boundary")]
     let repo = &*ctx.git2_repo.get()?;
@@ -120,6 +127,15 @@ pub fn pre_commit_with_tree(ctx: &Context, tree_id: gix::ObjectId) -> Result<Hoo
     }
     let had_index = match std::fs::copy(&index_path, &backup_tmp_path) {
         Ok(_) => {
+            // Git compares an index entry's file by content only while the index file isn't
+            // newer than the entry, so the restored index keeps its modified time, which a copy
+            // doesn't on every platform. Otherwise a same-size edit looks committed.
+            let modified = std::fs::metadata(&index_path)?.modified()?;
+            std::fs::File::options()
+                .write(true)
+                .open(&backup_tmp_path)?
+                .set_modified(modified)
+                .context("failed to keep the index's modified time in its backup")?;
             std::fs::rename(&backup_tmp_path, &backup_path)
                 .context("failed to finalize pre-commit index backup")?;
             true
@@ -154,8 +170,8 @@ pub fn pre_commit_with_tree(ctx: &Context, tree_id: gix::ObjectId) -> Result<Hoo
                     if code == 0 {
                         HookResult::Success
                     } else {
-                        // If the output contains GITBUTLER_ERROR, it's our managed hook blocking
-                        // commits on gitbutler/workspace - this is expected behavior, not a failure
+                        // If the output contains GITBUTLER_ERROR, it's the hook an older GitButler
+                        // installed to block commits on gitbutler/workspace - not a failure
                         if stdout.contains("GITBUTLER_ERROR") || stderr.contains("GITBUTLER_ERROR")
                         {
                             HookResult::Success
@@ -252,7 +268,6 @@ pub fn pre_push(
         return Ok(HookResult::NotConfigured);
     };
 
-    // Execute the pre-push hook with remote name and URL as arguments
     let mut child = std::process::Command::try_from({
         let mut prep = gix::command::prepare(&hook_path);
         if cfg!(windows) {
@@ -268,6 +283,7 @@ pub fn pre_push(
     })?
     .current_dir(repo.workdir().unwrap_or(repo.git_dir()))
     .stdin(Stdio::piped())
+    .stderr(Stdio::piped())
     .spawn()?;
 
     {
@@ -330,7 +346,7 @@ fn join_output(stdout: String, stderr: String, code: Option<i32>) -> String {
     let code = code
         .map(|code| format!(" (Exit Code {code})"))
         .unwrap_or_default();
-    if stdout.is_empty() && stderr.is_ascii() {
+    if stdout.is_empty() && stderr.is_empty() {
         return format!("hook produced no output{code}");
     } else if stdout.is_empty() {
         return stderr;

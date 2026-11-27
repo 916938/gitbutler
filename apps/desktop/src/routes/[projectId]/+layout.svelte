@@ -3,6 +3,7 @@
 	import ProjectSettingsShortcutHandler from "$components/settings/ProjectSettingsShortcutHandler.svelte";
 	import AnalyticsMonitor from "$components/shared/AnalyticsMonitor.svelte";
 	import FullviewLoading from "$components/shared/FullviewLoading.svelte";
+	import NativeAppModal from "$components/shared/NativeAppModal.svelte";
 	import NotOnGitButlerBranch from "$components/shared/NotOnGitButlerBranch.svelte";
 	import ProjectShortcutHandler from "$components/shared/ProjectShortcutHandler.svelte";
 	import ReduxResult from "$components/shared/ReduxResult.svelte";
@@ -12,6 +13,7 @@
 	import { BACKEND } from "$lib/backend";
 	import { BASE_BRANCH_SERVICE } from "$lib/baseBranch/baseBranchService.svelte";
 	import { BRANCH_SERVICE } from "$lib/branches/branchService.svelte";
+	import { parseQueryError } from "$lib/error/error";
 	import { showError } from "$lib/error/showError";
 	import { FORGE_INFO_SERVICE } from "$lib/forge/forgeInfo.svelte";
 	import { GITLAB_USER_SERVICE } from "$lib/forge/gitlab/gitlabUserService.svelte";
@@ -21,8 +23,7 @@
 	import { MODE_SERVICE } from "$lib/mode/modeService";
 	import { showInfo, showWarning } from "$lib/notifications/toasts";
 	import { PROJECTS_SERVICE } from "$lib/project/projectsService";
-	import { FILE_SELECTION_MANAGER } from "$lib/selection/fileSelectionManager.svelte";
-	import { UNCOMMITTED_SERVICE } from "$lib/selection/uncommittedService.svelte";
+	import { syncUncommittedChanges } from "$lib/selection/syncUncommittedChanges.svelte";
 	import { SETTINGS_SERVICE } from "$lib/settings/appSettings";
 	import { STACK_SERVICE } from "$lib/stacks/stackService.svelte";
 	import { CLIENT_STATE } from "$lib/state/clientState.svelte";
@@ -30,7 +31,7 @@
 	import { invalidatesList, ReduxTag } from "$lib/state/tags";
 	import { OnboardingEvent, POSTHOG_WRAPPER } from "$lib/telemetry/posthog";
 	import { debounce } from "$lib/utils/debounce";
-	import { WORKTREE_SERVICE } from "$lib/worktree/worktreeService.svelte";
+	import { worktreeChangesTag } from "$lib/worktree/worktreeEndpoints";
 	import { inject } from "@gitbutler/core/context";
 	import { mergeUnlisten } from "@gitbutler/ui-svelte/utils/mergeUnlisten";
 	import { onDestroy, untrack, type Snippet } from "svelte";
@@ -77,7 +78,6 @@
 
 	const modeService = inject(MODE_SERVICE);
 	const stackService = inject(STACK_SERVICE);
-	const worktreeService = inject(WORKTREE_SERVICE);
 
 	const modeQuery = $derived(modeService.mode(projectId));
 
@@ -124,33 +124,7 @@
 	// FILE SELECTION & WORKTREE MANAGEMENT
 	// ================================================ReorderDropzoneFactory
 
-	const uncommittedService = inject(UNCOMMITTED_SERVICE);
-	const idSelection = inject(FILE_SELECTION_MANAGER);
-
-	const worktreeDataQuery = $derived(worktreeService.worktreeData(projectId));
-	const worktreeData = $derived(worktreeDataQuery.response);
-
-	// Bridge between RTKQ and custom slice
-	$effect(() => {
-		if (worktreeData) {
-			untrack(() => {
-				uncommittedService.updateData({
-					changes: worktreeData.rawChanges,
-					assignments: worktreeData.hunkAssignments,
-				});
-			});
-		}
-	});
-
-	// Clear expired file selections
-	const affectedPaths = $derived(worktreeData?.rawChanges.map((c) => c.path));
-	$effect(() => {
-		if (affectedPaths) {
-			untrack(() => {
-				idSelection.retain(affectedPaths);
-			});
-		}
-	});
+	syncUncommittedChanges(() => projectId);
 
 	// =============================================================================
 	// ANALYTICS INIT
@@ -200,8 +174,11 @@
 	// FEED & UPDATES MANAGEMENT
 	// =============================================================================
 
-	const headResponse = $derived(modeService.head(projectId));
-	const head = $derived(headResponse.response);
+	function invalidateDiffs() {
+		clientState.dispatch(
+			clientState.backendApi.util.invalidateTags([invalidatesList(ReduxTag.Diff)]),
+		);
+	}
 
 	// Invalidate caches in response to backend events.
 	$effect(() =>
@@ -213,39 +190,42 @@
 			backend.listen(`project://${projectId}/git/head`, () => {
 				stackService.invalidateStacksAndDetails();
 			}),
-			backend.listen(`project://${projectId}/worktree_changes`, () => {
-				clientState.dispatch(
-					clientState.backendApi.util.invalidateTags([invalidatesList(ReduxTag.Diff)]),
-				);
+			backend.listen(`project://${projectId}/git/activity`, () => {
+				stackService.invalidateStacksAndDetails();
 			}),
+			backend.listen(`project://${projectId}/worktree_changes`, invalidateDiffs),
+			backend.listen(`project://${projectId}/linked_worktree_changes`, invalidateDiffs),
 			// Activity that requires re-reading workspace state — emitted on
-			// remote-ref updates (push, external fetch) and on external
-			// writes to `virtual_branches.toml` (e.g. by the `but` CLI).
-			backend.listen(`project://${projectId}/workspace-activity`, () => {
+			// remote-ref updates (push, external fetch), on external
+			// writes to `virtual_branches.toml` (e.g. by the `but` CLI)
+			// and when linked worktrees are added or removed.
+			backend.listen(`project://${projectId}/workspace-activity`, async () => {
+				const { backendApi } = clientState;
 				clientState.dispatch(
-					clientState.backendApi.util.invalidateTags([
+					backendApi.util.invalidateTags([
 						invalidatesList(ReduxTag.Stacks),
 						invalidatesList(ReduxTag.StackDetails),
-						invalidatesList(ReduxTag.WorktreeChanges),
+						worktreeChangesTag(),
+						invalidatesList(ReduxTag.Worktrees),
 						invalidatesList(ReduxTag.IntegrationSteps),
 						invalidatesList(ReduxTag.BranchListing),
 					]),
 				);
+				// A linked worktree's lane comes from the stacks re-read above, so one removed
+				// outside the app keeps its lane until they arrive. Re-read the changes of the
+				// worktrees still listed then, as reading a removed one's would fail.
+				const worktrees = await backendApi.endpoints.workspaceDetails
+					.fetch({ projectId }, { transform: (details) => details.worktrees })
+					// The workspace view reports a failed re-read; its lanes stay as they were.
+					.catch(() => undefined);
+				clientState.dispatch(
+					backendApi.util.invalidateTags(
+						(worktrees ?? []).map((worktree) => worktreeChangesTag(worktree.name)),
+					),
+				);
 			}),
 		),
 	);
-
-	// If the head changes, invalidate stacks and details
-	// We need to track the previous head value to avoid infinite loops
-	let previousHead = $state<string | undefined>(undefined);
-	$effect(() => {
-		if (head && head !== previousHead) {
-			untrack(() => {
-				previousHead = head;
-				stackService.invalidateStacksAndDetails();
-			});
-		}
-	});
 
 	// =============================================================================
 	// AUTO-REFRESH & SYNCHRONIZATION
@@ -375,6 +355,7 @@
 			<NoBaseBranch {projectId} />
 		{:else if baseBranch}
 			{#if mode.type === "OpenWorkspace" || mode.type === "Edit" || mode.subject.branchName}
+				<NativeAppModal />
 				<div class="view-wrap" role="group" ondragover={(e) => e.preventDefault()}>
 					<AppLayout {projectId} sidebarDisabled={mode.type === "Edit"}>
 						{@render pageChildren()}
@@ -391,7 +372,13 @@
 		<FullviewLoading />
 	{/snippet}
 	{#snippet error(baseError)}
-		<ProblemLoadingRepo {projectId} error={baseError} />
+		{@const parsedError = parseQueryError(baseError)}
+		<!-- A target an older GitButler set as a remote branch is replaced by choosing a local one. -->
+		{#if parsedError.code === "UnresolvedLegacyTarget"}
+			<NoBaseBranch {projectId} notice={parsedError.message} />
+		{:else}
+			<ProblemLoadingRepo {projectId} error={baseError} />
+		{/if}
 	{/snippet}
 </ReduxResult>
 

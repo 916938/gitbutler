@@ -1,4 +1,3 @@
-//! In place of commands.rs
 use std::{env, ffi::OsStr};
 
 use anyhow::{Context as _, Result, bail};
@@ -9,23 +8,21 @@ use std::path::Path;
 use tracing::instrument;
 use url::Url;
 
+use crate::commit::json::ChangesSource;
 use crate::open::program::FILE_EXTENSION_WILDCARD;
 use crate::open::{
     program::{
         OpenSpec, PROGRAMS, ProgramSpec, USER_DEFINED_PROGRAMS_FILENAME, UserDefinedProgramSpec,
-        json::{Editor, Program},
-        open_in_program_unchecked,
+        json::Editor, open_in_program_unchecked,
     },
     spawn::spawn_and_reap,
 };
 
-/// Terminal configuration and detection.
 pub mod terminal;
 
 /// Editor configuration.
 pub mod program;
 
-/// Spawn helpers.
 pub(crate) mod spawn;
 
 /// Opens a supported URL or file path with the platform's default handler.
@@ -377,7 +374,7 @@ fn add_did_param(url: &mut Url) {
 /// - The specified path does not exist or is not accessible
 /// - The terminal_id is not recognized for the current platform
 /// - On all platforms, only spawn failures are detected; the terminal's later exit status is not checked
-#[but_api(napi)]
+#[but_api]
 #[instrument(err(Debug))]
 pub fn open_in_terminal(terminal_id: String, path: String) -> Result<()> {
     use std::process::Command;
@@ -385,7 +382,6 @@ pub fn open_in_terminal(terminal_id: String, path: String) -> Result<()> {
     if cfg!(target_os = "macos") {
         use std::process::Stdio;
 
-        /// Helper to run a command and check its exit status
         /// Used for macOS terminals that are launched via `open` or direct commands.
         /// These typically return immediately (async launch), so we only check if the launch succeeded.
         fn run_terminal_command(mut cmd: Command, terminal_name: &str, path: &str) -> Result<()> {
@@ -520,7 +516,6 @@ pub fn open_in_terminal(terminal_id: String, path: String) -> Result<()> {
         #[cfg(windows)]
         fn create_new_console(cmd: &mut Command) -> &mut Command {
             use std::os::windows::process::CommandExt;
-            // CREATE_NEW_CONSOLE: Creates a new console for the process (0x00000010)
             // This allows the terminal to run independently without blocking our thread
             const CREATE_NEW_CONSOLE: u32 = 0x00000010;
             cmd.creation_flags(CREATE_NEW_CONSOLE)
@@ -530,7 +525,6 @@ pub fn open_in_terminal(terminal_id: String, path: String) -> Result<()> {
             cmd
         }
 
-        // Validate path exists and canonicalize it to proper Windows format
         let path_buf = Path::new(&path);
         if !path_buf.exists() {
             bail!("Path does not exist: {path}");
@@ -548,7 +542,6 @@ pub fn open_in_terminal(terminal_id: String, path: String) -> Result<()> {
             .to_owned();
         let canonical_path = &canonical_path;
 
-        // Check if the terminal binary exists in PATH before attempting to launch.
         let binary_found = which::which(&terminal_id).is_ok();
         if !binary_found {
             return Err(anyhow::anyhow!("'{terminal_id}' was not found.")
@@ -589,14 +582,20 @@ pub fn open_in_terminal(terminal_id: String, path: String) -> Result<()> {
     Ok(())
 }
 
-/// Reveals the file or directory at `path` in the platform's file manager.
+/// Reveals `path`, relative to `checkout`, in the platform's file manager. An empty `path`
+/// reveals the checkout itself.
 ///
 /// On macOS this reveals the item in Finder, on Windows it selects the item in
 /// Explorer, and on Linux it opens either the directory itself or the file's
 /// parent directory.
 #[but_api]
-#[instrument(err(Debug))]
-pub fn show_in_finder(path: String) -> Result<()> {
+#[instrument(skip(ctx), err(Debug))]
+pub fn show_in_finder(ctx: &but_ctx::Context, checkout: ChangesSource, path: String) -> Result<()> {
+    reveal_in_file_manager(&resolve_workdir_path(ctx, &checkout, &path)?)
+}
+
+fn reveal_in_file_manager(path: &Path) -> Result<()> {
+    let display = path.display();
     // Cross-platform implementation to open file/directory in the default file manager
     // macOS: Opens in Finder (with -R flag to reveal the item)
     // Windows: Opens in File Explorer
@@ -607,9 +606,9 @@ pub fn show_in_finder(path: String) -> Result<()> {
         use std::process::Command;
         Command::new("open")
             .arg("-R")
-            .arg(&path)
+            .arg(path)
             .status()
-            .with_context(|| format!("Failed to show '{path}' in Finder"))?;
+            .with_context(|| format!("Failed to show '{display}' in Finder"))?;
     }
 
     #[cfg(target_os = "windows")]
@@ -617,35 +616,33 @@ pub fn show_in_finder(path: String) -> Result<()> {
         use std::process::Command;
         Command::new("explorer")
             .arg("/select,")
-            .arg(&path)
+            .arg(path)
             .status()
-            .with_context(|| format!("Failed to show '{path}' in Explorer"))?;
+            .with_context(|| format!("Failed to show '{display}' in Explorer"))?;
     }
 
     #[cfg(target_os = "linux")]
     {
-        // For directories, open the directory directly
-        if std::path::Path::new(&path).is_dir() {
+        if path.is_dir() {
             open_that(
-                &Url::from_file_path(&path).map_err(|_| anyhow::anyhow!("Failed to parse URL"))?,
+                &Url::from_file_path(path).map_err(|_| anyhow::anyhow!("Failed to parse URL"))?,
             )
-            .with_context(|| format!("Failed to open directory '{path}' in file manager"))?;
+            .with_context(|| format!("Failed to open directory '{display}' in file manager"))?;
         } else {
-            // For files, try to open the parent directory
-            if let Some(parent) = std::path::Path::new(&path).parent() {
+            if let Some(parent) = path.parent() {
                 open_that(
                     &Url::from_file_path(parent)
                         .map_err(|_| anyhow::anyhow!("Failed to parse URL"))?,
                 )
                 .with_context(|| {
-                    format!("Failed to open parent directory of '{path}' in file manager",)
+                    format!("Failed to open parent directory of '{display}' in file manager",)
                 })?;
             } else {
                 open_that(
-                    &Url::from_file_path(&path)
+                    &Url::from_file_path(path)
                         .map_err(|_| anyhow::anyhow!("Failed to parse URL"))?,
                 )
-                .with_context(|| format!("Failed to open '{path}' in file manager"))?;
+                .with_context(|| format!("Failed to open '{display}' in file manager"))?;
             }
         }
     }
@@ -654,7 +651,7 @@ pub fn show_in_finder(path: String) -> Result<()> {
 }
 
 /// List all editors that can be opened from a GUI client.
-#[but_api(napi)]
+#[but_api]
 #[instrument(err(Debug))]
 pub fn list_editors() -> anyhow::Result<Vec<Editor>> {
     Ok(list_program_specs()
@@ -664,19 +661,6 @@ pub fn list_editors() -> anyhow::Result<Vec<Editor>> {
         .collect())
 }
 
-/// List all programs that can be opened from a GUI client.
-#[but_api(napi)]
-#[instrument(err(Debug))]
-pub fn list_programs() -> anyhow::Result<Vec<Program>> {
-    Ok(list_program_specs()
-        .iter()
-        .filter(|program| !program.requires_terminal())
-        .map(Into::into)
-        .collect())
-}
-
-/// List all user-defined programs.
-///
 /// This function never fails, it only logs errors as warnings if something goes wrong.
 fn list_user_defined_program_specs() -> Vec<ProgramSpec> {
     let Ok(user_defined_programs_file) =
@@ -718,7 +702,6 @@ fn list_user_defined_program_specs() -> Vec<ProgramSpec> {
         .collect()
 }
 
-/// List all program specifications.
 pub fn list_program_specs() -> Vec<ProgramSpec> {
     let mut specs = list_user_defined_program_specs();
 
@@ -773,25 +756,63 @@ pub fn list_program_specs_for_file(path: &Path) -> Vec<ProgramSpec> {
     }
 }
 
-/// Open `path` within the given project's workdir using the program specified by `program_id`.
+/// The absolute path of `path`, relative to `checkout`: a linked worktree's, or the project's
+/// own.
 ///
-/// `path` is resolved relative to the repository workdir.
+/// A linked worktree has to be active, see `worktrees::open_changes_source()`.
+#[but_api]
+#[instrument(skip(ctx), err(Debug))]
+pub fn workdir_path(
+    ctx: &but_ctx::Context,
+    checkout: ChangesSource,
+    path: String,
+) -> anyhow::Result<String> {
+    resolve_workdir_path(ctx, &checkout, &path)?
+        .into_os_string()
+        .into_string()
+        .map_err(|path| anyhow::anyhow!("{path:?} is not valid UTF-8"))
+}
+
+fn resolve_workdir_path(
+    ctx: &but_ctx::Context,
+    checkout: &ChangesSource,
+    path: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let stays_inside = std::path::Path::new(path).components().all(|component| {
+        matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    anyhow::ensure!(stays_inside, "{path:?} must be relative to the checkout");
+    if let Some((_name, wt_repo)) = crate::worktrees::open_changes_source(ctx, checkout)? {
+        return wt_repo
+            .workdir_path(path)
+            .context("linked worktree must have a workdir");
+    }
+    ctx.repo
+        .get()?
+        .workdir_path(path)
+        .context("project must have a workdir")
+}
+
+/// Open `path` using the program specified by `program_id`.
+///
+/// `path` is resolved relative to `checkout`, see [`workdir_path()`].
 ///
 /// `line_nr` can be provided to open a file at a specific line.
 ///
-/// [`list_programs`] provides the available `program_id`s.
-#[but_api(napi)]
+/// [`list_program_specs()`] provides the available `program_id`s.
+#[but_api]
 #[instrument(skip(ctx), err(Debug))]
 pub fn open_in_program(
     ctx: &mut but_ctx::Context,
     program_id: String,
+    checkout: ChangesSource,
     path: String,
     line_nr: Option<u32>,
 ) -> anyhow::Result<()> {
-    let repo = ctx.repo.get()?;
-    let resolved_path = repo
-        .workdir_path(path.as_str())
-        .context("project must have a workdir")?;
+    let resolved_path = resolve_workdir_path(ctx, &checkout, &path)?;
 
     let program_specs = list_program_specs();
     if let Some(program) = program_specs

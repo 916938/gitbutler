@@ -1,4 +1,4 @@
-use crate::args::atoms::{AllowMergedArg, CliIdArg};
+use crate::args::atoms::{AllowMergedArg, CliIdArg, MessageFileArg};
 
 /// Move commits and changes around.
 ///
@@ -115,6 +115,10 @@ pub struct Platform {
     #[clap(short, long)]
     pub message: Option<Vec<String>>,
 
+    /// Read the new commit's message from `FILE`, or from stdin when `FILE` is `-`.
+    #[clap(short = 'F', long, value_name = "FILE", conflicts_with = "message")]
+    pub file: Option<MessageFileArg>,
+
     /// One or more sources to move, all of one kind: commits; committed files and hunks from one
     /// commit; or a single branch.
     ///
@@ -128,6 +132,10 @@ pub struct Platform {
     #[clap(flatten)]
     #[allow(missing_docs)]
     pub allow_merged: AllowMergedArg,
+
+    #[clap(flatten)]
+    #[allow(missing_docs)]
+    pub json: crate::args::atoms::JsonArg,
 }
 
 /// Example invocations appended to a `but move` parse error.

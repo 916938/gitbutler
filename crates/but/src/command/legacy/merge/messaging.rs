@@ -1,23 +1,25 @@
 //! Confirmation prompt and end-of-command reporting, kept honest about what actually happened.
 
-use anyhow::bail;
 use but_api::land::{BranchLandKind, BranchLandResult};
 use but_ctx::Context;
 
 use crate::{
+    CliResult, bad_input,
     theme::{self, Paint},
     utils::{Confirm, ConfirmDefault, OutputChannel},
 };
 
 /// Render the outcome of a land: the headline, a note when the remaining branches were left
-/// un-reconciled, stale pull-request warnings for rebased siblings, and the undo caveat.
+/// un-reconciled, stale pull-request warnings for rebased siblings, and, when the target has a
+/// `push_remote_name`, the undo caveat. A target without one was landed locally, which `but undo`
+/// reverts like any other operation.
 pub(super) fn report_land_result(
     out: &mut OutputChannel,
     ctx: &Context,
     result: &BranchLandResult,
     branch_name: &str,
     target_display: &str,
-    push_remote_name: &str,
+    push_remote_name: Option<&str>,
     target_branch_name: &str,
 ) -> anyhow::Result<()> {
     let t = theme::get();
@@ -28,7 +30,7 @@ pub(super) fn report_land_result(
                 format!("{branch_name} was already on {target_display}.")
             }
             BranchLandKind::Updated { .. } => {
-                format!("Landed {branch_name} onto {target_display}.")
+                format!("Landed {branch_name} onto {target_display}")
             }
         };
         let style = if result.reconcile_skipped {
@@ -36,14 +38,18 @@ pub(super) fn report_land_result(
         } else {
             t.success
         };
-        writeln!(out, "\n{}", style.paint(headline))?;
-        for name in &result.deleted_remote_branches {
-            writeln!(
-                out,
-                "{}",
-                t.hint
-                    .paint(format!("Deleted {push_remote_name}/{name} (landed)"))
-            )?;
+        // The blank line separates the headline from the warning and progress a remote land prints.
+        let separator = if push_remote_name.is_some() { "\n" } else { "" };
+        writeln!(out, "{separator}{}", style.paint(headline))?;
+        if let Some(push_remote_name) = push_remote_name {
+            for name in &result.deleted_remote_branches {
+                writeln!(
+                    out,
+                    "{}",
+                    t.hint
+                        .paint(format!("Deleted {push_remote_name}/{name} (landed)"))
+                )?;
+            }
         }
     }
 
@@ -68,6 +74,7 @@ pub(super) fn report_land_result(
     if let BranchLandKind::Updated {
         prev_target_oid, ..
     } = &result.landed
+        && let Some(push_remote_name) = push_remote_name
     {
         print_undo_caveat(
             out,
@@ -181,7 +188,8 @@ pub(super) fn confirm_direct_target_update(
     attached_prs: &[(String, usize)],
     target_display: &str,
     yes: bool,
-) -> anyhow::Result<()> {
+    yes_command: &str,
+) -> CliResult<()> {
     let mut extras = Vec::new();
     if !lower.segments.is_empty() {
         extras.push(format!(
@@ -228,9 +236,14 @@ pub(super) fn confirm_direct_target_update(
     }
 
     let Some(mut inout) = out.prepare_for_terminal_input() else {
-        bail!(
-            "Refusing to directly update {target_display} without confirmation. Re-run with --yes to confirm."
-        );
+        return Err(bad_input(format!(
+            "Refusing to directly update {target_display} without confirmation."
+        ))
+        .hint(format!(
+            "`{yes_command}` skips the confirmation and publishes to {target_display}. \
+             Run it only if a person approved landing without a pull request."
+        ))
+        .into());
     };
 
     let question = if extras.is_empty() {
@@ -239,7 +252,7 @@ pub(super) fn confirm_direct_target_update(
         format!("Land {branch_name} and everything below it directly onto {target_display}?")
     };
     if inout.confirm(question, ConfirmDefault::Yes)? == Confirm::No {
-        bail!("Land cancelled");
+        return Err(bad_input("Land cancelled").into());
     }
 
     Ok(())

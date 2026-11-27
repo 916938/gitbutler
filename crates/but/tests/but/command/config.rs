@@ -1,12 +1,11 @@
 use crate::utils::{CommandExt as _, Sandbox};
 use snapbox::str;
 
-#[cfg(feature = "legacy")]
 #[test]
 fn github_stacks_configuration_is_repository_local() {
     let env = Sandbox::open_with_default_settings("repo-with-remote-and-head");
 
-    env.but("--json config forge github-stacks")
+    env.but("config --json forge github-stacks")
         .assert()
         .success()
         .stdout_eq(str![[r#"
@@ -27,7 +26,7 @@ The repository must be enrolled in GitHub's stacked pull requests preview.
         env.invoke_git("config --local --get gitbutler.githubStackingMode"),
         "native"
     );
-    env.but("--json config forge github-stacks")
+    env.but("config --json forge github-stacks")
         .assert()
         .success()
         .stdout_eq(snapbox::str![[r#"
@@ -36,7 +35,7 @@ The repository must be enrolled in GitHub's stacked pull requests preview.
 }
 
 "#]]);
-    env.but("--json config forge github-stacks disable")
+    env.but("config --json forge github-stacks disable")
         .allow_json()
         .assert()
         .success()
@@ -65,7 +64,6 @@ They are used when the repository is enrolled in GitHub's stacked pull requests 
     );
 }
 
-#[cfg(feature = "legacy")]
 #[test]
 fn github_stacks_configuration_requires_a_repository() {
     Sandbox::empty()
@@ -73,19 +71,60 @@ fn github_stacks_configuration_requires_a_repository() {
         .assert()
         .failure()
         .stderr_eq(str![[r#"
-Error: No git repository found at .
-Please run 'but setup' to initialize the project.
+Error: No git repository found at .git
+
+Hint: Run `but init` to initialize a Git repository.
 
 "#]]);
 }
 
-#[cfg(feature = "legacy")]
+#[test]
+fn target_change_prints_json() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.invoke_git("branch dev main");
+
+    env.but("config target dev --json")
+        .allow_json()
+        .assert()
+        .success()
+        .stdout_eq(str![[r#"
+{
+  "branch": "dev",
+  "remote_url": "./fake/local/path/which-is-fine-as-we-dont-fetch-or-push",
+  "sha": "0dc37334a458df421bf67ea806103bf5004845dd"
+}
+
+"#]]);
+}
+
+#[test]
+fn target_that_cannot_be_read_is_an_error() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.invoke_git("branch dev main");
+    env.but("config target dev").assert().success();
+    env.invoke_git("branch -D dev");
+
+    env.but("config target --json")
+        .allow_json()
+        .assert()
+        .failure()
+        .stdout_eq(str![])
+        .stderr_eq(str![[r#"
+Error: Failed to read the target branch 'dev'
+
+Caused by:
+    0: DefaultTargetNotFound
+    1: The ref partially named "refs/heads/dev" could not be found[..]
+
+"#]]);
+}
+
 #[test]
 fn target_configures_distinct_push_remote_for_fork() {
     let env = Sandbox::open_with_default_settings("repo-with-remote-and-head");
-    env.but("setup").assert().success();
     env.invoke_git("remote add upstream .");
     env.invoke_git("update-ref refs/remotes/upstream/main refs/remotes/origin/main");
+    env.invoke_git("branch --set-upstream-to=upstream/main main");
 
     env.but("config target upstream/main --push-remote origin")
         .assert()
@@ -93,11 +132,159 @@ fn target_configures_distinct_push_remote_for_fork() {
 
     assert_eq!(
         env.invoke_git("config --local --get gitbutler.project.targetRef"),
-        "refs/remotes/upstream/main"
+        "refs/heads/main",
+        "remote input resolves to its local tracking branch"
     );
     assert_eq!(
         env.invoke_git("config --local --get gitbutler.project.pushRemote"),
         "origin"
+    );
+}
+
+// regression test for https://linear.app/gitbutler/issue/GB-2242
+#[test]
+fn target_remote_shorthand_without_tracking_branch_hints_to_track_it() {
+    let env = Sandbox::open_with_default_settings("repo-with-remote-and-head");
+    env.invoke_git("remote add upstream .");
+    env.invoke_git("update-ref refs/remotes/upstream/main refs/remotes/origin/main");
+
+    // nothing is being migrated, so the error doesn't call upstream/main the current target.
+    // The hint names main rather than leaving a branch open to fill in, as an agent fills it with
+    // the branch it works on, which then becomes the target and pushes to upstream/main.
+    env.but("config target upstream/main")
+        .assert()
+        .failure()
+        .stderr_eq(str![[r#"
+Error: No local branch tracks upstream/main
+
+Hint: Make a local branch track upstream/main with `git branch --set-upstream-to=upstream/main main`, or choose a local target branch with `but config target <branch>`
+
+"#]]);
+
+    // run the command the hint suggests
+    env.invoke_git("branch --set-upstream-to=upstream/main main");
+
+    env.but("config target upstream/main").assert().success();
+    assert_eq!(
+        env.invoke_git("config --local --get gitbutler.project.targetRef"),
+        "refs/heads/main",
+        "the shorthand resolves to the branch that now tracks it"
+    );
+    assert_eq!(
+        env.invoke_git("rev-parse --abbrev-ref main@{upstream}"),
+        "upstream/main",
+        "main keeps its upstream although origin has a main too"
+    );
+}
+
+// regression test for https://linear.app/gitbutler/issue/GB-2244
+#[test]
+fn target_remote_shorthand_without_namesake_creates_it_tracking_that_remote() {
+    let env = Sandbox::open_with_default_settings("repo-with-remote-and-head");
+    env.invoke_bash("git checkout -q -b feature && git branch -q -D main");
+    env.invoke_git("remote add upstream .");
+    env.invoke_git("update-ref refs/remotes/upstream/main refs/remotes/origin/main");
+
+    // a fresh clone working on a feature branch has no local main to infer the target from
+    env.but("status").assert().failure().stderr_eq(str![[r#"
+Error: No target branch is configured and none could be inferred
+
+Hint: Run `but config target <remote>/<branch>` to configure one
+
+"#]]);
+
+    // run the command the hint suggests
+    env.but("config target upstream/main").assert().success();
+    assert_eq!(
+        env.invoke_git("rev-parse --abbrev-ref main@{upstream}"),
+        "upstream/main",
+        "main is created to track the remote branch named, not origin/main of the default remote"
+    );
+    assert_eq!(
+        env.invoke_git("config --local --get gitbutler.project.targetRef"),
+        "refs/heads/main",
+    );
+    env.but("status").assert().success();
+}
+
+#[test]
+fn target_remote_head_without_tracking_branch_hints_to_choose_one() {
+    let env = Sandbox::open_with_default_settings("repo-with-remote-and-head");
+    env.invoke_bash("git checkout -q -b feature && git branch -q -D main");
+
+    // git doesn't accept HEAD as a branch name, so no command can make one track origin/HEAD
+    env.but("config target origin/HEAD")
+        .assert()
+        .failure()
+        .stderr_eq(str![[r#"
+Error: No local branch tracks origin/HEAD
+
+Hint: Choose a local target branch with `but config target <branch>`
+
+"#]]);
+}
+
+#[test]
+fn target_accepts_local_branch() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.but("config target main").assert().success();
+    assert_eq!(
+        env.invoke_git("config --local --get gitbutler.project.targetRef"),
+        "refs/heads/main",
+        "local input is stored directly"
+    );
+}
+
+// As 0.23.1 left a target main pushed without `-u`: it tracks nothing, and pulls onto it moved the
+// cutoff to its unpublished commit. Choosing it again makes it track origin/main, as
+// `git branch --set-upstream-to=origin/main main` would, with the cutoff back on origin/main, so
+// pulls don't take the unpublished commit for integrated.
+#[test]
+fn target_untracked_local_branch_tracks_remote_branch_named_as_it() {
+    let env = Sandbox::open_with_default_settings("repo-with-remote-and-head");
+    env.invoke_git("branch --unset-upstream main");
+    env.invoke_git("commit --allow-empty -m unpublished");
+    env.invoke_git("config gitbutler.project.targetRef refs/heads/main");
+    env.invoke_bash("git config gitbutler.project.targetCommitId $(git rev-parse main)");
+    env.invoke_git("config gitbutler.project.portedMeta true");
+
+    env.but("config target main").assert().success();
+    assert_eq!(
+        env.invoke_git("rev-parse --abbrev-ref main@{upstream}"),
+        "origin/main",
+        "main tracks the branch named as it on the remote"
+    );
+    assert_eq!(
+        env.project_meta().target_commit_id.map(|id| id.to_string()),
+        Some(env.invoke_git("rev-parse origin/main")),
+        "the cutoff is back on origin/main, below the unpublished commit"
+    );
+}
+
+#[test]
+fn target_prefers_local_branch_over_remote_shorthand() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.invoke_git("branch origin/main main");
+    env.but("config target origin/main").assert().success();
+    assert_eq!(
+        env.invoke_git("config --local --get gitbutler.project.targetRef"),
+        "refs/heads/origin/main",
+        "an exact local branch name takes precedence over remote shorthand"
+    );
+}
+
+#[test]
+fn target_accepts_qualified_remote_despite_local_name_collision() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
+    env.invoke_git("branch origin/main main");
+    env.invoke_git("branch --set-upstream-to=refs/remotes/origin/main main");
+    env.but("config target refs/remotes/origin/main")
+        .assert()
+        .success();
+    assert_eq!(
+        env.invoke_git("config --local --get gitbutler.project.targetRef"),
+        "refs/heads/main",
+        "a qualified remote name bypasses the colliding local name"
     );
 }
 
@@ -178,7 +365,7 @@ Feature Flags:
 fn feature_config_json_lists_no_flags() {
     let env = Sandbox::empty();
 
-    env.but("--json config feature")
+    env.but("config --json feature")
         .allow_json()
         .assert()
         .success()
@@ -301,8 +488,6 @@ fn ai_openai_defaults_to_global_config() {
 fn ai_ollama_local_writes_repo_config() {
     let env = Sandbox::empty();
     env.invoke_bash("git init repo");
-    #[cfg(feature = "legacy")]
-    env.but("-C repo setup").assert().success();
 
     env.but("-C repo config ai --local ollama --endpoint localhost:11434 --model llama3.1")
         .assert()
@@ -357,7 +542,7 @@ fn ai_show_outputs_current_global_configuration_json() {
         .success();
 
     let output = env
-        .but("--json config ai show")
+        .but("config --json ai show")
         .env("GIT_CONFIG_GLOBAL", &global_config)
         .allow_json()
         .output()
@@ -373,8 +558,6 @@ fn ai_show_outputs_current_global_configuration_json() {
 fn ai_show_outputs_current_local_configuration_json() {
     let env = Sandbox::empty();
     env.invoke_bash("git init repo");
-    #[cfg(feature = "legacy")]
-    env.but("-C repo setup").assert().success();
 
     env.but("-C repo config ai --local ollama --endpoint localhost:11434 --model llama3.1")
         .assert()
@@ -473,4 +656,19 @@ fn ai_anthropic_byok_without_api_key_fails_non_interactive() {
         "config --file global.gitconfig --get gitbutler.aiModelProvider",
         "provider should not be written when BYOK key is missing",
     );
+}
+
+#[test]
+fn forge_auth_without_terminal_is_bad_input() {
+    let env = Sandbox::empty();
+
+    env.but("config forge auth")
+        .assert()
+        .failure()
+        .stderr_eq(str![[r#"
+Error: Human input required - run this in a terminal
+
+Hint: Ask the user to run `but config forge auth` in a terminal. It has no non-interactive form
+
+"#]]);
 }

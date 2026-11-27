@@ -15,7 +15,6 @@ fn id_to_tree(repo: &gix::Repository, id: gix::ObjectId) -> anyhow::Result<gix::
     }
 }
 
-/// A type representing one or more changes of a tree entry itself, with utility methods for convenience.
 #[derive(Debug, Clone)]
 pub struct TreeChanges(
     /// All the actual tree-changes, in their original form.
@@ -53,7 +52,6 @@ impl TreeChanges {
     }
 }
 
-/// Utilities
 impl TreeChanges {
     /// Compute diff statistics on all blobs in this instance, using `repo` for blob retrieval and diff setup.
     ///
@@ -81,7 +79,6 @@ impl TreeChanges {
         Ok(stats)
     }
 
-    /// Convert this instance into a list of [`TreeChange`] instances.
     pub fn into_tree_changes(self) -> Vec<TreeChange> {
         self.0.into_iter().map(Into::into).collect()
     }
@@ -98,7 +95,7 @@ pub fn tree_changes(
 
 /// Compute the tree-diff for `commit_id` with its first parent.
 pub fn commit_changes(commit_id: gix::Id<'_>) -> anyhow::Result<TreeChanges> {
-    let repo = commit_id.repo;
+    let repo = commit_id.repo();
     let parent_id = commit_id
         .object()?
         .into_commit()
@@ -183,8 +180,6 @@ impl From<gix::object::tree::diff::ChangeDetached> for TreeChange {
                 entry_mode,
                 id,
                 location,
-                diff: _,
-                copy: _,
                 ..
             } => {
                 let previous_state = ChangeState {

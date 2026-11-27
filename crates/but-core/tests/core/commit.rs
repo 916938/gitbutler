@@ -70,6 +70,150 @@ fn is_conflicted() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn conflict_entries_preserve_forced_content_and_tree_reviews() -> anyhow::Result<()> {
+    use but_core::RepositoryExt as _;
+    use gix::object::tree::EntryKind;
+
+    let repo = conflict_repo("normal-and-artificial")?.with_object_memory();
+    let path = std::path::PathBuf::from("conflict");
+    let mut base = repo.empty_tree().edit()?;
+    base.upsert("conflict", EntryKind::Blob, repo.write_blob("base\n")?)?;
+    let base_tree_id = base.write()?.detach();
+    let mut ours = repo.edit_tree(base_tree_id)?;
+    ours.upsert("conflict", EntryKind::Blob, repo.write_blob("ours\n")?)?;
+    let our_tree_id = ours.write()?.detach();
+
+    for deleted in [false, true] {
+        let mut theirs = repo.edit_tree(base_tree_id)?;
+        if deleted {
+            theirs.remove("conflict")?;
+        } else {
+            theirs.upsert("conflict", EntryKind::Blob, repo.write_blob("theirs\n")?)?;
+        }
+        let their_tree_id = theirs.write()?.detach();
+        let outcome = repo.merge_trees(
+            base_tree_id,
+            our_tree_id,
+            their_tree_id,
+            repo.default_merge_labels(),
+            repo.merge_options_force_ours()?,
+        )?;
+        let how = gix::merge::tree::TreatAsUnresolved::forced_resolution();
+        assert!(
+            outcome.has_unresolved_conflicts(how),
+            "both kinds of forced resolution remain reviewable"
+        );
+        assert_eq!(
+            outcome.index.has_unmerged_entries(how),
+            !deleted,
+            "forced content keeps source stages while a selected tree entry remains stage zero"
+        );
+        let entries = but_core::commit::conflict_entries_from_merge_outcome(&outcome, how)?;
+        assert_eq!(
+            entries.ancestor_entries,
+            if deleted {
+                Vec::new()
+            } else {
+                vec![path.clone()]
+            },
+            "only actual unmerged stages supply an ancestor path"
+        );
+        assert_eq!(
+            entries.our_entries,
+            std::slice::from_ref(&path),
+            "our conflicting path is retained"
+        );
+        assert_eq!(
+            entries.their_entries,
+            std::slice::from_ref(&path),
+            "their conflicting path is retained"
+        );
+    }
+    Ok(())
+}
+
+mod padding {
+    use bstr::ByteSlice as _;
+    use but_core::commit::padding;
+
+    use super::conflict_repo;
+
+    #[test]
+    fn create_on_conflicted_commit() -> anyhow::Result<()> {
+        let repo = conflict_repo("normal-and-artificial")?.with_object_memory();
+        for tag in ["conflicted", "marked-conflict"] {
+            let conflicted = but_core::Commit::from_id(repo.rev_parse_single(tag)?)?;
+
+            let padding_id = padding::create(&conflicted)?;
+            assert_eq!(
+                padding::create(&conflicted)?,
+                padding_id,
+                "{tag}: a padding commit is a pure function of its conflicted commit"
+            );
+            let padding = repo.find_commit(padding_id)?;
+            assert_eq!(
+                padding.tree_id()?,
+                repo.rev_parse_single(format!("{tag}:.auto-resolution").as_str())?,
+                "{tag}: the padding commit makes the auto-resolution checkout-able"
+            );
+            assert!(
+                !but_core::Commit::from_id(padding.id())?.is_conflicted(),
+                "{tag}: a padding commit carries no conflict"
+            );
+        }
+
+        let conflicted = but_core::Commit::from_id(repo.rev_parse_single("conflicted")?)?;
+        let padding = repo.find_commit(padding::create(&conflicted)?)?;
+        // The conflicted commit is the only parent, its author and committer are kept, and there are no extra headers.
+        snapbox::assert_data_eq!(
+            padding.data.to_str_lossy().into_owned(),
+            snapbox::str![[r#"
+tree df2b8fc99e1c1d4dbc0a854d9f72157f1d6ea078
+parent 84503317a1e1464381fcff65ece14bc1f4315b7c
+author GitButler <gitbutler@gitbutler.com> 1730625617 +0100
+committer Sebastian Thiel <sebastian.thiel@icloud.com> 1736343261 +0100
+
+GitButler Padding Commit
+
+Hi! I'm a stand-in for the conflicted commit below me, so your editor shows its
+auto-resolved changes instead of conflict markers.
+
+There's nothing to do with me. GitButler takes me out again once you resolve the
+conflict, and anything you commit on top of me moves onto the conflicted commit.
+
+"#]]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn create_on_unconflicted_commit_fails() -> anyhow::Result<()> {
+        let repo = conflict_repo("normal-and-artificial")?.with_object_memory();
+        let normal = but_core::Commit::from_id(repo.rev_parse_single("normal")?)?;
+        let error = padding::create(&normal).expect_err("there is no auto-resolution to pad");
+        assert!(
+            error.to_string().contains("is not conflicted"),
+            "an ordinary commit is refused instead of padding its own tree: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn create_on_malformed_conflict_fails() -> anyhow::Result<()> {
+        let repo = conflict_repo("normal-and-artificial")?.with_object_memory();
+        let partial = but_core::Commit::from_id(repo.rev_parse_single("partial-conflict")?)?;
+        let error = padding::create(&partial).expect_err("the auto-resolution tree is missing");
+        assert!(
+            error
+                .to_string()
+                .contains("Unexpected tree in conflicting commit"),
+            "a malformed conflict has no auto-resolution to pad: {error}"
+        );
+        Ok(())
+    }
+}
+
 pub fn conflict_repo(name: &str) -> anyhow::Result<gix::Repository> {
     let root = gix_testtools::scripted_fixture_read_only("conflict-commits.sh")
         .map_err(anyhow::Error::from_boxed)?;

@@ -68,7 +68,7 @@ use super::{
 
 mod details_layout;
 mod discard;
-pub(super) use discard::run_discard;
+pub(super) use discard::{committed_discard_operation, run_discard};
 
 pub mod mark;
 mod undo_redo;
@@ -205,22 +205,29 @@ impl Tui for App {
 
         self.updates += 1;
 
+        let ignore_user_inputs = self.modal.as_ref().is_some_and(|modal| match modal {
+            Modal::Confirm { confirm } => confirm.waiting_on_callback(),
+            _ => false,
+        });
+
+        if ignore_user_inputs {
+            self.should_render = true;
+        }
+
         // update at full speed while we're rendering the diff
         let event_poll_timeout = if self.details.is_polling_thread() {
             Duration::from_millis(0)
         } else {
             Duration::from_millis(30)
         };
-        // poll terminal events
         events.clear();
         event_polling.poll_into(event_poll_timeout, events)?;
         for event in events.drain(..) {
             let terminal_area: Rect = terminal_guard.terminal_mut().size()?.into();
-            event_to_messages(event, self, terminal_area, messages);
+            event_to_messages(event, self, terminal_area, messages, ignore_user_inputs);
         }
         dedup_mutation_messages(messages, other_messages);
 
-        // check for any out of band messages
         self.incoming_out_of_band_messages
             .retain(|rx| match rx.try_recv() {
                 Ok(msg) => {
@@ -233,13 +240,16 @@ impl Tui for App {
                 },
             });
 
-        // handle messages
         let mut did_reload = false;
         loop {
             if messages.is_empty() {
                 break;
             }
             for msg in messages.drain(..) {
+                // Fatal startup errors must bypass recoverable message error handling.
+                if let Message::FatalError(err) = msg {
+                    return Err(err);
+                }
                 if matches!(msg, Message::Reload(..)) {
                     if did_reload && cfg!(feature = "tui-profiling") && !cfg!(test) {
                         self.toasts
@@ -376,8 +386,8 @@ impl App {
         let is_details_visible = launch_options.show_diff || initial_hunk.is_some();
 
         let app_key_binds = AppKeyBinds {
-            key_binds: default_key_binds(&ctx.settings.feature_flags),
-            normal_with_marks_key_binds: normal_with_marks_key_binds(&ctx.settings.feature_flags),
+            key_binds: default_key_binds(),
+            normal_with_marks_key_binds: normal_with_marks_key_binds(),
             confirm_key_binds: confirm_key_binds(),
         };
 
@@ -661,6 +671,7 @@ impl App {
             Message::Reload(select_after_reload, cause) => {
                 self.handle_reload(ctx, out, select_after_reload, cause)?
             }
+            Message::FatalError(err) => messages.push(Message::FatalError(err)),
             Message::ShowError(err) => self.handle_show_error(err, messages),
             Message::Commit(commit_message) => {
                 self.handle_commit(commit_message, ctx, terminal_guard, messages)?
@@ -799,13 +810,6 @@ impl App {
             }
             Message::DropToBeDiscarded => {
                 self.to_be_discarded.clear();
-            }
-            Message::AndThen { lhs, rhs } => {
-                self.try_handle_message(ctx, out, terminal_guard, messages, *lhs)?;
-
-                // Push `rhs` to the end of the queue. That way any messages enqueued by `lhs` will
-                // be handled first.
-                messages.push(*rhs);
             }
             Message::Debug(text) => {
                 messages.push(Message::ShowToast {
@@ -986,7 +990,7 @@ impl App {
                 Mode::PickChanges(PickChangesMode { marks }) => marks.as_ref(),
             }
             .iter()
-            .map(|mark| mark.to_owned().into_selectable())
+            .filter_map(|mark| mark.to_owned().into_selectable())
             .collect(),
         ));
     }
@@ -1053,7 +1057,7 @@ impl App {
                 }
             }
             BackstackEntry::LeaveNormalMode => {
-                // Cancelling jump only restores the mode and backstack, never the cursor.
+                // Cancelling jump restores the mode, backstack, and cursor from before jumping.
                 if self.restore_mode_before_jump() {
                     return;
                 }
@@ -1194,7 +1198,7 @@ impl App {
     fn close_file_list(&mut self) {
         let should_clear_marks = matches!(
             self.marks_ref(),
-            mark::MarksRef::CommittedFiles { head: _, tail: _ }
+            mark::MarksRef::Committed { head: _, tail: _ }
         );
 
         self.flags.show_files = FilesStatusFlag::None;
@@ -1421,9 +1425,6 @@ impl App {
                     },
                 ));
             }
-            gitbutler_watcher::Change::ExternalInvalidation { .. } => {
-                // The TUI keeps no forge caches; workspace changes reach it as activity.
-            }
             gitbutler_watcher::Change::WorkspaceActivity { .. } => {
                 // TODO: We currently dont have a good way of detecting changes made by external
                 // processes and only then reloading. Always reloading here would result in double
@@ -1463,14 +1464,16 @@ impl App {
         let details_selection_before_reload =
             self.details.selected_section_cli_id().map(Arc::clone);
 
-        let select_details_section_after_reload = select_after_reload.as_ref().and_then(
+        let mut select_details_section_after_reload = select_after_reload.as_ref().and_then(
             |select_after_reload| match select_after_reload {
                 SelectAfterReload::UncommittedDetailsSection { index, direction } => {
                     Some((*index, *direction))
                 }
+                SelectAfterReload::RewrittenCommit {
+                    details_section, ..
+                } => *details_section,
                 SelectAfterReload::Commit(_)
                 | SelectAfterReload::FirstFileInCommit(_)
-                | SelectAfterReload::UncommittedFile { .. }
                 | SelectAfterReload::Branch(_)
                 | SelectAfterReload::CliId(_)
                 | SelectAfterReload::Worktree(_)
@@ -1495,10 +1498,26 @@ impl App {
                         self.backstack.remove_show_file_list();
                     }
                 }
+                SelectAfterReload::RewrittenCommit {
+                    source,
+                    new_commit,
+                    details_section: _,
+                } => {
+                    // The file list belongs to the rewritten commit, so move it to the new one.
+                    if let FilesStatusFlag::Commit(commit_shown) = self.flags.show_files
+                        && commit_shown == *source
+                    {
+                        if operations::commit_is_empty(ctx, *new_commit)? {
+                            self.flags.show_files = FilesStatusFlag::None;
+                            self.backstack.remove_show_file_list();
+                        } else {
+                            self.flags.show_files = FilesStatusFlag::Commit(*new_commit);
+                        }
+                    }
+                }
                 SelectAfterReload::Branch(_)
                 | SelectAfterReload::Worktree(_)
                 | SelectAfterReload::Uncommitted
-                | SelectAfterReload::UncommittedFile { .. }
                 | SelectAfterReload::UncommittedDetailsSection { .. }
                 | SelectAfterReload::CliId(_) => {}
             }
@@ -1510,43 +1529,73 @@ impl App {
 
         self.cursor = match select_after_reload {
             None | Some(SelectAfterReload::UncommittedDetailsSection { .. }) => {
-                let restored_cursor = self
-                    .cursor
-                    .selection_cli_id_for_reload(&self.status_lines, self.flags.show_files)
-                    .and_then(|cli_id| Cursor::restore(cli_id, &new_lines));
+                let restored_cursor = self.cursor.restore_after_reload(
+                    &self.status_lines,
+                    &new_lines,
+                    self.flags.show_files,
+                );
 
                 if select_details_section_after_reload.is_some() {
                     restored_cursor.or_else(|| Cursor::select_uncommitted(&new_lines))
                 } else {
-                    let selected_merge_base = self
-                        .cursor
-                        .selected_line(&self.status_lines)
-                        .is_some_and(|line| matches!(line.data, StatusOutputLineData::MergeBase));
-
-                    if selected_merge_base {
-                        Cursor::select_merge_base(&new_lines).or(restored_cursor)
-                    } else {
-                        restored_cursor
-                    }
+                    restored_cursor
                 }
             }
             Some(SelectAfterReload::Commit(commit_id)) => {
                 Cursor::select_commit(commit_id, &new_lines)
+            }
+            Some(SelectAfterReload::RewrittenCommit {
+                source,
+                new_commit,
+                details_section: _,
+            }) => {
+                // Select the same file in the new commit. If the file no longer has changes, select
+                // the first file in the new commit like discarding a whole file does, or the new
+                // commit if that has no files either.
+                let file_cursor = match selection_before_reload.as_deref() {
+                    Some(CliId::CommittedFile {
+                        committed_file:
+                            CommittedFileId {
+                                commit_id, path, ..
+                            },
+                        id: _,
+                    }) if *commit_id == source => {
+                        let cursor =
+                            Cursor::select_committed_file(new_commit, path.as_ref(), &new_lines);
+                        if cursor.is_none() {
+                            // The details now show something else, so the section no longer
+                            // applies.
+                            select_details_section_after_reload = None;
+                        }
+                        cursor
+                            .or_else(|| Cursor::select_first_file_in_commit(new_commit, &new_lines))
+                    }
+                    _ => None,
+                };
+                file_cursor.or_else(|| Cursor::select_commit(new_commit, &new_lines))
             }
             Some(SelectAfterReload::Branch(branch)) => Cursor::select_branch(&branch, &new_lines),
             Some(SelectAfterReload::Worktree(worktree)) => {
                 Cursor::select_worktree(worktree.as_ref(), &new_lines)
             }
             Some(SelectAfterReload::Uncommitted) => Cursor::select_uncommitted(&new_lines),
-            Some(SelectAfterReload::UncommittedFile { path }) => {
-                Cursor::select_uncommitted_file(path.as_ref(), &new_lines)
-            }
             Some(SelectAfterReload::FirstFileInCommit(commit_id)) => {
                 Cursor::select_first_file_in_commit(commit_id, &new_lines)
             }
             Some(SelectAfterReload::CliId(cli_id)) => Cursor::restore(&cli_id, &new_lines),
         }
         .unwrap_or_else(|| Cursor::new(&new_lines));
+
+        // Cancelling jump returns to where it started, so that line has to be found again too.
+        if let Mode::Jump(jump_mode) = self
+            .mode
+            .get_mut_and_i_promise_not_to_switch_to_a_different_state()
+        {
+            jump_mode.return_cursor = jump_mode
+                .return_cursor
+                .restore_after_reload(&self.status_lines, &new_lines, self.flags.show_files)
+                .unwrap_or_else(|| Cursor::new(&new_lines));
+        }
 
         if close_empty_global_file_list_after_reload
             && !new_lines.iter().any(|line| {
@@ -1667,6 +1716,7 @@ impl App {
                     }),
                     CommitSelection::Nothing,
                     CommitMessageSource::Empty,
+                    false,
                 )?;
 
                 messages.push(Message::Reload(
@@ -1694,6 +1744,7 @@ impl App {
                     }),
                     CommitSelection::Nothing,
                     CommitMessageSource::Empty,
+                    false,
                 )?;
 
                 messages.push(Message::Reload(
@@ -1886,11 +1937,11 @@ impl App {
                     .chain(tail)
                     .map(|hunk| hunk.hunks.head.hunk.path.as_bstr()),
             ),
-            mark::MarksRef::CommittedFiles { head, tail } => openable_from_paths(
+            mark::MarksRef::Committed { head, tail } => openable_from_paths(
                 ctx,
                 std::iter::once(head)
                     .chain(tail)
-                    .map(|file| file.path.as_bstr()),
+                    .map(|mark| mark.committed_file().path.as_bstr()),
             ),
             mark::MarksRef::Commits { .. } | mark::MarksRef::Branches { .. } => Ok(None),
         }
@@ -1968,7 +2019,6 @@ impl App {
         Ok(())
     }
 
-    /// Returns the currently selected commit id when the selected line is a commit.
     fn selected_commit_id(&self) -> Option<CommitId> {
         let selection = self.cursor.selected_line(&self.status_lines)?;
 
@@ -1999,7 +2049,7 @@ impl App {
                 but_workspace::ref_info::Options {
                     project_meta: ctx.project_meta()?,
                     traversal: but_graph::init::Options {
-                        worktrees: ctx.settings.feature_flags.worktree_manipulation,
+                        worktrees: true,
                         ..Default::default()
                     },
                     ..Default::default()

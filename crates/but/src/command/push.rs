@@ -4,11 +4,9 @@ pub mod help {
     use crate::utils::OutputChannel;
 
     fn is_gerrit_enabled() -> bool {
-        // Parse the -C flag from command line arguments
         let args: Vec<String> = std::env::args().collect();
         let mut current_dir = std::path::Path::new(".");
 
-        // Look for -C flag
         for (i, arg) in args.iter().enumerate() {
             if arg == "-C" && i + 1 < args.len() {
                 current_dir = std::path::Path::new(&args[i + 1]);
@@ -48,7 +46,7 @@ pub mod help {
         writeln!(out, "Options:")?;
         writeln!(
             out,
-            "  -d, --dry-run                     Show what would be pushed without actually pushing"
+            "  -d, --dry-run                     Show what would be pushed without pushing, and exit non-zero if the push would be refused"
         )?;
         writeln!(
             out,
@@ -62,8 +60,11 @@ pub mod help {
             out,
             "      --no-hooks, --no-verify       Bypass pre-push hooks"
         )?;
+        writeln!(
+            out,
+            "      --json                        Output detailed information as JSON for tool consumption"
+        )?;
 
-        // Check if gerrit mode is enabled and show gerrit options
         if is_gerrit_enabled() {
             writeln!(out,)?;
             writeln!(out, "Gerrit Options:")?;

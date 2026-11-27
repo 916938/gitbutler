@@ -8,12 +8,10 @@ use crate::utils::{CommandExt, Sandbox};
 
 use utils::create_local_branch_with_commit;
 
-#[cfg(feature = "legacy")]
 #[test]
 fn applying_a_worktree_branch_is_a_no_op() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);
-    util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     util::add_worktree_with_commit(&env, "wt-feature", "A");
 
@@ -116,101 +114,6 @@ Hint: run `but help` for all commands
 "#]]);
 }
 
-#[cfg(not(feature = "legacy"))]
-#[test]
-fn single_branch() {
-    let env = Sandbox::open_with_default_settings("one-fork");
-    snapbox::assert_data_eq!(
-        env.git_log(),
-        snapbox::str![[r"
-    * bf53300 (A) add A
-    | * b1540e5 (HEAD -> main) M
-    |/  
-    | * 0e391b2 (origin/B) add B
-    |/  
-    * e31e6ca (origin/main, origin/HEAD) add init
-    "]]
-    );
-
-    env.but("apply A")
-        .assert()
-        .success()
-        .stderr_eq(str![])
-        .stdout_eq(str![[r#"
-Applied branch 'main' to workspace
-Applied branch 'A' to workspace
-
-"#]]);
-
-    snapbox::assert_data_eq!(
-        env.workspace_debug_at_head().unwrap(),
-        snapbox::str![[r"
-    📕🏘️:0:gitbutler/workspace[🌳] <> ✓! on e31e6ca
-    ├── ≡📙:2:A on e31e6ca {1}
-    │   └── 📙:2:A
-    │       └── ·bf53300 (🏘️)
-    └── ≡📙:1:main on e31e6ca {2}
-        └── 📙:1:main
-            └── ·b1540e5 (🏘️)
-    "]]
-    );
-
-    snapbox::assert_data_eq!(
-        env.git_log(),
-        snapbox::str![[r"
-    *   d87b903 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-    |\  
-    | * bf53300 (A) add A
-    * | b1540e5 (main) M
-    |/  
-    | * 0e391b2 (origin/B) add B
-    |/  
-    * e31e6ca (origin/main, origin/HEAD) add init
-    "]]
-        .raw()
-    );
-
-    env.but("apply origin/B")
-        .assert()
-        .success()
-        .stdout_eq(str![[r#"
-Applied remote branch 'origin/B' to workspace
-
-"#]])
-        .stderr_eq(str![""]);
-    snapbox::assert_data_eq!(
-        env.workspace_debug_at_head().unwrap(),
-        snapbox::str![[r"
-    📕🏘️:0:gitbutler/workspace[🌳] <> ✓! on e31e6ca
-    ├── ≡📙:3:B <> origin/B →:4: on e31e6ca {1}
-    │   └── 📙:3:B <> origin/B →:4:
-    │       └── ❄️0e391b2 (🏘️)
-    ├── ≡📙:2:A on e31e6ca {2}
-    │   └── 📙:2:A
-    │       └── ·bf53300 (🏘️)
-    └── ≡📙:1:main on e31e6ca {3}
-        └── 📙:1:main
-            └── ·b1540e5 (🏘️)
-    "]]
-    );
-
-    // TODO: should be success and create a local tracking branch.
-    snapbox::assert_data_eq!(
-        env.git_log(),
-        snapbox::str![[r"
-    *-.   7bcf528 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
-    |\ \  
-    | | * 0e391b2 (origin/B, B) add B
-    | * | bf53300 (A) add A
-    | |/  
-    * / b1540e5 (main) M
-    |/  
-    * e31e6ca (origin/main, origin/HEAD) add init
-    "]]
-        .raw()
-    );
-}
-
 #[test]
 fn local_branch() {
     let env = Sandbox::open_or_init_scenario_with_target_and_default_settings("one-stack");
@@ -294,7 +197,7 @@ fn local_branch_with_json_output() {
     create_local_branch_with_commit(&env, "feature-branch");
 
     // Apply with JSON output
-    env.but("--json apply feature-branch")
+    env.but("apply --json feature-branch")
         .allow_json()
         .assert()
         .success()
@@ -305,7 +208,6 @@ fn local_branch_with_json_output() {
   "appliedBranches": [
     "refs/heads/feature-branch"
   ],
-  "workspaceRefCreated": false,
   "conflictingStacks": []
 }
 
@@ -549,7 +451,7 @@ fn nonexistent_branch_with_json() {
     let env = Sandbox::open_or_init_scenario_with_target_and_default_settings("one-stack");
 
     // Try to apply a branch that doesn't exist with JSON output
-    env.but("--json apply nonexistent-branch")
+    env.but("apply --json nonexistent-branch")
         .allow_json()
         .assert()
         .failure()
@@ -655,6 +557,11 @@ fn apply_branch_conflicting_with_workspace_reports_error() {
         .stderr_eq(str![[r#"
 Failed to apply branch: 'conflicting-branch' conflicts with existing stack: 'A'
 
+Hint: to apply 'conflicting-branch', unapply what it conflicts with first:
+  but unapply A && but apply conflicting-branch
+Hint: to leave the workspace as it is, check 'conflicting-branch' out in its own worktree:
+  but worktree new conflicting-branch
+
 "#]])
         .stdout_eq(str![""]);
 
@@ -664,6 +571,26 @@ Failed to apply branch: 'conflicting-branch' conflicts with existing stack: 'A'
         .failure()
         .stderr_eq(str![[r#"
 Failed to apply branch: 'conflicting-branch' conflicts with existing stack: 'A'
+
+Hint: to apply 'conflicting-branch', unapply what it conflicts with first:
+  but unapply A && but apply conflicting-branch
+Hint: to leave the workspace as it is, check 'conflicting-branch' out in its own worktree:
+  but worktree new conflicting-branch
+
+"#]])
+        .stdout_eq(str![""]);
+
+    // `but worktree new origin/conflicting-remote` would create a new local branch of that
+    // name, so a remote branch gets no worktree hint.
+    env.invoke_git("update-ref refs/remotes/origin/conflicting-remote conflicting-branch");
+    env.but("apply origin/conflicting-remote")
+        .assert()
+        .failure()
+        .stderr_eq(str![[r#"
+Failed to apply branch: 'origin/conflicting-remote' conflicts with existing stack: 'A'
+
+Hint: to apply 'origin/conflicting-remote', unapply what it conflicts with first:
+  but unapply A && but apply origin/conflicting-remote
 
 "#]])
         .stdout_eq(str![""]);
@@ -702,9 +629,8 @@ fn apply_branch_conflicting_with_workspace_reports_json_error() {
         .stdout_eq(str![[r#"
 {
   "status": "conflictAborted",
-  "workspaceChanged": true,
+  "workspaceChanged": false,
   "appliedBranches": [],
-  "workspaceRefCreated": false,
   "conflictingStacks": [
     "refs/heads/A"
   ]
@@ -790,6 +716,30 @@ Hint: run `but help` for all commands
 "#]]
         .raw()
     );
+}
+
+#[test]
+fn apply_after_unapplying_down_to_one_branch_reports_that_branch() {
+    let env = Sandbox::open_or_init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    create_local_branch_with_commit(&env, "feature-branch");
+    env.but("apply feature-branch").assert().success();
+    env.but("unapply feature-branch").assert().success();
+    assert_eq!(
+        env.invoke_git("rev-parse --abbrev-ref HEAD"),
+        "A",
+        "unapplying down to one branch checks that branch out"
+    );
+
+    env.but("apply feature-branch")
+        .assert()
+        .success()
+        .stderr_eq(str![])
+        .stdout_eq(str![[r#"
+Applied branch 'A' to workspace
+Applied branch 'feature-branch' to workspace
+
+"#]]);
 }
 
 mod utils {

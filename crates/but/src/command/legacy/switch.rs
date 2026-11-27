@@ -21,7 +21,8 @@ use crate::{
     bad_input,
     theme::{self, Theme},
     utils::{
-        CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils, time::format_relative_time,
+        CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils, change_source::InvokedFrom,
+        time::format_relative_time,
     },
 };
 
@@ -31,10 +32,16 @@ pub fn switch(
     ctx: &mut Context,
     mut out: IntermediateChannel<'_>,
     args: Platform,
+    invoked_from: &InvokedFrom,
 ) -> CliResult<SwitchOutcome> {
+    if let Some(worktree) = &invoked_from.linked_worktree {
+        return Err(bad_input(format!("Cannot switch from worktree {worktree}"))
+            .hint("Run `but switch` from the main worktree")
+            .into());
+    }
     let mut guard = ctx.exclusive_worktree_access();
 
-    let operation = resolve(ctx, guard.read_permission(), &mut out, args)?;
+    let operation = resolve(ctx, guard.read_permission(), &mut out, args, invoked_from)?;
 
     Ok(run(ctx, guard.write_permission(), operation)?)
 }
@@ -44,8 +51,13 @@ fn resolve(
     perm: &RepoShared,
     out: &mut IntermediateChannel<'_>,
     args: Platform,
+    invoked_from: &InvokedFrom,
 ) -> CliResult<SwitchOperation> {
-    let Platform { target, workspace } = args;
+    let Platform {
+        target,
+        workspace,
+        json: _,
+    } = args;
 
     if workspace {
         return Ok(SwitchOperation::Workspace);
@@ -53,7 +65,7 @@ fn resolve(
 
     if let Some(target) = target {
         let repo = ctx.repo.get()?;
-        let id_map = IdMap::new_from_context(ctx, perm)?;
+        let id_map = IdMap::new_from_context(ctx, perm, Some(invoked_from))?;
         let branch = target.resolve_existing_local_branch(&repo, &id_map)?;
         Ok(SwitchOperation::Branch { branch })
     } else {
@@ -89,7 +101,8 @@ pub fn run(
     perm: &mut RepoExclusive,
     operation: SwitchOperation,
 ) -> anyhow::Result<SwitchOutcome> {
-    match operation {
+    let old_head = ctx.repo.get()?.head_id()?.detach();
+    let outcome: anyhow::Result<_> = match operation {
         SwitchOperation::Workspace => {
             let workspace_exists = {
                 let repo = ctx.repo.get()?;
@@ -116,7 +129,23 @@ pub fn run(
 
             Ok(SwitchOutcome::Branch { branch })
         }
+    };
+    let outcome = outcome?;
+    if !matches!(outcome, SwitchOutcome::AlreadyOnWorkspace) {
+        // Checkout is already complete: hook failure must not roll it back.
+        let hook_result = {
+            let repo = ctx.repo.get()?;
+            but_core::hooks::post_checkout(
+                repo.workdir().context("Checkout requires a worktree")?,
+                old_head,
+                repo.head_id()?.detach(),
+            )
+        };
+        // Hooks can modify repository state, including when they fail.
+        ctx.reload_repo_and_invalidate_workspace(perm)?;
+        hook_result?;
     }
+    Ok(outcome)
 }
 
 pub enum SwitchOperation {

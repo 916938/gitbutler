@@ -1,6 +1,9 @@
 use snapbox::IntoData;
 
-use crate::utils::Sandbox;
+use crate::{
+    command::undo::{Options, run_mutate_undo_roundtrip_test_with_options},
+    utils::Sandbox,
+};
 
 #[test]
 fn status_with_main_and_origin_main_in_sync() {
@@ -670,4 +673,307 @@ Hint: run `but help` for all commands
 Hint: run `but help` for all commands
 
 "#]]);
+}
+
+#[test]
+fn main_pulled_outside_gitbutler_is_not_a_branch_of_a_new_stack() {
+    let env = Sandbox::open_with_default_settings("single-branch-mode");
+    // GitButler records the target, then `main` is pulled with plain git.
+    env.but("status").assert().success();
+    env.invoke_bash(
+        "echo upstream > upstream.txt && git add upstream.txt && git commit -qm upstream \
+         && git update-ref refs/remotes/origin/main main",
+    );
+    env.but("branch new feature").assert().success();
+    env.file("feature.txt", "feature\n");
+    env.but("commit -b feature -m feature-change")
+        .assert()
+        .success();
+
+    // `main` holds nothing beyond `origin/main`, so it's the base of `feature`, not its bottom branch.
+    env.but("status")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ at [feature] [HEAD]
+┊●   rwm feature-change
+├╯
+┊
+┊● 100373b (main, upstream: origin/main) 1 new commit
+├╯ 100373b (common base, main, origin/main) 2000-01-02 upstream
+
+Hint: origin/main moved ahead; run `but pull` to update the workspace
+
+"#]]);
+}
+
+#[test]
+fn main_with_own_commits_stays_below_a_branch_checked_out_from_it() {
+    let env = Sandbox::open_with_default_settings("single-branch-mode");
+    env.invoke_bash("echo main > on-main.txt && git add on-main.txt && git commit -qm on-main");
+
+    // The checked-out `main` with a commit of its own is a branch.
+    env.but("status")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ ma [main] [HEAD]
+┊●   xzn on-main
+├╯
+┊
+┴ b1540e5 (common base, origin/main) 2000-01-02 M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    env.invoke_bash(
+        "git checkout -qb feature-branch && echo feature > feature.txt && git add feature.txt \
+         && git commit -qm on-feature",
+    );
+
+    // `main` keeps its commit, so it stays a branch below the one built on it.
+    env.but("status")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ at [feature-branch] [HEAD]
+┊●   lns on-feature
+┊│
+┊├┄ ma [main]
+┊●   xzn on-main
+├╯
+┊
+┴ b1540e5 (common base, origin/main) 2000-01-02 M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
+fn main_behind_origin_is_not_a_branch_of_a_new_stack() {
+    let env = Sandbox::open_with_default_settings("single-branch-mode");
+    // GitButler records the target, then `main` is pulled with plain git once, and
+    // `origin/main` moves on again, leaving `main` behind without commits of its own.
+    env.but("status").assert().success();
+    env.invoke_bash(
+        "echo pulled > pulled.txt && git add pulled.txt && git commit -qm pulled \
+         && git checkout -q --detach && echo upstream > upstream.txt && git add upstream.txt \
+         && git commit -qm upstream && git update-ref refs/remotes/origin/main HEAD \
+         && git checkout -q main",
+    );
+    env.invoke_bash(
+        "git checkout -qb feature-branch && echo feature > feature.txt && git add feature.txt \
+         && git commit -qm on-feature",
+    );
+
+    // `main` holds nothing that isn't upstream, so it's no branch at the bottom.
+    env.but("status")
+        .env("NO_BG_TASKS", "1")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ at [feature-branch] [HEAD]
+┊●   tou on-feature
+├╯
+┊
+┊● 22beb02 (upstream: origin/main) 1 new commit
+├╯ fa533ac (common base, main) 2000-01-02 pulled
+
+Hint: origin/main moved ahead; run `but pull` to update the workspace
+
+"#]]);
+}
+
+#[test]
+fn status_and_committing_without_a_remote_target() {
+    let env = Sandbox::open_with_default_settings("first-commit");
+
+    env.file("file", "content");
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* 85efbe4 (HEAD -> main) M
+
+"#]]
+    );
+
+    env.but("status")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted]
+┊   qs A file
+┊
+┴ 85efbe4 (common base, main, HEAD) 2000-01-02 M
+
+Hint: run `but branch new` to create a new branch to work on
+
+"#]]);
+
+    let options = Options {
+        redo: true,
+        ..Default::default()
+    };
+
+    run_mutate_undo_roundtrip_test_with_options(&env, options, |env| {
+        env.but("commit -b feature -m 'work'").assert().success();
+
+        env.but("status")
+            .assert()
+            .success()
+            .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ at [feature] [HEAD]
+┊●   qqo work
+├╯
+┊
+┴ 85efbe4 (common base, main) 2000-01-02 M
+
+Hint: run `but help` for all commands
+
+"#]]);
+    });
+
+    env.file("new-file", "new content");
+
+    run_mutate_undo_roundtrip_test_with_options(&env, options, |env| {
+        env.but("commit -b other-feature -m 'more work'")
+            .assert()
+            .success();
+
+        env.but("status")
+            .assert()
+            .success()
+            .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ ot [other-feature]
+┊●   rpq more work
+├╯
+┊
+┊╭┄ at [feature]
+┊●   qqo work
+├╯
+┊
+┴ 85efbe4 (common base, main) 2000-01-02 M
+
+Hint: run `but help` for all commands
+
+"#]]);
+    });
+}
+
+#[test]
+fn creating_new_independent_branches_without_remote() {
+    let env = Sandbox::open_with_default_settings("first-commit");
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* 85efbe4 (HEAD -> main) M
+
+"#]]
+    );
+
+    env.but("branch new feature").assert().success();
+
+    env.but("status")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ at [feature] [HEAD] (no commits)
+├╯
+┊
+┴ 85efbe4 (common base, main) 2000-01-02 M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    let options = Options {
+        redo: true,
+        ..Default::default()
+    };
+
+    run_mutate_undo_roundtrip_test_with_options(&env, options, |env| {
+        env.but("branch new other-feature").assert().success();
+
+        env.but("status")
+            .assert()
+            .success()
+            .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┊╭┄ ot [other-feature] (no commits)
+├╯
+┊
+┊╭┄ at [feature] (no commits)
+├╯
+┊
+┴ 85efbe4 (common base, main) 2000-01-02 M
+
+Hint: run `but help` for all commands
+
+"#]]);
+    });
+}
+
+#[test]
+fn switching_to_workspace_without_remote() {
+    let env = Sandbox::open_with_default_settings("first-commit");
+
+    snapbox::assert_data_eq!(
+        env.git_log(),
+        snapbox::str![[r#"
+* 85efbe4 (HEAD -> main) M
+
+"#]]
+    );
+
+    let options = Options {
+        redo: true,
+        ..Default::default()
+    };
+
+    run_mutate_undo_roundtrip_test_with_options(&env, options, |env| {
+        env.but("switch --workspace").assert().success();
+
+        env.but("status")
+            .assert()
+            .success()
+            .stdout_eq(snapbox::str![[r#"
+╭┄ @ [uncommitted] (no changes)
+┊
+┴ 85efbe4 (common base, main) 2000-01-02 M
+
+Hint: run `but branch new` to create a new branch to work on
+
+"#]]);
+
+        snapbox::assert_data_eq!(
+            env.git_log(),
+            snapbox::str![[r#"
+* a73e2f5 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 85efbe4 (main, gitbutler/target) M
+
+"#]]
+        );
+    });
 }

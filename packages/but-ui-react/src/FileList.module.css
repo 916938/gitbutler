@@ -1,0 +1,507 @@
+/* Fills the height it is given: the header stays put and the rows scroll under it. */
+.panel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.header {
+	display: flex;
+	position: relative;
+	column-gap: var(--but-gap-icon-text);
+	flex-shrink: 0;
+	align-items: center;
+	padding-inline: var(--but-space-3xl) var(--but-padding-panel);
+	/* The panel's 12px in from its top and end, as the diff's bar beside it; the title starts 16px
+	   in, as the view header's above it. The rows start 10px under the buttons. */
+	padding-block: var(--but-padding-panel) var(--but-space-xl);
+}
+
+/* The header's two faces trade places when the filter opens: the title steps aside, the field
+   widens in from where the search button was, and the search button slides into the actions'
+   place as the actions fold away. Closing plays it back. */
+.label {
+	display: flex;
+	column-gap: var(--but-gap-icon-text);
+	align-items: center;
+	min-width: 0;
+	transition:
+		opacity var(--but-transition-fast) ease-out,
+		translate var(--but-transition-fast) ease-out;
+
+	.filtering & {
+		translate: -10px 0;
+		opacity: 0;
+	}
+}
+
+.title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Short and fixed-width, so a narrow header truncates the title beside them instead. */
+.stats {
+	display: inline-flex;
+	column-gap: 6px;
+	flex-shrink: 0;
+	align-items: center;
+}
+
+/* Over the title, up to the close button: the panel's 12px in from the start and a 4px gap
+   before it. */
+.filterField {
+	position: absolute;
+	inset-block-start: var(--but-padding-panel);
+	inset-inline: 25% calc(var(--but-padding-panel) + var(--but-size-control) + var(--but-space-sm));
+	opacity: 0;
+	transition:
+		opacity var(--but-transition-fast) ease-out,
+		inset-inline-start var(--but-transition-fast) ease-out;
+
+	.filtering & {
+		inset-inline-start: var(--but-padding-panel);
+		opacity: 1;
+	}
+}
+
+/* How many files the filter keeps, at the field's end, in the field's own text style. */
+.filterFound {
+	display: flex;
+	position: absolute;
+	align-items: center;
+	inset-block: 0;
+	inset-inline-end: 8px;
+	color: var(--but-subtle-foreground);
+	pointer-events: none;
+}
+
+.headerEnd {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	margin-inline-start: auto;
+}
+
+/* Folds to nothing while filtering, drawing the search button along to the end. */
+.headerActions {
+	display: grid;
+	grid-template-columns: 1fr;
+	transition:
+		grid-template-columns var(--but-transition-fast) ease-out,
+		opacity var(--but-transition-fast) ease-out;
+
+	.filtering & {
+		grid-template-columns: 0fr;
+		opacity: 0;
+	}
+}
+
+.headerActionsInner {
+	display: flex;
+	min-width: 0;
+	/* Clipped as it folds, with room left for a button's focus ring. */
+	overflow: clip;
+	overflow-clip-margin: 4px;
+}
+
+.toggleIcons {
+	display: grid;
+	place-items: center;
+}
+
+.toggleIcon {
+	display: flex;
+	grid-area: 1 / 1;
+	transition:
+		opacity var(--but-transition-fast) ease-out,
+		scale var(--but-transition-fast) ease-out,
+		filter var(--but-transition-fast) ease-out;
+}
+
+.toggleIconGone {
+	scale: 0.25;
+	filter: blur(4px);
+	opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.label,
+	.filterField,
+	.headerActions {
+		transition-property: opacity;
+	}
+}
+
+.body {
+	flex: 1;
+}
+
+.list {
+	display: flex;
+	row-gap: 1px;
+	flex-direction: column;
+	padding-inline: var(--but-padding-panel);
+	padding-block-end: var(--but-padding-panel);
+}
+
+/* The panel's own header leaves room under itself; one passed in, such as a popup's search, ends
+   on a hairline, so the rows keep the inset they have at the other three edges. */
+.listOwnTop {
+	padding-block-start: var(--but-padding-panel);
+}
+
+.item {
+	--guide-color: color-mix(in srgb, var(--but-muted-foreground) 20%, transparent);
+
+	display: flex;
+	column-gap: var(--but-gap-icon-text);
+	align-items: center;
+	min-height: var(--but-size-control);
+	/* Less on the end: the last cell centres its mark in 22px, which already sets it in from the
+	   edge, so 4px leaves it about as far from the edge as the icon is at the start. */
+	padding-inline: var(--but-space-lg) var(--but-space-sm);
+	border-radius: var(--but-radius-control);
+	color: var(--but-foreground);
+	cursor: var(--control-cursor);
+
+	/* No transition: hover and selection share this ground, and selection moves with the arrow
+	   keys (design/foundations/states.md, "List rows snap"). */
+	&:where(:hover) {
+		background-color: var(--but-hover);
+	}
+
+	/* After hover, so a selected row reads the same under the pointer. */
+	&[data-selected] {
+		--joined-line: var(--but-secondary);
+
+		background-color: var(--but-selected-inactive);
+	}
+
+	&[inert] {
+		opacity: 0.5;
+	}
+}
+
+/* A run of picked rows reads as one block, as Finder draws one: rounded only where it starts and
+   ends, the pixel between two of its rows filled with the selection, and a faint line across that
+   pixel, set in from the ends as the row's contents are. */
+.item[data-selected]:has(+ .item[data-selected]) {
+	border-end-start-radius: 0;
+	border-end-end-radius: 0;
+}
+
+.item[data-selected] + .item[data-selected] {
+	position: relative;
+	border-start-start-radius: 0;
+	border-start-end-radius: 0;
+	box-shadow: 0 -1px 0 0 var(--but-selected-inactive);
+
+	&::after {
+		position: absolute;
+		height: 1px;
+		inset-block-start: -1px;
+		inset-inline: var(--but-space-lg);
+		background-color: var(--joined-line);
+		content: "";
+	}
+}
+
+:where([data-selection-focused="true"]:not([data-selection-focus-styles="false"] *))
+	.item[data-selected]
+	+ .item[data-selected] {
+	box-shadow: 0 -1px 0 0 var(--but-selected);
+}
+
+/* The solid fill and inverted contents are for the list holding the selection focus only, so
+   where the cursor sits in every other list stays legible without competing. */
+:where([data-selection-focused="true"]:not([data-selection-focus-styles="false"] *))
+	.item[data-selected] {
+	--checkbox-bg: var(--but-inverse);
+	--guide-color: color-mix(in srgb, var(--but-inverse-muted-foreground) 40%, transparent);
+	--joined-line: color-mix(in srgb, var(--but-inverse-foreground) 8%, transparent);
+
+	background-color: var(--but-selected);
+	color: var(--but-selected-foreground);
+
+	.directory,
+	.marks,
+	.editing,
+	.toggle {
+		color: var(--but-inverse-muted-foreground);
+	}
+
+	.toggle:hover::before {
+		background-color: var(--but-inverse-ghost-hover);
+	}
+
+	/* The ghost button's inverted variant. On the buttons themselves, since a variant declares
+	   these on its own element and an inherited value would lose to it. */
+	button {
+		--button-border: none;
+		--button-bg: transparent;
+		--button-fg: var(--but-inverse-foreground);
+		--button-hover-bg: var(--but-inverse-ghost-hover);
+	}
+}
+
+/* The indent: one step per directory the row sits in, then a directory's chevron in a step of its
+   own, so a directory's guide hangs from the middle of its chevron. The icon sits 6px after the
+   last step, closer than the name after it: after a folder's chevron, so the two read as a pair,
+   and after a file's last guide, so a file's icon lines up under its folder's. A top-level file
+   has no folder to line up under: its icon starts a pixel into the row's padding, in the
+   chevrons' column, as a sidebar row's glyph does. */
+.steps {
+	display: flex;
+	column-gap: 4px;
+	flex-shrink: 0;
+	align-self: stretch;
+	margin-inline-end: calc(6px - var(--but-gap-icon-text));
+}
+
+.item > .lead:first-child {
+	margin-inline-start: -1px;
+}
+
+.step {
+	display: flex;
+	position: relative;
+	flex-shrink: 0;
+	align-items: center;
+	justify-content: center;
+	width: 12px;
+}
+
+/* Runs the row's full height and on through the pixel between rows, so the guides of the rows
+   above and below join into one line under the directory they sit in. It ends of its own accord:
+   the first row shallower than the step doesn't draw one. */
+.guide::before {
+	position: absolute;
+	width: 1px;
+	inset-block: 0 -1px;
+	background-color: var(--guide-color);
+	content: "";
+}
+
+/* The last row in its directory: the guide comes down to the row's middle and turns, at a
+   control's radius so it follows the corners setting, into the icon, and ends there, as on a
+   sidebar row: 3px short of a folder's chevron, or of a file's icon, which sits further off. */
+.guideLast::before {
+	width: auto;
+	inset-block: 0 calc(50% - 0.5px);
+	inset-inline: calc(50% - 0.5px) -1px;
+	border-inline-start: 1px solid;
+	border-block-end: 1px solid;
+	border-color: var(--guide-color);
+	border-end-start-radius: var(--but-radius-control);
+	background-color: transparent;
+}
+
+.guideLast:last-child::before {
+	inset-inline-end: -3px;
+}
+
+.guideNone::before {
+	display: none;
+}
+
+/* Faded, so the glyph after it reads first; it comes up under the pointer. */
+.toggle {
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--but-subtle-foreground);
+	cursor: var(--control-cursor);
+	opacity: 0.6;
+
+	&:hover,
+	&:focus-visible {
+		color: var(--but-muted-foreground);
+		opacity: 1;
+	}
+}
+
+/* A chevron that folds on its own click takes a ground under the pointer, a box around it wider
+   than its step, on top of the row's. Behind the glyph, so the box doesn't cover it. */
+.toggle {
+	isolation: isolate;
+
+	&::before {
+		z-index: -1;
+		position: absolute;
+		height: 18px;
+		inset-block-start: calc(50% - 9px);
+		inset-inline: -3px;
+		border-radius: var(--but-radius-sm);
+		content: "";
+		transition: background-color var(--but-transition-fast);
+	}
+
+	&:hover::before {
+		background-color: var(--but-hover);
+	}
+}
+
+/* The icon and the checkbox share one cell. */
+.lead {
+	display: grid;
+	flex-shrink: 0;
+
+	& > * {
+		display: flex;
+		grid-area: 1 / 1;
+		align-items: center;
+		justify-content: center;
+	}
+}
+
+/* File and folder glyphs share one box, so the two kinds of row line up. */
+.icon {
+	width: 14px;
+	height: 14px;
+	color: var(--but-subtle-foreground);
+}
+
+/* Opaque, so a checked box covers the icon under it. */
+.checkbox {
+	opacity: 0;
+
+	&:has([data-checked], [data-indeterminate]),
+	.lead:hover &,
+	&:focus-within {
+		opacity: 1;
+	}
+
+	&:has([data-disabled]) {
+		display: none;
+	}
+}
+
+.label {
+	display: flex;
+	flex-grow: 1;
+	align-items: center;
+	min-width: 0;
+}
+
+.text {
+	display: flex;
+	min-width: 0;
+	overflow: hidden;
+	line-height: 16px;
+	white-space: nowrap;
+}
+
+/* Whole until the folder is gone; cut only when it alone is wider than the row. */
+.name {
+	flex-shrink: 0;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Subtle, so the name reads first and the folder only says where it is. Short of room it gives
+   way first, by far, and is cut in the middle, as the GPUI client cuts it, so its end, which tells
+   two folders apart, stays. Its width is the whole folder's, set as it's measured. */
+.directory {
+	position: relative;
+	flex-shrink: 1000;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--but-subtle-foreground);
+	white-space: pre;
+}
+
+/* What the cut is measured on: the whole folder, laid out as it would show but out of sight. */
+.directoryCopy {
+	visibility: hidden;
+	position: absolute;
+	inset-inline-start: 0;
+	pointer-events: none;
+}
+
+/* What a filter found, as the GPUI client marks it: 1px, close under the letters, so the
+   row's line box doesn't clip it. */
+.match {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 1px;
+}
+
+.directoryTrail {
+	margin-inline-start: 6px;
+}
+
+/* A reviewed file is done with, so what the row says about it recedes; its controls stay as
+   available as any other row's, since dimming a control reads as disabling it. */
+.faded {
+	opacity: 0.5;
+}
+
+/* Beside the name, never shrinking before the path does. */
+.lineStats {
+	flex-shrink: 0;
+	/* Centred beside the 13px name, the 12px figures ride 1px above its baseline. */
+	translate: 0 1px;
+}
+
+.marks {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	color: var(--but-muted-foreground);
+}
+
+/* The row's last cell, reserved on every row and its mark centred in it, so the letters line up
+   down the list. 22px, as a small icon-only Button is, so a file row's end lines up with a
+   sidebar row's. A file row has no ⋯ to swap in here: its menu opens with a right-click. */
+.end {
+	display: grid;
+	flex-shrink: 0;
+	place-items: center;
+	width: 22px;
+}
+
+.status {
+	display: flex;
+	align-items: center;
+}
+
+/* Inter's own figures, as 🍑 But UI and the GPUI client draw them: its tabular "1" is another
+   glyph, and each count is centred in a cell of its own anyway. The line counts' size, and their
+   step down, so a folded directory's numbers read as one line. Subtle, as the folder is, since it
+   says only how many files are inside. */
+.count {
+	translate: 0 1px;
+	color: var(--but-subtle-foreground);
+
+	:where([data-selection-focused="true"]:not([data-selection-focus-styles="false"] *))
+		.item[data-selected]
+		& {
+		color: var(--but-inverse-muted-foreground);
+	}
+}
+
+/* Conflicted: the warning in amber, as a conflicted commit's glyph is: a conflict waits on the
+   user, it hasn't failed (but-ui's Conflicts note). */
+.conflicted {
+	display: flex;
+	color: var(--but-warning-mark);
+}
+
+/* Open to edit with nothing changed yet: quiet, as the folder is, since nothing has happened. */
+.editing {
+	display: flex;
+	color: var(--but-subtle-foreground);
+}
+
+/* The box the change-type letter occupies, so a row that swaps one for the other keeps everything
+   before it in place. Kept in step with the width FileStatusBadge.module.css sizes off its text. */
+.reviewed {
+	display: flex;
+	justify-content: center;
+	width: 1.1em;
+	color: var(--but-primary-mark);
+	font-size: 11px;
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ### Description
-# Project metadata is present in git config and legacy TOML, with differing values.
+# Project metadata is present in git config.
 
 set -eu -o pipefail
 
@@ -20,19 +20,9 @@ git commit -m "initial"
 git update-ref refs/remotes/origin/main HEAD
 git update-ref refs/remotes/upstream/trunk HEAD
 
-mkdir -p .git/gitbutler
-cat >.git/gitbutler/virtual_branches.toml <<EOF
-[default_target]
-branchName = "main"
-remoteName = "origin"
-remoteUrl = ""
-sha = "$(git rev-parse HEAD)"
-pushRemoteName = "fork"
-
-[branch_targets]
-
-[branches]
-EOF
+# Legacy remote targets resolve through configured local tracking branches.
+git branch --set-upstream-to=origin/main main
+git branch --track trunk upstream/trunk
 
 git config gitbutler.project.targetRef refs/remotes/upstream/trunk
 git config gitbutler.project.targetCommitId "$(git rev-parse HEAD)"

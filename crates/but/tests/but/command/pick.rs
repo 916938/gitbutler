@@ -80,10 +80,9 @@ fn failed_pick_switch_to_existing_branch_rolls_back_materialization() {
         .assert()
         .failure()
         .stderr_eq(str![[r#"
-Error: Could not safely check out 'refs/heads/other' from [..] to [..]
+Error: Uncommitted files would be overwritten by checkout: "first"
 
-Caused by:
-    Uncommitted files would be overwritten by checkout: "first"
+Hint: Run `but commit -b <branch> <file>` to keep those files or `but discard <file>` to drop them, then retry
 
 "#]]);
 
@@ -121,7 +120,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
     snapbox::assert_data_eq!(
         env.git_log(),
         str![[r#"
-*   54743c4 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+*   8267892 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 |/  
 | * 4db633b (foo) add first
 |/  
@@ -159,10 +158,9 @@ fn failed_pick_switch_restores_ad_hoc_stack_refs() {
         .assert()
         .failure()
         .stderr_eq(str![[r#"
-Error: Could not safely check out 'refs/heads/bottom' from [..] to [..]
+Error: Uncommitted files would be overwritten by checkout: "first.txt"
 
-Caused by:
-    Uncommitted files would be overwritten by checkout: "first.txt"
+Hint: Run `but commit -b <branch> <file>` to keep those files or `but discard <file>` to drop them, then retry
 
 "#]]);
 
@@ -222,7 +220,7 @@ fn pick_commit_to_existing_branch_outputs_json() {
 
     env.but("unapply B").assert().success();
 
-    env.but("--json pick d3e2ba3")
+    env.but("pick --json d3e2ba3")
         .allow_json()
         .assert()
         .success()
@@ -260,7 +258,7 @@ fn pick_duplicate_sources_outputs_each_commit_once() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
 
-    env.but("--json pick 9477ae7 9477ae7 d3e2ba3 --branch new-branch")
+    env.but("pick --json 9477ae7 9477ae7 d3e2ba3 --branch new-branch")
         .allow_json()
         .assert()
         .success()
@@ -291,7 +289,7 @@ fn pick_commit_to_new_branch_outputs_json() {
 
     env.but("unapply A").assert().success();
 
-    env.but("--json pick 9477ae7 --branch new-branch")
+    env.but("pick --json 9477ae7 --branch new-branch")
         .allow_json()
         .assert()
         .success()
@@ -578,6 +576,8 @@ fn pick_relative_to_branch_rejects_existing_new_branch_name() {
             .stderr_eq(str![[r#"
 Error: A branch named 'B' is already applied
 
+Hint: Pick another name
+
 "#]]);
     }
 
@@ -589,6 +589,8 @@ Error: A branch named 'B' is already applied
             .failure()
             .stderr_eq(str![[r#"
 Error: A branch named 'B' exists but is not applied
+
+Hint: Pick another name, or run `but apply B` if you meant that branch
 
 "#]]);
     }
@@ -616,7 +618,6 @@ Error: Cannot use `-b/--branch` when committing relative to commits
 fn pick_relative_to_worktree_rejects_new_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    super::util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     super::util::add_worktree_with_commit(&env, "wt-inside", "A");
 
@@ -637,7 +638,6 @@ Error: Cannot use `-b/--branch` when committing relative to worktrees
 fn pick_a_worktree_commit_onto_a_workspace_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    super::util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     super::util::add_worktree_with_commit(&env, "wt-feature", "A");
 
@@ -674,7 +674,6 @@ Picked 580bef0 onto branch 'B' to create qnu
 fn pick_a_commit_onto_a_worktree_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    super::util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     super::util::add_worktree_with_commit(&env, "wt-inside", "A");
 
@@ -710,7 +709,6 @@ Picked d3e2ba3 onto branch 'wt-inside' to create olw
 fn pick_in_a_linked_worktree_defaults_to_its_branch() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    super::util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = super::util::add_worktree_with_commit(&env, "wt-inside", "A");
 
@@ -747,7 +745,7 @@ Picked d3e2ba3 onto branch 'wt-inside' to create olw
 fn pick_in_an_unmanaged_worktree_needs_a_target() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    let wt_dir = super::util::add_worktree_with_commit(&env, "wt-inside", "A");
+    let wt_dir = super::util::add_unmanaged_worktree(&env, "wt-inside");
 
     env.but("pick lrm")
         .current_dir(&wt_dir)

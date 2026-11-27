@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use crate::branch::SafeDelete;
 
-/// The outcome of [`SafeDelete::delete_reference()`]
 #[derive(Debug, Clone)]
 pub struct Outcome<'parent> {
     /// The paths to the worktrees that have the to-be-deleted reference checked out,
@@ -11,15 +10,12 @@ pub struct Outcome<'parent> {
 }
 
 impl Outcome<'_> {
-    /// Return `true` if the reference was deleted.
     pub fn was_deleted(&self) -> bool {
         self.checked_out_in_worktree_dirs.is_none()
     }
 }
 
-/// Lifecycle
 impl SafeDelete {
-    /// Create a new instance, fetching the required information from `repo`.
     pub fn new(repo: &gix::Repository) -> anyhow::Result<Self> {
         Ok(SafeDelete {
             worktrees_by_ref: gix_copies::worktree_branches(repo)?,
@@ -33,14 +29,14 @@ impl SafeDelete {
     /// performs no mutation, so it can be used to check the precondition up front.
     pub fn worktree_dirs_with_ref(&self, rn: &gix::Reference) -> Option<&[PathBuf]> {
         self.worktrees_by_ref
-            .get(&rn.inner.name)
+            .get(rn.name())
             .map(|paths| paths.as_slice())
     }
 
     /// Delete the reference `rn` if no `HEAD` in any worktree points to `rn` directly or indirectly.
     /// Return an outcome to indicate if it was deleted or not.
     pub fn delete_reference(&self, rn: &gix::Reference) -> anyhow::Result<Outcome<'_>> {
-        let out = if let Some(paths) = self.worktrees_by_ref.get(&rn.inner.name) {
+        let out = if let Some(paths) = self.worktrees_by_ref.get(rn.name()) {
             Some(paths.as_slice())
         } else {
             rn.delete()?;
@@ -62,7 +58,7 @@ mod gix_copies {
     use crate::branch::WorktreePathByRef;
 
     fn insert_head(head: Option<gix::Head<'_>>, out: &mut WorktreePathByRef) -> anyhow::Result<()> {
-        if let Some((head, wd)) = head.and_then(|head| head.repo.workdir().map(|wd| (head, wd))) {
+        if let Some((head, wd)) = head.and_then(|head| head.repo().workdir().map(|wd| (head, wd))) {
             out.entry("HEAD".try_into().expect("added first so we always have it"))
                 .or_default()
                 .push(wd.to_owned());

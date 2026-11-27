@@ -3,21 +3,11 @@ use std::sync::Arc;
 use but_core::ref_metadata::StackId;
 use ratatui::text::Span;
 
-use crate::{
-    CliId,
-    command::legacy::status::{CommitClassification, render_oneshot},
-    utils::WriteWithUtils,
-};
+use crate::{CliId, command::legacy::status::CommitClassification};
 
-pub enum StatusOutput<'a> {
-    /// Immediately print the outputs as it's being generated.
-    ///
-    /// This is used when running the status command in one-shot mode.
-    Immediate { out: &'a mut dyn WriteWithUtils },
-    /// Buffer the output so it can be rendered in the TUI.
-    Buffer {
-        lines: &'a mut Vec<StatusOutputLine>,
-    },
+/// Collects the lines of the status output, which one-shot mode prints and the TUI renders.
+pub struct StatusOutput<'a> {
+    pub lines: &'a mut Vec<StatusOutputLine>,
 }
 
 impl StatusOutput<'_> {
@@ -33,15 +23,7 @@ impl StatusOutput<'_> {
             data,
         };
 
-        match self {
-            StatusOutput::Immediate { out } => {
-                render_oneshot::render_oneshot(output_line, *out)?;
-            }
-            StatusOutput::Buffer { lines } => {
-                lines.push(output_line);
-            }
-        }
-
+        self.lines.push(output_line);
         Ok(())
     }
 
@@ -252,15 +234,10 @@ impl StatusOutput<'_> {
         connector: Vec<Span<'static>>,
         id: Vec<Span<'static>>,
         suffix: Vec<Span<'static>>,
-        commit_id: gix::ObjectId,
     ) -> anyhow::Result<()> {
         self.push_line(
             Some(connector),
-            StatusOutputContent::MergeBase(MergeBaseLineContent {
-                id,
-                suffix,
-                commit_id,
-            }),
+            StatusOutputContent::MergeBase(MergeBaseLineContent { id, suffix }),
             StatusOutputLineData::MergeBase,
         )
     }
@@ -293,7 +270,6 @@ pub enum StatusOutputContent {
 pub struct MergeBaseLineContent {
     pub id: Vec<Span<'static>>,
     pub suffix: Vec<Span<'static>>,
-    pub commit_id: gix::ObjectId,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -305,7 +281,7 @@ pub struct CommitLineContent {
     pub suffix: Vec<Span<'static>>,
 }
 
-/// Consdering the example "dp [dp-branch-1] (no commits)" see the field docs for what exactly they
+/// Considering the example "dp [dp-branch-1] (no commits)" see the field docs for what exactly they
 /// correspond to.
 #[derive(Debug, Default, Clone)]
 pub struct BranchLineContent {
@@ -321,7 +297,7 @@ pub struct BranchLineContent {
     pub suffix: Vec<Span<'static>>,
 }
 
-/// Consdering the example "ae:sv A a/b/c.rs" see the field docs for what exactly they
+/// Considering the example "ae:sv A a/b/c.rs" see the field docs for what exactly they
 /// correspond to.
 #[derive(Debug, Default, Clone)]
 pub struct FileLineContent {
@@ -366,10 +342,7 @@ pub struct StatusOutputLine {
     /// ┊● 7cd07f6 (upstream: origin/main) 1 new commit (checked 34 seconds ago) | Some("┊● ")
     /// ├╯ 8678259 [origin/main] 2026-03-11 nix                                  | Some("├╯ ")
     pub connector: Option<Vec<Span<'static>>>,
-    /// The content of the line such as the commit, branch, or file.
     pub content: StatusOutputContent,
-    /// The backing data associated with this line.
-    ///
     /// This tells the TUI what data the actual line is showing. Used for performing operations on
     /// the line.
     pub data: StatusOutputLineData,

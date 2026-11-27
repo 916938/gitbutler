@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Context as _, bail};
 use but_core::{
     ObjectStorageExt, RefMetadata, RepositoryExt, ref_metadata,
@@ -10,7 +12,9 @@ use but_core::{
     WORKSPACE_REF_NAME,
     ref_metadata::{StackId, StackKind},
 };
+use but_error::bail_precondition;
 use but_graph::{SegmentIndex, init::Overlay, petgraph::Direction, workspace::WorkspaceKind};
+use but_rebase::graph_rebase::{Editor, LookupStep as _, Pick, Step, SuccessfulRebase};
 use gix::{
     prelude::ObjectIdExt,
     reference::Category,
@@ -21,13 +25,12 @@ use gix::{
 };
 use tracing::instrument;
 
-use crate::branch::{
-    OnWorkspaceMergeConflict, setup_local_tracking_configuration, try_find_validated_ref,
-};
+use crate::branch::{setup_local_tracking_configuration, try_find_validated_ref};
 use crate::{
     WorkspaceCommit,
     branch::{anon_stacks, ensure_no_missing_stacks},
     commit::merge::Tip,
+    editor_workspace::enter_workspace,
     ref_info::WorkspaceExt,
 };
 
@@ -47,6 +50,24 @@ impl std::fmt::Debug for ConflictingStack {
             .field("id", &self.id)
             .field("ref_name", &self.ref_name.to_string())
             .finish()
+    }
+}
+
+/// Attached to the error of [apply_stack()] if the branch shares commits with a stack of the
+/// workspace, so callers can tell it apart from other failures.
+#[derive(Debug, Clone)]
+pub struct OverlapErrorContext {
+    /// The branch that couldn't be applied.
+    pub branch: gix::refs::FullName,
+}
+
+impl std::fmt::Display for OverlapErrorContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "'{}' overlaps with a stack of the workspace",
+            self.branch.shorten()
+        )
     }
 }
 
@@ -86,10 +107,9 @@ pub struct Outcome {
     /// The workspace as it looks like now.
     ///
     /// The returned workspace can also be a proposed state that was not persisted because
-    /// [Options::on_workspace_conflict] aborted the operation. Check [Outcome::conflicting_stacks]
+    /// there was a conflict. Check [Outcome::conflicting_stacks]
     /// and [Outcome::status] to tell whether anything was actually persisted.
     pub workspace: but_graph::Workspace,
-    /// The precise kind of apply operation that completed.
     pub status: OutcomeStatus,
     /// The branch(es) that were activated or recorded by the operation.
     ///
@@ -99,13 +119,8 @@ pub struct Outcome {
     ///
     /// If a remote tracking branch is given to apply, it will actually apply its local tracking branch, which is created on demand as well.
     /// Further, if there is no target or if the current branch isn't the target branch, then the current branch and the given one
-    /// will be applied, and two branches are listed here.
+    /// will be applied. The current branch is listed here too, unless workspace metadata already had it applied.
     pub applied_branches: Vec<gix::refs::FullName>,
-    /// `true` if we created the given workspace ref as it didn't exist yet.
-    pub workspace_ref_created: bool,
-    /// If not `None`, an actual merge was attempted, but depending on [the settings](OnWorkspaceMergeConflict),
-    /// this was persisted or not.
-    pub workspace_merge: Option<crate::commit::merge::Outcome>,
     /// Stacks that conflicted while trying to apply the branch.
     ///
     /// Each entry includes the stable stack id and its tip ref name, so callers don't have to
@@ -126,14 +141,11 @@ impl std::fmt::Debug for Outcome {
         let Outcome {
             workspace: _,
             status: _,
-            workspace_ref_created,
-            workspace_merge: _,
             conflicting_stacks,
             applied_branches,
         } = self;
         let mut f = f.debug_struct("Outcome");
         f.field("workspace_changed", &self.workspace_changed())
-            .field("workspace_ref_created", workspace_ref_created)
             .field(
                 "applied_branches",
                 &format!(
@@ -152,44 +164,9 @@ impl std::fmt::Debug for Outcome {
     }
 }
 
-/// How the newly applied branch should be merged into the workspace commit.
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
-pub enum WorkspaceMerge {
-    /// Do nothing but to merge it into the workspace commit, *even* if it's not needed as the workspace reference
-    /// can connect directly with the *one* workspace base.
-    /// This also ensures that there is a workspace merge commit, even if it is none-sensical.
-    #[default]
-    AlwaysMerge,
-    /// Only create a merge commit if a new commit is effectively merged in. This avoids *unnecessary* merge commits,
-    /// but also requires support for this when creating commits (which may then have to create a merge-commit themselves).
-    // TODO: make this the default
-    MergeIfNeeded,
-}
-
-/// Decide how a newly created workspace reference should be named.
-#[derive(Default, Debug, Clone)]
-pub enum WorkspaceReferenceNaming {
-    /// Create a default workspace branch
-    #[default]
-    Default,
-    /// Create a workspace with the given name instead.
-    Given(gix::refs::FullName),
-}
-
 /// Options for [apply()].
 #[derive(Default, Debug, Clone)]
 pub struct Options {
-    /// How the branch should be brought into the workspace.
-    pub workspace_merge: WorkspaceMerge,
-    /// Decide how to deal with conflicts when creating the workspace merge commit to bring in each stack.
-    pub on_workspace_conflict: OnWorkspaceMergeConflict,
-    /// How the workspace reference should be named should it be created.
-    /// The creation is always needed if there are more than one branch applied.
-    pub workspace_reference_naming: WorkspaceReferenceNaming,
-    /// If not `None`, the applied branch should be merged into the workspace commit at the N'th parent position.
-    /// This is useful if the tip of a branch (at a specific position) was unapplied, and a segment within that branch
-    /// should now be re-applied, but of course, be placed at the same spot and not end up at the end of the workspace.
-    pub order: Option<usize>,
     /// Create new stack id, which by default is a function that generates a new StackId.
     pub new_stack_id: Option<fn(&gix::refs::FullNameRef) -> StackId>,
     /// By default applying branches that are already applied is considered an error. Setting this
@@ -204,6 +181,252 @@ pub struct Options {
     /// into a workspace with only `foo` applied, regardless which branches were previously
     /// applied.
     pub allow_applying_already_applied_branch_when_outside_workspace: bool,
+}
+
+/// Returned by [apply_stack()].
+pub struct ApplyStackOutcome<'ws, 'meta, M: RefMetadata> {
+    /// The rebase that applies the stack once materialized.
+    pub rebase: SuccessfulRebase<'ws, 'meta, M>,
+    /// Whether materializing `rebase` changes the workspace.
+    pub status: OutcomeStatus,
+    /// The branch(es) that become lanes once `rebase` is materialized.
+    pub applied_branches: Vec<gix::refs::FullName>,
+    /// The tracking configuration of a local tracking branch that `rebase` creates, to be written
+    /// once `rebase` was materialized.
+    pub tracking: Option<LocalTracking>,
+}
+
+/// A local branch created to track a remote-tracking branch.
+pub struct LocalTracking {
+    local: gix::refs::FullName,
+    remote: gix::refs::FullName,
+}
+
+impl LocalTracking {
+    /// Configure the local branch to track the remote-tracking branch in `repo`.
+    pub fn write(&self, repo: &gix::Repository) -> anyhow::Result<()> {
+        let (config, _) =
+            setup_local_tracking_configuration(repo, self.local.as_ref(), self.remote.as_ref())?;
+        config.commit()?;
+        Ok(())
+    }
+}
+
+/// Ensure that `branch` is a parent of the workspace commit, at `order` among its parents if it
+/// isn't one yet, or as its last parent if `order` is `None` or past the end.
+///
+/// If there is no workspace commit, one is first created with `HEAD` as its parent.
+///
+/// For each parent of the workspace commit P, `target..branch` must have no commits in common with
+/// `target..P`, or the error carries an [`OverlapErrorContext`].
+///
+/// If `branch` is a remote-tracking branch, its local tracking branch is applied instead. If that
+/// doesn't exist, it's created at the remote-tracking commit, and its tracking configuration is
+/// returned to be written after materializing.
+#[instrument(skip(editor, order), err(Debug))]
+pub fn apply_stack<'ws, 'meta, M: RefMetadata>(
+    editor: Editor<'ws, 'meta, M>,
+    branch: &FullNameRef,
+    order: impl Into<Option<usize>>,
+) -> anyhow::Result<ApplyStackOutcome<'ws, 'meta, M>> {
+    let (branch, remote_tracking_branch) = if branch.category() == Some(Category::RemoteBranch) {
+        // Symbolic ones, `origin/HEAD` say, would make a local branch of the name they point through.
+        if try_find_validated_ref(editor.repo(), branch, "apply")?.is_none() {
+            bail!("Cannot apply non-existing branch '{}'", branch.shorten());
+        }
+        let Some((local_tracking_branch, _remote)) = editor
+            .repo()
+            .upstream_branch_and_remote_for_tracking_branch(branch)?
+        else {
+            bail_precondition!("Couldn't find remote refspecs that would match '{branch}'");
+        };
+        (local_tracking_branch, Some(branch))
+    } else if branch.category() == Some(Category::LocalBranch) {
+        (branch.to_owned(), None)
+    } else {
+        bail_precondition!("Can only apply local or remote-tracking branches, got '{branch}'");
+    };
+    let branch = branch.as_ref();
+
+    let target = editor
+        .target_selector()
+        .map(|target| editor.find_commit_target(target))
+        .transpose()?
+        .map(|(_, target_commit)| target_commit.id);
+
+    // If HEAD was not a parent of the workspace commit, it needs to be reported as applied. This
+    // duplicates some of the work in enter_workspace. Figure out if this can be moved there.
+    let head_name = match editor
+        .head()
+        .map(|head| editor.lookup_step(head))
+        .transpose()?
+    {
+        Some(Step::Reference { refname, .. }) => Some(refname),
+        Some(Step::Pick(_) | Step::None) | None => None,
+    };
+    let mut applied_branches: Vec<gix::refs::FullName> = head_name
+        .filter(|head| {
+            head.as_bstr() != WORKSPACE_REF_NAME
+                && Some(head.as_ref()) != editor.target_ref()
+                && head.as_ref() != branch
+        })
+        .into_iter()
+        .collect();
+
+    let workspace_commit_created = editor
+        .workspace_reference()
+        .and_then(|workspace_reference| editor.workspace_commit(workspace_reference))
+        .is_none();
+    let (rebase, workspace_commit) = enter_workspace(editor)?;
+    let mut editor = rebase.into_editor();
+
+    let mut tracking = None;
+
+    // `branch_selector` needs to be Option because until we know that we are actually applying
+    // something, we don't want to create one if it doesn't already exists.
+    let (branch_selector, branch_commit_selector, branch_commit_id) =
+        match editor.try_select_reference(branch) {
+            Some(branch_selector) => {
+                let (branch_commit_selector, branch_commit) =
+                    editor.find_commit_target(branch_selector)?;
+                (
+                    Some(branch_selector),
+                    branch_commit_selector,
+                    branch_commit.id,
+                )
+            }
+            None => {
+                let repo = editor.repo();
+                let branch_commit_id =
+                    match (repo.try_find_reference(branch)?, remote_tracking_branch) {
+                        (Some(mut reference), _) => reference.peel_to_commit()?.id,
+                        (None, Some(remote_tracking_branch)) => {
+                            tracking = Some(LocalTracking {
+                                local: branch.to_owned(),
+                                remote: remote_tracking_branch.to_owned(),
+                            });
+                            repo.find_reference(remote_tracking_branch)?
+                                .peel_to_commit()?
+                                .id
+                        }
+                        (None, None) => {
+                            bail!("Cannot apply non-existing branch '{}'", branch.shorten())
+                        }
+                    };
+                let branch_commit_selector = match editor.try_select_commit(branch_commit_id) {
+                    Some(branch_commit_selector) => branch_commit_selector,
+                    None => {
+                        // The branch is outside of the graph the editor knows, so keep its history as is.
+                        let mut pick = Pick::new_pick(branch_commit_id);
+                        pick.preserved_parents =
+                            Some(editor.find_commit(branch_commit_id)?.parents.to_vec());
+                        pick.mutable = false;
+                        editor.add_step(Step::Pick(pick))?
+                    }
+                };
+                // The reference is only added once the branch becomes a lane, so a local tracking
+                // branch isn't created for nothing.
+                (None, branch_commit_selector, branch_commit_id)
+            }
+        };
+    let commits_in_branch = commits_in(editor.repo(), branch_commit_id, target)?;
+    let already_applied = Some(branch) == editor.target_ref()
+        || 'already_applied: {
+            for (parent_selector, _order) in editor.direct_parents(workspace_commit)? {
+                if Some(parent_selector) == branch_selector {
+                    break 'already_applied true;
+                }
+            }
+            false
+        };
+    if already_applied {
+        // Branch is already applied, perhaps through enter_workspace() (or even before this
+        // function was invoked)
+        return Ok(ApplyStackOutcome {
+            rebase: editor.rebase()?,
+            status: if workspace_commit_created {
+                OutcomeStatus::Applied
+            } else {
+                OutcomeStatus::AlreadyApplied
+            },
+            applied_branches,
+            tracking: None,
+        });
+    }
+
+    // Check for empty branches and overlaps
+    let mut empty_parents = Vec::new();
+    for (parent_selector, _order) in editor.direct_parents(workspace_commit)? {
+        // The target commit, or the target branch pointing at it, only stands in for the target
+        // in a workspace without lanes.
+        let is_target = Some(parent_selector) == editor.target_selector()
+            || matches!(
+                editor.lookup_step(parent_selector)?,
+                Step::Reference { refname, .. } if Some(refname.as_ref()) == editor.target_ref()
+            );
+        if is_target {
+            empty_parents.push(parent_selector);
+            continue;
+        }
+        let parent_commit_id = editor.find_commit_target(parent_selector)?.1.id;
+        let overlap: Vec<gix::ObjectId> = commits_in_branch
+            .intersection(&commits_in(editor.repo(), parent_commit_id, target)?)
+            .copied()
+            .collect();
+        if !overlap.is_empty() {
+            let parent_label = match editor.lookup_step(parent_selector)? {
+                Step::Reference { refname, .. } => format!("'{}'", refname.shorten()),
+                Step::Pick(_) | Step::None => {
+                    let (_, commit) = editor.find_commit_target(parent_selector)?;
+                    commit.id.to_hex_with_len(7).to_string()
+                }
+            };
+            return Err(anyhow::Error::msg(OverlapErrorContext {
+                branch: branch.to_owned(),
+            })
+            .context(
+                but_error::Context::new(format!(
+                    "Cannot apply '{}' as it overlaps with {parent_label}",
+                    branch.shorten()
+                ))
+                .with_code(but_error::Code::PreconditionFailed),
+            ));
+        }
+    }
+
+    let branch_selector = match branch_selector {
+        Some(branch_selector) => branch_selector,
+        None => {
+            let branch_selector = editor.add_step(Step::new_reference(branch.to_owned()))?;
+            editor.add_edge(branch_selector, branch_commit_selector, 0)?;
+            branch_selector
+        }
+    };
+    editor.insert_parent(workspace_commit, branch_selector, order.into())?;
+    for empty_parent in empty_parents {
+        editor.remove_edges(workspace_commit, empty_parent)?;
+    }
+    applied_branches.push(branch.to_owned());
+
+    Ok(ApplyStackOutcome {
+        rebase: editor.rebase()?,
+        status: OutcomeStatus::Applied,
+        applied_branches,
+        tracking,
+    })
+}
+
+/// The commits reachable from `tip` but not from `target` (if specified).
+fn commits_in(
+    repo: &gix::Repository,
+    tip: gix::ObjectId,
+    target: Option<gix::ObjectId>,
+) -> anyhow::Result<BTreeSet<gix::ObjectId>> {
+    let mut revwalk = tip.attach(repo).ancestors();
+    if target.is_some() {
+        revwalk = revwalk.with_hidden(target);
+    }
+    revwalk.all()?.map(|info| Ok(info?.id)).collect()
 }
 
 /// Apply `branch` to the given `workspace`, and possibly create the workspace reference in `repo`
@@ -234,10 +457,6 @@ pub fn apply(
     repo: &gix::Repository,
     meta: &mut impl RefMetadata,
     Options {
-        workspace_merge: integration_mode,
-        on_workspace_conflict,
-        workspace_reference_naming,
-        order,
         new_stack_id,
         allow_applying_already_applied_branch_when_outside_workspace,
     }: Options,
@@ -247,7 +466,7 @@ pub fn apply(
     let branch_orig = branch;
     let (mut branch_ref, mut incoming_branch_is_remote_tracking_without_local_tracking) =
         (try_find_validated_ref(repo, branch, "apply")?, false);
-    if ws.is_branch_the_target_or_its_local_tracking_branch(branch) {
+    if ws.is_target_or_upstream(branch, repo)? {
         bail!("Cannot add the target '{branch}' branch to its own workspace");
     }
     let mut branch = branch.to_owned();
@@ -268,7 +487,7 @@ pub fn apply(
         branch = upstream_branch_name;
         branch_ref = try_find_validated_ref(repo, branch.as_ref(), "apply")?;
     }
-    let head_ref_name = repo.head_name()?.map(|name| name.to_owned());
+    let head_ref_name = repo.head_name()?;
     let head_on_managed_workspace_ref = match &ws.kind {
         WorkspaceKind::Managed { ref_info }
         | WorkspaceKind::ManagedMissingWorkspaceCommit { ref_info } => head_ref_name
@@ -289,13 +508,10 @@ pub fn apply(
             && (!allow_applying_already_applied_branch_when_outside_workspace
                 || head_on_managed_workspace_ref))
     {
-        let workspace_ref_created = false;
         // When exiting early, don't try to adjust the ws commit.
         return Ok(Outcome {
             workspace: ws,
             status: OutcomeStatus::AlreadyApplied,
-            workspace_ref_created,
-            workspace_merge: None,
             conflicting_stacks: Vec::new(),
             applied_branches: Vec::new(),
         });
@@ -320,17 +536,19 @@ pub fn apply(
                 .as_ref()
                 .context("Workspace metadata must be available to repair stale applied state")?;
             let mut ws_md = meta.workspace(ws_ref_name.as_ref())?;
-            add_branch_as_stack_forcefully(&mut ws_md, branch.as_ref(), order, new_stack_id);
+            add_branch_as_stack_forcefully(&mut ws_md, branch.as_ref(), new_stack_id);
             persist_metadata_and_gitconfig(meta, &applied_branches, &ws_md, None)?;
         }
-        let ws = ws
-            .graph
-            .redo_traversal_with_overlay(
-                repo,
-                meta,
-                Overlay::default().with_entrypoint(commit_to_checkout, ws_ref_name.clone()),
-            )?
-            .into_workspace()?;
+        let ws = super::reprojected(
+            &ws,
+            repo,
+            meta,
+            Overlay::default(),
+            Some((
+                ws_ref_name.as_ref().map(|name| name.as_ref()),
+                commit_to_checkout,
+            )),
+        )?;
         set_head_to_reference(
             repo,
             commit_to_checkout,
@@ -341,8 +559,6 @@ pub fn apply(
         return Ok(Outcome {
             workspace: ws,
             status: OutcomeStatus::Applied,
-            workspace_ref_created: false,
-            workspace_merge: None,
             conflicting_stacks: Vec::new(),
             applied_branches,
         });
@@ -382,19 +598,23 @@ pub fn apply(
             // We need to switch over to a possibly existing workspace.
             // We know that the current branch is *not* reachable from the workspace or isn't naturally included,
             // so it needs to be added as well.
-            let next_ws_ref_name = match workspace_reference_naming {
-                WorkspaceReferenceNaming::Default => {
-                    gix::refs::FullName::try_from(WORKSPACE_REF_NAME).expect("known statically")
-                }
-                WorkspaceReferenceNaming::Given(name) => name,
-            };
+            let next_ws_ref_name =
+                gix::refs::FullName::try_from(WORKSPACE_REF_NAME).expect("known statically");
             let mut current_unmanaged_head_branch_name = ws.ref_name().map(|rn| rn.to_owned());
             if let Some(ref current_head_ref) = current_unmanaged_head_branch_name {
                 // If our current branch is related to the next workspace's target, don't add it to the
                 // soon-to-be-created workspace.
                 // This is a 'trick' to allow callers to prevent 'main' to be added to the workspace automatically
                 // even though the new workspace is supposed to have it as target.
-                if ws.is_branch_the_target_or_its_local_tracking_branch(current_head_ref.as_ref()) {
+                if ws
+                    .graph
+                    .project_meta
+                    .target_ref
+                    .as_ref()
+                    .is_some_and(|target| {
+                        target.as_local_full_name_ref() == current_head_ref.as_ref()
+                    })
+                {
                     current_unmanaged_head_branch_name.take();
                 }
             }
@@ -415,29 +635,22 @@ pub fn apply(
         .is_some_and(|head| head.as_bstr() == workspace_ref_name_to_update.as_bstr());
 
     // First, see if the branches to apply would naturally emerge if they had metadata.
-    let (ws_ref_id, ws_ref_exists) = match repo
-        .try_find_reference(workspace_ref_name_to_update.as_ref())?
-    {
+    let ws_ref_id = match repo.try_find_reference(workspace_ref_name_to_update.as_ref())? {
         None => {
             // Pretend to create a workspace reference later at the current AdHoc workspace id
-            let tip = ws.tip_commit().map(|c| c.id).context(
-                    "BUG: how can an empty ad-hoc workspace exist? Should have at least one stack-segment with commit",
-                )?;
-            (tip, false)
+            ws.tip_commit().map(|c| c.id).context(
+                "BUG: how can an empty ad-hoc workspace exist? Should have at least one stack-segment with commit",
+            )?
         }
         Some(mut existing_workspace_reference) => match &ws.kind {
             WorkspaceKind::Managed { .. } | WorkspaceKind::ManagedMissingWorkspaceCommit { .. } => {
-                let id = existing_workspace_reference.peel_to_id()?;
-                (id.detach(), true)
+                existing_workspace_reference.peel_to_id()?.detach()
             }
             // If starting from an adhoc workspace, re-create the managed workspace from the current
             // HEAD and not from the old workspace. Branches that were previously applied might have
             // moved and thus the old workspace will contain out of date commits that'll become
             // anonymous segments.
-            WorkspaceKind::AdHoc => {
-                let tip = repo.head_id()?;
-                (tip.detach(), true)
-            }
+            WorkspaceKind::AdHoc => repo.head_id()?.detach(),
         },
     };
 
@@ -477,7 +690,7 @@ pub fn apply(
             }
         }
         for rn in &branches_to_apply {
-            add_branch_as_stack_forcefully(ws_mut, rn.as_ref(), order, new_stack_id);
+            add_branch_as_stack_forcefully(ws_mut, rn.as_ref(), new_stack_id);
         }
     }
     let ws_md_retry_base = ws_md.clone();
@@ -510,15 +723,17 @@ pub fn apply(
         }))
         .with_branch_metadata_override(branch_mds)
         .with_workspace_metadata_override(ws_md_override);
-    let ws = ws
-        .graph
-        .redo_traversal_with_overlay(repo, meta, overlay.clone())?
-        .into_workspace()?;
+    let ws = super::reprojected(
+        &ws,
+        repo,
+        meta,
+        overlay.clone(),
+        Some((Some(workspace_ref_name_to_update.as_ref()), ws_ref_id)),
+    )?;
 
     let all_applied_branches_are_already_visible = branches_to_apply
         .iter()
         .all(|rn| ws.find_segment_and_stack_by_refname(rn.as_ref()).is_some());
-    let needs_ws_ref_creation = !ws_ref_exists;
     let local_tracking_config_and_ref_info =
         local_tracking_config_and_ref_info.zip(commit_to_create_branch_at.map({
             let branch = branch.clone();
@@ -526,6 +741,11 @@ pub fn apply(
         }));
     let applied_branches = branches_to_apply
         .iter()
+        .filter(|rn| {
+            *rn == &branch
+                || !(head_branch_in_workspace
+                    && head_ref_name.as_ref().is_some_and(|head| head == *rn))
+        })
         .map(|rn| (*rn).to_owned())
         .collect();
     // Take the no-merge shortcut only when the branches to apply are already visible *and* HEAD is
@@ -548,21 +768,26 @@ pub fn apply(
             head_id.object()?.peel_to_tree()?.id,
         )?;
         let ws_commit_with_new_message = ws_commit_with_new_message.id.detach();
-        let (graph, new_head_id) = if (ws_commit_with_new_message != head_id
+        let (workspace, new_head_id) = if (ws_commit_with_new_message != head_id
             && ws.kind.has_managed_commit())
-            || needs_workspace_commit_without_remerge(&ws, integration_mode)
+            || needs_workspace_commit_without_remerge(&ws)
         {
-            let graph = ws.graph.redo_traversal_with_overlay(
+            let workspace = super::reprojected(
+                &ws,
                 repo,
                 meta,
                 overlay.with_entrypoint(
                     ws_commit_with_new_message,
                     Some(workspace_ref_name_to_update.clone()),
                 ),
+                Some((
+                    Some(workspace_ref_name_to_update.as_ref()),
+                    ws_commit_with_new_message,
+                )),
             )?;
-            (graph, ws_commit_with_new_message)
+            (workspace, ws_commit_with_new_message)
         } else {
-            (ws.graph, ws_ref_id)
+            (ws, ws_ref_id)
         };
 
         set_head_to_reference(
@@ -573,10 +798,8 @@ pub fn apply(
             (!head_on_workspace_ref).then_some(workspace_ref_name_to_update.as_ref()),
         )?;
         return Ok(Outcome {
-            workspace: graph.into_workspace()?,
+            workspace,
             status: OutcomeStatus::Applied,
-            workspace_ref_created: needs_ws_ref_creation,
-            workspace_merge: None,
             conflicting_stacks: Vec::new(),
             applied_branches,
         });
@@ -612,14 +835,12 @@ pub fn apply(
     ensure_no_missing_stacks(&merge_result)?;
     drop(existing_stacks_superseded_by_branch);
 
-    if merge_result.has_conflicts() && on_workspace_conflict.should_abort() {
+    if merge_result.has_conflicts() {
         let conflicting_stacks =
             correlate_conflicting_stacks(&ws_md, &merge_result.conflicting_stacks);
         return Ok(Outcome {
             workspace: ws,
             status: OutcomeStatus::ConflictAborted,
-            workspace_ref_created: false,
-            workspace_merge: Some(merge_result),
             conflicting_stacks,
             applied_branches: Vec::new(),
         });
@@ -633,11 +854,13 @@ pub fn apply(
     let overlay = overlay
         .with_entrypoint(new_head_id, Some(workspace_ref_name_to_update.clone()))
         .with_workspace_metadata_override(ws_md_override);
-    let graph = ws
-        .graph
-        .redo_traversal_with_overlay(&in_memory_repo, meta, overlay.clone())?;
-
-    let mut ws = graph.into_workspace()?;
+    let mut ws = super::reprojected(
+        &ws,
+        &in_memory_repo,
+        meta,
+        overlay.clone(),
+        Some((Some(workspace_ref_name_to_update.as_ref()), new_head_id)),
+    )?;
     let collect_unapplied_branches = |ws: &but_graph::Workspace| {
         branches_to_apply
             .iter()
@@ -654,7 +877,7 @@ pub fn apply(
             .iter()
             .filter(|rn| !unapplied_branches.contains(rn))
         {
-            add_branch_as_stack_forcefully(ws_mut, branch_to_add.as_ref(), order, new_stack_id);
+            add_branch_as_stack_forcefully(ws_mut, branch_to_add.as_ref(), new_stack_id);
         }
         for rn in &unapplied_branches {
             // Here we have to check if the new ref would be able to become its own stack,
@@ -726,14 +949,12 @@ pub fn apply(
         )?;
         ensure_no_missing_stacks(&merge_result)?;
 
-        if merge_result.has_conflicts() && on_workspace_conflict.should_abort() {
+        if merge_result.has_conflicts() {
             let conflicting_stacks =
                 correlate_conflicting_stacks(&ws_md, &merge_result.conflicting_stacks);
             return Ok(Outcome {
                 workspace: ws,
                 status: OutcomeStatus::ConflictAborted,
-                workspace_ref_created: false,
-                workspace_merge: Some(merge_result),
                 conflicting_stacks,
                 applied_branches: Vec::new(),
             });
@@ -742,16 +963,15 @@ pub fn apply(
         conflicting_stacks = correlate_conflicting_stacks(&ws_md, &merge_result.conflicting_stacks);
         remove_conflicting_stacks_from_workspace(&mut ws_md, &conflicting_stacks);
         let ws_md_override = Some((workspace_ref_name_to_update.clone(), (*ws_md).clone()));
-        ws = ws
-            .graph
-            .redo_traversal_with_overlay(
-                &in_memory_repo,
-                meta,
-                overlay
-                    .with_entrypoint(new_head_id, Some(workspace_ref_name_to_update.clone()))
-                    .with_workspace_metadata_override(ws_md_override),
-            )?
-            .into_workspace()?;
+        ws = super::reprojected(
+            &ws,
+            &in_memory_repo,
+            meta,
+            overlay
+                .with_entrypoint(new_head_id, Some(workspace_ref_name_to_update.clone()))
+                .with_workspace_metadata_override(ws_md_override),
+            Some((Some(workspace_ref_name_to_update.as_ref()), new_head_id)),
+        )?;
         let unapplied_branches = collect_unapplied_branches(&ws);
 
         if !unapplied_branches.is_empty() {
@@ -800,8 +1020,6 @@ pub fn apply(
     Ok(Outcome {
         workspace: ws,
         status: OutcomeStatus::Applied,
-        workspace_ref_created: needs_ws_ref_creation,
-        workspace_merge: Some(merge_result),
         conflicting_stacks,
         applied_branches,
     })
@@ -984,11 +1202,10 @@ fn find_superseded_stacks(
 fn add_branch_as_stack_forcefully(
     ws_md: &mut Workspace,
     rn: &FullNameRef,
-    order: Option<usize>,
     new_stack_id: impl FnOnce(&gix::refs::FullNameRef) -> StackId,
 ) {
     let (stack_idx, branch_idx) =
-        ws_md.add_or_insert_new_stack_if_not_present(rn, order, Merged, new_stack_id);
+        ws_md.add_or_insert_new_stack_if_not_present(rn, None, Merged, new_stack_id);
 
     let stack = &mut ws_md.stacks[stack_idx];
     if branch_idx != 0 && !stack.is_in_workspace() {
@@ -1026,7 +1243,7 @@ fn persist_metadata_and_gitconfig<T: RefMetadata>(
     }
 
     if let Some((config, (ref_to_create, remote_tracking_ref, ref_target_id))) = config_and_ref {
-        let repo = ref_target_id.repo;
+        let repo = ref_target_id.repo();
         // The reference first, as git does: should it fail, the config transaction drops unwritten.
         repo.reference(
             ref_to_create,
@@ -1077,20 +1294,14 @@ fn set_head_to_reference(
     Ok(())
 }
 
-fn needs_workspace_commit_without_remerge(
-    ws: &but_graph::Workspace,
-    integration_mode: WorkspaceMerge,
-) -> bool {
-    match integration_mode {
-        WorkspaceMerge::AlwaysMerge => match ws.kind {
-            WorkspaceKind::Managed { .. } => false,
-            WorkspaceKind::AdHoc => {
-                // If it's still ad-hoc, there must be a reason, and we don't try to create a managed commit
-                false
-            }
-            WorkspaceKind::ManagedMissingWorkspaceCommit { .. } => true,
-        },
-        WorkspaceMerge::MergeIfNeeded => false,
+fn needs_workspace_commit_without_remerge(ws: &but_graph::Workspace) -> bool {
+    match ws.kind {
+        WorkspaceKind::Managed { .. } => false,
+        WorkspaceKind::AdHoc => {
+            // If it's still ad-hoc, there must be a reason, and we don't try to create a managed commit
+            false
+        }
+        WorkspaceKind::ManagedMissingWorkspaceCommit { .. } => true,
     }
 }
 

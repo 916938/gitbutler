@@ -6,14 +6,12 @@ pub use traversal::{
 };
 
 pub use commands::{FileInfo, RepoCommands, read_worktree_file};
-pub use remote::GitRemote;
 
 mod repository_ext;
-pub use repository_ext::{commit_with_signature_gix, commit_without_signature_gix};
+pub use repository_ext::commit_without_signature_gix;
 
 pub mod hooks;
 pub mod managed_hooks;
-mod remote;
 
 pub const GITBUTLER_COMMIT_AUTHOR_NAME: &str = "GitButler";
 pub const GITBUTLER_COMMIT_AUTHOR_EMAIL: &str = "gitbutler@gitbutler.com";
@@ -40,6 +38,6 @@ pub fn signature_gix(purpose: SignaturePurpose) -> gix::actor::Signature {
 fn commit_time(overriding_variable_name: &str) -> gix::date::Time {
     std::env::var(overriding_variable_name)
         .ok()
-        .and_then(|time| gix::date::parse(&time, Some(gix::date::Zoned::now())).ok())
+        .and_then(|time| gix::date::parse(&time, Some(gix::date::ZonedDateTime::now())).ok())
         .unwrap_or_else(gix::date::Time::now_local_or_utc)
 }

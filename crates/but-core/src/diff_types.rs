@@ -47,7 +47,7 @@ impl From<TreeChange> for DiffSpec {
     fn from(change: crate::TreeChange) -> Self {
         Self {
             previous_path: change.previous_path().map(ToOwned::to_owned),
-            path: change.path.to_owned(),
+            path: change.path,
             hunk_headers: vec![],
         }
     }
@@ -136,7 +136,6 @@ impl std::fmt::Debug for HunkHeader {
 /// the *dominant* change to display. Note that it can stack with a content change,
 /// but *should not only in case of a `TypeChange*`*.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[expect(missing_docs)]
 pub enum ModeFlags {
     ExecutableBitAdded,
     ExecutableBitRemoved,

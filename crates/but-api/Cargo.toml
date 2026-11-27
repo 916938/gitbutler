@@ -15,10 +15,6 @@ ignored = [
     # Used by macro-generated async API glue that machete does not detect reliably.
     "futures",
     "tokio",
-    # Used only when the `napi` feature is enabled for Node bindings.
-    "napi",
-    # Used only when the `napi` feature is enabled for Node bindings.
-    "napi-derive",
     # Used only when the `tauri` feature is enabled for Tauri command bindings.
     "tauri",
 ]
@@ -31,12 +27,11 @@ default = []
 ## Provide Tauri commands automatically where possible, to avoid duplication.
 ## Needs "legacy" as long as it needs legacy project support.
 tauri = ["dep:tauri", "legacy"]
-## Provide napi bindings for Node.js via napi-rs.
-## Needs "legacy" as long as it needs legacy project support.
-napi = ["dep:napi", "dep:napi-derive", "legacy", "export-schema"]
 ## When paths are turned into strings they are lossy. Also provide a `_bytes` variant of such fields with the original value
 ## for lossless use.
 path-bytes = []
+## If enabled, we will let the current executable (gitbutler-tauri) be the source for the `but` link.
+builtin-but = []
 ## Generate JSON schemas for TypeScript type generation via schemars.
 export-schema = [
     "but-error/export-schema",
@@ -48,7 +43,6 @@ export-schema = [
     "gitbutler-project/export-schema",
     "but-rebase/export-schema",
     "gitbutler-operating-modes/export-schema",
-    "gitbutler-branch/export-schema",
     "gitbutler-branch-actions/export-schema",
     "gitbutler-edit-mode/export-schema",
     "gitbutler-oplog/export-schema",
@@ -59,9 +53,9 @@ export-schema = [
 ##
 ## This changes the shape of a public type, so it must stay coherent across one
 ## build: never enable it in any crate's default features. Leaf crates
-## (`gitbutler-tauri`, `but-napi`, `but`) forward it so artifact builds can opt
+## (`gitbutler-tauri`, `but`) forward it so artifact builds can opt
 ## in on the command line.
-graph-workspace = []
+graph-workspace = ["but-transaction/graph-workspace"]
 ## Make legacy functionality available.
 legacy = [
     "but-ctx/legacy",
@@ -69,15 +63,12 @@ legacy = [
     "dep:but-askpass",
     "dep:gitbutler-user",
     "dep:gitbutler-project",
-    "dep:gitbutler-branch",
     "dep:gitbutler-branch-actions",
-    "dep:gitbutler-commit",
     "dep:gitbutler-reference",
     "dep:gitbutler-repo",
     "dep:gitbutler-edit-mode",
     "dep:gitbutler-operating-modes",
     "dep:gitbutler-oplog",
-    "dep:but-action",
     "dep:but-gerrit",
 ]
 
@@ -94,6 +85,7 @@ but-workspace.workspace = true
 but-settings.workspace = true
 but-secret.workspace = true
 but-rebase.workspace = true
+but-transaction.workspace = true
 but-db.workspace = true
 but-forge.workspace = true
 but-forge-storage.workspace = true
@@ -104,6 +96,7 @@ but-hunk-dependency.workspace = true
 but-github.workspace = true
 but-gitlab.workspace = true
 but-bitbucket.workspace = true
+but-gitbutler-code.workspace = true
 # 'legacy' is needed while this is only a sketch of what the oplog could be.
 # For single-branch testing, we also want the oplog and just take it as it is.
 but-oplog = { workspace = true, features = ["legacy"] }
@@ -113,13 +106,10 @@ itertools.workspace = true
 
 # What follows is *basically* newly written crates that are built on top of legacy,
 # so need some refactoring/rethinking to become usable.
-but-action = { workspace = true, optional = true }
 but-gerrit = { workspace = true, optional = true }
 gitbutler-user = { workspace = true, optional = true }
 gitbutler-project = { workspace = true, optional = true }
-gitbutler-branch = { workspace = true, optional = true }
 gitbutler-branch-actions = { workspace = true, optional = true }
-gitbutler-commit = { workspace = true, optional = true }
 gitbutler-reference = { workspace = true, optional = true }
 gitbutler-repo = { workspace = true, optional = true }
 gitbutler-edit-mode = { workspace = true, optional = true }
@@ -129,11 +119,6 @@ gitbutler-git.workspace = true
 tauri = { version = "^2.10.3", features = [
     "unstable",
 ], optional = true } # For the #[tauri::command(async)] macro only
-napi = { version = "3.8.5", features = [
-    "serde-json",
-    "tokio_rt",
-], optional = true }
-napi-derive = { version = "3.5.4", optional = true }
 boolean-enums.workspace = true
 bstr = { workspace = true }
 schemars.workspace = true

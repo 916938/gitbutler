@@ -15,6 +15,7 @@ use but_graph::SegmentIndex;
 use but_workspace::{
     ref_info::{Commit, LocalCommit, LocalCommitRelation, Segment},
     ui::PushStatus,
+    worktrees::WorktreeBase,
 };
 use gitbutler_operating_modes::OperatingMode;
 use gix::date::time::CustomFormat;
@@ -42,10 +43,12 @@ use crate::{
     id::{
         ChangeIdWithShortId, CommittedFileId, LaneWithId, SegmentWithId, ShortId, TreeChangeWithId,
     },
+    theme::Theme,
     tui::text::truncate_text,
     utils::{
-        InputOutputChannel, OutputChannel, WriteWithUtils, shorten_hex_object_id,
-        shorten_object_id, status_letter, status_letter_ui, time::format_relative_time_verbose,
+        CliOutput, CliOutputHuman, InputOutputChannel, OutputChannel, WriteWithUtils,
+        shorten_hex_object_id, shorten_object_id, status_letter, status_letter_ui,
+        time::format_relative_time_verbose,
     },
 };
 
@@ -206,8 +209,6 @@ pub enum TuiRunOptions {
     PickChanges,
 }
 
-/// The outcome of running the TUI.
-///
 /// Under normal circumstances this will be [`TuiOutcome::None`] but if the TUI is launched via
 /// [`tui_with_options`] it might be something else.
 ///
@@ -266,15 +267,21 @@ struct StatusContext {
     /// The changed files of every checkout with CLI IDs, main worktree first.
     /// Only needed for the tree status letters, which hunks do not carry.
     changes_by_source: Vec<(ChangeSourceId, Vec<ui::TreeChange>)>,
-    /// The active linked worktrees with the commits they own, empty unless the
-    /// `worktreeManipulation` flag is on.
+    /// The active linked worktrees with the commits they own.
     worktrees: Vec<but_workspace::worktrees::WorktreeInfo>,
+    /// How many commits of the target tip each worktree resting outside the workspace lacks,
+    /// by worktree name.
+    worktrees_behind_target: HashMap<BString, usize>,
     /// Symbolic HEAD of the checkout where status was invoked.
     head_ref: Option<gix::refs::FullName>,
     /// Uncommitted files with unresolved merge conflicts in the index; not committable until resolved.
     conflicted_paths: Vec<String>,
-    common_merge_base_data: CommonMergeBase,
-    target_tip_id: gix::ObjectId,
+    common_merge_base_data: Option<CommonMergeBase>,
+    /// Selected history cutoff, independent of the displayed common base.
+    target_cutoff_id: Option<gix::ObjectId>,
+    target_tip_id: Option<gix::ObjectId>,
+    /// The workspace target ref, including local targets without legacy base-branch data.
+    target_ref: Option<gix::refs::FullName>,
     upstream_state: Option<UpstreamState>,
     last_fetched_ms: Option<u128>,
     review_map: std::collections::HashMap<String, Vec<but_forge::ForgeReview>>,
@@ -304,8 +311,7 @@ impl StatusContext {
     }
 }
 
-fn show_edit_mode_status(ctx: &mut Context, out: &mut OutputChannel) -> anyhow::Result<()> {
-    // Delegate to the resolve status logic to show actual conflict details
+fn show_edit_mode_status(ctx: &mut Context, out: &mut OutputChannel) -> CliResult<()> {
     crate::command::legacy::resolve::show_resolve_status(ctx, out)
 }
 
@@ -318,13 +324,11 @@ pub(crate) fn worktree(
     // Check if we're in edit mode first, before doing any expensive operations
     let mode = but_api::legacy::modes::operating_mode(ctx)?.operating_mode;
     if let gitbutler_operating_modes::OperatingMode::Edit(_metadata) = mode {
-        // In edit mode, show the conflict resolution status
-        return show_edit_mode_status(ctx, out).map_err(Into::into);
+        return show_edit_mode_status(ctx, out);
     }
 
-    if let Some(out) = out.for_json() {
-        out.write_value(workspace_status(ctx, flags)?)?;
-        return Ok(());
+    if out.is_json() {
+        return out.print_cli_output(StatusOutcome::Json(Box::new(workspace_status(ctx, flags)?)));
     }
 
     let mut status_ctx = {
@@ -342,12 +346,10 @@ pub(crate) fn worktree(
 
     match render_mode {
         StatusRenderMode::Oneshot(_) => {
-            let Some(human_out) = out.for_human() else {
-                return Ok(());
-            };
-
-            let mut output = StatusOutput::Immediate { out: human_out };
+            let mut lines = Vec::new();
+            let mut output = StatusOutput { lines: &mut lines };
             build_status_output(ctx, &status_ctx, &mut output)?;
+            out.print_cli_output(StatusOutcome::Human(lines))?;
         }
         StatusRenderMode::Tui(launch_options) => {
             let initial_target =
@@ -362,7 +364,7 @@ pub(crate) fn worktree(
             let run_options = TuiRunOptions::Normal;
 
             let mut lines = Vec::new();
-            let mut output = StatusOutput::Buffer { lines: &mut lines };
+            let mut output = StatusOutput { lines: &mut lines };
             build_status_output(ctx, &status_ctx, &mut output)?;
             let (final_lines, _outcome) = tui::render_tui(
                 ctx,
@@ -376,17 +378,51 @@ pub(crate) fn worktree(
 
             drop(inout);
 
-            if !launch_options.skip_status_after
-                && let Some(human_out) = out.for_human()
-            {
-                for line in final_lines {
-                    render_oneshot::render_oneshot(line, human_out)?;
-                }
+            if !launch_options.skip_status_after {
+                out.print_cli_output(StatusOutcome::Human(final_lines))?;
             }
         }
     }
 
     Ok(())
+}
+
+/// The workspace status in the form of the output format, as human and JSON status are built
+/// separately.
+#[must_use]
+enum StatusOutcome {
+    Human(Vec<StatusOutputLine>),
+    Json(Box<json::WorkspaceStatus>),
+}
+
+impl CliOutputHuman for StatusOutcome {
+    fn on_human(
+        self,
+        out: &mut dyn WriteWithUtils,
+        _agent: bool,
+        _theme: &'static Theme,
+    ) -> anyhow::Result<()> {
+        match self {
+            StatusOutcome::Human(lines) => {
+                for line in lines {
+                    render_oneshot::render_oneshot(line, out)?;
+                }
+            }
+            StatusOutcome::Json(_) => {
+                unreachable!("JSON status is only built for JSON output")
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CliOutput for StatusOutcome {
+    fn on_json(self) -> impl Serialize {
+        match self {
+            StatusOutcome::Json(status) => status,
+            StatusOutcome::Human(_) => unreachable!("human status is only built for human output"),
+        }
+    }
 }
 
 pub(crate) fn tui_with_options(
@@ -420,7 +456,7 @@ pub(crate) fn tui_with_options(
     drop(guard);
 
     let mut lines = Vec::new();
-    let mut output = StatusOutput::Buffer { lines: &mut lines };
+    let mut output = StatusOutput { lines: &mut lines };
     build_status_output(ctx, &status_ctx, &mut output)?;
     let (_final_lines, outcome) =
         tui::render_tui(ctx, out, flags, lines, launch_options, None, run_options)?;
@@ -464,17 +500,20 @@ fn build_status_context(
 ) -> anyhow::Result<StatusContext> {
     use crate::utils::change_source::InvokedFrom;
 
+    let invoked_from = match &render_mode {
+        StatusRenderMode::Oneshot(invoked_from) => invoked_from.clone(),
+        StatusRenderMode::Tui(options) => options.invoked_from.clone(),
+    };
     let head_ref = {
         let repo = ctx.repo.get()?;
-        let invoked_from = match &render_mode {
-            StatusRenderMode::Oneshot(invoked_from) => invoked_from.as_ref(),
-            StatusRenderMode::Tui(options) => options.invoked_from.as_ref(),
-        };
-        match invoked_from {
-            Some(InvokedFrom::LinkedWorktree(name)) => {
+        match invoked_from
+            .as_ref()
+            .and_then(|from| from.linked_worktree.as_ref())
+        {
+            Some(name) => {
                 but_workspace::worktrees::open_worktree_repo(&repo, name.as_ref())?.head_name()?
             }
-            Some(InvokedFrom::MainWorktree) | None => repo.head_name()?,
+            None => repo.head_name()?,
         }
     };
     let (
@@ -483,6 +522,7 @@ fn build_status_context(
         remote_commits_by_id,
         stacks,
         resolved_target,
+        lower_bound,
         commit_id_to_change_id,
         worktrees,
         worktree_stacks,
@@ -497,8 +537,8 @@ fn build_status_context(
                 ..Default::default()
             },
         )?;
-        let stacks = ws.stacks.clone();
-        let worktree_stacks = ws.worktrees.clone();
+        let (stacks, worktree_stacks) =
+            crate::id::without_padding_commits(&repo, ws.stacks.clone(), ws.worktrees.clone());
         let mut push_statuses_by_segment_id = HashMap::<SegmentIndex, PushStatus>::new();
         let mut local_commits_by_id = HashMap::<gix::ObjectId, LocalCommit>::new();
         let mut remote_commits_by_id = HashMap::<gix::ObjectId, Commit>::new();
@@ -538,13 +578,20 @@ fn build_status_context(
             }
         }
 
-        let resolved_target = workspace_target::ResolvedTarget::from_workspace(&ws)?;
+        let resolved_target = if repo.head()?.is_unborn() {
+            None
+        } else {
+            Some(workspace_target::ResolvedTarget::from_workspace(
+                &ws, &repo,
+            )?)
+        };
         (
             push_statuses_by_segment_id,
             local_commits_by_id,
             remote_commits_by_id,
             stacks,
             resolved_target,
+            ws.lower_bound,
             commit_id_to_change_id,
             worktrees,
             worktree_stacks,
@@ -605,11 +652,11 @@ fn build_status_context(
         commit_id_to_change_id,
         worktree_stacks,
         ctx.settings.context_lines,
+        invoked_from.as_ref().map(InvokedFrom::checkout),
     )?;
 
     let stacks = id_map.stacks();
-    // Store the count of stacks for hint logic later
-    let has_branches = !stacks.is_empty();
+    let has_branches = resolved_target.is_some() && !stacks.is_empty();
 
     let mut stack_details: Vec<StackEntry> = Vec::new();
 
@@ -621,8 +668,11 @@ fn build_status_context(
         ),
     ));
 
-    for stack in stacks {
-        stack_details.push((stack.lane.stack_id(), (Some(stack.clone()), Vec::new())));
+    // The unborn branch is shown in the footer, not as an empty stack.
+    if resolved_target.is_some() {
+        for stack in stacks {
+            stack_details.push((stack.lane.stack_id(), (Some(stack.clone()), Vec::new())));
+        }
     }
 
     let ci_map = ci_map(
@@ -635,91 +685,92 @@ fn build_status_context(
 
     // Calculate common_merge_base data and upstream state in a scope
     // to ensure repo reference is dropped before any async operations
-    let (common_merge_base_data, upstream_state, last_fetched_ms, base_branch) = {
-        let base_branch = {
-            but_api::legacy::virtual_branches::get_base_branch_data(ctx, perm)
-                .ok()
-                .flatten()
-        };
-        let status_target = resolved_target.for_status(base_branch.as_ref());
-        let repo = ctx.repo.get()?;
-        let target_commit_id = status_target.commit_id;
-        let base_commit = repo.find_commit(target_commit_id)?;
-        let base_commit_decoded = base_commit.decode()?;
-        let full_message = base_commit_decoded.message.to_string();
-        let formatted_date = base_commit_decoded
-            .committer()?
-            .time()?
-            .format_or_unix(DATE_ONLY);
-        let author = base_commit_decoded.author()?;
-        let common_merge_base_data = CommonMergeBase {
-            target_name: status_target.display_name,
-            common_merge_base: shorten_object_id(&repo, target_commit_id),
-            message: full_message,
-            commit_date: formatted_date,
-            commit_id: target_commit_id,
-            authored_at: base_commit_decoded.author()?.time()?.seconds as i128 * 1000,
-            committed_at: base_commit_decoded.committer()?.time()?.seconds as i128 * 1000,
-            author_name: author.name.to_string(),
-            author_email: author.email.to_string(),
-        };
+    let (common_merge_base_data, upstream_state, last_fetched_ms, base_branch) =
+        if let Some(resolved_target) = &resolved_target {
+            let base_branch = {
+                but_api::legacy::virtual_branches::get_base_branch_data(ctx, perm)
+                    .ok()
+                    .flatten()
+            };
+            let status_target = resolved_target.for_status(base_branch.as_ref(), lower_bound);
+            let repo = ctx.repo.get()?;
+            let target_commit_id = status_target.commit_id;
+            let base_commit = repo.find_commit(target_commit_id)?;
+            let base_commit_decoded = base_commit.decode()?;
+            let full_message = base_commit_decoded.message.to_string();
+            let formatted_date = base_commit_decoded
+                .committer()?
+                .time()?
+                .format_or_unix(DATE_ONLY);
+            let author = base_commit_decoded.author()?;
+            let common_merge_base_data = CommonMergeBase {
+                target_name: status_target.display_name,
+                common_merge_base: shorten_object_id(&repo, target_commit_id),
+                message: full_message,
+                commit_date: formatted_date,
+                commit_id: target_commit_id,
+                authored_at: base_commit_decoded.author()?.time()?.seconds as i128 * 1000,
+                committed_at: base_commit_decoded.committer()?.time()?.seconds as i128 * 1000,
+                author_name: author.name.to_string(),
+                author_email: author.email.to_string(),
+            };
 
-        // Get cached upstream state information (without fetching)
-        let (upstream_state, last_fetched_ms) = base_branch
-            .as_ref()
-            .map(|base_branch| {
-                let last_fetched = base_branch.last_fetched_ms;
-                let state = if base_branch.behind > 0 {
-                    // Get the latest commit on the upstream branch (current_sha is the tip of the remote branch)
-                    let commit_id = base_branch.current_sha;
-                    repo.find_commit(commit_id).ok().and_then(|commit_obj| {
-                        let commit = commit_obj.decode().ok()?;
-                        let message = out.truncate_if_unpaged(
-                            &commit.message.to_string().replace('\n', " "),
-                            30,
-                        );
+            let (upstream_state, last_fetched_ms) = base_branch
+                .as_ref()
+                .map(|base_branch| {
+                    let last_fetched = base_branch.last_fetched_ms;
+                    let state = if base_branch.behind > 0
+                        && let Some(commit_id) = base_branch.current_sha
+                    {
+                        // The current SHA is the resolved upstream tip.
+                        repo.find_commit(commit_id).ok().and_then(|commit_obj| {
+                            let commit = commit_obj.decode().ok()?;
+                            let message = out.truncate_if_unpaged(
+                                &commit.message.to_string().replace('\n', " "),
+                                30,
+                            );
 
-                        let formatted_date = commit
-                            .committer()
-                            .ok()?
-                            .time()
-                            .ok()?
-                            .format_or_unix(DATE_ONLY);
+                            let formatted_date = commit
+                                .committer()
+                                .ok()?
+                                .time()
+                                .ok()?
+                                .format_or_unix(DATE_ONLY);
 
-                        let author = commit.author().ok()?;
+                            let author = commit.author().ok()?;
 
-                        Some(UpstreamState {
-                            target_name: base_branch.branch_name.clone(),
-                            behind_count: base_branch.behind,
-                            latest_commit: shorten_object_id(&repo, commit_id),
-                            message,
-                            commit_date: formatted_date,
-                            last_fetched_ms: last_fetched,
-                            commit_id,
-                            authored_at: author.time().ok()?.seconds as i128 * 1000,
-                            committed_at: commit.committer().ok()?.time().ok()?.seconds as i128
-                                * 1000,
-                            author_name: author.name.to_string(),
-                            author_email: author.email.to_string(),
+                            Some(UpstreamState {
+                                target_name: base_branch.branch_name.clone(),
+                                behind_count: base_branch.behind,
+                                latest_commit: shorten_object_id(&repo, commit_id),
+                                message,
+                                commit_date: formatted_date,
+                                last_fetched_ms: last_fetched,
+                                commit_id,
+                                authored_at: author.time().ok()?.seconds as i128 * 1000,
+                                committed_at: commit.committer().ok()?.time().ok()?.seconds as i128
+                                    * 1000,
+                                author_name: author.name.to_string(),
+                                author_email: author.email.to_string(),
+                            })
                         })
-                    })
-                } else {
-                    None
-                };
-                (state, last_fetched)
-            })
-            .unwrap_or((None, None));
+                    } else {
+                        None
+                    };
+                    (state, last_fetched)
+                })
+                .unwrap_or((None, None));
 
-        // repo, base_commit, and base_commit_decoded are automatically dropped here at end of scope
-        (
-            common_merge_base_data,
-            upstream_state,
-            last_fetched_ms,
-            base_branch,
-        )
-    };
+            (
+                Some(common_merge_base_data),
+                upstream_state,
+                last_fetched_ms,
+                base_branch,
+            )
+        } else {
+            (None, None, None, None)
+        };
 
-    // Compute upstream integration statuses for explicit upstream diagnostics.
     let branch_merge_statuses: BTreeMap<String, UpstreamBranchStatus> = if flags.show_upstream
         && base_branch
             .as_ref()
@@ -731,8 +782,15 @@ fn build_status_context(
     };
     let target_tip_id = base_branch
         .as_ref()
-        .map(|base_branch| base_branch.current_sha)
-        .unwrap_or(common_merge_base_data.commit_id);
+        .filter(|base_branch| base_branch.remote_name.is_some())
+        .and_then(|base_branch| base_branch.current_sha);
+    let worktrees_behind_target = worktrees_behind_target(
+        &*ctx.repo.get()?,
+        &worktrees,
+        base_branch
+            .as_ref()
+            .and_then(|base_branch| base_branch.current_sha),
+    )?;
 
     let is_paged = out.is_paged();
     let should_truncate_for_terminal = truncation_policy(format, &render_mode, is_paged);
@@ -743,9 +801,14 @@ fn build_status_context(
         worktree_changes: worktree_changes.worktree_changes.changes,
         changes_by_source,
         worktrees,
+        worktrees_behind_target,
         conflicted_paths,
         common_merge_base_data,
+        target_cutoff_id: resolved_target.as_ref().map(|target| target.oid()),
         target_tip_id,
+        target_ref: resolved_target
+            .as_ref()
+            .and_then(|target| target.ref_name().map(ToOwned::to_owned)),
         upstream_state,
         last_fetched_ms,
         review_map,
@@ -763,6 +826,36 @@ fn build_status_context(
         remote_commits_by_id,
         base_branch,
     })
+}
+
+/// How many commits of `target_tip` each of `worktrees` resting outside the workspace lacks, by
+/// worktree name, measured against the tip `but pull` rebases them onto.
+fn worktrees_behind_target(
+    repo: &gix::Repository,
+    worktrees: &[but_workspace::worktrees::WorktreeInfo],
+    target_tip: Option<gix::ObjectId>,
+) -> anyhow::Result<HashMap<BString, usize>> {
+    let Some(target_tip) = target_tip else {
+        return Ok(HashMap::new());
+    };
+    let mut outside_worktrees = worktrees
+        .iter()
+        .filter_map(|worktree| match worktree.base? {
+            WorktreeBase::Outside(base) => Some((worktree, base)),
+            WorktreeBase::InWorkspace(_) => None,
+        })
+        .peekable();
+    if outside_worktrees.peek().is_none() {
+        return Ok(HashMap::new());
+    }
+    let cache = repo.commit_graph_if_enabled()?;
+    let mut graph = repo.revision_graph(cache.as_ref());
+    outside_worktrees
+        .map(|(worktree, base)| {
+            let counts = repo.ahead_behind_counts_with_graph(base, target_tip, &mut graph)?;
+            Ok((worktree.name.clone(), counts.behind))
+        })
+        .collect()
 }
 
 /// Decide if status text should be pre-truncated for terminal output.
@@ -832,7 +925,6 @@ fn print_hint(
 
     output.connector(Vec::from([Span::raw("")]))?;
 
-    // Determine what hint to show based on workspace state
     let has_uncommitted_files = !status_ctx.worktree_changes.is_empty();
     let mut shown_situational_hint = false;
 
@@ -866,7 +958,14 @@ fn print_hint(
         shown_situational_hint = true;
     }
 
-    let hint_text = if has_merged_upstream_branch {
+    if let Some(hint) = worktrees_behind_hint(status_ctx) {
+        output.hint(Vec::from([Span::styled(hint, crate::theme::get().hint)]))?;
+        shown_situational_hint = true;
+    }
+
+    let hint_text = if status_ctx.common_merge_base_data.is_none() {
+        Some("Hint: run `but commit` to create the initial commit")
+    } else if has_merged_upstream_branch {
         Some(
             "Hint: branches marked `(merged upstream)` have landed; run `but pull` to remove them, or start new work on another branch",
         )
@@ -892,6 +991,33 @@ fn print_hint(
     }
 
     Ok(())
+}
+
+/// Name the worktrees `but pull` would rebase onto the target tip they lack commits of.
+fn worktrees_behind_hint(status_ctx: &StatusContext) -> Option<String> {
+    let base_branch = status_ctx.base_branch.as_ref()?;
+    let names: Vec<_> = status_ctx
+        .worktrees
+        .iter()
+        .filter(|worktree| {
+            worktree.rebasable_base().is_some()
+                && status_ctx
+                    .worktrees_behind_target
+                    .get(&worktree.name)
+                    .is_some_and(|behind| *behind > 0)
+        })
+        .map(|worktree| worktree.name.to_string())
+        .collect();
+    let (verb, object) = match names.len() {
+        0 => return None,
+        1 => ("is", "it"),
+        _ => ("are", "them"),
+    };
+    Some(format!(
+        "Hint: {} {verb} behind {}; run `but pull` to update {object}",
+        names.join(", "),
+        base_branch.branch_name
+    ))
 }
 
 fn should_explain_rewritten_commit_marker(status_ctx: &StatusContext) -> bool {
@@ -993,15 +1119,17 @@ fn empty_branch_is_merged_upstream(
         return false;
     };
 
+    let Some(target_tip_id) = status_ctx.target_tip_id else {
+        return false;
+    };
     if remote_tracking_ref_is_target_branch(status_ctx, remote_ref_name.as_ref())
-        || (remote_tip_id == status_ctx.common_merge_base_data.commit_id
-            && remote_tip_id != status_ctx.target_tip_id)
+        || (Some(remote_tip_id) == status_ctx.target_cutoff_id && remote_tip_id != target_tip_id)
     {
         return false;
     }
 
-    repo.merge_base(remote_tip_id, status_ctx.target_tip_id)
-        .is_ok_and(|merge_base| merge_base.is_some_and(|merge_base| merge_base == remote_tip_id))
+    repo.is_ancestor(remote_tip_id, target_tip_id)
+        .unwrap_or(false)
 }
 
 fn remote_tracking_ref_is_target_branch(
@@ -1017,7 +1145,8 @@ fn remote_tracking_ref_is_target_branch(
 fn target_remote_tracking_ref_name(
     base_branch: &gitbutler_branch_actions::BaseBranch,
 ) -> Option<String> {
-    if base_branch.remote_name.is_empty() {
+    let remote_name = base_branch.remote_name.as_ref()?;
+    if remote_name.is_empty() {
         return None;
     }
 
@@ -1025,15 +1154,12 @@ fn target_remote_tracking_ref_name(
         return Some(base_branch.branch_name.clone());
     }
 
-    let remote_prefix = format!("{}/", base_branch.remote_name);
+    let remote_prefix = format!("{remote_name}/");
     let branch_name = base_branch
         .branch_name
         .strip_prefix(&remote_prefix)
         .unwrap_or(&base_branch.branch_name);
-    Some(format!(
-        "refs/remotes/{remote}/{branch_name}",
-        remote = base_branch.remote_name
-    ))
+    Some(format!("refs/remotes/{remote_name}/{branch_name}",))
 }
 
 /// Display upstream state information when upstream has commits ahead of the workspace base.
@@ -1061,12 +1187,21 @@ fn print_upstream_state(
 
     let t = crate::theme::get();
     let dot = Span::styled("●", t.success);
+    let repo = ctx.repo.get()?;
+    let mut label = String::new();
+    if let Some(local_target) = ctx.project_meta()?.target_ref
+        && let Some(mut reference) = repo.try_find_reference(&local_target)?
+        && reference.peel_to_id()?.detach() == upstream.commit_id
+    {
+        label.push_str(&local_target.shorten().to_string());
+        label.push_str(", ");
+    }
+    label.push_str(&format!("upstream: {}", upstream.target_name));
 
     if status_ctx.flags.show_upstream {
         // When showing detailed commits, only show count in summary
         let mut upstream_summary = Vec::from([Span::raw(format!(
-            "(upstream: {}) {} new {}",
-            upstream.target_name,
+            "({label}) {} new {}",
             upstream.behind_count,
             if upstream.behind_count == 1 {
                 "commit"
@@ -1076,15 +1211,13 @@ fn print_upstream_state(
         ))]);
         if !last_checked_text.is_empty() {
             upstream_summary.push(Span::raw(" "));
-            upstream_summary.push(Span::styled(last_checked_text.clone(), t.hint));
+            upstream_summary.push(Span::styled(last_checked_text, t.hint));
         }
         output.upstream_changes(Vec::from([Span::raw("┊╭┄ ")]), upstream_summary)?;
 
-        // Display detailed list of upstream commits
         if let Some(base_branch) = &status_ctx.base_branch
             && !base_branch.upstream_commits.is_empty()
         {
-            let repo = ctx.repo.get()?;
             let commits = base_branch.upstream_commits.iter().take(8);
             for commit in commits {
                 let commit_short = shorten_hex_object_id(&repo, &commit.id);
@@ -1117,8 +1250,7 @@ fn print_upstream_state(
         let mut upstream_summary = Vec::from([
             Span::styled(upstream.latest_commit.clone(), t.hint),
             Span::raw(format!(
-                " (upstream: {}) {} new {}",
-                upstream.target_name,
+                " ({label}) {} new {}",
                 upstream.behind_count,
                 if upstream.behind_count == 1 {
                     "commit"
@@ -1146,31 +1278,43 @@ fn print_common_merge_base_summary(
     status_ctx: &StatusContext,
     output: &mut StatusOutput<'_>,
 ) -> anyhow::Result<()> {
+    let Some(common_merge_base) = &status_ctx.common_merge_base_data else {
+        let name = status_ctx
+            .head_ref
+            .as_ref()
+            .context("Unborn HEAD must name a branch")?;
+        return output.connector(Vec::from([Span::raw(format!(
+            "┴ no commits ({})",
+            name.shorten()
+        ))]));
+    };
     let mut label = String::from("common base");
     let mut is_head = false;
-    if let Some(base_branch) = &status_ctx.base_branch {
-        let repo = ctx.repo.get()?;
+    let base_refs: Vec<_> = if let Some(base_branch) = &status_ctx.base_branch {
         let local_ref = format!("refs/heads/{}", base_branch.short_name);
         let remote_ref = target_remote_tracking_ref_name(base_branch);
-        for ref_name in std::iter::once(local_ref).chain(remote_ref) {
-            if let Some(mut reference) = repo.try_find_reference(ref_name.as_str())?
-                && reference.peel_to_id()?.detach() == status_ctx.common_merge_base_data.commit_id
-            {
-                label.push_str(", ");
-                label.push_str(&reference.name().shorten().to_string());
-                is_head |= status_ctx
-                    .head_ref
-                    .as_ref()
-                    .is_some_and(|head_ref| head_ref.as_ref() == reference.name());
-            }
+        std::iter::once(local_ref).chain(remote_ref).collect()
+    } else {
+        status_ctx
+            .target_ref
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    let repo = ctx.repo.get()?;
+    for ref_name in base_refs {
+        if let Some(mut reference) = repo.try_find_reference(ref_name.as_str())?
+            && reference.peel_to_id()?.detach() == common_merge_base.commit_id
+        {
+            label.push_str(", ");
+            label.push_str(&reference.name().shorten().to_string());
+            is_head |= status_ctx
+                .head_ref
+                .as_ref()
+                .is_some_and(|head_ref| head_ref.as_ref() == reference.name());
         }
     }
-    let first_line = status_ctx
-        .common_merge_base_data
-        .message
-        .lines()
-        .next()
-        .unwrap_or("");
+    let first_line = common_merge_base.message.lines().next().unwrap_or("");
     let connector = if status_ctx.upstream_state.is_some() {
         "├╯"
     } else {
@@ -1183,21 +1327,17 @@ fn print_common_merge_base_summary(
     }
     let summary = Vec::from([
         Span::raw(format!(" ({label}) ")),
-        Span::styled(
-            status_ctx.common_merge_base_data.commit_date.clone(),
-            t.hint,
-        ),
+        Span::styled(common_merge_base.commit_date.clone(), t.hint),
         Span::raw(" "),
-        Span::raw(first_line.to_string()),
+        Span::raw(first_line),
     ]);
     output.merge_base(
         Vec::from([Span::raw(connector), Span::raw(" ")]),
         Vec::from([Span::styled(
-            status_ctx.common_merge_base_data.common_merge_base.clone(),
+            common_merge_base.common_merge_base.clone(),
             t.hint,
         )]),
         summary,
-        status_ctx.common_merge_base_data.commit_id,
     )?;
     Ok(())
 }
@@ -1210,7 +1350,6 @@ fn print_worktree_status(
 ) -> anyhow::Result<bool> {
     let mut has_merged_upstream_branch = false;
     for (i, (stack_id, (stack_with_id, files))) in status_ctx.stack_details.iter().enumerate() {
-        // files assigned to the stack
         if let Some(stack_with_id) = stack_with_id {
             let branch_name = stack_with_id
                 .segments
@@ -1308,6 +1447,8 @@ fn ci_map<'a>(
 /// Where a worktree lane draws its blank separator line: nested lanes above the heading,
 /// standalone lanes below the closing connector, where the caller's next section expects one.
 /// The lane draws it itself so a lane skipped for lack of IDs leaves no stray separator.
+/// It's a plain connector, not a gap between stacks, as stacks can't be moved into or below a
+/// worktree lane.
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum LaneSeparator {
     Above,
@@ -1316,8 +1457,7 @@ enum LaneSeparator {
 
 /// Print each linked worktree resting on `base` as a lane nested `depth` levels deep.
 ///
-/// Nothing is printed when no worktree branches off `base`, which is the common case and the
-/// only case at all unless the `worktreeManipulation` flag is on.
+/// Nothing is printed when no worktree branches off `base`, which is the common case.
 fn print_worktree_lanes_on(
     ctx: &Context,
     status_ctx: &StatusContext,
@@ -1363,7 +1503,7 @@ fn print_worktree_lane(
         .context("BUG: a worktree lane names its uncommitted area")?;
 
     if separator == Some(LaneSeparator::Above) {
-        output.between_stacks(in_lane(depth, [Span::raw("┊")]))?;
+        output.connector(in_lane(depth, [Span::raw("┊")]))?;
     }
 
     let source = ChangeSourceId::Worktree(worktree.name.clone());
@@ -1388,11 +1528,48 @@ fn print_worktree_lane(
         LaneOpening::RowAbove,
         output,
     )?;
-    output.connector(in_lane(depth, [Span::raw("├╯")]))?;
+    output.connector(in_lane(
+        depth,
+        std::iter::once(Span::raw("├╯")).chain(worktree_base_label(status_ctx, &repo, worktree)),
+    ))?;
     if separator == Some(LaneSeparator::Below) {
-        output.between_stacks(in_lane(depth, [Span::raw("┊")]))?;
+        output.connector(in_lane(depth, [Span::raw("┊")]))?;
     }
     Ok(())
+}
+
+/// The commit a worktree lane rests on and how it relates to the target tip, empty when that
+/// commit is the common base the lane appears to join.
+fn worktree_base_label(
+    status_ctx: &StatusContext,
+    repo: &gix::Repository,
+    worktree: &but_workspace::worktrees::WorktreeInfo,
+) -> Vec<Span<'static>> {
+    let (Some(WorktreeBase::Outside(base)), Some(behind), Some(base_branch)) = (
+        worktree.base,
+        status_ctx.worktrees_behind_target.get(&worktree.name),
+        &status_ctx.base_branch,
+    ) else {
+        return Vec::new();
+    };
+    if status_ctx
+        .common_merge_base_data
+        .as_ref()
+        .is_some_and(|common_base| common_base.commit_id == base)
+    {
+        return Vec::new();
+    }
+    let target = &base_branch.branch_name;
+    let relation = match behind {
+        0 => target.clone(),
+        1 => format!("1 commit behind {target}"),
+        n => format!("{n} commits behind {target}"),
+    };
+    Vec::from([
+        Span::raw(" "),
+        Span::styled(shorten_object_id(repo, base), crate::theme::get().hint),
+        Span::raw(format!(" ({relation})")),
+    ])
 }
 
 /// The extra `┊` lanes drawn to the left of a line, one per enclosing linked-worktree lane.
@@ -2119,7 +2296,7 @@ fn display_cli_commit_details(
             t.hint,
         )
     };
-    let start_id = Span::styled(short_id.to_string(), t.cli_id);
+    let start_id = Span::styled(short_id, t.cli_id);
 
     let change_id_spans = if let Some(change_id) = change_id {
         let padded = change_id.padded_short_id();

@@ -8,9 +8,10 @@ use but_path::home_dir;
 use serde::Serialize;
 
 use crate::{
+    CliResult,
     args::skill,
-    theme::{self, Paint},
-    utils::{OutputChannel, detect_agent::Agent},
+    theme::{self, Paint, Theme},
+    utils::{CliOutput, CliOutputHuman, OutputChannel, WriteWithUtils, detect_agent::Agent},
 };
 
 mod freshness;
@@ -18,7 +19,6 @@ mod reference;
 use freshness::agent_default_install_path;
 pub(crate) use freshness::{agent_skill_notice, agent_skill_update_notice};
 
-/// Error type for user-initiated cancellation
 #[derive(Debug, Clone, Copy)]
 struct UserCancelled;
 
@@ -30,35 +30,28 @@ impl std::fmt::Display for UserCancelled {
 
 impl std::error::Error for UserCancelled {}
 
-// Embedded skill files
-const SKILL_MD: &[u8] = include_bytes!("../../../skill/SKILL.md");
-const CONCEPTS_MD: &[u8] = include_bytes!("../../../skill/references/concepts.md");
-const EXAMPLES_MD: &[u8] = include_bytes!("../../../skill/references/examples.md");
-const REFERENCE_MD: &[u8] = include_bytes!("../../../skill/references/reference.md");
+const SKILL_MD: &str = include_str!("../../../skill/SKILL.md");
+const CONCEPTS_MD: &str = include_str!("../../../skill/references/concepts.md");
+const EXAMPLES_MD: &str = include_str!("../../../skill/references/examples.md");
 /// Body of a stub SKILL.md: the full skill's frontmatter followed by this.
 const STUB_MD: &str = include_str!("../../../skill/stub.md");
 
-/// Metadata for a skill file to be installed
 struct SkillFile {
     /// Relative path components from install directory.
     path_components: &'static [&'static str],
-    /// Embedded content
-    content: &'static [u8],
     /// Name of the document as `but skill <name>` prints it.
     name: &'static str,
-    /// Renders the text `but skill <name>` prints when it is not the embedded
-    /// content: the command reference comes from the clap tree so it always
-    /// matches the binary, while the installed file stays hand-written.
-    served: Option<fn() -> String>,
+    /// The document as it is installed and as `but skill <name>` prints it.
+    /// The command reference is rendered from the clap tree so it always
+    /// matches the binary.
+    content: fn() -> String,
 }
 
 impl SkillFile {
-    /// Get the actual installation path given a base directory.
     fn get_install_path(&self, base_dir: &std::path::Path) -> PathBuf {
         join_relative_path(base_dir, self.path_components)
     }
 
-    /// Format the relative path for output and JSON.
     fn display_path(&self) -> String {
         self.path_components.join("/")
     }
@@ -68,18 +61,8 @@ impl SkillFile {
         self.path_components == ["SKILL.md"]
     }
 
-    /// The embedded content as text; the sources are Markdown and must be UTF-8.
-    fn text(&self) -> Result<&'static str> {
-        std::str::from_utf8(self.content)
-            .with_context(|| format!("{} is not valid UTF-8", self.display_path()))
-    }
-
-    /// The text `but skill <name>` prints.
-    fn served_text(&self) -> Result<String> {
-        match self.served {
-            Some(render) => Ok(render()),
-            None => self.text().map(str::to_owned),
-        }
+    fn text(&self) -> String {
+        (self.content)()
     }
 }
 
@@ -87,27 +70,23 @@ impl SkillFile {
 const SKILL_FILES: &[SkillFile] = &[
     SkillFile {
         path_components: &["SKILL.md"],
-        content: SKILL_MD,
         name: "core",
-        served: None,
+        content: || SKILL_MD.to_owned(),
     },
     SkillFile {
         path_components: &["references", "reference.md"],
-        content: REFERENCE_MD,
         name: "reference",
-        served: Some(reference::render),
+        content: reference::render,
     },
     SkillFile {
         path_components: &["references", "concepts.md"],
-        content: CONCEPTS_MD,
         name: "concepts",
-        served: None,
+        content: || CONCEPTS_MD.to_owned(),
     },
     SkillFile {
         path_components: &["references", "examples.md"],
-        content: EXAMPLES_MD,
         name: "examples",
-        served: None,
+        content: || EXAMPLES_MD.to_owned(),
     },
 ];
 
@@ -132,12 +111,9 @@ fn skill_files_in_write_order(layout: SkillLayout) -> impl Iterator<Item = &'sta
         .chain(SKILL_FILES.iter().filter(|file| file.is_main_skill_file()))
 }
 
-/// Represents a skill installation location format
 #[derive(Debug, Clone)]
 struct SkillFormat {
-    /// Display name of the format
     name: &'static str,
-    /// Description of where this format is used
     description: &'static str,
     /// Whether this format should be offered for local and/or global installs.
     availability: SkillFormatAvailability,
@@ -162,7 +138,6 @@ impl SkillFormat {
         }
     }
 
-    /// Get the actual installation path given a base directory
     fn get_install_path(&self, base_dir: &std::path::Path) -> PathBuf {
         join_relative_path(base_dir, self.path_components)
     }
@@ -202,7 +177,7 @@ fn skill_format_for_name(name: &str, global: bool) -> Option<&'static SkillForma
 }
 
 /// Join a relative path from components using platform-native separators.
-fn join_relative_path(base_dir: &std::path::Path, components: &[&str]) -> PathBuf {
+pub(crate) fn join_relative_path(base_dir: &std::path::Path, components: &[&str]) -> PathBuf {
     components
         .iter()
         .fold(base_dir.to_path_buf(), |path, component| {
@@ -210,7 +185,6 @@ fn join_relative_path(base_dir: &std::path::Path, components: &[&str]) -> PathBu
         })
 }
 
-// Common skill folder formats
 const SKILL_FORMATS: &[SkillFormat] = &[
     SkillFormat {
         name: "Agent Skills",
@@ -339,6 +313,30 @@ fn skill_format_for_agent(agent: Agent, global: bool) -> Option<&'static SkillFo
     skill_format_for_name(name, global)
 }
 
+/// Whether `agent` also loads skills from the shared project `.agents/skills`,
+/// besides its own [`skill_format_for_agent`] location.
+#[rustfmt::skip]
+fn agent_loads_shared_project_skills(agent: Agent) -> bool {
+    match agent {
+        Agent::Codex | Agent::Cursor | Agent::CursorCli | Agent::GitHubCopilot
+        | Agent::OpenCode | Agent::Poolside | Agent::GeminiCli | Agent::Augment
+        | Agent::Antigravity | Agent::Replit | Agent::Amp | Agent::Crush
+        | Agent::Goose | Agent::RooCode | Agent::Pi | Agent::Devin => true,
+        // `.agents/skills` already is their own format.
+        Agent::Cline | Agent::Dirac | Agent::DeepSeekHarness => false,
+        // Trae only reads it behind an opt-in setting; the others don't
+        // document it, so counting it would silence the missing-skill notice
+        // while they never load the skill.
+        Agent::ClaudeCode | Agent::ClaudeCodeCowork | Agent::KiroCli | Agent::Trae
+        | Agent::Junie | Agent::TabnineCli => false,
+        // No known skill location at all.
+        Agent::QwenCode | Agent::GitLabDuoCli | Agent::KiloCode | Agent::Hermes
+        | Agent::V0 | Agent::PulumiNeo | Agent::AmazonQ | Agent::CodeBuddy
+        | Agent::GrokBuild | Agent::Warp | Agent::OpenHands | Agent::OpenClaw
+        | Agent::Unknown => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallScope {
     Local,
@@ -385,7 +383,6 @@ impl From<InstallScopeOption> for String {
     }
 }
 
-/// Status of an installed skill
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillStatus {
     /// Path to the skill installation directory
@@ -400,14 +397,10 @@ pub struct SkillStatus {
     pub up_to_date: bool,
 }
 
-/// Result of checking all skills
 #[derive(Debug, Serialize)]
 pub struct SkillCheckResult {
-    /// Current CLI version
     pub cli_version: String,
-    /// List of all found skill installations with their status
     pub skills: Vec<SkillStatus>,
-    /// Number of outdated skills
     pub outdated_count: usize,
 }
 
@@ -416,9 +409,9 @@ pub fn handle(
     current_dir: &std::path::Path,
     out: &mut OutputChannel,
     platform: skill::Platform,
-) -> Result<()> {
+) -> CliResult<()> {
     if let Some(doc) = platform.doc() {
-        return print_doc(out, doc, platform.full);
+        return out.print_cli_output(doc_outcome(doc, platform.full));
     }
     match platform.cmd {
         Some(skill::Subcommands::Install {
@@ -434,7 +427,7 @@ pub fn handle(
             };
             match install_skill(current_dir, out, global, path, detect, layout) {
                 Err(error) if error.downcast_ref::<UserCancelled>().is_some() => Ok(()),
-                result => result,
+                result => out.print_cli_output(result?),
             }
         }
         Some(skill::Subcommands::Check {
@@ -451,47 +444,73 @@ pub fn handle(
     }
 }
 
-/// Print one embedded skill document, with every reference appended when
-/// `full` is set. Content goes straight to the output channel with no pager so
-/// an agent can read it in one call.
-fn print_doc(out: &mut OutputChannel, name: &str, full: bool) -> Result<()> {
+/// One embedded skill document, with every reference appended when `full` is
+/// set. Content goes straight to the output channel with no pager so an agent
+/// can read it in one call.
+fn doc_outcome(name: &'static str, full: bool) -> DocOutcome {
     let file = SKILL_FILES
         .iter()
         .find(|file| file.name == name)
         .expect("every doc subcommand names an embedded skill file");
-    let content = file.served_text()?;
+    let content = file.text();
     // The frontmatter is trigger text for the harness, not guidance. Only
     // SKILL.md carries one; a `---` rule inside a reference must stay.
     let body = match frontmatter_close(&content) {
         Some(close) if file.is_main_skill_file() => &content[close.end..],
         _ => content.as_str(),
     };
-    // Validate every reference before printing anything, so a bad embed
-    // fails loudly instead of producing a partial or altered document.
     let references: Vec<(&SkillFile, String)> = if full {
         SKILL_FILES
             .iter()
             .filter(|file| !file.is_main_skill_file())
-            .map(|file| Ok((file, file.served_text()?)))
-            .collect::<Result<_>>()?
+            .map(|file| (file, file.text()))
+            .collect()
     } else {
         Vec::new()
     };
-    if let Some(writer) = out.for_human() {
-        write!(writer, "{body}")?;
-        for (reference, text) in &references {
-            writeln!(writer, "\n--- but skill {} ---\n", reference.name)?;
-            write!(writer, "{text}")?;
+    DocOutcome {
+        name,
+        body: body.to_owned(),
+        references: references
+            .into_iter()
+            .map(|(reference, text)| (reference.name, text))
+            .collect(),
+    }
+}
+
+#[must_use]
+struct DocOutcome {
+    name: &'static str,
+    body: String,
+    /// The name and text of each appended reference.
+    references: Vec<(&'static str, String)>,
+}
+
+impl CliOutputHuman for DocOutcome {
+    fn on_human(
+        self,
+        out: &mut dyn WriteWithUtils,
+        _agent: bool,
+        _theme: &'static Theme,
+    ) -> Result<()> {
+        write!(out, "{}", self.body)?;
+        for (name, text) in &self.references {
+            writeln!(out, "\n--- but skill {name} ---\n")?;
+            write!(out, "{text}")?;
         }
+        Ok(())
     }
-    if let Some(out) = out.for_json() {
-        let docs: Vec<serde_json::Value> = references
+}
+
+impl CliOutput for DocOutcome {
+    fn on_json(self) -> impl Serialize {
+        let docs: Vec<serde_json::Value> = self
+            .references
             .iter()
-            .map(|(reference, text)| serde_json::json!({ "name": reference.name, "content": text }))
+            .map(|(name, text)| serde_json::json!({ "name": name, "content": text }))
             .collect();
-        out.write_value(serde_json::json!({ "name": name, "content": body, "references": docs }))?;
+        serde_json::json!({ "name": self.name, "content": self.body, "references": docs })
     }
-    Ok(())
 }
 
 /// The repository around `current_dir`, `None` when there is none. Any other
@@ -504,7 +523,6 @@ fn repository_context(current_dir: &std::path::Path) -> Result<Option<Context>> 
     }
 }
 
-/// Expand tilde in path to home directory
 fn expand_tilde(path_str: &str) -> Option<PathBuf> {
     if path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\") {
         home_dir().map(|home| {
@@ -554,7 +572,6 @@ fn frontmatter_close(content: &str) -> Option<std::ops::Range<usize>> {
         })
 }
 
-/// Replace version in SKILL.md content
 fn inject_version(content: &str, version: &str) -> String {
     let replace = |text: &str| text.replace("version: 0.0.0", &format!("version: {version}"));
     match frontmatter_close(content) {
@@ -572,13 +589,11 @@ fn inject_version(content: &str, version: &str) -> String {
 fn resolve_custom_path(custom: &str, ctx: Option<&mut Context>, global: bool) -> Result<PathBuf> {
     let path = std::path::Path::new(custom);
 
-    // Try tilde expansion first
     let expanded_path = expand_tilde(custom).unwrap_or_else(|| path.to_path_buf());
 
     if expanded_path.is_absolute() {
         Ok(expanded_path)
     } else {
-        // Relative path - join with base directory
         let base_dir = get_base_dir(ctx, global)?;
         Ok(base_dir.join(expanded_path))
     }
@@ -659,10 +674,8 @@ fn frontmatter_value(content: &str, key: &str) -> Option<String> {
 fn parse_yaml_value(value: &str) -> String {
     let value = value.trim();
 
-    // Handle quoted strings
     if value.starts_with('"') || value.starts_with('\'') {
         let quote_char = value.chars().next().unwrap();
-        // Find the closing quote
         if let Some(end) = value[1..].find(quote_char) {
             return value[1..1 + end].to_string();
         }
@@ -696,6 +709,25 @@ fn find_format_installations(format: &SkillFormat, base_dir: &std::path::Path) -
     found
 }
 
+/// GitButler skill installations under `base_dir`, with their format names.
+/// Only formats valid in that scope are scanned, so a scope-specific location
+/// (e.g. `.github/skills` locally, `.copilot/skills` globally) isn't
+/// discovered under the wrong scope.
+pub(crate) fn find_installations(
+    base_dir: &std::path::Path,
+    global: bool,
+) -> Vec<(PathBuf, &'static str)> {
+    SKILL_FORMATS
+        .iter()
+        .filter(|format| format.is_available_for(global))
+        .flat_map(|format| {
+            find_format_installations(format, base_dir)
+                .into_iter()
+                .map(move |path| (path, format.name))
+        })
+        .collect()
+}
+
 fn is_complete_skill_installation(path: &std::path::Path) -> bool {
     let skill_md = path.join("SKILL.md");
     is_gitbutler_skill(&skill_md)
@@ -713,8 +745,6 @@ fn is_current_skill_installation(path: &std::path::Path, version: &str) -> bool 
 const SCOPE_GLOBAL: &str = "global";
 const SCOPE_LOCAL: &str = "local";
 
-/// Find all GitButler skill installations.
-///
 /// Returns a list of (install_path, format_name, scope) tuples.
 fn find_all_installations(
     ctx: Option<&mut Context>,
@@ -723,7 +753,6 @@ fn find_all_installations(
 ) -> Result<Vec<(PathBuf, &'static str, &'static str)>> {
     let mut installations = Vec::new();
 
-    // Determine which base directories to check
     let mut base_dirs: Vec<(PathBuf, &str)> = Vec::new();
 
     if check_global && let Some(home) = home_dir() {
@@ -744,25 +773,15 @@ fn find_all_installations(
         base_dirs.push((workdir, SCOPE_LOCAL));
     }
 
-    // Scan each base directory for the formats valid in its scope, so a
-    // scope-specific location (e.g. `.github/skills` locally, `.copilot/skills`
-    // globally) isn't discovered under the wrong scope.
     for (base_dir, scope) in base_dirs {
-        let is_global = scope == SCOPE_GLOBAL;
-        for format in SKILL_FORMATS {
-            if !format.is_available_for(is_global) {
-                continue;
-            }
-            for path in find_format_installations(format, &base_dir) {
-                installations.push((path, format.name, scope));
-            }
+        for (path, format_name) in find_installations(&base_dir, scope == SCOPE_GLOBAL) {
+            installations.push((path, format_name, scope));
         }
     }
 
     Ok(installations)
 }
 
-/// Check the status of all installed skills.
 pub fn check_skill_status(
     ctx: Option<&mut Context>,
     check_global: bool,
@@ -807,9 +826,8 @@ fn check_skills(
     global_only: bool,
     local_only: bool,
     auto_update: bool,
-) -> Result<()> {
+) -> CliResult<()> {
     let t = theme::get();
-    // Determine scope
     let (check_global, check_local) = match (global_only, local_only) {
         (true, false) => (true, false),
         (false, true) => (false, true),
@@ -823,12 +841,12 @@ fn check_skills(
         None
     };
 
-    // Warn if --local was explicitly requested but no repo context is available
     if local_only && ctx.is_none() {
-        anyhow::bail!(
+        return Err(anyhow::anyhow!(
             "Cannot check local installations: not in a git repository.\n\
              Use --global to check global installations, or run from within a repository."
-        );
+        )
+        .into());
     }
 
     // First check to find outdated skills (reborrow ctx so we can use it again later)
@@ -854,7 +872,7 @@ fn check_skills(
 
         for path_str in &outdated_paths {
             // Pass None for ctx since the paths are already absolute and don't require repo context
-            install_skill(
+            let outcome = install_skill(
                 current_dir,
                 out,
                 false,
@@ -862,6 +880,7 @@ fn check_skills(
                 false,
                 SkillLayout::Full,
             )?;
+            out.print_cli_output(outcome)?;
         }
     }
 
@@ -872,23 +891,43 @@ fn check_skills(
         initial_result
     };
 
-    // Output based on format
-    if let Some(writer) = out.for_human() {
-        print_human_check_output(writer, &result)?;
+    out.print_cli_output(CheckOutcome {
+        result,
+        auto_update,
+    })
+}
+
+#[must_use]
+struct CheckOutcome {
+    result: SkillCheckResult,
+    /// Whether outdated skills were updated, so there is no need to suggest it.
+    auto_update: bool,
+}
+
+impl CliOutputHuman for CheckOutcome {
+    fn on_human(self, out: &mut dyn WriteWithUtils, _agent: bool, t: &'static Theme) -> Result<()> {
+        let Self {
+            result,
+            auto_update,
+        } = self;
+        print_human_check_output(out, &result)?;
 
         if result.outdated_count > 0 && !auto_update {
-            writeln!(writer)?;
+            writeln!(out)?;
             writeln!(
-                writer,
+                out,
                 "{} Run 'but skill check --update' to update outdated skills",
                 t.sym().arrow.attention()
             )?;
         }
-    } else if let Some(json_out) = out.for_json() {
-        json_out.write_value(&result)?;
+        Ok(())
     }
+}
 
-    Ok(())
+impl CliOutput for CheckOutcome {
+    fn on_json(self) -> impl Serialize {
+        self.result
+    }
 }
 
 fn print_human_check_output(
@@ -1118,18 +1157,6 @@ fn prompt_for_install_path(
     Ok(selected_format.get_install_path(&base_dir))
 }
 
-/// Prepare SKILL.md content with version injection and validate all files
-fn prepare_skill_content(version: &str) -> Result<String> {
-    // Validate all embedded files are valid UTF-8
-    let skill_content = std::str::from_utf8(SKILL_MD).context("SKILL.md is not valid UTF-8")?;
-    std::str::from_utf8(CONCEPTS_MD).context("concepts.md is not valid UTF-8")?;
-    std::str::from_utf8(EXAMPLES_MD).context("examples.md is not valid UTF-8")?;
-    std::str::from_utf8(REFERENCE_MD).context("reference.md is not valid UTF-8")?;
-
-    // Inject version into SKILL.md
-    Ok(inject_version(skill_content, version))
-}
-
 /// Write the bundled skill files into `install_path`, creating the directory
 /// structure as needed and injecting the CLI version into SKILL.md. An existing
 /// stub stays a stub on every rewrite, so refreshes never upgrade a layout by
@@ -1138,15 +1165,8 @@ pub(crate) fn write_skill_files(
     install_path: &std::path::Path,
     layout: SkillLayout,
 ) -> Result<&'static str> {
-    if SKILL_FILES.iter().any(|f| f.content.is_empty()) {
-        anyhow::bail!(
-            "Skill files were not properly embedded at build time. Please report this as a bug."
-        );
-    }
-
-    // Prepare all content before writing (validate UTF-8 and inject version)
     let version = option_env!("VERSION").unwrap_or("dev");
-    let full_skill_md = prepare_skill_content(version)?;
+    let full_skill_md = inject_version(SKILL_MD, version);
     let layout = match installed_layout(&install_path.join("SKILL.md")) {
         SkillLayout::Stub => SkillLayout::Stub,
         SkillLayout::Full => layout,
@@ -1189,16 +1209,15 @@ pub(crate) fn write_skill_files(
         let file_path = file.get_install_path(install_path);
         let content = if file.is_main_skill_file() {
             // Use the version-injected content for SKILL.md
-            skill_md_content.as_bytes()
+            skill_md_content.clone()
         } else {
-            file.content
+            file.text()
         };
-        write_skill_file(&file_path, content)?;
+        write_skill_file(&file_path, content.as_bytes())?;
     }
     Ok(version)
 }
 
-/// Write a skill file with proper error context
 fn write_skill_file(path: &std::path::Path, content: &[u8]) -> Result<()> {
     std::fs::write(path, content).with_context(|| {
         format!(
@@ -1208,7 +1227,6 @@ fn write_skill_file(path: &std::path::Path, content: &[u8]) -> Result<()> {
     })
 }
 
-/// Install the skill files
 fn install_skill(
     current_dir: &std::path::Path,
     out: &mut OutputChannel,
@@ -1216,17 +1234,11 @@ fn install_skill(
     custom_path: Option<String>,
     detect: bool,
     layout: SkillLayout,
-) -> Result<()> {
+) -> Result<InstallOutcome> {
     let t = theme::get();
     let driving_agent = (!out.can_prompt())
         .then(crate::utils::detect_agent::detect)
         .flatten();
-    // Validate that embedded files are not empty (catches build issues)
-    if SKILL_FILES.iter().any(|f| f.content.is_empty()) {
-        anyhow::bail!(
-            "Skill files were not properly embedded at build time. Please report this as a bug."
-        );
-    }
 
     // Validate SKILL_FORMATS configuration (catches development errors)
     debug_assert!(
@@ -1256,7 +1268,6 @@ fn install_skill(
 
     let mut progress = out.progress_channel();
 
-    // Validate flags
     if detect && custom_path.is_some() {
         anyhow::bail!("Cannot use both --detect and --path options together");
     }
@@ -1300,7 +1311,6 @@ fn install_skill(
 
     let mut version = "";
     for install_path in &install_paths {
-        // Validate installation path
         if install_path.exists() && install_path.is_file() {
             anyhow::bail!(
                 "Installation path {} is a file, not a directory. Please specify a directory path.",
@@ -1308,7 +1318,6 @@ fn install_skill(
             );
         }
 
-        // Check if files already exist and warn user
         if install_path.join("SKILL.md").exists()
             && let Some(writer) = out.for_human()
         {
@@ -1327,12 +1336,42 @@ fn install_skill(
     }
     // An existing stub is kept as a stub, so report what each location
     // actually holds rather than the layout that was requested.
-    let written: Vec<(&PathBuf, SkillLayout)> = install_paths
+    let written: Vec<(PathBuf, SkillLayout)> = install_paths
         .iter()
-        .map(|path| (path, installed_layout(&path.join("SKILL.md"))))
+        .map(|path| (path.clone(), installed_layout(&path.join("SKILL.md"))))
         .collect();
 
-    if let Some(writer) = out.for_human() {
+    Ok(InstallOutcome {
+        version,
+        install_paths,
+        written,
+        installed_for_driving_agent,
+    })
+}
+
+#[must_use]
+struct InstallOutcome {
+    version: &'static str,
+    install_paths: Vec<PathBuf>,
+    /// Each install path with the layout it holds after the install.
+    written: Vec<(PathBuf, SkillLayout)>,
+    /// Whether the skill went to the default location of the agent running `but`.
+    installed_for_driving_agent: bool,
+}
+
+impl CliOutputHuman for InstallOutcome {
+    fn on_human(
+        self,
+        writer: &mut dyn WriteWithUtils,
+        _agent: bool,
+        t: &'static Theme,
+    ) -> Result<()> {
+        let Self {
+            version: _,
+            install_paths,
+            written,
+            installed_for_driving_agent,
+        } = self;
         writeln!(writer)?;
         writeln!(
             writer,
@@ -1377,9 +1416,18 @@ fn install_skill(
             )?;
             writeln!(writer)?;
         }
+        Ok(())
     }
+}
 
-    if let Some(out) = out.for_json() {
+impl CliOutput for InstallOutcome {
+    fn on_json(self) -> impl Serialize {
+        let Self {
+            version,
+            install_paths,
+            written,
+            installed_for_driving_agent: _,
+        } = self;
         let installations: Vec<serde_json::Value> = written
             .iter()
             .map(|(path, layout)| {
@@ -1407,10 +1455,8 @@ fn install_skill(
         {
             result["files"] = installations[0]["files"].clone();
         }
-        out.write_value(result)?;
+        result
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1512,21 +1558,6 @@ mod tests {
     }
 
     #[test]
-    fn prepare_skill_content_validates_utf8() {
-        // This tests that the function checks UTF-8 validity
-        // The actual embedded files should be valid, so this should succeed
-        let result = prepare_skill_content("1.0.0");
-        assert!(result.is_ok());
-        assert!(!result.unwrap().is_empty());
-    }
-
-    #[test]
-    fn prepare_skill_content_injects_version() {
-        let result = prepare_skill_content("9.9.9").unwrap();
-        assert!(result.contains("version: 9.9.9"));
-    }
-
-    #[test]
     fn skill_formats_are_valid() {
         // Validate that all SKILL_FORMATS have non-empty fields
         assert!(!SKILL_FORMATS.is_empty(), "Must have at least one format");
@@ -1624,20 +1655,8 @@ mod tests {
         // This catches build issues where files aren't properly embedded
         for file in SKILL_FILES {
             assert!(
-                !file.content.is_empty(),
+                !file.text().is_empty(),
                 "{} should be embedded",
-                file.display_path()
-            );
-        }
-    }
-
-    #[test]
-    fn embedded_files_are_valid_utf8() {
-        // Ensure all embedded files are valid UTF-8
-        for file in SKILL_FILES {
-            assert!(
-                std::str::from_utf8(file.content).is_ok(),
-                "{} should be valid UTF-8",
                 file.display_path()
             );
         }
@@ -1825,12 +1844,12 @@ mod tests {
             skill_md.contains(&format!("version: {version}")),
             "SKILL.md carries the CLI's bundled version"
         );
-        assert!(
-            install_path
-                .join("references")
-                .join("reference.md")
-                .exists(),
-            "reference files are written alongside SKILL.md"
+        let installed_reference =
+            std::fs::read_to_string(install_path.join("references").join("reference.md")).unwrap();
+        assert_eq!(
+            installed_reference,
+            reference::render(),
+            "the installed command reference is the one `but skill reference` prints"
         );
     }
 

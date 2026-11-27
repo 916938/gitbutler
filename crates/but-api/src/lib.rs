@@ -5,15 +5,7 @@
 //! For them to behave correctly in multi-threaded scenarios, be sure to use an *exclusive or shared* lock
 //! on this level.
 //! Lower-level crates like `but-workspace` won't use filesystem-based locking beyond what Git offers natively.
-#![cfg_attr(not(feature = "napi"), forbid(unsafe_code))]
-#![cfg_attr(feature = "napi", deny(unsafe_code))]
-#![deny(missing_docs)]
-
-use std::collections::BTreeMap;
-
-use but_core::ChangeId;
-#[cfg(not(feature = "graph-workspace"))]
-use but_workspace::RefInfo;
+#![forbid(unsafe_code)]
 
 #[cfg(feature = "legacy")]
 pub mod legacy;
@@ -26,11 +18,13 @@ pub mod gitlab;
 
 /// Functions for Bitbucket authentication.
 pub mod bitbucket;
+/// Gated behind `legacy` because pushing and fetching rely on the legacy `gitbutler-git`, as for
+/// `land`.
+#[cfg(feature = "legacy")]
+pub mod gitbutler_code;
 
-/// Functions that take a branch as input.
 pub mod branch;
 
-/// Functions that operate on the workspace.
 pub mod workspace;
 
 /// Listing target-branch history relative to the workspace.
@@ -46,7 +40,6 @@ pub mod land;
 /// Ephemeral comments anchored to lines in diffs, shared between the GUI and the CLI.
 pub mod comments;
 
-/// Functions that operate commits
 pub mod commit;
 
 /// Functions that operate on linked git worktrees (experimental).
@@ -62,47 +55,48 @@ pub mod diff;
 /// EXPERIMENTAL
 pub mod json;
 
-/// Functions releated to platform detection and information.
 pub mod platform;
 
 pub mod open;
 
 pub mod panic_capture;
 
-/// The types for watcher events
-#[cfg(feature = "export-schema")]
-pub mod watcher;
-
-/// The tag vocabulary clients cache API results under.
-pub mod tags;
-
-/// App-level AI configuration.
 pub mod ai;
 
-/// Functions for workspace state.
-pub mod workspace_state;
+pub use but_transaction::{WorkspaceState, workspace_state};
 
-/// Represents the workspace for the frontend
-///
-/// This describes the post-operation workspace view that mutations should
-/// return regardless of whether they executed for real or as a dry-run.
-#[derive(Debug, Clone)]
-pub struct WorkspaceState {
-    /// Commits that were replaced by the operation. Maps `old_id -> new_id`.
-    pub replaced_commits: BTreeMap<gix::ObjectId, gix::ObjectId>,
-    /// Conflicted commits that were created.
-    pub conflicted_commits: Vec<(gix::ObjectId, ChangeId)>,
-    /// The workspace presented for the frontend. See [`RefInfo`] for more
-    /// detail.
-    #[cfg(not(feature = "graph-workspace"))]
-    pub head_info: RefInfo,
-    /// The workspace presented for the frontend, as the rendered graph
-    /// projection. See
-    /// [`DetailedGraphWorkspace`](but_workspace::ui::workspace::DetailedGraphWorkspace)
-    /// for more detail.
-    #[cfg(feature = "graph-workspace")]
-    pub graph_workspace: but_workspace::ui::workspace::DetailedGraphWorkspace,
-    /// True if a checkout occurred, and a conflict occurred during that
-    /// checkout.
-    pub checkout_conflict_occurred: bool,
+#[cfg(test)]
+mod tests {
+    use but_api_macros::but_api;
+    use but_testsupport::{CommandExt, git_at_dir, open_repo};
+
+    #[but_api(refreshes)]
+    pub fn probe(_ctx: &but_ctx::Context, succeed: bool) -> anyhow::Result<()> {
+        if succeed {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("the mutation failed"))
+        }
+    }
+
+    #[test]
+    fn a_refreshing_mutation_writes_the_sentinel_only_on_success() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        git_at_dir(tmp.path()).args(["init"]).run();
+        let ctx = but_ctx::Context::from_repo_for_testing(open_repo(tmp.path())?)?;
+        let sentinel = ctx.project_data_dir.join("REFRESH");
+        // A project in use has its storage directory; a fresh repository doesn't yet.
+        std::fs::create_dir_all(&ctx.project_data_dir)?;
+
+        probe(&ctx, false).unwrap_err();
+        assert!(!sentinel.exists(), "a failed mutation changed nothing");
+
+        probe(&ctx, true)?;
+        assert_eq!(
+            std::fs::read_to_string(&sentinel)?,
+            but_project_handle::process_sentinel_token(),
+            "the writer signs the sentinel so its own watcher can skip it"
+        );
+        Ok(())
+    }
 }

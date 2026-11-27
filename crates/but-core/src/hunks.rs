@@ -127,17 +127,14 @@ fn line_nums_from_hunk(diff: &BString, old_start: u32, new_start: u32) -> (Vec<u
         };
         match *first_char {
             b'+' => {
-                // Line added in new version
                 line_nums_added_new.push(new_line_num);
                 new_line_num += 1;
             }
             b'-' => {
-                // Line removed from old version
                 line_nums_removed_old.push(old_line_num);
                 old_line_num += 1;
             }
             b'@' => {
-                // Header line, skip
                 continue;
             }
             // Context lines (' ') and anything else are treated as unchanged.
@@ -340,7 +337,6 @@ pub struct HunkRange {
 
 // TODO: one day make this struct use `HunkRange` instead of loose fields.
 impl HunkHeader {
-    /// Return our old-range as self-contained structure.
     pub fn old_range(&self) -> HunkRange {
         HunkRange {
             start: self.old_start,
@@ -348,7 +344,6 @@ impl HunkHeader {
         }
     }
 
-    /// Return our new-range as self-contained structure.
     pub fn new_range(&self) -> HunkRange {
         HunkRange {
             start: self.new_start,
@@ -356,9 +351,18 @@ impl HunkHeader {
         }
     }
 
-    /// Return `true` if this hunk is fully contained in the other hunk.
     pub fn contains(self, other: HunkHeader) -> bool {
         self.old_range().contains(other.old_range()) && self.new_range().contains(other.new_range())
+    }
+
+    /// Return `true` if either side intersects the same side of `other`. A null side, as a
+    /// selection of lines has for the side it doesn't select, intersects nothing.
+    pub fn overlaps(self, other: HunkHeader) -> bool {
+        let intersects = |ours: HunkRange, theirs: HunkRange| {
+            !ours.is_null() && !theirs.is_null() && ours.intersects(theirs)
+        };
+        intersects(self.old_range(), other.old_range())
+            || intersects(self.new_range(), other.new_range())
     }
 }
 
@@ -367,7 +371,6 @@ impl HunkRange {
     pub fn end(&self) -> u32 {
         self.start + self.lines
     }
-    /// Calculate line number of the last line.
     pub fn last_line(&self) -> u32 {
         if self.lines == 0 {
             return self.start;
@@ -451,6 +454,48 @@ mod test {
             let zero_range = HunkRange { start: 1, lines: 0 };
             assert!(one_range.contains(zero_range));
             assert!(!zero_range.contains(one_range));
+        }
+    }
+
+    mod overlaps {
+        use super::*;
+
+        fn header(old_start: u32, old_lines: u32, new_start: u32, new_lines: u32) -> HunkHeader {
+            HunkHeader {
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+            }
+        }
+
+        #[test]
+        fn a_hunk_overlaps_the_lines_and_hunks_around_it() {
+            let hunk = header(5, 1, 5, 2);
+            assert!(
+                hunk.overlaps(header(2, 7, 2, 8)),
+                "the hunk with context around it"
+            );
+            assert!(
+                !hunk.overlaps(header(10, 3, 11, 3)),
+                "another hunk further down"
+            );
+            assert!(
+                hunk.overlaps(header(0, 0, 6, 1)),
+                "an added line of it selected"
+            );
+            assert!(
+                hunk.overlaps(header(5, 1, 0, 0)),
+                "a removed line of it selected"
+            );
+            assert!(
+                !hunk.overlaps(header(0, 0, 9, 1)),
+                "a line selected elsewhere"
+            );
+            assert!(
+                !header(0, 0, 1, 2).overlaps(header(1, 1, 0, 0)),
+                "an insertion at the top shares no side with a removal there"
+            );
         }
     }
 

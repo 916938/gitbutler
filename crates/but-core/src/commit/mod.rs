@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context as _, bail};
 use bstr::{BStr, BString, ByteSlice};
@@ -14,7 +14,6 @@ use crate::{
     commit::tree_expression::TreeExpression,
 };
 
-/// A collection of all the extra information we keep in the headers of a commit.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Headers {
     /// A property we can use to determine if two different commits are
@@ -32,11 +31,8 @@ pub struct Headers {
     pub conflicted: Option<u64>,
 }
 
-/// Lifecycle
 impl Headers {
-    /// Create a headers structure with both change_id and conflicted unset.
-    ///
-    /// This is only useful if you're going to set one of the properties right after. You _probably_ want to
+    /// Only useful if you're going to set one of the properties right after.
     pub fn empty() -> Self {
         Self {
             change_id: None,
@@ -75,16 +71,6 @@ impl Headers {
         self
     }
 
-    /// Creates a new set of headers with a randomly generated change_id.
-    #[cfg(feature = "legacy")]
-    #[deprecated = "We want deterministic change-ids, use Headers::synthetic_change_id_from_commit_id() instead."]
-    pub fn new_with_random_change_id() -> Self {
-        Self {
-            change_id: Some(ChangeId::generate()),
-            conflicted: None,
-        }
-    }
-
     /// Create a new instance, with the following rules for setting the change id header:
     /// 1. If `gitbutler.testing.changeId` is `content-hash`, use a placeholder that is replaced
     ///    with an ID derived from the final commit content by [`create()`].
@@ -114,7 +100,6 @@ impl Headers {
         }
     }
 
-    /// Create a new instance from a specified change_id
     pub fn from_change_id(change_id: ChangeId) -> Self {
         Headers {
             change_id: Some(change_id),
@@ -122,7 +107,6 @@ impl Headers {
         }
     }
 
-    /// Extract header information from the given `commit`, or return `None` if not present.
     pub fn try_from_commit(commit: &gix::objs::Commit) -> Option<Self> {
         Self::try_from_commit_headers(|| commit.extra_headers())
     }
@@ -158,7 +142,6 @@ impl Headers {
         })
     }
 
-    /// Remove all header fields from `commit`.
     pub fn remove_in_commit(commit: &mut gix::objs::Commit) {
         for field in [
             HEADERS_VERSION_FIELD,
@@ -216,13 +199,11 @@ impl From<&Headers> for Vec<(BString, BString)> {
     }
 }
 
-/// Determines how to sign the commit.
 #[derive(Default, PartialEq, Copy, Clone, Debug)]
 pub enum SignCommit {
     /// Unconditionally sign the commit. Note that this places responsibility on the caller to
     /// ensure that commit signing is configured, or at least handling that it was not.
     Yes,
-    /// Do not sign the commit.
     No,
     /// Sign the commit only if `gitbutler.signCommits=true`, *or* `gitbutler.signCommits` is unset
     /// but `commit.gpgSign=true`. In other words, `gitbutler.signCommits` takes precedence over
@@ -340,11 +321,8 @@ fn resolve_content_hash_change_id(
 /// conflicted information.
 #[derive(Debug, Copy, Clone)]
 pub enum TreeKind {
-    /// Our tree that caused a conflict during the merge.
     Ours,
-    /// Their tree that caused a conflict during the merge.
     Theirs,
-    /// The base of the conflicting mereg.
     Base,
     /// The tree that resulted from the merge with auto-resolution enabled.
     AutoResolution,
@@ -370,9 +348,7 @@ impl TreeKind {
     }
 }
 
-/// Lifecycle
 impl<'repo> Commit<'repo> {
-    /// Decode the object at `commit_id` and keep its data for later query.
     pub fn from_id(commit_id: gix::Id<'repo>) -> anyhow::Result<Self> {
         commit_id.object()?.try_into_commit()?.try_into()
     }
@@ -426,14 +402,12 @@ impl std::ops::DerefMut for CommitOwned {
 }
 
 impl Headers {
-    /// Return `true` if this commit contains a tree that is conflicted.
     pub fn is_conflicted(&self) -> bool {
         self.conflicted.is_some()
     }
 }
 
 impl CommitOwned {
-    /// Attach `repo` to this instance to be able to do way more with it.
     pub fn attach(self, repo: &gix::Repository) -> Commit<'_> {
         let CommitOwned { id, inner } = self;
         Commit {
@@ -452,7 +426,6 @@ impl CommitOwned {
     }
 }
 
-/// Mutations
 impl Commit<'_> {
     /// Set this commit to use the given `headers`, completely replacing the ones it might currently have.
     pub fn set_headers(&mut self, header: &Headers) {
@@ -460,15 +433,11 @@ impl Commit<'_> {
     }
 }
 
-/// Access
 impl<'repo> Commit<'repo> {
-    /// Remove the `repo` reference to become a fully owned instance.
     pub fn detach(self) -> CommitOwned {
         self.into()
     }
 
-    /// Return `true` if this commit contains a tree that is conflicted.
-    ///
     /// Conflict metadata is only authoritative when the tree contains at least
     /// one synthetic conflict entry. This avoids treating copied conflict
     /// trailers on otherwise ordinary commits as conflict state while keeping
@@ -485,7 +454,7 @@ impl<'repo> Commit<'repo> {
             return false;
         }
 
-        let Ok(tree) = self.id.repo.find_tree(self.inner.tree) else {
+        let Ok(tree) = self.id.repo().find_tree(self.inner.tree) else {
             return true;
         };
         tree.iter().any(|entry| {
@@ -515,14 +484,14 @@ impl<'repo> Commit<'repo> {
         Ok(if self.is_conflicted() {
             self.inner
                 .tree
-                .attach(self.id.repo)
+                .attach(self.id.repo())
                 .object()?
                 .into_tree()
                 .find_entry(kind.as_tree_entry_name())
                 .with_context(|| format!("Unexpected tree in conflicting commit {}", self.id))?
                 .id()
         } else {
-            self.inner.tree.attach(self.id.repo)
+            self.inner.tree.attach(self.id.repo())
         })
     }
 
@@ -533,7 +502,7 @@ impl<'repo> Commit<'repo> {
         if !self.is_conflicted() {
             return Ok(None);
         }
-        let tree = self.inner.tree.attach(self.id.repo).object()?.into_tree();
+        let tree = self.inner.tree.attach(self.id.repo()).object()?.into_tree();
         Ok(Some((
             tree.find_entry(TreeKind::Base.as_tree_entry_name())
                 .with_context(|| format!("No base tree in conflicting commit {}", self.id))?
@@ -552,7 +521,7 @@ impl<'repo> Commit<'repo> {
         if !self.is_conflicted() {
             return Ok(Vec::new());
         }
-        let tree = self.inner.tree.attach(self.id.repo).object()?.into_tree();
+        let tree = self.inner.tree.attach(self.id.repo()).object()?.into_tree();
         let mut ids = Vec::new();
         let mut i = 0;
         while let Some(entry) = tree.find_entry(format!("{CONFLICT_BASE_PREFIX}{i}")) {
@@ -567,7 +536,7 @@ impl<'repo> Commit<'repo> {
         if !self.is_conflicted() {
             return Ok(smallvec![self.inner.tree]);
         }
-        let tree = self.inner.tree.attach(self.id.repo).object()?.into_tree();
+        let tree = self.inner.tree.attach(self.id.repo()).object()?.into_tree();
         let mut ids = SmallVec::new();
         let mut i = 0;
         while let Some(entry) = tree.find_entry(format!("{CONFLICT_SIDE_PREFIX}{i}")) {
@@ -577,7 +546,6 @@ impl<'repo> Commit<'repo> {
         Ok(ids)
     }
 
-    /// Return our custom headers, of present.
     pub fn headers(&self) -> Option<Headers> {
         Headers::try_from_commit(&self.inner)
     }
@@ -592,12 +560,9 @@ impl<'repo> Commit<'repo> {
     }
 }
 
-/// Conflict specific details
 impl Commit<'_> {
-    /// Obtains the conflict entries of a conflicted commit if the commit is
-    /// conflicted, otherwise returns None.
     pub fn conflict_entries(&self) -> anyhow::Result<Option<ConflictEntries>> {
-        let repo = self.id.repo;
+        let repo = self.id.repo();
 
         if !self.is_conflicted() {
             return Ok(None);
@@ -635,23 +600,10 @@ pub struct ConflictEntries {
 but_schemars::register_sdk_type!(ConflictEntries);
 
 impl ConflictEntries {
-    /// If there are any conflict entries
     pub fn has_entries(&self) -> bool {
         !self.ancestor_entries.is_empty()
             || !self.our_entries.is_empty()
             || !self.their_entries.is_empty()
-    }
-
-    /// The total count of conflicted entries
-    pub fn total_entries(&self) -> usize {
-        let set = self
-            .ancestor_entries
-            .iter()
-            .chain(self.our_entries.iter())
-            .chain(self.their_entries.iter())
-            .collect::<HashSet<_>>();
-
-        set.len()
     }
 }
 
@@ -659,16 +611,10 @@ impl ConflictEntries {
 ///
 /// This is the shared translation used when a merge is auto-resolved but still
 /// has unresolved conflicts that must be persisted in a conflicted commit/tree.
-/// It first asks `gix` to materialize conflict stages into an index view of the
-/// merged tree. If that yields no staged conflict paths, it falls back to the
+/// It first asks `gix` to construct the final index from the merge outcome.
+/// If that yields no staged conflict paths, it falls back to the
 /// unresolved conflict list from the merge outcome itself, which is important
 /// for force-resolved merges where Git would otherwise omit index stages.
-///
-/// - `repo` - is the repository that owns `merged_tree_id` and provides the index
-///   machinery used to derive stage entries from the merge result.
-///
-/// - `merged_tree_id` - is the tree written from the merge result's auto-resolved
-///   output, which is reloaded so conflict stages can be inspected.
 ///
 /// - `merge_result` - is the original `gix` merge outcome whose unresolved
 ///   conflicts are translated into GitButler conflict-entry metadata.
@@ -676,19 +622,12 @@ impl ConflictEntries {
 /// - `treat_as_unresolved` - decides which conflicts should still be treated as
 ///   unresolved when scanning both staged entries and fallback conflict records.
 pub fn conflict_entries_from_merge_outcome(
-    repo: &gix::Repository,
-    merged_tree_id: gix::ObjectId,
     merge_result: &gix::merge::tree::Outcome<'_>,
     treat_as_unresolved: gix::merge::tree::TreatAsUnresolved,
 ) -> anyhow::Result<ConflictEntries> {
     use gix::index::entry::Stage;
 
-    let mut index = repo.index_from_tree(&merged_tree_id.attach(repo))?;
-    merge_result.index_changed_after_applying_conflicts(
-        &mut index,
-        treat_as_unresolved,
-        gix::merge::tree::apply_index_entries::RemovalMode::Mark,
-    );
+    let index = merge_result.index(treat_as_unresolved, None)?;
 
     let (mut ancestor_entries, mut our_entries, mut their_entries) =
         (Vec::new(), Vec::new(), Vec::new());
@@ -743,9 +682,12 @@ pub fn conflict_entries_from_merge_outcome(
 
 mod conflict;
 use conflict::message_is_conflicted;
+mod message_format;
 pub use conflict::{
     add_conflict_markers, rewrite_conflict_markers_on_message_change, strip_conflict_markers,
 };
+pub use message_format::format_commit_message;
+pub mod padding;
 pub mod tree_expression;
 
 /// Write a GitButler conflicted tree that wraps `resolved_tree_id` together
@@ -757,8 +699,6 @@ pub mod tree_expression;
 ///
 /// - `resolved_tree_id` - is the visible auto-resolved tree that callers want to
 ///   present as the conflicted commit's main tree.
-///
-/// - `tree_expression` - represents the trees involved in the conflict.
 ///
 /// - `conflict_entries` - lists the paths that should be recorded as conflicted in
 ///   the synthetic GitButler tree metadata.
@@ -801,11 +741,8 @@ pub fn write_conflicted_tree(
         .map(|tree_id| tree_id.detach())
 }
 
-/// A commit with change id.
 #[derive(Debug, Clone)]
 pub struct CommitIdentifiers {
-    /// The commit sha.
     pub id: gix::ObjectId,
-    /// The change id.
     pub change_id: ChangeId,
 }

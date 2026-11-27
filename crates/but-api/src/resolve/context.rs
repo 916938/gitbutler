@@ -82,7 +82,6 @@ pub struct FileConflict {
 /// Everything needed to prompt for and apply a resolution of one conflicted commit.
 #[derive(Debug, Clone)]
 pub struct ResolutionRequest {
-    /// The conflicted commit to resolve.
     pub commit_id: gix::ObjectId,
     /// The commit's message with the conflict markers stripped.
     pub commit_message: String,
@@ -159,17 +158,14 @@ pub fn build_request(
     let mut outcome = repo.merge_trees(base, ours, theirs, merge_labels(), options.into())?;
     let merged_tree_id = outcome.tree.write()?.detach();
 
-    let mut index = repo.index_from_tree(&merged_tree_id)?;
-    if !outcome.index_changed_after_applying_conflicts(
-        &mut index,
-        gix::merge::tree::TreatAsUnresolved::git(),
-        gix::merge::tree::apply_index_entries::RemovalMode::Mark,
-    ) {
+    let conflict_kind = gix::merge::tree::TreatAsUnresolved::git();
+    if !outcome.index.has_unmerged_entries(conflict_kind) {
         bail!(
             "Re-merging the conflicting trees of commit {commit_id} yielded no conflicts to resolve"
         );
     }
 
+    let index = outcome.index(conflict_kind, None)?;
     let mut sides_by_path: std::collections::BTreeMap<BString, ConflictSides> = Default::default();
     for entry in index.entries() {
         use gix::index::entry::Stage;
@@ -361,8 +357,6 @@ pub(crate) fn split_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Find all well-formed conflict blocks in `lines`.
-///
 /// A block requires an ours marker, a separator, and a closing theirs marker;
 /// anything else (stray or malformed markers) is treated as plain content.
 /// This scanner is shared by hunk extraction and resolution splicing so both

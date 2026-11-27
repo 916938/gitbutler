@@ -2,7 +2,7 @@ use anyhow::Result;
 use but_core::DiffSpec;
 use but_rebase::graph_rebase::{Editor, LookupStep as _};
 use but_testsupport::git_status;
-use but_workspace::commit::{ChangeSource, commit_amend};
+use but_workspace::commit::{ChangeSource, Conflicts, commit_amend};
 
 use crate::ref_info::with_workspace_commit::utils::{
     StackState, add_stack_with_segments,
@@ -56,6 +56,7 @@ fn amend_commit_smoke_test() -> Result<()> {
         worktree_changes_as_specs(&repo)?,
         0,
         ChangeSource::Head,
+        Conflicts::Reject,
     )?;
 
     assert!(outcome.rejected_specs.is_empty());
@@ -112,6 +113,7 @@ fn amend_into_earlier_commit_leaves_no_uncommitted_changes() -> Result<()> {
         worktree_changes_as_specs_with_hunks(&repo, context_lines)?,
         context_lines,
         ChangeSource::Head,
+        Conflicts::Reject,
     )?;
 
     assert!(outcome.rejected_specs.is_empty());
@@ -126,6 +128,113 @@ fn amend_into_earlier_commit_leaves_no_uncommitted_changes() -> Result<()> {
         "expected no uncommitted changes after amending, but got:\n{status_after}"
     );
 
+    Ok(())
+}
+
+/// Amend the uncommitted change, which rewrites a line `second` wrote, into `first`, below it,
+/// with `conflicts`, returning the repository, how many specs it rejected and its status.
+fn amend_below_what_it_builds_on(
+    conflicts: Conflicts,
+) -> Result<(
+    gix::Repository,
+    usize,
+    String,
+    but_testsupport::gix_testtools::tempfile::TempDir,
+)> {
+    let (tmp, graph, repo, mut meta, _description, mut db) =
+        writable_scenario("amend-below-what-it-builds-on", |_| {})?;
+    let first = repo.rev_parse_single("stack-1~1")?.detach();
+    let mut ws = graph.into_workspace()?;
+    let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
+    let outcome = commit_amend(
+        editor,
+        first,
+        worktree_changes_as_specs(&repo)?,
+        0,
+        ChangeSource::Head,
+        conflicts,
+    )?;
+    let rejected = outcome.rejected_specs.len();
+    outcome.rebase.materialize(Default::default())?;
+    let status = git_status(&repo)?;
+    Ok((repo, rejected, status, tmp))
+}
+
+#[test]
+fn amend_below_what_it_builds_on_rejects_it() -> Result<()> {
+    let (repo, rejected, status, _tmp) = amend_below_what_it_builds_on(Conflicts::Reject)?;
+    assert_eq!(rejected, 1, "the change doesn't merge into `first`");
+    assert_eq!(status, " M test.txt\n", "it stays uncommitted");
+    snapbox::assert_data_eq!(
+        but_testsupport::visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 4adab82 (HEAD -> stack-1) second
+* 6d68248 first
+* 84731fe (origin/main, main) base
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn amend_below_what_it_builds_on_keeping_conflicts_conflicts_it() -> Result<()> {
+    let (repo, rejected, status, _tmp) = amend_below_what_it_builds_on(Conflicts::Keep)?;
+    assert_eq!(rejected, 0, "the change goes into `first`");
+    let blob = |spec: &str| -> Result<String> {
+        Ok(String::from_utf8_lossy(&repo.rev_parse_single(spec)?.object()?.data).into_owned())
+    };
+    // `first` keeps its own lines, and the sides that conflicted on them.
+    snapbox::assert_data_eq!(
+        [
+            "stack-1~1:test.txt",
+            "stack-1~1:.conflict-side-0/test.txt",
+            "stack-1~1:.conflict-side-1/test.txt",
+            "stack-1~1:.conflict-base-0/test.txt",
+            "stack-1:test.txt",
+        ]
+        .map(|spec| Ok(format!("{spec}\n{}", blob(spec)?)))
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?
+        .join("\n"),
+        snapbox::str![[r#"
+stack-1~1:test.txt
+one
+two
+three
+
+stack-1~1:.conflict-side-0/test.txt
+one
+two
+three
+
+stack-1~1:.conflict-side-1/test.txt
+one
+two c
+three
+
+stack-1~1:.conflict-base-0/test.txt
+one
+two b
+three
+
+stack-1:test.txt
+one
+two b
+three
+
+"#]]
+    );
+    snapbox::assert_data_eq!(status, snapbox::str![[r#""#]]);
+    snapbox::assert_data_eq!(
+        but_testsupport::visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* edf42d2 (HEAD -> stack-1) second
+* aa212da [conflict] first
+* 84731fe (origin/main, main) base
+
+"#]]
+    );
     Ok(())
 }
 
@@ -183,7 +292,14 @@ fn amend_with_two_stacks_preserves_uncommitted_deletions() -> Result<()> {
 
     let mut ws = graph.into_workspace()?;
     let editor = Editor::create(&mut ws, &mut meta, &repo, &mut db)?;
-    let outcome = commit_amend(editor, a_commit_id, a_file_specs, 0, ChangeSource::Head)?;
+    let outcome = commit_amend(
+        editor,
+        a_commit_id,
+        a_file_specs,
+        0,
+        ChangeSource::Head,
+        Conflicts::Reject,
+    )?;
 
     assert!(outcome.rejected_specs.is_empty());
     let _materialized = outcome.rebase.materialize(Default::default())?;
@@ -219,11 +335,11 @@ mod from_worktree {
     use anyhow::Result;
     use but_core::DiffSpec;
     use but_graph::Graph;
-    use but_meta::VirtualBranchesTomlMetadata;
+    use but_meta::VirtualBranchesMetadata;
     use but_rebase::graph_rebase::{Editor, LookupStep as _, mutate::InsertSide};
     use but_testsupport::{CommandExt as _, git, git_status_at_dir, visualize_commit_graph_all};
     use but_workspace::{
-        commit::{ChangeSource, commit_amend, commit_create},
+        commit::{ChangeSource, Conflicts, commit_amend, commit_create},
         worktrees::open_worktree_repo,
     };
     use snapbox::str;
@@ -234,20 +350,18 @@ mod from_worktree {
     fn scenario() -> (
         gix::Repository,
         but_testsupport::gix_testtools::tempfile::TempDir,
-        std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        std::mem::ManuallyDrop<VirtualBranchesMetadata>,
         but_db::DbHandle,
     ) {
         let (repo, tmp) = writable_scenario_slow("worktree-amend");
-        let meta = VirtualBranchesTomlMetadata::from_path(
-            repo.path().join("should-never-be-written.toml"),
-        )
-        .expect("in-memory metadata handle always opens");
+        let meta = VirtualBranchesMetadata::from_path(repo.path())
+            .expect("in-memory metadata handle always opens");
         let db = but_testsupport::project_db(&repo).expect("project database always opens");
         (repo, tmp, std::mem::ManuallyDrop::new(meta), db)
     }
 
     /// Build the graph over `repo` with both linked worktrees discovered from `db`,
-    /// mirroring what `but-ctx` does with the `worktreeManipulation` flag enabled;
+    /// mirroring what `but-ctx` does;
     /// adoption is marked as already run so they count as active.
     fn graph_with_worktree_tips(
         repo: &gix::Repository,
@@ -255,7 +369,7 @@ mod from_worktree {
         db: &mut but_db::DbHandle,
     ) -> Result<Graph> {
         db.worktree_meta_mut().mark_adopted()?;
-        Graph::from_head(
+        but_testsupport::graph_from_head(
             repo,
             meta,
             Default::default(),
@@ -308,6 +422,7 @@ mod from_worktree {
                 repo: &wt_repo,
                 name: "wt".into(),
             },
+            Conflicts::Reject,
         )?;
         assert!(
             outcome.rejected_specs.is_empty(),
@@ -377,6 +492,7 @@ mod from_worktree {
                 repo: &wt_repo,
                 name: "wt".into(),
             },
+            Conflicts::Reject,
         )?;
         let selector = outcome.commit_selector.expect("a commit was amended");
         let materialized = outcome.rebase.materialize(Default::default())?;
@@ -446,6 +562,7 @@ mod from_worktree {
                 repo: &wt_repo,
                 name: "wt".into(),
             },
+            Conflicts::Reject,
         )?;
         assert!(
             outcome.rejected_specs.is_empty(),
@@ -494,15 +611,17 @@ mod from_worktree {
         let wt_repo = open_worktree_repo(&repo, "wt".into())?;
 
         let d1_id = detached_tip(&repo)?;
+        // `a-file` builds on F1, which D1 doesn't have, so only the new file goes in cleanly.
         let outcome = commit_amend(
             editor,
             d1_id,
-            whole_file_spec("a-file"),
+            whole_file_spec("new-file"),
             0,
             ChangeSource::Worktree {
                 repo: &wt_repo,
                 name: "wt".into(),
             },
+            Conflicts::Reject,
         )?;
         let selector = outcome.commit_selector.expect("a commit was amended");
         let materialized = outcome.rebase.materialize(Default::default())?;
@@ -563,6 +682,7 @@ mod from_worktree {
                 repo: &wt_repo,
                 name: "wt".into(),
             },
+            Conflicts::Reject,
         )
         .unwrap_err();
         assert!(err.to_string().contains("the commit is immutable"), "{err}");
@@ -589,6 +709,7 @@ mod from_worktree {
                 repo: &wt_repo,
                 name: "not-a-worktree".into(),
             },
+            Conflicts::Reject,
         )
         .unwrap_err();
         assert!(err.to_string().contains("no checkout recorded"), "{err}");
@@ -619,6 +740,7 @@ mod from_worktree {
                 repo: &wt_repo,
                 name: "wt".into(),
             },
+            Conflicts::Reject,
         )?;
         assert!(
             outcome.rejected_specs.is_empty(),

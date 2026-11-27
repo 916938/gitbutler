@@ -1,4 +1,3 @@
-/// How to perform a cherry-pick.
 #[derive(Debug, Copy, Clone)]
 pub enum PickMode {
     /// No matter what, rebase one commit onto the other, creating a new commit in the process.
@@ -12,10 +11,8 @@ pub enum PickMode {
     SkipIfNoop,
 }
 
-/// How to deal with commits that are empty after cherry-picking.
 #[derive(Debug, Copy, Clone)]
 pub enum EmptyCommit {
-    /// Keep the empty commit.
     Keep,
     /// Instead of the empty commit, keep only the previous one, effectively
     /// dropping the commit whose tree didn't differ compared to the previous one.
@@ -35,7 +32,6 @@ use crate::commit::DateMode;
 /// Place `commit_to_rebase` onto `base`.
 ///
 /// `pick_mode` and `empty_commit` control how to deal with no-ops and empty commits.
-/// Returns the id of the cherry-picked commit.
 ///
 /// Note that the rewritten commit will have headers injected, among which is a change id.
 pub fn cherry_pick_one(
@@ -94,7 +90,7 @@ fn cherry_pick_tree<'repo>(
     new_base: &but_core::Commit<'repo>,
     to_rebase: &but_core::Commit<'repo>,
 ) -> anyhow::Result<gix::merge::tree::Outcome<'repo>> {
-    let repo = to_rebase.id.repo;
+    let repo = to_rebase.id.repo();
     let (base, ours, theirs) = find_cherry_pick_trees(new_base, to_rebase)?;
     use but_core::RepositoryExt;
     repo.merge_trees(
@@ -112,21 +108,17 @@ fn find_cherry_pick_trees<'repo>(
     new_base: &but_core::Commit<'repo>,
     to_rebase: &but_core::Commit<'repo>,
 ) -> anyhow::Result<(gix::Id<'repo>, gix::Id<'repo>, gix::Id<'repo>)> {
-    let repo = to_rebase.id.repo;
+    let repo = to_rebase.id.repo();
     // we need to do a manual 3-way patch merge
     // find the base, which is the parent of to_rebase
     let base = if to_rebase.is_conflicted() {
-        // Use to_rebase's recorded base
         find_real_tree(to_rebase, TreeKind::Base)?
     } else {
         let base_commit_id = to_rebase.parents.first().context("no parent")?;
-        // Use the parent's auto-resolution
         let base_commit = but_core::Commit::from_id(base_commit_id.attach(repo))?;
         find_real_tree(&base_commit, TreeKind::AutoResolution)?
     };
-    // Get the auto-resolution
     let ours = find_real_tree(new_base, TreeKind::AutoResolution)?;
-    // Get the original theirs
     let theirs = find_real_tree(to_rebase, TreeKind::Theirs)?;
     Ok((base, ours, theirs))
 }
@@ -136,7 +128,7 @@ fn find_real_tree<'repo>(
     side: TreeKind,
 ) -> anyhow::Result<gix::Id<'repo>> {
     Ok(if commit.is_conflicted() {
-        let tree = commit.id.repo.find_tree(commit.tree)?;
+        let tree = commit.id.repo().find_tree(commit.tree)?;
         let conflicted_side = tree
             .find_entry(side.as_tree_entry_name())
             .context("Failed to get conflicted side of commit")?;
@@ -152,8 +144,7 @@ fn commit_from_unconflicted_tree<'repo>(
     resolved_tree_id: gix::Id<'repo>,
     empty_commit: EmptyCommit,
 ) -> anyhow::Result<gix::Id<'repo>> {
-    let repo = head.id.repo;
-    // Remove empty commits
+    let repo = head.id.repo();
     if matches!(empty_commit, EmptyCommit::UsePrevious)
         && resolved_tree_id == head.tree_id_or_auto_resolution()?
     {
@@ -164,7 +155,6 @@ fn commit_from_unconflicted_tree<'repo>(
     let mut new_commit = to_rebase.inner;
     new_commit.tree = resolved_tree_id.detach();
 
-    // Assure the commit isn't thinking it's conflicted.
     new_commit.message = but_core::commit::strip_conflict_markers(new_commit.message.as_ref());
     if let Some(pos) = new_commit
         .extra_headers()
@@ -195,16 +185,10 @@ fn commit_from_conflicted_tree<'repo>(
     cherry_pick: gix::merge::tree::Outcome<'_>,
     treat_as_unresolved: gix::merge::tree::TreatAsUnresolved,
 ) -> anyhow::Result<gix::Id<'repo>> {
-    let repo = resolved_tree_id.repo;
+    let repo = resolved_tree_id.repo();
 
-    let conflicted_files = conflict_entries_from_merge_outcome(
-        repo,
-        resolved_tree_id.detach(),
-        &cherry_pick,
-        treat_as_unresolved,
-    )?;
+    let conflicted_files = conflict_entries_from_merge_outcome(&cherry_pick, treat_as_unresolved)?;
 
-    // convert files into a string and save as a blob
     let conflicted_files_string = toml::to_string(&conflicted_files)?;
     let conflicted_files_blob = repo.write_blob(conflicted_files_string.as_bytes())?;
 
@@ -241,7 +225,6 @@ fn commit_from_conflicted_tree<'repo>(
     to_rebase.tree = tree.write().context("failed to write tree")?.detach();
     set_parent(&mut to_rebase, head.id.detach())?;
 
-    // Add conflict markers to the commit message
     to_rebase.inner.message =
         but_core::commit::add_conflict_markers(to_rebase.inner.message.as_ref());
 

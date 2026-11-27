@@ -9,8 +9,11 @@ use std::{
 };
 
 use bstr::{BStr, BString, ByteSlice};
-use but_core::ref_metadata;
-use but_graph::{SegmentIndex, workspace::StackCommitFlags};
+use but_core::{commit::padding, ref_metadata};
+use but_graph::{
+    SegmentIndex,
+    workspace::{StackCommitFlags, WorktreeBase},
+};
 use gix::Repository;
 
 /// A commit with must useful information extracted from the Git commit itself.
@@ -18,24 +21,18 @@ use gix::Repository;
 /// Note that additional information can be computed and placed in the [`LocalCommit`].
 #[derive(Clone, Eq, PartialEq)]
 pub struct Commit {
-    /// The hash of the commit.
     pub id: gix::ObjectId,
     /// The IDs of the parent commits, but may be empty if this is the first commit.
     pub parent_ids: Vec<gix::ObjectId>,
-    /// The hash of the tree associated with the object.
     pub tree_id: gix::ObjectId,
     /// The complete message, verbatim.
     pub message: BString,
-    /// The signature at which the commit was authored.
     pub author: gix::actor::Signature,
-    /// The signature at which the commit was committed.
     pub committer: gix::actor::Signature,
     /// The references pointing to this commit, even after dereferencing tag objects, along with workspace information.
     /// These can be names of tags and branches.
     pub refs: Vec<but_graph::RefInfo>,
-    /// Additional properties to help classify this commit.
     pub flags: StackCommitFlags,
-    /// Whether the commit is in a conflicted state, a GitButler concept.
     /// GitButler will perform rebasing/reordering etc. without interruptions and flag commits as conflicted if needed.
     /// Conflicts are resolved via the Edit Mode mechanism.
     ///
@@ -48,7 +45,6 @@ pub struct Commit {
     /// if it's not stored in the Commit. Use [`Self::change_id()`] to always get the change id,
     /// if necessary, by deriving it from the commit hash itself.
     pub change_id: Option<but_core::ChangeId>,
-    /// Optional URL to the Gerrit review for this commit, if applicable.
     pub gerrit_review_url: Option<String>,
 }
 
@@ -103,7 +99,6 @@ impl Commit {
         )
     }
 
-    /// A special constructor for very specific case.
     pub(crate) fn from_commit_ahead_of_workspace_commit(
         commit: but_core::Commit<'_>,
         graph_commit: &but_graph::Commit,
@@ -120,7 +115,6 @@ impl Commit {
 /// A commit that is reachable through the *local tracking branch*, with additional, computed information.
 #[derive(Clone, Eq, PartialEq)]
 pub struct LocalCommit {
-    /// The simple commit.
     pub inner: Commit,
     /// Provide additional information on how this commit relates to other points of reference, like its remote branch,
     /// or the target branch to integrate with.
@@ -154,7 +148,6 @@ impl std::fmt::Debug for LocalCommit {
 /// The state of the [local commit](LocalCommit) in relation to its remote tracking branch or its integration branch.
 #[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
 pub enum LocalCommitRelation {
-    /// The commit is only local
     #[default]
     LocalOnly,
     /// The commit is also present in the remote tracking branch.
@@ -325,14 +318,12 @@ pub struct Segment {
     pub base: Option<gix::ObjectId>,
 }
 
-/// Direct Access (without graph)
 impl Segment {
     /// Return the top-most commit id of the segment.
     pub fn tip(&self) -> Option<gix::ObjectId> {
         self.commits.first().map(|commit| commit.id)
     }
 
-    /// Return the name of the branch at the tip of the segment, if present.
     pub fn ref_name(&self) -> Option<&gix::refs::FullNameRef> {
         self.ref_info.as_ref().map(|ri| ri.ref_name.as_ref())
     }
@@ -356,7 +347,6 @@ pub struct Lane<'a> {
 /// What a segment is known by before and after its lane is rebased.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SegmentIdentity {
-    /// The branch naming the segment.
     Branch(gix::refs::FullName),
     /// The worktree whose detached `HEAD` owns the segment, by its stable name.
     DetachedWorktree(BString),
@@ -401,9 +391,11 @@ impl<'a> Lane<'a> {
 
 impl std::fmt::Debug for Segment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `id` is left out: `ref_name` and `commits` identify the segment, and its index
+        // only says how the graph numbered its segments.
         let Segment {
             ref_info,
-            id,
+            id: _,
             commits,
             commits_on_remote,
             remote_tracking_ref_name,
@@ -413,7 +405,6 @@ impl std::fmt::Debug for Segment {
             base,
         } = self;
         f.debug_struct("ref_info::ui::Segment")
-            .field("id", &id)
             .field(
                 "ref_name",
                 &match ref_info.as_ref() {
@@ -449,7 +440,32 @@ impl std::fmt::Debug for Segment {
     }
 }
 
-use anyhow::{Context as _, bail};
+/// The error [`graph_to_ref_info()`] fails with when commits sit on top of the workspace commit,
+/// most likely because `git commit` added them while `gitbutler/workspace` was checked out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommitsAboveWorkspaceCommit {
+    /// How many commits are on top of the workspace commit.
+    pub count: usize,
+    /// The workspace commit that resetting to keeps their changes uncommitted.
+    pub workspace_commit_id: gix::ObjectId,
+}
+
+impl std::fmt::Display for CommitsAboveWorkspaceCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Found {} commit(s) on top of the workspace commit.\n\n\
+             Run the following command in your working directory to fix this while leaving your worktree unchanged.\n\
+             Worktree changes need to be re-committed manually for now.\n\n    \
+             git reset --soft {}",
+            self.count, self.workspace_commit_id
+        )
+    }
+}
+
+impl std::error::Error for CommitsAboveWorkspaceCommit {}
+
+use anyhow::Context as _;
 use but_graph::{
     Graph,
     petgraph::Direction,
@@ -463,8 +479,8 @@ use crate::{AncestorWorkspaceCommit, RefInfo, WorkspaceCommit, branch, ui::PushS
 /// Gather information about the current `HEAD` and the workspace that might be associated with it,
 /// based on data in `repo` and `meta`. Use `options` to further configure the call.
 ///
-/// `db` lets graph construction discover and seed linked-worktree tips, see
-/// [`Graph::from_commit_traversal()`].
+/// `db` lets the walk discover the linked worktrees, whose `HEAD`s it also walks if
+/// `opts.traversal.worktrees` is set.
 ///
 /// For details, see [`ref_info()`].
 pub fn head_info(
@@ -486,14 +502,14 @@ pub fn head_info_and_workspace(
     db: &mut but_db::DbHandle,
     opts: Options<'_>,
 ) -> anyhow::Result<(RefInfo, but_graph::Workspace)> {
-    let graph = Graph::from_head(
+    let ws = workspace(
         repo,
         meta,
-        opts.project_meta.clone(),
         db,
-        opts.traversal.clone(),
+        opts.project_meta.clone(),
+        &opts.traversal,
+        None,
     )?;
-    let ws = graph.into_workspace()?;
     Ok((graph_to_ref_info(&ws, repo, opts)?, ws))
 }
 
@@ -507,22 +523,64 @@ pub fn head_info_and_workspace(
 /// Make sure the `repo` is initialized with a decently sized Object cache so querying the same commit multiple times will be cheap(er).
 #[instrument(level = "debug", skip(meta), err(Debug))]
 pub fn ref_info(
-    mut existing_ref: gix::Reference<'_>,
+    existing_ref: gix::Reference<'_>,
     meta: &impl but_core::RefMetadata,
     db: &mut but_db::DbHandle,
     opts: Options<'_>,
 ) -> anyhow::Result<RefInfo> {
-    let id = existing_ref.peel_to_id()?;
-    let repo = id.repo;
-    let graph = Graph::from_commit_traversal(
-        id,
-        existing_ref.inner.name,
+    let repo = existing_ref.repo();
+    let ws = workspace(
+        repo,
         meta,
-        opts.project_meta.clone(),
         db,
-        opts.traversal.clone(),
+        opts.project_meta.clone(),
+        &opts.traversal,
+        Some(existing_ref),
     )?;
-    graph_to_ref_info(&graph.into_workspace()?, repo, opts)
+    graph_to_ref_info(&ws, repo, opts)
+}
+
+/// Project the workspace that [`head_info()`] and [`ref_info()`] describe, seen from `HEAD`, or
+/// from `seen_from` if given, for callers that turn it into a [`RefInfo`] themselves.
+///
+/// It's projected from the [nosegment graph](but_graph::nosegment::workspace()), which is also
+/// walked from the workspaces known to `meta` and, if `traversal` asks for
+/// [worktrees](but_graph::init::Options::worktrees), from the linked worktrees discovered through
+/// `db`. Of `traversal`, only that, the collection of tags and the commit limit apply.
+pub fn workspace(
+    repo: &gix::Repository,
+    meta: &impl but_core::RefMetadata,
+    db: &mut but_db::DbHandle,
+    project_meta: but_core::ref_metadata::ProjectMeta,
+    traversal: &but_graph::init::Options,
+    seen_from: Option<gix::Reference<'_>>,
+) -> anyhow::Result<but_graph::Workspace> {
+    let worktree_tips = but_graph::init::discover_worktree_tips(repo, db, traversal.worktrees)?;
+    let (seen_from_ref, seen_from_commit) = match seen_from {
+        Some(mut reference) => {
+            let id = reference.peel_to_id()?.detach();
+            (Some(reference.detach().name), Some(id))
+        }
+        None => {
+            let head = repo.head()?;
+            (
+                head.referent_name().map(ToOwned::to_owned),
+                head.id().map(|id| id.detach()),
+            )
+        }
+    };
+    but_graph::nosegment::workspace(
+        repo,
+        meta,
+        but_graph::init::Overlay::default(),
+        project_meta,
+        seen_from_ref.as_ref().map(|name| name.as_ref()),
+        seen_from_commit,
+        [],
+        worktree_tips,
+        traversal.collect_tags,
+        traversal.commits_limit_hint,
+    )
 }
 
 pub(crate) fn find_ancestor_workspace_commit(
@@ -548,6 +606,9 @@ pub(crate) fn find_ancestor_workspace_commit(
             if commit.is_managed() {
                 sidx_and_cidx = Some((s.id, cidx));
                 return true;
+            }
+            if padding::is_padding_by_message(commit.message.as_ref()) {
+                continue;
             }
             commits_outside.push(
                 crate::ref_info::Commit::from_commit_ahead_of_workspace_commit(
@@ -585,12 +646,6 @@ pub fn graph_to_ref_info(
     repo: &gix::Repository,
     opts: Options<'_>,
 ) -> anyhow::Result<RefInfo> {
-    if workspace.graph.hard_limit_hit() {
-        tracing::warn!(hard_limit=?opts.traversal.hard_limit,
-            "Commit-graph traversal might be incorrect as it was stopped too early due to hard limit",
-        );
-    }
-
     let but_graph::Workspace {
         graph,
         id,
@@ -599,7 +654,7 @@ pub fn graph_to_ref_info(
         target_ref,
         target_commit,
         metadata: _,
-        lower_bound: _,
+        lower_bound,
         lower_bound_segment_id,
         worktrees,
     } = workspace;
@@ -612,22 +667,45 @@ pub fn graph_to_ref_info(
     };
     // Ask the repo where the ref points and compare the stored id itself: the graph
     // may drop `target_commit` and may leave the ref's own segment without commits.
-    let is_target_current = match (target_ref, graph.project_meta.target_commit_id) {
-        (Some(tr), Some(stored)) => repo
-            .try_find_reference(tr.ref_name.as_ref())?
-            .is_some_and(|mut r| r.peel_to_id().is_ok_and(|id| id == stored)),
+    let target_upstream = graph
+        .project_meta
+        .remote_target_ref(repo)?
+        .map(|ref_name| -> anyhow::Result<_> {
+            let tip = repo
+                .try_find_reference(ref_name.as_ref())?
+                .and_then(|mut reference| reference.peel_to_id().ok().map(|id| id.detach()));
+            Ok(crate::TargetUpstream {
+                ref_name,
+                tip,
+                cutoff_matches_tip: tip.is_some() && tip == graph.project_meta.target_commit_id,
+            })
+        })
+        .transpose()?;
+    let can_fast_forward_local_target = match (
+        graph.project_meta.target_ref.as_ref(),
+        target_upstream.as_ref().and_then(|upstream| upstream.tip),
+    ) {
+        (Some(local), Some(tip)) => {
+            let local = local.as_local_full_name_ref();
+            repo.try_find_reference(local)?.is_some()
+                && crate::upstream_integration::local_tracking_branch_to_fast_forward(
+                    repo, local, tip,
+                )?
+                .is_some()
+        }
         _ => false,
     };
     let mut info = RefInfo {
         symbolic_remote_names: repo.remote_names().into_iter().collect(),
-        lower_bound: *lower_bound_segment_id,
+        lower_bound: *lower_bound,
         stacks: stacks
             .iter()
             .map(|stack| branch::Stack::try_from_graph_stack(stack, repo))
             .collect::<anyhow::Result<_>>()?,
         target_ref: target_ref.clone(),
         target_commit: target_commit.clone(),
-        is_target_current,
+        target_upstream,
+        can_fast_forward_local_target,
         has_lanes_behind_target: false,
         ancestor_workspace_commit,
         worktrees: worktrees
@@ -641,22 +719,21 @@ pub fn graph_to_ref_info(
         .is_some_and(|target| info.has_lanes_behind(graph, target));
 
     if let Some(info) = &info.ancestor_workspace_commit {
-        // This is the MVP version of what should be guided by the UI - just communicate through
-        // an error message, which can only be recovered once the command is executed.
-        let mut msg = format!(
-            "Found {} commit(s) on top of the workspace commit.\n\n",
-            info.commits_outside.len()
-        );
-        let ws_commit_id =
-            graph[info.segment_with_managed_commit].commits[info.commit_index_of_managed_commit].id;
-        msg.push_str(
-                    "Run the following command in your working directory to fix this while leaving your worktree unchanged.\n",
-                );
-        msg.push_str("Worktree changes need to be re-committed manually for now.\n\n");
-        msg.push_str(&format!("    git reset --soft {ws_commit_id}"));
-        bail!("{msg}");
+        // Fail with a typed error, so callers can offer the reset it describes.
+        return Err(CommitsAboveWorkspaceCommit {
+            count: info.commits_outside.len(),
+            workspace_commit_id: graph[info.segment_with_managed_commit].commits
+                [info.commit_index_of_managed_commit]
+                .id,
+        }
+        .into());
     }
-    info.compute_similarity(graph, repo, opts.expensive_commit_info)?;
+    info.compute_similarity(
+        graph,
+        repo,
+        *lower_bound_segment_id,
+        opts.expensive_commit_info,
+    )?;
     if let GerritMode::Enabled(metadata) = opts.gerrit_mode {
         info.apply_gerrit_metadata(metadata)?;
     }
@@ -714,24 +791,6 @@ fn apply_review_to_metadata(
     }
 }
 
-fn forge_review_for_branch(
-    reviews_by_head: &std::collections::HashMap<String, (usize, bool, Option<String>)>,
-    short_name: &str,
-) -> Option<(usize, bool, Option<String>)> {
-    if let Some(review) = reviews_by_head.get(short_name) {
-        return Some(review.clone());
-    }
-
-    let mut prefixed_matches = reviews_by_head.iter().filter_map(|(head, review)| {
-        let (_, branch) = head.rsplit_once(':')?;
-        (branch == short_name).then_some(review)
-    });
-    let review = prefixed_matches.next()?;
-    prefixed_matches
-        .all(|candidate| candidate == review)
-        .then(|| review.clone())
-}
-
 impl RefInfo {
     /// Whether a stack, or a worktree with something of its own to rebase onto the target, lacks
     /// `target`.
@@ -754,6 +813,48 @@ impl RefInfo {
                         != Some(target.segment_index)
                 })
         })
+    }
+
+    /// Whether updating the workspace onto `target_tip` would change anything: `target_commit`,
+    /// the stored one, isn't the tip, the local target can fast-forward to it, or `HEAD` lacks it.
+    pub fn workspace_behind(
+        &self,
+        repo: &Repository,
+        target_tip: gix::ObjectId,
+        target_commit: gix::ObjectId,
+    ) -> anyhow::Result<bool> {
+        Ok(target_commit != target_tip
+            || self.can_fast_forward_local_target
+            || match repo.head_id() {
+                Ok(head) => !repo.is_ancestor(target_tip, head.detach())?,
+                Err(_) => false,
+            })
+    }
+
+    /// The worktrees an update rebases onto `target_tip` that lack it.
+    pub fn worktrees_behind(
+        &self,
+        repo: &Repository,
+        target_tip: gix::ObjectId,
+    ) -> anyhow::Result<Vec<&crate::worktrees::WorktreeInfo>> {
+        let mut eligible_worktrees = self
+            .worktrees
+            .iter()
+            .filter(|worktree| worktree.rebasable_base().is_some())
+            .peekable();
+        let mut behind = Vec::new();
+        if eligible_worktrees.peek().is_none() {
+            return Ok(behind);
+        }
+
+        let cache = repo.commit_graph_if_enabled()?;
+        let mut graph = repo.revision_graph(cache.as_ref());
+        for worktree in eligible_worktrees {
+            if !repo.is_ancestor_with_graph(target_tip, worktree.head, &mut graph)? {
+                behind.push(worktree);
+            }
+        }
+        Ok(behind)
     }
 
     /// Every lane, i.e. each stack followed by each worktree in tip order.
@@ -812,8 +913,8 @@ impl RefInfo {
     }
 
     /// Resolve each segment's forge review association from a cache-derived map,
-    /// keyed by the segment's remote/pushed short name (what the forge records as
-    /// a review's `source_branch`).
+    /// keyed by the short name of the segment's remote-tracking branch, like
+    /// `origin/my-feature`.
     ///
     /// For active branches this remains a projection-time view of forge truth:
     /// an open review, or a review merged exactly at the branch's tip — the
@@ -824,34 +925,30 @@ impl RefInfo {
     /// with the cache as a migration fallback when no number has been
     /// persisted yet. A cache match on an otherwise metadata-less segment
     /// synthesizes metadata so single-branch mode surfaces the association
-    /// too. `reviews_by_head` maps a pushed short name to
+    /// too. `reviews_by_head` maps a remote-tracking short name to
     /// `(number, is open, merged head)`; build it from the forge cache at the
-    /// call boundary so this crate stays free of DB and forge wiring. As a
-    /// defensive fallback, a uniquely matching `owner:branch` key is accepted,
-    /// while ambiguous fork heads are ignored.
+    /// call boundary so this crate stays free of DB and forge wiring.
     pub fn apply_forge_review_associations(
         &mut self,
-        repo: &gix::Repository,
         reviews_by_head: &std::collections::HashMap<String, (usize, bool, Option<String>)>,
     ) {
-        let remote_names = repo.remote_names();
         for segment in self.lane_segments_mut().flatten() {
-            let cached = segment
-                .remote_tracking_ref_name
-                .as_ref()
-                .and_then(|rtb| {
-                    but_core::extract_remote_name_and_short_name(rtb.as_ref(), &remote_names)
-                })
-                .and_then(|(_, short)| {
-                    forge_review_for_branch(reviews_by_head, short.to_str().ok()?)
-                });
+            let cached = (segment.remote_tracking_ref_name.as_ref())
+                .and_then(|rtb| reviews_by_head.get(rtb.shorten().to_str().ok()?))
+                .cloned();
             // The merged head is the review's PUSHED commit, so match the
             // tip's remote counterpart when it has one: a local rewrite
             // between push and merge must not break the window.
-            let tip = segment.commits.first().map(|commit| match commit.relation {
-                LocalCommitRelation::LocalAndRemote(remote_id) => remote_id.to_string(),
-                _ => commit.id.to_string(),
-            });
+            let tip = segment
+                .commits
+                .first()
+                .map(|commit| match commit.relation {
+                    LocalCommitRelation::LocalAndRemote(remote_id) => remote_id.to_string(),
+                    _ => commit.id.to_string(),
+                })
+                // A branch without commits points at its base, as one the target moved past does
+                // while a worktree keeps it checked out.
+                .or_else(|| segment.base.map(|id| id.to_string()));
             apply_review_to_metadata(
                 &mut segment.metadata,
                 cached,
@@ -968,10 +1065,11 @@ impl crate::ref_info::Segment {
         }: &but_graph::workspace::StackSegment,
         repo: &gix::Repository,
     ) -> anyhow::Result<Self> {
-        let commits: Vec<_> = commits
+        let mut commits: Vec<_> = commits
             .iter()
             .map(|c| LocalCommit::try_from_stack_commit(c, repo))
             .collect::<anyhow::Result<_>>()?;
+        commits.retain(|c| !padding::is_padding_by_message(c.message.as_ref()));
         let commits_on_remote: Vec<_> = commits_on_remote
             .iter()
             .map(|c| {
@@ -1008,13 +1106,27 @@ impl crate::worktrees::WorktreeInfo {
             name: name.clone(),
             ref_name: ref_name.clone(),
             head: *head,
-            base: *base,
+            base: match *base {
+                Some(WorktreeBase::InWorkspace(id)) => {
+                    Some(WorktreeBase::InWorkspace(beneath_padding(id, repo)?))
+                }
+                Some(WorktreeBase::Outside(id)) => Some(WorktreeBase::Outside(id)),
+                None => None,
+            },
             segments: segments
                 .iter()
                 .map(|s| crate::ref_info::Segment::try_from_graph_segment(s, repo))
                 .collect::<anyhow::Result<_>>()?,
         })
     }
+}
+
+fn beneath_padding(id: gix::ObjectId, repo: &gix::Repository) -> anyhow::Result<gix::ObjectId> {
+    let commit = but_core::Commit::from_id(id.attach(repo))?;
+    Ok(match commit.parents.as_slice() {
+        [parent] if padding::is_padding_by_message(commit.message.as_ref()) => *parent,
+        _ => id,
+    })
 }
 
 impl LocalCommit {
@@ -1045,9 +1157,7 @@ impl LocalCommit {
 
 #[cfg(test)]
 mod review_association_tests {
-    use std::collections::HashMap;
-
-    use super::{apply_review_to_metadata, forge_review_for_branch};
+    use super::apply_review_to_metadata;
     use but_core::ref_metadata::Branch;
 
     fn branch_with_review(review: Option<usize>) -> Branch {
@@ -1167,44 +1277,5 @@ mod review_association_tests {
         let mut metadata = Some(branch_with_review(None));
         apply_review_to_metadata(&mut metadata, Some((42, false, None)), true, None);
         assert_eq!(metadata.unwrap().review.pull_request, Some(42));
-    }
-
-    #[test]
-    fn owner_prefixed_review_head_matches_the_short_branch_name() {
-        let reviews = HashMap::from([("alice:feature".to_string(), (42, true, None))]);
-
-        assert_eq!(
-            forge_review_for_branch(&reviews, "feature"),
-            Some((42, true, None)),
-            "a uniquely matching fork head should be accepted defensively"
-        );
-    }
-
-    #[test]
-    fn exact_review_head_takes_precedence_over_a_prefixed_head() {
-        let reviews = HashMap::from([
-            ("feature".to_string(), (42, true, None)),
-            ("alice:feature".to_string(), (99, true, None)),
-        ]);
-
-        assert_eq!(
-            forge_review_for_branch(&reviews, "feature"),
-            Some((42, true, None)),
-            "the forge's normal short-name representation should take precedence"
-        );
-    }
-
-    #[test]
-    fn ambiguous_owner_prefixed_review_heads_do_not_match() {
-        let reviews = HashMap::from([
-            ("alice:feature".to_string(), (42, true, None)),
-            ("bob:feature".to_string(), (99, true, None)),
-        ]);
-
-        assert_eq!(
-            forge_review_for_branch(&reviews, "feature"),
-            None,
-            "a short branch name cannot safely select between fork owners"
-        );
     }
 }

@@ -1,17 +1,15 @@
 use anyhow::Context;
-use but_graph::{
-    CommitFlags, FirstParent, Graph, Segment, SegmentIndex, SegmentRelation, init::Tip,
-};
+use but_graph::{FirstParent, Graph, Segment, SegmentIndex, SegmentRelation};
 use but_testsupport::visualize_commit_graph_all;
 use snapbox::IntoData;
 
-use crate::init::{read_only_in_memory_scenario, standard_options};
 use crate::support::graph_dag;
+use crate::utils::{read_only_in_memory_scenario, standard_options};
 
 #[test]
 fn find_git_merge_base_handles_duplicate_queue_entries_and_redundant_bases() -> anyhow::Result<()> {
     let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -68,7 +66,7 @@ fn find_git_merge_base_handles_duplicate_queue_entries_and_redundant_bases() -> 
 #[test]
 fn relation_between_matches_merge_base_in_redundant_ancestor_case() -> anyhow::Result<()> {
     let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -141,7 +139,7 @@ fn reachable_difference_returns_commits_in_traversal_order() -> anyhow::Result<(
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -187,32 +185,36 @@ fn reachable_difference_returns_commits_in_traversal_order() -> anyhow::Result<(
 }
 
 #[test]
-fn explicit_traversal_tips_include_unnamed_revisions() -> anyhow::Result<()> {
-    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
+fn extra_tips_include_unnamed_revisions() -> anyhow::Result<()> {
+    let (repo, meta, _db) = read_only_in_memory_scenario("four-diamond")?;
     let merged_id = repo.rev_parse_single("merged")?.detach();
     let a_id = repo.rev_parse_single("A")?.detach();
     let c_id = repo.rev_parse_single("C")?.detach();
     let main_id = repo.rev_parse_single("main")?.detach();
 
-    let graph = Graph::from_commit_traversal_tips(
+    let options = standard_options();
+    let graph = but_graph::nosegment::workspace(
         &repo,
-        [
-            Tip::entrypoint(merged_id, None),
-            Tip::reachable(a_id, None),
-            Tip::reachable(c_id, None),
-        ],
         &*meta,
+        but_graph::init::Overlay::default(),
         but_core::ref_metadata::ProjectMeta::default(),
-        &mut db,
-        standard_options(),
+        None,
+        Some(merged_id),
+        [a_id, c_id],
+        Vec::new(),
+        options.collect_tags,
+        options.commits_limit_hint,
     )?
+    .graph
     .validated()?;
 
+    // Seen from a commit without a branch, the graph starts at that commit rather than at
+    // `merged`, which points at it.
     snapbox::assert_data_eq!(
         graph_dag(&graph),
         snapbox::str![[r#"
-◎  👉merged[🌳]
-●    ·8a6c109 (⌂)
+◎  merged[🌳]
+●    👉·8a6c109 (⌂)
 ├─╮
 ◎ │  A
 ● │    ·62b409a (⌂)
@@ -247,73 +249,9 @@ fn explicit_traversal_tips_include_unnamed_revisions() -> anyhow::Result<()> {
 }
 
 #[test]
-fn explicit_traversal_prioritizes_integrated_tips_independent_of_input_order() -> anyhow::Result<()>
-{
-    let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
-    let merged_id = repo.rev_parse_single("merged")?.detach();
-    let a_id = repo.rev_parse_single("A")?.detach();
-    let main_id = repo.rev_parse_single("main")?.detach();
-
-    let graph = Graph::from_commit_traversal_tips(
-        &repo,
-        [
-            Tip::entrypoint(merged_id, None),
-            Tip::reachable(a_id, None),
-            Tip::integrated(main_id, None),
-        ],
-        &*meta,
-        but_core::ref_metadata::ProjectMeta::default(),
-        &mut db,
-        standard_options(),
-    )?
-    .validated()?;
-
-    snapbox::assert_data_eq!(
-        graph_dag(&graph),
-        snapbox::str![[r#"
-◎  👉merged[🌳]
-●    ·8a6c109 (⌂)
-├─╮
-◎ │  A
-● │    ·62b409a (⌂)
-├───╮
-● │ │  ·592abec (⌂)
-│ │ ◎  B
-│ │ ●  ·f16dddf (⌂)
-├───╯
-│ ◎  C
-│ ●    ·7ed512a (⌂)
-│ ├─╮
-│ ● │  ·35ee481 (⌂)
-├─╯ │
-│   ◎  D
-│   ●  ·ecb1877 (⌂)
-├───╯
-◎  main
-●  🏁·965998b (⌂|✓)
-"#]]
-    );
-
-    let (main_seg, main) = graph
-        .segment_and_commit_by_ref_name(ref_name("refs/heads/main")?.as_ref())
-        .expect("main segment");
-    assert!(
-        main.flags.contains(CommitFlags::Integrated),
-        "integrated tips should be queued before reachable tips even if the caller provides them last"
-    );
-    assert_eq!(
-        main_seg.id.index(),
-        0,
-        "schedule first, hence the first node"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn relation_between_handles_identity_and_disjoint_segments() -> anyhow::Result<()> {
     let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
-    let mut graph = Graph::from_head(
+    let mut graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -346,7 +284,7 @@ fn relation_between_handles_identity_and_disjoint_segments() -> anyhow::Result<(
 #[test]
 fn merge_base_apis_can_resolve_segments_by_first_commit_id() -> anyhow::Result<()> {
     let (repo, meta, mut db) = read_only_in_memory_scenario("four-diamond")?;
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),

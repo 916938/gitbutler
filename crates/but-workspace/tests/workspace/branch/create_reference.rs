@@ -14,7 +14,7 @@ use crate::{
 };
 
 fn branch_order_meta(repo: &gix::Repository) -> anyhow::Result<BranchOrderMetadata> {
-    BranchOrderMetadata::from_paths(repo.path().join("virtual-branches.toml"), repo.path())
+    BranchOrderMetadata::from_path(repo.path())
 }
 
 mod with_workspace {
@@ -23,7 +23,7 @@ mod with_workspace {
 
     use but_core::{RefMetadata, ref_metadata::ValueInfo};
     use but_graph::init::Options;
-    use but_meta::VirtualBranchesTomlMetadata;
+    use but_meta::VirtualBranchesMetadata;
     use but_testsupport::{graph_workspace, id_at, id_by_rev, visualize_commit_graph_all};
     use but_workspace::branch::create_reference::{Anchor, Position::*};
 
@@ -55,10 +55,13 @@ Single commit, no main remote/target, no ws commit, but ws-reference
 "#]]
         );
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
-            project_meta(&repo)?,
+            but_core::ref_metadata::ProjectMeta {
+                target_ref: None,
+                ..project_meta(&repo)?
+            },
             &mut db,
             Options::limited(),
         )?;
@@ -74,11 +77,21 @@ Single commit, no main remote/target, no ws commit, but ws-reference
 "#]]
         );
 
+        // The workspace identity must come from workspace metadata, not target metadata.
+        crate::ref_info::with_workspace_commit::utils::add_workspace(&mut meta);
         // …we chose to work with an open-ended workspace just to struggle more.
-        let mut project_meta = project_meta(&repo)?;
+        let mut project_meta = but_core::ref_metadata::ProjectMeta {
+            target_ref: None,
+            ..project_meta(&repo)?
+        };
         project_meta.target_commit_id = None;
-        let graph =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
+        let graph = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?;
         let mut ws = graph.into_workspace()?;
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
@@ -126,7 +139,7 @@ Single commit, target, no ws commit, but ws-reference
 "#]]
         );
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -138,7 +151,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 
 "#]]
         );
@@ -152,7 +165,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {[..]}
     └── 📙:A
 
@@ -173,7 +186,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:A on 3183e43 {[..]}
 │   └── 📙:A
 └── ≡📙:B on 3183e43 {[..]}
@@ -203,7 +216,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {[..]}
 │   ├── 📙:above-A
 │   └── 📙:A
@@ -229,7 +242,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {[..]}
 │   ├── 📙:above-A
 │   └── 📙:A
@@ -243,8 +256,8 @@ Single commit, target, no ws commit, but ws-reference
         // Finally, assure the data looks correct. Can't afford bugs in the translation.
         let path = meta.path().to_owned();
         drop(meta);
-        let meta = VirtualBranchesTomlMetadata::from_path(path)?;
-        let graph = but_graph::Graph::from_head(
+        let meta = VirtualBranchesMetadata::from_path(path)?;
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -255,7 +268,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {[..]}
 │   ├── 📙:above-A
 │   └── 📙:A
@@ -269,7 +282,8 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             visualize_commit_graph_all(&repo)?,
             snapbox::str![[r#"
-* a6258f6 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+* 2ed6b76 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+|/
 * 3183e43 (origin/main, main, below-B, above-A, B, A) M1
 
 "#]]
@@ -293,7 +307,7 @@ Single commit, target, no ws commit, but ws-reference
 "#]]
         );
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -305,7 +319,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡:A on bce0c5e
     └── :A
         ├── ·43f9472 (🏘️)
@@ -333,7 +347,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:A on bce0c5e {[..]}
     ├── 📙:A
     │   └── ·43f9472 (🏘️)
@@ -360,7 +374,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:A on bce0c5e {[..]}
     ├── 📙:A
     │   └── ·43f9472 (🏘️)
@@ -390,7 +404,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:A on bce0c5e {[..]}
     ├── 📙:A
     ├── 📙:above-A-commit
@@ -421,7 +435,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:above-A on bce0c5e {[..]}
     ├── 📙:above-A
     ├── 📙:A
@@ -451,7 +465,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:above-A on bce0c5e {[..]}
     ├── 📙:above-A
     ├── 📙:A
@@ -481,7 +495,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:above-A on bce0c5e {[..]}
     ├── 📙:above-A
     ├── 📙:A
@@ -503,7 +517,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 ├── ≡📙:above-A on bce0c5e {[..]}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -537,7 +551,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 ├── ≡📙:above-A on bce0c5e {[..]}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -574,7 +588,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 ├── ≡📙:above-A on bce0c5e {[..]}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -596,8 +610,8 @@ Single commit, target, no ws commit, but ws-reference
         // Finally, assure the data looks correct. Can't afford bugs in the translation.
         let path = meta.path().to_owned();
         drop(meta);
-        let meta = VirtualBranchesTomlMetadata::from_path(path)?;
-        let graph = but_graph::Graph::from_head(
+        let meta = VirtualBranchesMetadata::from_path(path)?;
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -608,7 +622,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 ├── ≡📙:above-A on bce0c5e {[..]}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -659,7 +673,7 @@ Single commit, target, no ws commit, but ws-reference
 
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -671,7 +685,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     └── 📙:A
         ├── ·c2878fb (🏘️)
@@ -697,7 +711,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     ├── 📙:A
     │   └── ·c2878fb (🏘️)
@@ -726,7 +740,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     ├── 📙:A
     │   └── ·c2878fb (🏘️)
@@ -756,7 +770,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     ├── 📙:A
     ├── 📙:above-A-commit
@@ -787,7 +801,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:above-A on 3183e43 {0}
     ├── 📙:above-A
     ├── 📙:A
@@ -832,7 +846,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:above-A on 3183e43 {0}
     ├── 📙:above-A
     ├── 📙:A
@@ -862,7 +876,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:above-A on 3183e43 {0}
     ├── 📙:above-A
     ├── 📙:A
@@ -884,7 +898,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {0}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -918,7 +932,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {0}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -955,7 +969,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {0}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -977,8 +991,8 @@ Single commit, target, no ws commit, but ws-reference
         // Finally, assure the data looks correct. Can't afford bugs in the translation.
         let path = meta.path().to_owned();
         drop(meta);
-        let meta = VirtualBranchesTomlMetadata::from_path(path)?;
-        let graph = but_graph::Graph::from_head(
+        let meta = VirtualBranchesMetadata::from_path(path)?;
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -989,7 +1003,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:above-A on 3183e43 {0}
 │   ├── 📙:above-A
 │   ├── 📙:A
@@ -1039,7 +1053,7 @@ Single commit, target, no ws commit, but ws-reference
 
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1051,7 +1065,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     └── 📙:A
         ├── ·c2878fb (🏘️)
@@ -1078,7 +1092,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     ├── 📙:A
     │   ├── ·c2878fb (🏘️)
@@ -1111,7 +1125,7 @@ Single commit, target, no ws commit, but ws-reference
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
         add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1123,7 +1137,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:A on 3183e43 {0}
 │   └── 📙:A
 │       └── ·49d4b34 (🏘️)
@@ -1151,7 +1165,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:A on 3183e43 {0}
 │   ├── 📙:A
 │   │   └── ·49d4b34 (🏘️)
@@ -1181,7 +1195,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:A on 3183e43 {0}
 │   ├── 📙:A
 │   │   └── ·49d4b34 (🏘️)
@@ -1213,7 +1227,7 @@ Single commit, target, no ws commit, but ws-reference
 
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1224,7 +1238,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:A on bce0c5e {0}
     └── 📙:A
         ├── ·43f9472 (🏘️)
@@ -1251,7 +1265,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:A on bce0c5e {0}
     ├── 📙:A
     │   └── ·43f9472 (🏘️)
@@ -1280,7 +1294,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:A on bce0c5e {0}
     ├── 📙:A
     ├── 📙:new
@@ -1308,7 +1322,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:above-A on bce0c5e {0}
     ├── 📙:above-A
     ├── 📙:A
@@ -1337,7 +1351,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:above-A on bce0c5e {0}
     ├── 📙:above-A
     ├── 📙:A
@@ -1368,8 +1382,8 @@ Single commit, target, no ws commit, but ws-reference
         // Assure the persisted data reproduces the same workspace.
         let path = meta.path().to_owned();
         drop(meta);
-        let meta = VirtualBranchesTomlMetadata::from_path(path)?;
-        let graph = but_graph::Graph::from_head(
+        let meta = VirtualBranchesMetadata::from_path(path)?;
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1380,7 +1394,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on bce0c5e
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 └── ≡📙:above-A on bce0c5e {0}
     ├── 📙:above-A
     ├── 📙:A
@@ -1412,7 +1426,7 @@ Single commit, target, no ws commit, but ws-reference
         for position in [Above, Below] {
             let (_tmp, repo, mut meta, mut db) =
                 named_writable_scenario("single-branch-no-ws-commit")?;
-            let mut ws = but_graph::Graph::from_head(
+            let mut ws = but_testsupport::graph_from_head(
                 &repo,
                 &meta,
                 project_meta(&repo)?,
@@ -1454,7 +1468,7 @@ Single commit, target, no ws commit, but ws-reference
 "#]]
         );
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1471,7 +1485,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {[..]}
     └── 📙:A
 
@@ -1495,7 +1509,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {[..]}
     ├── 📙:A
     └── 📙:below-A
@@ -1519,7 +1533,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:above-A on 3183e43 {[..]}
     ├── 📙:above-A
     ├── 📙:A
@@ -1546,10 +1560,18 @@ Single commit, target, no ws commit, but ws-reference
         // Make the workspace open-ended so 'main' with the first commit in history is part of it.
         add_stack_with_segments(&mut meta, 0, "main", StackState::InWorkspace, &[]);
 
-        let mut project_meta = project_meta(&repo)?;
+        let mut project_meta = but_core::ref_metadata::ProjectMeta {
+            target_ref: None,
+            ..project_meta(&repo)?
+        };
         project_meta.target_commit_id = None;
-        let graph =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
+        let graph = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?;
         let mut ws = graph.into_workspace()?;
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
@@ -1601,7 +1623,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓!
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓!
 └── ≡📙:main {0}
     ├── 📙:main
     └── 📙:new
@@ -1619,7 +1641,7 @@ Single commit, target, no ws commit, but ws-reference
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
         add_stack_with_segments(&mut meta, 1, "B", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1630,7 +1652,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:A on 3183e43 {0}
 │   └── 📙:A
 │       └── ·49d4b34 (🏘️)
@@ -1659,7 +1681,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 ├── ≡📙:A on 3183e43 {0}
 │   └── 📙:A
 │       └── ·49d4b34 (🏘️)
@@ -1676,7 +1698,7 @@ Single commit, target, no ws commit, but ws-reference
     #[test]
     fn at_reference_errors() -> anyhow::Result<()> {
         let (_tmp, repo, mut meta, mut db) = named_writable_scenario("single-branch-4-commits")?;
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1745,7 +1767,7 @@ Single commit, target, no ws commit, but ws-reference
 "#]]
         );
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &*meta,
             project_meta(&repo)?,
@@ -1754,10 +1776,24 @@ Single commit, target, no ws commit, but ws-reference
         )?;
         let mut ws = graph.into_workspace()?;
 
+        // The header describes local main; incoming history still comes from its upstream.
+        assert_eq!(
+            ws.graph
+                .project_meta
+                .remote_target_ref(&repo)?
+                .map(|name| name.to_string()),
+            Some("refs/remotes/origin/main".to_owned()),
+            "the fixture must configure the target upstream"
+        );
+        assert_eq!(
+            ws.incoming_target_commit_ids(&repo)?,
+            Vec::<gix::ObjectId>::new(),
+            "origin/main is the parent of the workspace base, so none of its commits are incoming"
+        );
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on bce0c5e
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on bce0c5e
 
 "#]]
         );
@@ -1816,7 +1852,7 @@ Single commit, target, no ws commit, but ws-reference
 
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &*meta,
             project_meta(&repo)?,
@@ -1828,7 +1864,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main on 3183e43
+📕🏘️⚠️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 3183e43
 └── ≡📙:A on 3183e43 {0}
     └── 📙:A
         ├── ·c2878fb (🏘️)
@@ -1954,8 +1990,8 @@ Single commit, target, no ws commit, but ws-reference
         Ok(())
     }
 
-    /// Regression: `but branch new <name>` and `create_virtual_branch` both go through
-    /// `create_reference(.., None, ..)`. When the target (`origin/main`) is advanced past the
+    /// Regression: `but branch new <name>` goes through `create_reference(.., None, ..)`.
+    /// When the target (`origin/main`) is advanced past the
     /// workspace, its tip sits OUTSIDE the workspace. The no-anchor path used to anchor the new
     /// ref at that tip and bail with "the target commit ... already belongs to another branch".
     /// It must instead anchor at `merge_base(target_tip, ws-commit)` (here M1), inside the
@@ -1979,7 +2015,7 @@ Single commit, target, no ws commit, but ws-reference
         // `A` is applied (in the workspace), based at M1.
         add_stack_with_segments(&mut meta, 0, "A", StackState::InWorkspace, &[]);
 
-        let graph = but_graph::Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta(&repo)?,
@@ -1990,7 +2026,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 3183e43
 └── ≡📙:A on 3183e43 {0}
     └── 📙:A
         └── ·49d4b34 (🏘️)
@@ -2021,7 +2057,7 @@ Single commit, target, no ws commit, but ws-reference
         snapbox::assert_data_eq!(
             graph_workspace(&updated_ws).to_string(),
             snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳] <> ✓refs/remotes/origin/main⇣1 on 3183e43
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main⇣1 on 3183e43
 ├── ≡📙:A on 3183e43 {0}
 │   └── 📙:A
 │       └── ·49d4b34 (🏘️)
@@ -2041,12 +2077,74 @@ Single commit, target, no ws commit, but ws-reference
         );
         Ok(())
     }
+
+    /// Regression: a no-anchor branch rests on the highest base, here `main`, which conflicts with
+    /// `older`. That used to fail the rebase, depending on the order of the workspace parents, even
+    /// though `newer` already contains `main`, so the new branch adds nothing to the workspace.
+    #[test]
+    fn no_anchor_branch_keeps_the_tree_of_a_workspace_with_mixed_bases() -> anyhow::Result<()> {
+        for (order, expected_parents) in [
+            (Some(0), ["main", "older", "newer"]),
+            (None, ["older", "newer", "main"]),
+        ] {
+            let (_tmp, repo, mut meta, mut db) = named_writable_scenario("stacks-on-mixed-bases")?;
+            snapbox::assert_data_eq!(
+                visualize_commit_graph_all(&repo)?,
+                snapbox::str![[r#"
+*   4e4c809 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+|/  
+| * cf9ed1d (newer) newer
+| * 8eb5282 (origin/main, main) main
+* | 2f8a7a2 (older) older
+|/  
+* ee25044 base
+
+"#]]
+            );
+            add_stack_with_segments(&mut meta, 0, "older", StackState::InWorkspace, &[]);
+            add_stack_with_segments(&mut meta, 1, "newer", StackState::InWorkspace, &[]);
+            let graph = but_testsupport::graph_from_head(
+                &repo,
+                &meta,
+                project_meta(&repo)?,
+                &mut db,
+                Options::limited(),
+            )?;
+            let mut ws = graph.into_workspace()?;
+            let tree_before = repo.head_tree_id()?.detach();
+
+            crate::utils::create_reference(
+                &repo,
+                &mut ws,
+                &mut meta,
+                &mut db,
+                rc("refs/heads/new-branch"),
+                None,
+                order,
+            )?;
+
+            assert_eq!(
+                repo.head_tree_id()?,
+                tree_before,
+                "an empty branch doesn't change what's in the workspace, with order {order:?}"
+            );
+            assert_eq!(
+                repo.head_commit()?.parent_ids().collect::<Vec<_>>(),
+                expected_parents
+                    .iter()
+                    .map(|rev| repo.rev_parse_single(*rev))
+                    .collect::<Result<Vec<_>, _>>()?,
+                "the new branch at `main` is a workspace parent at the requested position"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[test]
 fn errors() -> anyhow::Result<()> {
     let (repo, mut meta, mut db) = named_read_only_in_memory_scenario("unborn-empty", "")?;
-    let graph = but_graph::Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -2093,10 +2191,13 @@ fn errors() -> anyhow::Result<()> {
 "#]]
     );
 
-    let graph = but_graph::Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
-        project_meta(&repo)?,
+        but_core::ref_metadata::ProjectMeta {
+            target_ref: None,
+            ..project_meta(&repo)?
+        },
         &mut db,
         Options::limited(),
     )?;
@@ -2185,7 +2286,7 @@ fn errors() -> anyhow::Result<()> {
         );
     }
 
-    let graph = but_graph::Graph::from_commit_traversal(
+    let graph = but_testsupport::graph_from_commit_traversal(
         a_id,
         a_ref,
         &*meta,
@@ -2227,54 +2328,6 @@ fn errors() -> anyhow::Result<()> {
             "it shouldn't actually have change the ref"
         );
     }
-
-    let graph = but_graph::Graph::from_commit_traversal(
-        a_id,
-        a_ref.to_owned(),
-        &*meta,
-        but_core::ref_metadata::ProjectMeta {
-            target_commit_id: Some(main_id.detach()),
-            ..Default::default()
-        },
-        &mut db,
-        Options {
-            commits_limit_hint: 0.into(),
-            ..Options::limited()
-        },
-    )?;
-    let mut ws = graph.into_workspace()?;
-    snapbox::assert_data_eq!(
-        graph_workspace(&ws).to_string(),
-        snapbox::str![[r#"
-⌂:A <> ✓!
-└── ≡:A {1}
-    └── :A
-        └── ✂️·89cc2d3
-
-"#]]
-    );
-
-    // The single commit of `A` is visible, but nothing below it is.
-    let err = crate::utils::create_reference(
-        &repo,
-        &mut ws,
-        &mut *meta,
-        &mut db,
-        new_name,
-        Anchor::at_segment(a_ref, Below),
-        None,
-    )
-    .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Commit d79bba960b112dbd25d45921c47eeda22288022b isn't part of the workspace",
-    );
-    assert!(meta.branch(a_ref)?.is_default(), "no data was stored");
-    assert_ne!(
-        repo.find_reference(a_ref)?.id(),
-        main_id,
-        "it shouldn't actually have changed the ref"
-    );
     Ok(())
 }
 
@@ -2291,7 +2344,7 @@ fn journey_with_commits() -> anyhow::Result<()> {
 "#]]
     );
 
-    let graph = but_graph::Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -2403,7 +2456,7 @@ fn journey_with_commits() -> anyhow::Result<()> {
 #[test]
 fn existing_git_ref_is_rejected() -> anyhow::Result<()> {
     let (_tmp, repo, mut meta, mut db) = named_writable_scenario("single-branch-4-commits")?;
-    let graph = but_graph::Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &meta,
         project_meta(&repo)?,
@@ -2452,7 +2505,7 @@ fn detached_head() -> anyhow::Result<()> {
         PreviousValue::Any,
         "detach below main",
     )?;
-    let graph = but_graph::Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &meta,
         project_meta(&repo)?,
@@ -2498,6 +2551,100 @@ fn detached_head() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The stacks `C` over `B` and `A`, with `checkout` checked out on its own and no workspace
+/// reference.
+fn plain_checkout(
+    checkout: &str,
+) -> anyhow::Result<(
+    but_testsupport::gix_testtools::tempfile::TempDir,
+    gix::Repository,
+    but_meta::VirtualBranchesMetadata,
+    but_db::DbHandle,
+    but_graph::Workspace,
+)> {
+    use but_testsupport::CommandExt as _;
+
+    let (tmp, repo, meta, mut db) =
+        named_writable_scenario("ws-ref-ws-commit-single-stack-double-stack")?;
+    but_testsupport::git(&repo)
+        .args(["checkout", checkout])
+        .run();
+    but_testsupport::git(&repo)
+        .args(["update-ref", "-d", "refs/heads/gitbutler/workspace"])
+        .run();
+    let ws = but_testsupport::graph_from_head(
+        &repo,
+        &meta,
+        project_meta(&repo)?,
+        &mut db,
+        Options::limited(),
+    )?
+    .into_workspace()?;
+    Ok((tmp, repo, meta, db, ws))
+}
+
+#[test]
+fn branch_without_anchor_enters_the_workspace_beside_the_checked_out_stack() -> anyhow::Result<()> {
+    let (_tmp, repo, mut meta, mut db, mut ws) = plain_checkout("C")?;
+
+    crate::utils::create_reference(
+        &repo,
+        &mut ws,
+        &mut meta,
+        &mut db,
+        rc("refs/heads/new"),
+        None,
+        None,
+    )?;
+
+    // A workspace commit now holds the stack that was checked out and the new branch.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 09d8e52 (A) A
+| *   f2ca8a1 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
+| |/  
+| |/  
+|/|   
+| * 09bc93e (C) C
+| * c813d8d (B) B
+|/  
+* 85efbe4 (origin/main, new, main) M
+
+"#]]
+    );
+    Ok(())
+}
+
+#[test]
+fn branch_without_anchor_is_checked_out_in_place_of_the_target() -> anyhow::Result<()> {
+    let (_tmp, repo, mut meta, mut db, mut ws) = plain_checkout("main")?;
+
+    crate::utils::create_reference(
+        &repo,
+        &mut ws,
+        &mut meta,
+        &mut db,
+        rc("refs/heads/new"),
+        None,
+        None,
+    )?;
+
+    // The target is no lane, so a workspace would hold the new branch alone, and isn't kept.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 09d8e52 (A) A
+| * 09bc93e (C) C
+| * c813d8d (B) B
+|/  
+* 85efbe4 (HEAD -> new, origin/main, main) M
+
+"#]]
+    );
+    Ok(())
+}
+
 /// [`Anchor::AtReference`] in an ad-hoc (single-branch) workspace, where the tip-to-base order of
 /// same-commit branches lives in the `branch_order` table rather than workspace metadata.
 mod ad_hoc_at_reference {
@@ -2516,12 +2663,13 @@ mod ad_hoc_at_reference {
     )> {
         let (tmp, repo, _legacy_meta, mut db) =
             named_writable_scenario("single-branch-with-3-commits")?;
-        let project_meta =
-            crate::ref_info::with_workspace_commit::utils::project_meta_with_target_at(
-                &repo, "main~2",
-            )?;
+        // Exercise branch ordering with a stored cutoff, not a configured target branch.
+        let project_meta = but_core::ref_metadata::ProjectMeta {
+            target_commit_id: Some(repo.rev_parse_single("main~2")?.detach()),
+            ..Default::default()
+        };
         let meta = branch_order_meta(&repo)?;
-        let ws = but_graph::Graph::from_head(
+        let ws = but_testsupport::graph_from_head(
             &repo,
             &meta,
             project_meta.clone(),
@@ -2594,29 +2742,6 @@ mod ad_hoc_at_reference {
             &["refs/heads/main", "refs/heads/new-below"],
         );
         assert_eq!(repo.find_reference(below_ref)?.id(), main_id);
-
-        // A remote reference created after the editor's graph isn't part of the workspace.
-        let remote_ref = r("refs/remotes/origin/main");
-        repo.reference(
-            remote_ref,
-            main_id,
-            PreviousValue::Any,
-            "test remote anchor",
-        )?;
-        let err = create(
-            &repo,
-            &mut ws,
-            &mut meta,
-            &mut db,
-            r("refs/heads/new-remote-anchor"),
-            remote_ref,
-            Above,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "The anchor reference 'origin/main' isn't part of the workspace"
-        );
         Ok(())
     }
 
@@ -2630,9 +2755,14 @@ mod ad_hoc_at_reference {
             &repo, &mut ws, &mut meta, &mut db, bottom_ref, main_ref, Below,
         )?;
 
-        let ws =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?
-                .into_workspace()?;
+        let ws = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?
+        .into_workspace()?;
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
@@ -2685,9 +2815,14 @@ mod ad_hoc_at_reference {
             ],
         );
 
-        let ws =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?
-                .into_workspace()?;
+        let ws = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?
+        .into_workspace()?;
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
@@ -2767,9 +2902,14 @@ mod ad_hoc_at_reference {
         assert_order(&meta, main_ref, &expected);
 
         // ...and the workspace re-projects identically from the reloaded metadata.
-        let ws =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?
-                .into_workspace()?;
+        let ws = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?
+        .into_workspace()?;
         snapbox::assert_data_eq!(
             graph_workspace(&ws).to_string(),
             snapbox::str![[r#"
@@ -2917,9 +3057,14 @@ mod ad_hoc_at_reference {
         );
 
         // Mix in an `Above` insertion: a new tip over the (still checked-out) `main`.
-        let mut ws =
-            but_graph::Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?
-                .into_workspace()?;
+        let mut ws = but_testsupport::graph_from_head(
+            &repo,
+            &meta,
+            project_meta,
+            &mut db,
+            Options::limited(),
+        )?
+        .into_workspace()?;
         create(&repo, &mut ws, &mut meta, &mut db, crown, main_ref, Above)?;
         assert_order(
             &meta,

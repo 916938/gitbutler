@@ -300,21 +300,24 @@ fn help_popup_scrolls() {
 
 #[test]
 fn undo_opens_confirm_for_latest_snapshot() {
-    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
-    env.setup_metadata(&["A"]);
-    let mut tui = test_status_tui(env);
+    // The undo toast names the oplog entry, whose ID depends on the agent it records.
+    temp_env::with_vars_unset(crate::utils::detect_agent::ENVIRONMENT_VARIABLES, || {
+        let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+        env.setup_metadata(&["A"]);
+        let mut tui = test_status_tui(env);
 
-    tui.env().file("test.txt", "content");
-    tui.input('c');
-    tui.input(KeyCode::Down);
-    tui.input('i');
-    tui.input(KeyCode::Enter);
-    tui.input("commit for undo prompt test");
-    tui.input(KeyCode::Enter);
+        tui.env().file("test.txt", "content");
+        tui.input('c');
+        tui.input(KeyCode::Down);
+        tui.input('i');
+        tui.input(KeyCode::Enter);
+        tui.input("commit for undo prompt test");
+        tui.input(KeyCode::Enter);
 
-    tui.input('u').assert_rendered_term_svg_eq(file![
-        "snapshots/undo_opens_confirm_for_latest_snapshot_001.svg"
-    ]);
+        tui.input('u').assert_rendered_term_svg_eq(file![
+            "snapshots/undo_opens_confirm_for_latest_snapshot_001.svg"
+        ]);
+    });
 }
 
 #[test]
@@ -1428,7 +1431,7 @@ fn remember_selection() {
     let mut tui = test_status_tui_with_options(
         env,
         TestTuiOptions {
-            launch_options: launch_options.clone(),
+            launch_options,
             ..Default::default()
         },
     );
@@ -1557,7 +1560,7 @@ fn open_tui_on_uncommitted_hunk(show_diff: bool) -> TestTui<App> {
         let ctx = env.context();
         let id_map = IdMap::legacy_new_from_context(&ctx).expect("failed to build CLI IDs");
         let cli_ids = id_map
-            .parse_using_context("target.txt", &ctx)
+            .parse_using_context("@:target.txt", &ctx)
             .expect("failed to resolve uncommitted file");
         let file = cli_ids
             .into_iter()

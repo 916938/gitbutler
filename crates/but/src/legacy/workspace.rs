@@ -61,27 +61,20 @@ fn head_info(
     // HEAD; during edit mode the workspace ref is queried without them.
     let ws = {
         let mut options = but_graph::init::Options::limited();
-        options.worktrees =
-            edit_mode_workspace_ref.is_none() && ctx.settings.feature_flags.worktree_manipulation;
+        options.worktrees = edit_mode_workspace_ref.is_none();
         let mut db = ctx.db.get_cache_mut()?;
-        let graph = match &edit_mode_workspace_ref {
-            Some(ref_name) => {
-                let mut reference = repo.find_reference(ref_name.as_ref())?;
-                let id = reference.peel_to_id()?;
-                but_graph::Graph::from_commit_traversal(
-                    id,
-                    reference.name().to_owned(),
-                    &meta,
-                    ctx.project_meta()?,
-                    &mut db,
-                    options,
-                )?
-            }
-            None => {
-                but_graph::Graph::from_head(&repo, &meta, ctx.project_meta()?, &mut db, options)?
-            }
-        };
-        graph.into_workspace()?
+        let seen_from = edit_mode_workspace_ref
+            .as_ref()
+            .map(|ref_name| repo.find_reference(ref_name.as_ref()))
+            .transpose()?;
+        ref_info::workspace(
+            &repo,
+            &meta,
+            &mut db,
+            ctx.project_meta()?,
+            &options,
+            seen_from,
+        )?
     };
     let gerrit_mode_enabled = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
     let db = gerrit_mode_enabled
@@ -102,8 +95,8 @@ fn head_info(
     // Enrich active associations from the forge cache while keeping durable
     // stored identity for integrated branches, mirroring desktop `head_info`.
     let review_cache = ctx.db.get_cache()?;
-    let prs_by_head = but_forge::review_associations_by_head(&review_cache)?;
-    info.apply_forge_review_associations(&repo, &prs_by_head);
+    let prs_by_head = but_forge::review_associations_by_head(&review_cache, &repo)?;
+    info.apply_forge_review_associations(&prs_by_head);
 
     Ok((info, object_hash))
 }
@@ -117,16 +110,12 @@ fn edit_mode_workspace_ref(repo: &gix::Repository) -> anyhow::Result<Option<gix:
     if !is_edit_mode {
         return Ok(None);
     }
-    for name in [
-        gitbutler_operating_modes::WORKSPACE_BRANCH_REF,
-        gitbutler_operating_modes::INTEGRATION_BRANCH_REF,
-    ] {
-        let ref_name: gix::refs::FullName = name.try_into()?;
-        if repo.try_find_reference(ref_name.as_ref())?.is_some() {
-            return Ok(Some(ref_name));
-        }
-    }
-    Ok(None)
+    let ref_name: gix::refs::FullName =
+        gitbutler_operating_modes::WORKSPACE_BRANCH_REF.try_into()?;
+    Ok(repo
+        .try_find_reference(ref_name.as_ref())?
+        .is_some()
+        .then_some(ref_name))
 }
 
 pub fn applied_stacks(ctx: &Context) -> anyhow::Result<Vec<HeadInfoStack>> {
@@ -201,6 +190,18 @@ pub fn push_scope_with_expensive_commit_info(
             .map(Into::into)
             .collect()
     }))
+}
+
+/// The short names of the branches a push of `branch` pushes: `branch` and those beneath it, down
+/// the lanes it rests on, that the remote doesn't have yet.
+pub fn branches_to_push(
+    ctx: &Context,
+    branch: &gix::refs::FullNameRef,
+) -> anyhow::Result<Vec<String>> {
+    let (info, _) = head_info(ctx, true)?;
+    Ok(but_workspace::legacy::push::branches_to_push(&info, branch)
+        .map(|(_, ref_name)| ref_name.shorten().to_string())
+        .collect())
 }
 
 /// The branches a review of `branch` stacks on followed by `branch` itself, base first: those
@@ -351,13 +352,14 @@ pub(crate) mod tests {
 
         let repo = open_repo(tmp.path())?;
         ProjectMeta {
-            target_ref: Some("refs/remotes/origin/main".try_into()?),
+            target_ref: Some(but_core::ref_metadata::LocalRefName::new(
+                "refs/heads/main".try_into()?,
+            )?),
             target_commit_id: Some(repo.rev_parse_single("refs/remotes/origin/main")?.detach()),
             push_remote: Some("origin".into()),
         }
         .persist(&repo)?;
-        let mut ctx = Context::from_repo_for_testing(repo)?.with_memory_app_cache();
-        ctx.settings.feature_flags.worktree_manipulation = true;
+        let ctx = Context::from_repo_for_testing(repo)?.with_memory_app_cache();
         {
             let mut db = ctx.db.get_cache_mut()?;
             // Adoption already ran, so the worktree on disk counts as active.

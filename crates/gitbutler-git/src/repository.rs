@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -58,21 +57,15 @@ pub enum RepositoryError<
     AskpassExecutableMismatch,
     #[error("Run `{prefix}cargo build -p gitbutler-git` to get the askpass binary at '{path}'")]
     AskpassExecutableNotFound { path: String, prefix: String },
-    /// The remote configuration could not be read.
     #[error("failed to read configuration for remote `{remote}`: {source}")]
     RemoteConfiguration {
-        /// The remote whose configuration could not be read.
         remote: String,
-        /// The configuration lookup error.
         #[source]
         source: gix::Error,
     },
-    /// The repository could not be opened.
     #[error("failed to open repository at `{}`: {source}", path.display())]
     RepositoryOpen {
-        /// The repository path that could not be opened.
         path: PathBuf,
-        /// The repository open error.
         #[source]
         source: gix::Error,
     },
@@ -106,12 +99,52 @@ where
     Fut: std::future::Future<Output = Option<String>>,
 {
     let envs = new_env_with_git_ssh_configured(&harness_env);
+    let stall_limits = http_stall_limit_args(&harness_env);
+    let args: Vec<&str> = stall_limits
+        .iter()
+        .map(String::as_str)
+        .chain(args.iter().copied())
+        .collect();
 
     if let Some(on_prompt) = on_prompt {
-        execute_with_indirect_askpass(harness_env, executor, args, envs, on_prompt).await
+        execute_with_indirect_askpass(harness_env, executor, &args, envs, on_prompt).await
     } else {
-        execute_direct(harness_env, executor, args, envs).await
+        execute_direct(harness_env, executor, &args, envs).await
     }
+}
+
+/// Git's HTTP transport has no timeout, so a remote that accepts the connection and then goes
+/// silent hangs the operation forever. These settings abort a transfer that moves less than
+/// 1 byte per second for 60 seconds, while slow transfers that still make progress keep going.
+const HTTP_STALL_LIMITS: [(&str, &str); 2] =
+    [("http.lowSpeedLimit", "1"), ("http.lowSpeedTime", "60")];
+
+/// Returns `-c` arguments for each of [`HTTP_STALL_LIMITS`] the user hasn't configured.
+fn http_stall_limit_args<P>(harness_env: &HarnessEnv<P>) -> Vec<String>
+where
+    P: AsRef<Path>,
+{
+    let config = match harness_env {
+        HarnessEnv::Repo(repo_path) => gix::open(repo_path.as_ref())
+            .ok()
+            .map(|repo| repo.config_snapshot().plumbing().clone()),
+        HarnessEnv::Global(_) => gix::config::File::from_globals().ok().map(|mut config| {
+            // Git applies `GIT_CONFIG_*` overrides on top; a repository's config has them already.
+            if let Ok(overrides) = gix::config::File::from_environment_overrides() {
+                config.append(overrides).ok();
+            }
+            config
+        }),
+    };
+    HTTP_STALL_LIMITS
+        .into_iter()
+        .filter(|(key, _)| {
+            config
+                .as_ref()
+                .is_none_or(|config| config.raw_value(*key).is_err())
+        })
+        .flat_map(|(key, value)| ["-c".to_owned(), format!("{key}={value}")])
+        .collect()
 }
 
 /// Askpass-aware execution of Git commands, allowing the GUI to communicate with the askpass
@@ -147,7 +180,9 @@ where
         current_exe = current_exe.parent().unwrap().to_path_buf();
     }
 
-    let askpath_path = askpass_executable_path(&current_exe);
+    let askpath_path = current_exe
+        .with_file_name("gitbutler-git-askpass")
+        .with_extension(std::env::consts::EXE_EXTENSION);
 
     let res = executor.stat(&askpath_path).await.map_err(Error::<E>::Exec);
     if res.is_err() {
@@ -235,7 +270,6 @@ where
             res = sock_server.accept().fuse() => {
                 let mut sock = res.map_err(Error::<E>::AskpassServer)?;
 
-                // get the PID of the peer
                 let peer_pid = sock.pid().map_err(Error::<E>::NoPid)?;
 
                 // get the full image path of the peer id; this is pretty expensive at the moment.
@@ -255,12 +289,11 @@ where
                     .and_then(|p| p.exe().map(|exe| exe.to_string_lossy().into_owned()))
                     .ok_or(Error::<E>::NoSuchPid(peer_pid))?;
 
-                // stat the askpass executable that is being invoked
                 let peer_stat = executor.stat(&peer_path).await.map_err(Error::<E>::Exec)?;
 
                 let valid_executable = if peer_stat.ino == askpath_stat.ino {
                     if peer_stat.dev != askpath_stat.dev {
-                        return Err(Error::<E>::AskpassDeviceMismatch)?;
+                        Err(Error::<E>::AskpassDeviceMismatch)?;
                     }
 
                     true
@@ -269,21 +302,17 @@ where
                 };
 
                 if !valid_executable {
-                    return Err(Error::<E>::AskpassExecutableMismatch)?;
+                    Err(Error::<E>::AskpassExecutableMismatch)?;
                 }
 
-                // await for peer to send secret
                 let peer_secret = sock.read_line().await.map_err(Error::<E>::AskpassIo)?;
 
-                // check the secret
                 if peer_secret.trim() != secret {
-                    return Err(Error::<E>::AskpassSecretMismatch)?;
+                    Err(Error::<E>::AskpassSecretMismatch)?;
                 }
 
-                // get the prompt
                 let prompt = sock.read_line().await.map_err(Error::<E>::AskpassIo)?;
 
-                // call the prompt handler
                 let response = on_prompt(prompt.clone()).await;
                 if let Some(response) = response {
                     sock.write_line(&response).await.map_err(Error::<E>::AskpassIo)?;
@@ -293,21 +322,6 @@ where
             }
         }
     }
-}
-
-fn askpass_executable_path(current_exe: &Path) -> PathBuf {
-    askpass_executable_path_from_override(std::env::var_os("GITBUTLER_ASKPASS_BIN"), current_exe)
-}
-
-fn askpass_executable_path_from_override(
-    override_path: Option<OsString>,
-    current_exe: &Path,
-) -> PathBuf {
-    override_path.map(PathBuf::from).unwrap_or_else(|| {
-        current_exe
-            .with_file_name("gitbutler-git-askpass")
-            .with_extension(std::env::consts::EXE_EXTENSION)
-    })
 }
 
 /// Directly execute the Git command without invoking the askpass pipe machinery. This is useful
@@ -383,8 +397,10 @@ where
         }
     };
 
+    // Keepalives close the connection once the server hasn't answered for 60 seconds
+    // (4 probes, 15 seconds apart); without them a half-open connection hangs forever.
     let git_ssh_command = format!(
-        "ssh -o StrictHostKeyChecking=accept-new -o KbdInteractiveAuthentication=no{additional_options}"
+        "ssh -o StrictHostKeyChecking=accept-new -o KbdInteractiveAuthentication=no -o ServerAliveInterval=15 -o ServerAliveCountMax=4{additional_options}"
     );
     envs.insert("GIT_SSH_COMMAND".into(), git_ssh_command);
     envs
@@ -456,7 +472,6 @@ where
     if status == 0 {
         Ok(())
     } else {
-        // Was the ref not found?
         if let Some(refname) = stderr
             .lines()
             .find(|line| line.to_lowercase().contains("couldn't find remote ref"))
@@ -481,6 +496,36 @@ where
     }
 }
 
+/// Deletes the remote-tracking refs of `remote` whose branches are gone from it, like
+/// `git remote prune`. Unlike a pruning fetch, it never brings new commits.
+pub async fn prune<P, F, Fut, E>(
+    repo_path: P,
+    executor: E,
+    remote: &str,
+    on_prompt: Option<F>,
+) -> Result<(), crate::Error<Error<E>>>
+where
+    P: AsRef<Path>,
+    E: GitExecutor,
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Option<String>>,
+{
+    let repo_path = repo_path.as_ref();
+    let args = ["remote", "prune", remote];
+    let (status, stdout, stderr) =
+        execute_with_auth_harness(HarnessEnv::Repo(repo_path), &executor, &args, on_prompt).await?;
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(Error::<E>::Failed {
+            status,
+            args: args.into_iter().map(Into::into).collect(),
+            stdout,
+            stderr,
+        })?
+    }
+}
+
 fn fetch_refspecs(repo: &gix::Repository, remote: &str) -> gix::Result<Vec<String>> {
     let refspecs: Vec<_> = repo
         .find_remote(remote)?
@@ -496,8 +541,6 @@ fn fetch_refspecs(repo: &gix::Repository, remote: &str) -> gix::Result<Vec<Strin
     })
 }
 
-/// Pushes a refspec to the given remote in the repository at the given path.
-///
 /// If `on_prompt` is provided, we override SSH_ASKPASS to point to our custom askpass client to
 /// ferry prompts and responses between the SSH process and this process. This should be used
 /// carefully as it will unceremoniously override any askpass configuration the user might have,
@@ -564,7 +607,6 @@ where
         return Err(crate::Error::ForcePushProtection(base_error));
     }
 
-    // Check for specific error patterns in stderr
     if let Some(refname) = stderr
         .lines()
         .find(|line| line.to_lowercase().contains("does not match any"))
@@ -594,8 +636,6 @@ where
     Err(base_error.into())
 }
 
-/// Clones the given repository URL to the target directory.
-///
 /// If `on_prompt` is provided, we override SSH_ASKPASS to point to our custom askpass client to
 /// ferry prompts and responses between the SSH process and this process. This should be used
 /// carefully as it will unceremoniously override any askpass configuration the user might have,
@@ -617,7 +657,6 @@ where
 {
     let target_dir = target_dir.as_ref();
 
-    // For clone, we run from the parent directory of the target
     let work_dir = target_dir.parent().unwrap_or(Path::new("."));
 
     let target_dir_str = target_dir.to_string_lossy();
@@ -661,8 +700,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::OsString, path::Path};
-
     #[tokio::test]
     async fn fetch_distinguishes_missing_remotes_from_invalid_configuration() -> anyhow::Result<()>
     {
@@ -696,39 +733,5 @@ mod tests {
             "an existing remote with an invalid refspec remains a configuration error"
         );
         Ok(())
-    }
-
-    #[test]
-    fn askpass_executable_path_honors_override() {
-        let path = super::askpass_executable_path_from_override(
-            Some(OsString::from("/tmp/custom-askpass")),
-            Path::new("/Applications/GitButler Lite.app/Contents/MacOS/GitButler Lite"),
-        );
-
-        assert_eq!(
-            path,
-            Path::new("/tmp/custom-askpass"),
-            "explicit askpass path should be used for packaged Electron apps"
-        );
-    }
-
-    #[test]
-    fn askpass_executable_path_falls_back_next_to_current_exe() {
-        let path =
-            super::askpass_executable_path_from_override(None, Path::new("/tmp/gitbutler-lite"));
-        let expected = if std::env::consts::EXE_EXTENSION.is_empty() {
-            "/tmp/gitbutler-git-askpass".to_string()
-        } else {
-            format!(
-                "/tmp/gitbutler-git-askpass.{}",
-                std::env::consts::EXE_EXTENSION
-            )
-        };
-
-        assert_eq!(
-            path,
-            Path::new(&expected),
-            "fallback should preserve the historical current_exe sibling lookup"
-        );
     }
 }

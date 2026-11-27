@@ -6,7 +6,7 @@ fn list_hides_empty_applied_branches_by_default() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks-one-empty");
     env.setup_metadata(&["A", "B"]);
 
-    let result = env.but("--json branch list").allow_json().output().unwrap();
+    let result = env.but("branch --json list").allow_json().output().unwrap();
     assert!(result.status.success());
     let stdout = String::from_utf8_lossy(&result.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
@@ -25,7 +25,7 @@ fn list_hides_empty_applied_branches_by_default() {
     assert!(json["branches"].as_array().unwrap().is_empty());
 
     let result = env
-        .but("--json branch list --empty")
+        .but("branch --json list --empty")
         .allow_json()
         .output()
         .unwrap();
@@ -120,6 +120,40 @@ local   ✓ branch-7  ↑1     26y ago    author
 local   ✓ branch-8  ↑1     26y ago    author
 
 ... result truncated to 20 matching branches (use --all to show all that match filters)
+
+"#]])
+        .stderr_eq(snapbox::str![[]]);
+}
+
+/// After unapplying down to one branch, that branch is listed only as applied.
+#[test]
+fn single_branch_mode_lists_checked_out_branch_only_as_applied() {
+    let env = Sandbox::open_or_init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    env.invoke_bash(
+        r#"
+    git checkout main -b feature-branch;
+    git commit -m 'Add feature' --allow-empty;
+    git checkout gitbutler/workspace;
+        "#,
+    );
+    env.but("apply feature-branch").assert().success();
+    env.but("unapply feature-branch").assert().success();
+    assert_eq!(
+        env.invoke_git("rev-parse --abbrev-ref HEAD"),
+        "A",
+        "unapplying down to one branch checks that branch out"
+    );
+
+    env.but("branch list")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Applied branches
+active  ✓ *A          26y ago    author
+
+Unapplied Branches
+local   ✓ feature-branch ↑1     26y ago    author
 
 "#]])
         .stderr_eq(snapbox::str![[]]);

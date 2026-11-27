@@ -1,6 +1,6 @@
 use anyhow::Context as _;
 use but_core::{
-    RefMetadata,
+    DryRun, RefMetadata,
     sync::{RepoExclusive, RepoShared},
 };
 use but_ctx::Context;
@@ -16,17 +16,12 @@ use crate::{
         branch::NewPlatform,
     },
     bad_input,
+    command::legacy::commit::refuse_switch_with_detached_head,
     id::CommitId,
-    print_deprecation_warning,
     theme::{self, Theme},
     utils::{
-        CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils,
-        change_source::InvokedFrom,
-        merged_upstream::MergedUpstream,
-        single_branch_mode::{
-            HowToCreateStackedReference, HowToCreateUnstackedReference, SingleBranchMode,
-        },
-        targeting::Side,
+        CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils, change_source::InvokedFrom,
+        merged_upstream::MergedUpstream, name_new_branch, targeting::Side,
     },
 };
 
@@ -37,7 +32,7 @@ pub fn new(
     invoked_from: &InvokedFrom,
 ) -> CliResult<NewOutcome> {
     let mut guard = ctx.exclusive_worktree_access();
-    let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
+    let id_map = IdMap::new_from_context(ctx, guard.read_permission(), Some(invoked_from))?;
 
     let operation = {
         let head_info = but_api::legacy::workspace::head_info(ctx)?;
@@ -66,13 +61,17 @@ fn resolve(
     let NewPlatform {
         above,
         below,
-        anchor,
         name,
         allow_merged,
         switch,
     } = args;
 
-    let merged = MergedUpstream::new(&*ctx.repo.get()?, head_info, allow_merged);
+    let merged = MergedUpstream::new(
+        &*ctx.repo.get()?,
+        &ctx.project_meta()?,
+        head_info,
+        allow_merged,
+    );
 
     let (repo, ws, _db) = ctx.workspace_and_db_with_perm(perm)?;
 
@@ -80,23 +79,9 @@ fn resolve(
         .map(|name| name.resolve_for_creation(&repo, &ws))
         .transpose()?;
 
-    let above = match (above, anchor) {
-        (None, None) => None,
-        (None, Some(anchor)) => {
-            print_deprecation_warning(
-                "`--anchor/-a` is deprecated and will be removed in a future release. Use `--above/-A` instead",
-            );
-            Some(anchor)
-        }
-        (Some(above), None) => Some(above),
-        (Some(_), Some(_)) => {
-            unreachable!("--anchor and --above are mutually exclusive in the clap args")
-        }
-    };
-
     match (above, below) {
         (None, None) => {
-            if let InvokedFrom::LinkedWorktree(worktree) = invoked_from {
+            if let Some(worktree) = &invoked_from.linked_worktree {
                 return Err(bad_input(format!(
                     "Cannot create an unstacked branch from worktree {worktree}"
                 ))
@@ -204,40 +189,24 @@ impl NewUnstackedBranchOperation {
         meta: &mut impl RefMetadata,
         perm: &mut RepoExclusive,
     ) -> anyhow::Result<NewOutcome> {
-        let NewUnstackedBranchOperation { name, switch } = self;
-        let sbm = SingleBranchMode::new(ctx, perm.read_permission(), switch)?;
+        let NewUnstackedBranchOperation { mut name, switch } = self;
+        if switch {
+            refuse_switch_with_detached_head(&*ctx.repo.get()?)?;
+        }
         let snapshot_details = SnapshotDetails::new(OperationKind::CreateBranch);
+        let new_ref = name_new_branch(&mut name, &*ctx.repo.get()?)?;
 
-        let (new_ref, _ws) = sbm.transaction_with_workspace_setup(
+        // Named so undo deletes it again.
+        but_transaction::with_transaction_with_perm(
             ctx,
             meta,
-            snapshot_details,
             perm,
-            true,
+            snapshot_details,
+            &[new_ref.as_ref()],
+            DryRun::No,
             |mut tx| {
-                let new_ref = if let Some(name) = name {
-                    name.clone()
-                } else {
-                    but_core::branch::unique_canned_refname(tx.repo())?
-                };
-
-                match sbm.how_to_create_unstacked_reference() {
-                    HowToCreateUnstackedReference::Normally => {
-                        tx.create_reference(new_ref.as_ref(), None, Some(0))?;
-                    }
-                    HowToCreateUnstackedReference::CreateRefAtAnchorThenCheckout(anchor) => {
-                        tx.create_reference(new_ref.as_ref(), anchor, Some(0))?;
-                        tx.checkout(new_ref.as_ref())?;
-                    }
-                    HowToCreateUnstackedReference::CreateRefAtCommitThenCheckout {
-                        target_commit_id,
-                    } => {
-                        tx.create_reference_at_commit(new_ref.as_ref(), target_commit_id)?;
-                        tx.checkout(new_ref.as_ref())?;
-                    }
-                }
-
-                Ok(but_transaction::Commit(new_ref))
+                tx.create_unstacked_reference(Some(new_ref.clone()), switch)?;
+                anyhow::Ok(())
             },
         )?;
 
@@ -256,58 +225,59 @@ impl NewStackedBranchOperation {
         perm: &mut RepoExclusive,
     ) -> anyhow::Result<NewOutcome> {
         let NewStackedBranchOperation {
-            name,
+            mut name,
             target,
             side,
             switch,
         } = self;
 
-        let sbm = SingleBranchMode::new(ctx, perm.read_permission(), switch)?;
+        if switch {
+            refuse_switch_with_detached_head(&*ctx.repo.get()?)?;
+        }
         let snapshot_details = SnapshotDetails::new(OperationKind::CreateBranch);
+        let new_ref = name_new_branch(&mut name, &*ctx.repo.get()?)?;
 
-        let (new_ref, _ws) = sbm.transaction_with_workspace_setup(
+        // Named so undo deletes it again.
+        but_transaction::with_transaction_with_perm(
             ctx,
             meta,
-            snapshot_details,
             perm,
-            false,
+            snapshot_details,
+            &[new_ref.as_ref()],
+            DryRun::No,
             |mut tx| {
-                let new_ref = if let Some(name) = name {
-                    name.clone()
-                } else {
-                    but_core::branch::unique_canned_refname(tx.repo())?
-                };
-
-                let (anchor, checkout_after_create) = match &target {
-                    NewStackedBranchTarget::Commit(commit_target) => (
-                        Anchor::AtCommit {
+                match &target {
+                    NewStackedBranchTarget::Commit(commit_target) => {
+                        let anchor = Anchor::AtCommit {
                             commit_id: commit_target.commit_id,
                             position: side.into(),
-                        },
-                        false,
-                    ),
-                    NewStackedBranchTarget::Branch(branch_target) => {
-                        match sbm.how_to_create_stacked_reference(branch_target.as_ref(), side) {
-                            HowToCreateStackedReference::Normally(anchor) => (anchor, false),
-                            HowToCreateStackedReference::CreateRefAtAnchorThenCheckout(anchor) => {
-                                (anchor, true)
-                            }
-                        }
+                        };
+                        tx.create_reference(new_ref.as_ref(), anchor.clone(), Some(0))
+                            .with_context(|| {
+                                format!(
+                                    "failed to create reference. anchor={anchor:?}; new_ref={new_ref:?}"
+                                )
+                            })?;
                     }
-                };
-
-                tx.create_reference(new_ref.as_ref(), anchor.clone(), Some(0))
-                    .with_context(|| {
-                        format!(
-                            "failed to create reference. anchor={anchor:?}; new_ref={new_ref:?}"
+                    NewStackedBranchTarget::Branch(branch_target) => {
+                        tx.create_reference(
+                            new_ref.as_ref(),
+                            Anchor::at_segment(branch_target.as_ref(), side.into()),
+                            None,
                         )
-                    })?;
+                        .with_context(|| {
+                            format!(
+                                "failed to create reference. relative_to={branch_target:?}; side={side}; new_ref={new_ref:?}"
+                            )
+                        })?;
+                    }
+                }
 
-                if checkout_after_create || switch {
+                if switch {
                     tx.checkout(new_ref.as_ref())?;
                 }
 
-                Ok(but_transaction::Commit(new_ref))
+                Ok(())
             },
         )?;
 

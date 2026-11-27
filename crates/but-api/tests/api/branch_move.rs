@@ -3,8 +3,8 @@ use but_testsupport::{CommandExt, git_at_dir, open_repo};
 use gitbutler_oplog::{OplogExt, RestoreKind};
 
 use crate::support::{
-    assert_workspace_ref, create_empty_branch_above, persist_default_target,
-    repo_with_feature_branch, write_file,
+    assert_workspace_ref, create_empty_branch_above, repo_with_feature_branch,
+    set_project_target_to_feature, write_file,
 };
 
 fn move_branch_above(
@@ -37,10 +37,13 @@ fn context_with_three_branch_stack_options(
     git_at_dir(tmp.path()).args(["add", "base.txt"]).run();
     git_at_dir(tmp.path()).args(["commit", "-m", "base"]).run();
     git_at_dir(tmp.path())
-        .args(["config", "remote.origin.url", "../origin"])
+        .args(["remote", "add", "origin", "../origin"])
         .run();
     git_at_dir(tmp.path())
         .args(["update-ref", "refs/remotes/origin/main", "HEAD"])
+        .run();
+    git_at_dir(tmp.path())
+        .args(["branch", "--set-upstream-to=origin/main", "main"])
         .run();
 
     for branch in ["A", "B", "C"] {
@@ -59,7 +62,9 @@ fn context_with_three_branch_stack_options(
     let repo = open_repo(tmp.path())?;
     let target_commit_id = repo.rev_parse_single("refs/remotes/origin/main")?.detach();
     ProjectMeta {
-        target_ref: Some("refs/remotes/origin/main".try_into()?),
+        target_ref: Some(but_core::ref_metadata::LocalRefName::new(
+            "refs/heads/main".try_into()?,
+        )?),
         target_commit_id: Some(target_commit_id),
         push_remote: Some("origin".into()),
     }
@@ -109,7 +114,7 @@ fn move_non_empty_branch_dry_run_previews_new_tip_without_mutating_repository() 
     let (head_before, subject_tip_before, target_tip_before) = {
         let repo = ctx.repo.get()?;
         (
-            repo.head_name()?.expect("HEAD is symbolic").to_owned(),
+            repo.head_name()?.expect("HEAD is symbolic"),
             repo.rev_parse_single(subject.as_ref())?.detach(),
             repo.rev_parse_single(target.as_ref())?.detach(),
         )
@@ -323,7 +328,8 @@ fn move_empty_branch_dry_run_previews_new_order_without_persisting_it() -> anyho
 #[test]
 fn metadata_only_branch_move_can_be_undone_and_redone() -> anyhow::Result<()> {
     let (repo, _tmp) = repo_with_feature_branch()?;
-    persist_default_target(&repo)?;
+    // Keep the empty branch chain above the cutoff so it remains part of the workspace.
+    set_project_target_to_feature(&repo)?;
     let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
     let main: gix::refs::FullName = "refs/heads/main".try_into()?;
     let middle: gix::refs::FullName = "refs/heads/middle".try_into()?;
@@ -367,6 +373,82 @@ fn metadata_only_branch_move_can_be_undone_and_redone() -> anyhow::Result<()> {
         ctx.meta()?.branch_stack_order(middle.as_ref())?,
         Some(order_after),
         "redo should restore the moved branch order"
+    );
+    Ok(())
+}
+
+#[test]
+fn stacking_the_second_to_last_lane_leaves_the_workspace() -> anyhow::Result<()> {
+    let (repo, _tmp) = crate::support::writable_scenario("checkout-head-info");
+    crate::support::persist_default_target(&repo)?;
+    let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
+    let feature = gix::refs::FullName::try_from("refs/heads/feature")?;
+    let sibling = gix::refs::FullName::try_from("refs/heads/sibling")?;
+    but_api::branch::apply_only(&mut ctx, feature.as_ref())?;
+    but_api::branch::apply_only(&mut ctx, sibling.as_ref())?;
+    assert_eq!(
+        ctx.repo.get()?.head_name()?.expect("HEAD is symbolic"),
+        but_core::WORKSPACE_REF_NAME,
+        "two lanes need the workspace"
+    );
+
+    let result = move_branch_above(&mut ctx, sibling.as_ref(), feature.as_ref(), DryRun::No)?;
+
+    {
+        let repo = ctx.repo.get()?;
+        assert_eq!(
+            repo.head_name()?.expect("HEAD is symbolic"),
+            sibling,
+            "with one stack left `HEAD` moves onto its top branch"
+        );
+        assert!(
+            repo.try_find_reference(but_core::WORKSPACE_REF_NAME)?
+                .is_none(),
+            "the workspace reference is gone"
+        );
+    }
+    assert_workspace_ref(&result.workspace, "refs/heads/sibling");
+
+    crate::support::undo(&mut ctx)?;
+    assert_eq!(
+        ctx.repo.get()?.head_name()?.expect("HEAD is symbolic"),
+        but_core::WORKSPACE_REF_NAME,
+        "undo brings the workspace back"
+    );
+    Ok(())
+}
+
+#[test]
+fn tearing_off_in_single_branch_mode_brings_the_workspace_back() -> anyhow::Result<()> {
+    let (repo, _tmp) = crate::support::writable_scenario("checkout-head-info");
+    crate::support::persist_default_target(&repo)?;
+    let mut ctx = but_ctx::Context::from_repo_for_testing(repo)?.with_memory_app_cache();
+    let feature = gix::refs::FullName::try_from("refs/heads/feature")?;
+    let sibling = gix::refs::FullName::try_from("refs/heads/sibling")?;
+    but_api::branch::apply_only(&mut ctx, feature.as_ref())?;
+    but_api::branch::apply_only(&mut ctx, sibling.as_ref())?;
+    move_branch_above(&mut ctx, sibling.as_ref(), feature.as_ref(), DryRun::No)?;
+
+    but_api::branch::tear_off_branch(&mut ctx, sibling.as_ref(), DryRun::No)?;
+
+    assert_eq!(
+        ctx.repo.get()?.head_name()?.expect("HEAD is symbolic"),
+        but_core::WORKSPACE_REF_NAME,
+        "two lanes need the workspace"
+    );
+    // The torn-off branch is a lane of its own beside the one it left.
+    snapbox::assert_data_eq!(
+        crate::support::workspace_graph(&ctx)?,
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳] <> ✓refs/heads/main on 5374caf
+├── ≡📙:feature on 5374caf {[..]}
+│   └── 📙:feature
+│       └── ·edd8381 (🏘️)
+└── ≡📙:sibling on 5374caf {[..]}
+    └── 📙:sibling
+        └── ·bc74e1b (🏘️)
+
+"#]]
     );
     Ok(())
 }

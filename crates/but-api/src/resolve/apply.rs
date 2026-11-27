@@ -24,7 +24,6 @@ use super::context::{FileConflict, ResolutionRequest, is_marker_shaped, scan_con
 use super::{HunkResolution, RemainingConflicts, ResolutionSpec};
 use crate::WorkspaceState;
 
-/// What applying resolutions produced.
 pub(crate) struct AppliedResolution {
     /// The rewritten commit's final id after the rebase.
     pub new_commit: gix::ObjectId,
@@ -35,7 +34,6 @@ pub(crate) struct AppliedResolution {
     /// conflict is resolved. The commit can still be conflicted with `manual`
     /// files even when this is empty.
     pub remaining: Vec<RemainingConflicts>,
-    /// Workspace state after the apply.
     pub workspace: WorkspaceState,
 }
 
@@ -382,12 +380,8 @@ pub(crate) fn apply(
         // commits that were only marked by the legacy header — the header is
         // cleared below, so the message must carry the state.
         commit.message = but_core::commit::add_conflict_markers(commit.message.as_ref());
-        let conflict_entries = but_core::commit::conflict_entries_from_merge_outcome(
-            &repo,
-            merged_tree_id,
-            &outcome,
-            treat_as_unresolved,
-        )?;
+        let conflict_entries =
+            but_core::commit::conflict_entries_from_merge_outcome(&outcome, treat_as_unresolved)?;
         let tree_expression = TreeExpression {
             base_tree_ids: vec![base_tree_id],
             side_tree_ids: [ours_tree_id, theirs_tree_id].into_iter().collect(),

@@ -1,7 +1,6 @@
 //! These tests cover behaviour specific to the workspace commit
 
 use anyhow::Result;
-use but_graph::Graph;
 use but_rebase::graph_rebase::{Editor, LookupStep, Pick, Step};
 use but_testsupport::{cat_commit, graph_tree, visualize_commit_graph_all};
 use snapbox::prelude::*;
@@ -28,7 +27,7 @@ fn workspace_remains_unchanged_with_no_operations() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -56,18 +55,17 @@ fn workspace_remains_unchanged_with_no_operations() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉📕►►►:0[0]:gitbutler/workspace[🌳]
+└── 👉📕►►►[0]:gitbutler/workspace[🌳]
     └── ·8795f47 (⌂|🏘)
-        └── 📙►:5[1]:c
-            └── 📙►:6[2]:main
-                └── ►:1[3]:anon:
-                    └── ·dd72792 (⌂|🏘)
-                        └── 📙►:2[4]:b
-                            └── ·e5aa7b5 (⌂|🏘)
-                                └── 📙►:3[5]:a
-                                    └── ·3bfeb52 (⌂|🏘)
-                                        └── 📙►:4[6]:base
-                                            └── 🏁·b6e2f57 (⌂|🏘)
+        └── 📙►[1]:c
+            └── 📙►[2]:main
+                └── ·dd72792 (⌂|🏘)
+                    └── 📙►[3]:b
+                        └── ·e5aa7b5 (⌂|🏘)
+                            └── 📙►[4]:a
+                                └── ·3bfeb52 (⌂|🏘)
+                                    └── 📙►[5]:base
+                                        └── 🏁·b6e2f57 (⌂|🏘)
 
 "#]]
     );
@@ -114,7 +112,7 @@ fn workspace_commit_is_not_signed_after_cherry_pick() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -136,17 +134,16 @@ fn workspace_commit_is_not_signed_after_cherry_pick() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉📕►►►:0[0]:gitbutler/workspace[🌳]
+└── 👉📕►►►[0]:gitbutler/workspace[🌳]
     └── ·badca2f (⌂|🏘)
-        └── 📙►:4[1]:c
-            └── 📙►:5[2]:main
-                └── ►:1[3]:anon:
-                    └── ·06106c2 (⌂|🏘)
-                        └── 📙►:6[4]:b
-                            └── 📙►:7[5]:a
-                                └── ·3bfeb52 (⌂|🏘)
-                                    └── 📙►:3[6]:base
-                                        └── 🏁·b6e2f57 (⌂|🏘)
+        └── 📙►[1]:c
+            └── 📙►[2]:main
+                └── ·06106c2 (⌂|🏘)
+                    └── 📙►[3]:b
+                        └── 📙►[4]:a
+                            └── ·3bfeb52 (⌂|🏘)
+                                └── 📙►[5]:base
+                                    └── 🏁·b6e2f57 (⌂|🏘)
 
 "#]]
     );
@@ -228,7 +225,7 @@ fn ad_hoc_workspace_keeps_regular_defaults() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -256,7 +253,7 @@ fn ad_hoc_workspace_keeps_regular_defaults() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·120e3a9 (⌂)
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
@@ -307,7 +304,7 @@ fn workspace_commit_should_not_be_allowed_to_conflict() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),
@@ -407,7 +404,7 @@ fn workspace_commit_with_deleted_branch_ref_rebases_successfully() -> Result<()>
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         but_core::ref_metadata::ProjectMeta::default(),

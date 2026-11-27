@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 use crate::{
-    CliId, IdMap,
+    CliError, CliId, CliResult, IdMap, bad_input,
     id::parser::parse_sources,
     legacy::workspace::{HeadInfoBranch, HeadInfoStack},
-    theme::{self, Paint},
+    theme::{self, Paint, Theme},
     tui::get_text::{self, HTML_COMMENT_END_MARKER, HTML_COMMENT_START_MARKER},
-    utils::{Confirm, ConfirmDefault, OutputChannel},
+    utils::{CliOutput, CliOutputHuman, Confirm, ConfirmDefault, OutputChannel, WriteWithUtils},
 };
 
 const RETRY_REVIEW_ACTION: &str = "If you still need this action after the review state changes, retry the same command; it fetches the latest review data.";
@@ -23,7 +23,7 @@ pub async fn enable_auto_merge(
     selector: Option<String>,
     off: bool,
     out: &mut OutputChannel,
-) -> anyhow::Result<()> {
+) -> CliResult<()> {
     // Fail fast if no forge user is authenticated, before pushing or prompting.
     ensure_forge_authentication(ctx).await?;
 
@@ -42,7 +42,6 @@ pub async fn enable_auto_merge(
 
     // Iterate over the reviews that need to be mutated. Skip if their in an invalid state.
     for review_id in review_ids {
-        // Fetch the latest information about the review
         let review = but_api::legacy::forge::get_review(ctx, review_id).ok();
 
         if let Some(review) = review {
@@ -81,7 +80,14 @@ pub async fn enable_auto_merge(
             writeln!(out, "Auto-merge {action} for review {review_id}")?;
         }
 
-        but_api::legacy::forge::set_review_auto_merge(ctx.to_sync(), review_id, !off).await?;
+        but_api::legacy::forge::set_review_auto_merge(ctx.to_sync(), review_id, !off, None)
+            .await
+            .map_err(|err| match off {
+                true => CliError::from(err),
+                false => CliError::from(err).hint(
+                    "Fix what the forge reported and retry, or merge the review on the forge without auto-merge",
+                ),
+            })?;
     }
 
     if let Some(out) = out.for_human() {
@@ -126,13 +132,12 @@ fn auto_merge_summary_lines(
     lines
 }
 
-/// Set the draftiness of or or multiple reviews.
 pub async fn set_draftiness(
     ctx: &mut Context,
     selector: Option<String>,
     draft: bool,
     out: &mut OutputChannel,
-) -> anyhow::Result<()> {
+) -> CliResult<()> {
     // Fail fast if no forge user is authenticated, before pushing or prompting.
     ensure_forge_authentication(ctx).await?;
 
@@ -149,7 +154,6 @@ pub async fn set_draftiness(
 
     // Iterate over the reviews and validate the state, before mutating.
     for review_id in review_ids {
-        // Fetch the latest information about the review
         let review = but_api::legacy::forge::get_review(ctx, review_id).ok();
 
         if let Some(review) = review {
@@ -246,14 +250,13 @@ pub async fn set_draftiness(
     Ok(())
 }
 
-/// Set the review template for the given project.
 pub fn set_review_template(
     ctx: &mut Context,
     template_path: Option<String>,
     out: &mut OutputChannel,
 ) -> anyhow::Result<()> {
     if let Some(path) = template_path {
-        let message = format!("Set review template path to: {}", &path);
+        let message = format!("Set review template path to: {path}");
         but_api::legacy::forge::set_review_template(ctx, Some(path))?;
         if let Some(out) = out.for_human() {
             writeln!(out, "{message}")?;
@@ -290,8 +293,8 @@ pub fn set_review_template(
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("Could not determine selected review template"))?
         };
-        let message = format!("Set review template path to: {}", &selected_template);
-        but_api::legacy::forge::set_review_template(ctx, Some(selected_template.clone()))?;
+        let message = format!("Set review template path to: {selected_template}");
+        but_api::legacy::forge::set_review_template(ctx, Some(selected_template))?;
         if let Some(out) = out.for_human() {
             writeln!(out, "{message}")?;
         }
@@ -300,12 +303,12 @@ pub fn set_review_template(
     Ok(())
 }
 
-/// Create a new forge review for a branch.
 /// If no branch is specified, prompts the user to select one.
-/// If there is only one branch without a an acco, asks for confirmation.
+/// If there is only one branch without a review, asks for confirmation.
 #[expect(clippy::too_many_arguments)]
 pub async fn create_review(
     ctx: &mut Context,
+    current_dir: &std::path::Path,
     branch: Option<String>,
     skip_force_push_protection: bool,
     with_force: bool,
@@ -314,7 +317,7 @@ pub async fn create_review(
     draft: bool,
     message: Option<ForgeReviewMessage>,
     out: &mut OutputChannel,
-) -> anyhow::Result<()> {
+) -> CliResult<CreateReviewOutcome> {
     // Fail fast if no forge user is authenticated, before pushing or prompting.
     ensure_forge_authentication(ctx).await?;
 
@@ -323,20 +326,14 @@ pub async fn create_review(
     let review_map = get_review_map_strict(ctx, Some(but_forge::CacheConfig::NoCache))?;
     let lanes = crate::legacy::workspace::applied_lanes(ctx)?;
 
-    // If branch is specified, resolve it
     let maybe_branch_names = if let Some(branch_id) = branch {
         Some(get_branch_names(&ctx.legacy_project, &branch_id)?)
     } else {
-        // Find branches without PRs
         let branches_without_prs = get_branches_without_prs(&review_map, &lanes)?;
 
         if branches_without_prs.is_empty() {
-            if let Some(out) = out.for_human() {
-                writeln!(out, "All branches already have reviews.")?;
-            }
-            return Ok(());
+            return Ok(CreateReviewOutcome::AllBranchesHaveReviews);
         } else if branches_without_prs.len() == 1 {
-            // If there's only one branch without a PR, ask for confirmation
             let branch_name = &branches_without_prs[0];
             let mut inout = out
                 .prepare_for_terminal_input()
@@ -349,16 +346,16 @@ pub async fn create_review(
             {
                 Some(vec![branch_name.clone()])
             } else {
-                return Ok(());
+                return Ok(CreateReviewOutcome::Declined);
             }
         } else {
-            // Multiple branches without PRs - let the prompt handle it
             None
         }
     };
 
-    handle_multiple_branches_in_workspace(
+    Ok(handle_multiple_branches_in_workspace(
         ctx,
+        current_dir,
         &review_map,
         &lanes,
         skip_force_push_protection,
@@ -370,16 +367,89 @@ pub async fn create_review(
         out,
         maybe_branch_names,
     )
-    .await
+    .await?)
+}
+
+#[must_use]
+pub enum CreateReviewOutcome {
+    AllBranchesHaveReviews,
+    /// The user declined to open a review on the only branch without one.
+    Declined,
+    NoBranchesSelected,
+    Published {
+        outcome: PublishReviewsOutcome,
+        /// Where `but` runs, which tells agent output which PR this session opened.
+        current_dir: std::path::PathBuf,
+    },
+}
+
+impl CliOutputHuman for CreateReviewOutcome {
+    fn on_human(
+        self,
+        out: &mut dyn WriteWithUtils,
+        agent: bool,
+        _theme: &'static Theme,
+    ) -> anyhow::Result<()> {
+        match self {
+            CreateReviewOutcome::AllBranchesHaveReviews => {
+                writeln!(out, "All branches already have reviews.")?;
+            }
+            CreateReviewOutcome::Declined => {}
+            CreateReviewOutcome::NoBranchesSelected => {
+                writeln!(
+                    out,
+                    "No branches selected for review publication. Aborting."
+                )?;
+            }
+            CreateReviewOutcome::Published {
+                outcome,
+                current_dir,
+            } => {
+                let pr_created_tag = agent
+                    .then(|| pr_created_tag_for(&current_dir, &outcome.published))
+                    .flatten();
+                display_review_publication_summary(outcome, out)?;
+                if let Some(tag) = pr_created_tag {
+                    writeln!(
+                        out,
+                        "\nClaude desktop counts this PR as opened by this session, which Auto-fix needs, when your reply contains:\n{tag}"
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl CliOutput for CreateReviewOutcome {
+    fn on_json(self) -> impl Serialize {
+        match self {
+            CreateReviewOutcome::Published { outcome, .. } => Some(outcome),
+            CreateReviewOutcome::AllBranchesHaveReviews
+            | CreateReviewOutcome::Declined
+            | CreateReviewOutcome::NoBranchesSelected => None,
+        }
+    }
 }
 
 /// Make sure that the account that is about to be used in this repository's forge is correctly authenticated.
-async fn ensure_forge_authentication(ctx: &mut Context) -> Result<(), anyhow::Error> {
+async fn ensure_forge_authentication(ctx: &mut Context) -> CliResult<()> {
     let (storage, forge_repo_info, preferred_forge_user) = {
         let remote_url = ctx
             .project_meta()?
-            .remote_url_with_fallback(&*ctx.repo.get()?)?;
-        let forge_repo_info = but_forge::derive_forge_repo_info(&remote_url);
+            .target_remote_url(&*ctx.repo.get()?)
+            .map_err(|err| {
+                bad_input(format!("{err:#}")).hint(
+                    "Run `but config push-remote <name>`, first adding the remote with `git remote add <name> <url>` if it is missing, then retry",
+                )
+            })?;
+        let forge_repo_info = but_forge::derive_forge_repo_info(
+            &remote_url,
+            ctx.legacy_project
+                .forge_override
+                .as_deref()
+                .and_then(but_forge::ForgeName::from_override_str),
+        );
         (
             but_forge_storage::Controller::from_path(but_path::app_data_dir()?),
             forge_repo_info,
@@ -388,43 +458,51 @@ async fn ensure_forge_authentication(ctx: &mut Context) -> Result<(), anyhow::Er
     };
 
     let forge_repo_info = forge_repo_info.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Unable to determine the forge for this project. Is target branch associated with a supported forge?"
+        bad_input(
+            "Unable to determine the forge for this project. Is target branch associated with a supported forge?",
+        )
+        .hint(
+            "If this is a self-hosted GitHub or GitLab, run `but config forge auth` in a terminal (an agent has to ask the user to run it). Otherwise, run `but push <branch>` and open the review on the forge's website",
         )
     })?;
 
-    let account_validity =
-        but_forge::check_forge_account_is_valid(preferred_forge_user, &forge_repo_info, &storage)
-            .await?;
-
     let forge_display_name = match forge_repo_info.forge {
         but_forge::ForgeName::Azure => {
-            anyhow::bail!("Azure is unsupported at the minute. Sorry 😞.");
+            return Err(bad_input("Azure is unsupported at the minute. Sorry 😞.")
+                .hint("Run `but push <branch>` and open the review on the Azure DevOps website")
+                .into());
+        }
+        but_forge::ForgeName::GitButler => {
+            return Err(
+                bad_input("GitButler Code doesn't support pull requests from `but` yet")
+                    .hint("Run `but push <branch>` and open the pull request on GitButler Code's website")
+                    .into(),
+            );
         }
         but_forge::ForgeName::GitHub => "GitHub",
         but_forge::ForgeName::GitLab => "GitLab",
         but_forge::ForgeName::Bitbucket => "Bitbucket",
     };
 
-    match account_validity {
-        but_forge::ForgeAccountValidity::Invalid => Err(anyhow::anyhow!(
-            "Known account is not correctly authenticated.\nRun '{}' to authenticate with {}.",
-            "but config forge auth",
-            forge_display_name
-        )),
-        but_forge::ForgeAccountValidity::NoCredentials => Err(anyhow::anyhow!(
-            "No authenticated forge users found.\nRun '{}' to authenticate with {}.",
-            "but config forge auth",
-            forge_display_name
-        )),
-        but_forge::ForgeAccountValidity::Valid => {
-            // All good, continue
-            Ok(())
+    let account_validity =
+        but_forge::check_forge_account_is_valid(preferred_forge_user, &forge_repo_info, &storage)
+            .await?;
+
+    let refusal = match account_validity {
+        // An unreachable forge reports `Invalid` too, as the credentials check can't tell them apart.
+        but_forge::ForgeAccountValidity::Invalid => {
+            "Known account is not correctly authenticated, or the forge can't be reached."
         }
-    }
+        but_forge::ForgeAccountValidity::NoCredentials => "No authenticated forge users found.",
+        but_forge::ForgeAccountValidity::Valid => return Ok(()),
+    };
+    Err(bad_input(refusal)
+        .hint(format!(
+            "Run `but config forge auth` in a terminal to authenticate with {forge_display_name}, then retry. It prompts for input, so an agent has to ask the user to run it"
+        ))
+        .into())
 }
 
-/// Get list of branch names that don't have PRs yet.
 fn get_branches_without_prs(
     review_map: &std::collections::HashMap<String, Vec<but_forge::ForgeReview>>,
     lanes: &[HeadInfoStack],
@@ -441,9 +519,7 @@ fn get_branches_without_prs(
             {
                 // This means that there are no associated reviews that are open, but that doesn't mean that there are
                 // no associated reviews.
-                // Check whether there's an associated forge review.
                 if branch.review_id.is_none() {
-                    // If there's no associated review, the append the branch
                     branches_without_prs.push(branch_name.to_owned());
                 }
             }
@@ -474,6 +550,7 @@ fn get_branch_names(project: &Project, branch_id: &str) -> anyhow::Result<Vec<St
 #[expect(clippy::too_many_arguments)]
 pub async fn handle_multiple_branches_in_workspace(
     ctx: &mut Context,
+    current_dir: &std::path::Path,
     review_map: &std::collections::HashMap<String, Vec<but_forge::ForgeReview>>,
     lanes: &[HeadInfoStack],
     skip_force_push_protection: bool,
@@ -484,7 +561,7 @@ pub async fn handle_multiple_branches_in_workspace(
     message: Option<&ForgeReviewMessage>,
     out: &mut OutputChannel,
     selected_branches: Option<Vec<String>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CreateReviewOutcome> {
     let mut overall_outcome = PublishReviewsOutcome {
         published: vec![],
         already_existing: vec![],
@@ -498,13 +575,7 @@ pub async fn handle_multiple_branches_in_workspace(
     };
 
     if selected_branches.is_empty() {
-        if let Some(out) = out.for_human() {
-            writeln!(
-                out,
-                "No branches selected for review publication. Aborting."
-            )?;
-        }
-        return Ok(());
+        return Ok(CreateReviewOutcome::NoBranchesSelected);
     }
     if let Some(outside) = selected_branches
         .iter()
@@ -546,16 +617,27 @@ pub async fn handle_multiple_branches_in_workspace(
         overall_outcome.review_sync.extend(outcome.review_sync);
     }
 
-    if let Some(out) = out.for_json() {
-        out.write_value(overall_outcome)?;
-    } else if let Some(out) = out.for_human() {
-        display_review_publication_summary(overall_outcome, out)?;
-    }
-
-    Ok(())
+    Ok(CreateReviewOutcome::Published {
+        outcome: overall_outcome,
+        current_dir: current_dir.to_owned(),
+    })
 }
 
-/// Prompt the user to select branches to publish.
+/// Claude desktop lets a session turn on Auto-fix only for a PR it saw the session open:
+/// one made with `gh pr create`, or one whose URL the agent's reply puts in this tag.
+/// The app accepts the tag only for the branch checked out in the session's folder, so this
+/// reads `HEAD` where `but` was invoked, not in the main worktree that `ctx` opens.
+fn pr_created_tag_for(
+    current_dir: &std::path::Path,
+    published: &[but_forge::ForgeReview],
+) -> Option<String> {
+    let head = gix::discover(current_dir).ok()?.head_name().ok()??;
+    let review = published
+        .iter()
+        .find(|review| head.shorten() == review.source_branch.as_bytes())?;
+    Some(format!("<pr-created>{}</pr-created>", review.html_url))
+}
+
 fn prompt_for_branch_selection(
     ctx: &Context,
     review_map: &std::collections::HashMap<String, Vec<but_forge::ForgeReview>>,
@@ -738,7 +820,6 @@ fn display_review_publication_summary(
     outcome: PublishReviewsOutcome,
     out: &mut dyn std::fmt::Write,
 ) -> std::fmt::Result {
-    // Show already existing PRs
     if !outcome.already_existing.is_empty() {
         writeln!(out)?;
         for review in &outcome.already_existing {
@@ -746,7 +827,6 @@ fn display_review_publication_summary(
         }
     }
 
-    // Show newly published PRs
     if !outcome.published.is_empty() {
         writeln!(out)?;
         for review in &outcome.published {
@@ -767,7 +847,6 @@ fn display_review_publication_summary(
     Ok(())
 }
 
-/// Print information about a newly created PR
 fn print_new_pr_info(
     review: &but_forge::ForgeReview,
     out: &mut dyn std::fmt::Write,
@@ -781,7 +860,7 @@ fn print_new_pr_info(
         t.pr_number.paint(&review.unit_symbol),
         t.pr_number.paint(review.number.to_string())
     )?;
-    writeln!(out, "  {} {}", t.hint.paint("Title:"), &review.title)?;
+    writeln!(out, "  {} {}", t.hint.paint("Title:"), review.title)?;
     writeln!(
         out,
         "  {} {}",
@@ -801,7 +880,6 @@ fn print_new_pr_info(
     Ok(())
 }
 
-/// Print information about an existing PR
 fn print_existing_pr_info(
     review: &but_forge::ForgeReview,
     out: &mut dyn std::fmt::Write,
@@ -827,7 +905,7 @@ fn print_existing_pr_info(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PublishReviewsOutcome {
+pub struct PublishReviewsOutcome {
     published: Vec<but_forge::ForgeReview>,
     already_existing: Vec<but_forge::ForgeReview>,
     review_sync: Vec<but_forge::ReviewSyncOutcome>,
@@ -865,15 +943,15 @@ pub struct ForgeReviewMessage {
     pub body: String,
 }
 
-pub fn parse_review_message(content: &str) -> anyhow::Result<ForgeReviewMessage> {
+/// Split `content` into a title, its first line, and a body. Return `None` if the first line is blank,
+/// which is how the review editor's user aborts.
+pub fn parse_review_message(content: &str) -> Option<ForgeReviewMessage> {
     let mut lines = content.lines();
-    let title = lines.next().unwrap_or("").trim().to_string();
-
+    let title = lines.next()?.trim().to_string();
     if title.is_empty() {
-        anyhow::bail!("Aborting due to empty PR title");
+        return None;
     }
 
-    // Skip any leading blank lines after the title, then collect the rest as description
     let body = lines
         .skip_while(|l| l.trim().is_empty())
         .collect::<Vec<_>>()
@@ -881,7 +959,7 @@ pub fn parse_review_message(content: &str) -> anyhow::Result<ForgeReviewMessage>
         .trim()
         .to_string();
 
-    Ok(ForgeReviewMessage { title, body })
+    Some(ForgeReviewMessage { title, body })
 }
 
 async fn publish_review_for_branch(
@@ -894,8 +972,6 @@ async fn publish_review_for_branch(
     out: &mut OutputChannel,
 ) -> anyhow::Result<PublishReviewResult> {
     let branch_name = branch.name.as_str();
-    // Check if a review already exists for the branch.
-    // If it does, skip publishing a new review.
     let existing_reviews = review_map.get(branch_name);
     if let Some(reviews) = existing_reviews
         && !reviews.is_empty()
@@ -940,7 +1016,6 @@ async fn publish_review_for_branch(
         get_pr_title_and_body_from_editor(ctx, commit.as_ref(), branch_name)?
     };
 
-    // Publish a new review for the branch
     but_api::legacy::forge::publish_review_only(
         ctx.to_sync(),
         branch.reference.clone(),
@@ -987,7 +1062,6 @@ fn get_pr_title_and_body_from_editor(
 ) -> anyhow::Result<(String, String)> {
     let mut template = String::new();
 
-    // Use the first line of the commit message as the default title if available
     let commit_title =
         extract_commit_title(commit).map(|s| s.replace(HTML_COMMENT_START_MARKER, "<\\!--"));
     if let Some(commit_title) = commit_title {
@@ -997,10 +1071,8 @@ fn get_pr_title_and_body_from_editor(
     }
     template.push('\n');
 
-    // Add a blank line between title and description
     template.push('\n');
 
-    // Use commit description as template if available
     let commit_description = extract_commit_description(commit);
     if let Some(commit_description) = commit_description {
         for line in commit_description {
@@ -1012,7 +1084,6 @@ fn get_pr_title_and_body_from_editor(
         template.push('\n');
     }
 
-    // Add instructions as comments
     let mut instructions = format!(
         "
 # Creating PR for branch: {branch_name}
@@ -1025,16 +1096,13 @@ HTML comments are stripped before submit.
 "
     );
 
-    // Add commit list with modified files as context
     if let Ok(commits) = branch_commits(ctx, branch_name)
         && !commits.is_empty()
     {
         instructions.push_str("\n# Commits in this PR:\n\n");
 
-        // Get the repository for diff operations
         let repo = ctx.repo.get()?;
         for (idx, commit) in commits.iter().enumerate() {
-            // Extract commit title (first line of message)
             let commit_title = commit
                 .message
                 .lines()
@@ -1051,7 +1119,6 @@ HTML comments are stripped before submit.
                 commit.id.to_hex_with_len(7)
             ));
 
-            // Get the files modified in this commit
             let parent = commit.parent_ids.first().copied();
             if let Ok(changes) = but_core::diff::TreeChanges::from_trees(&repo, parent, commit.id) {
                 let mut changes: Vec<String> = changes
@@ -1087,11 +1154,11 @@ HTML comments are stripped before submit.
 
     let content = get_text::from_editor("pr_message", &template, ".md")?.to_string();
     let content_without_comments = get_text::strip_html_comments(&content);
-    let message = parse_review_message(&content_without_comments)?;
+    let message = parse_review_message(&content_without_comments)
+        .context("Aborting due to empty PR title")?;
     Ok((message.title, message.body))
 }
 
-/// Extract the commit description (body) from the commit message, skipping the first line (title).
 fn extract_commit_description(commit: Option<&Commit>) -> Option<Vec<&str>> {
     commit.and_then(|c| {
         let desc_lines: Vec<&str> = c
@@ -1109,19 +1176,20 @@ fn extract_commit_description(commit: Option<&Commit>) -> Option<Vec<&str>> {
     })
 }
 
-/// Extract the commit title from the commit message (first line).
 fn extract_commit_title(commit: Option<&Commit>) -> Option<&str> {
     commit.and_then(|c| c.message.lines().next().and_then(|l| l.to_str().ok()))
 }
 
-/// Get a mapping from branch names to their associated reviews.
 #[instrument(skip(ctx))]
 pub fn get_review_map(
     ctx: &Context,
     cache_config: Option<but_forge::CacheConfig>,
 ) -> anyhow::Result<std::collections::HashMap<String, Vec<but_forge::ForgeReview>>> {
     let reviews = but_api::legacy::forge::list_reviews(ctx, cache_config).unwrap_or_default();
-    Ok(review_map_from_reviews(reviews))
+    Ok(review_map_from_reviews(but_forge::without_unrelated_forks(
+        reviews,
+        &*ctx.repo.get()?,
+    )))
 }
 
 fn get_review_map_strict(
@@ -1129,7 +1197,10 @@ fn get_review_map_strict(
     cache_config: Option<but_forge::CacheConfig>,
 ) -> anyhow::Result<std::collections::HashMap<String, Vec<but_forge::ForgeReview>>> {
     let reviews = but_api::legacy::forge::list_reviews(ctx, cache_config)?;
-    Ok(review_map_from_reviews(reviews))
+    Ok(review_map_from_reviews(but_forge::without_unrelated_forks(
+        reviews,
+        &*ctx.repo.get()?,
+    )))
 }
 
 fn review_map_from_reviews(
@@ -1182,13 +1253,11 @@ fn resolve_review_selection(
     let id_map = IdMap::legacy_new_from_context(ctx)?;
     let lanes = crate::legacy::workspace::applied_lanes(ctx)?;
     let target_review_ids = if let Some(selector) = selector {
-        // Extract any review IDs that match any of the associated reviews in the workspace.
         let review_ids = lanes
             .iter()
             .flat_map(review_ids_for_stack)
             .collect::<Vec<_>>();
         let mut unique_review_ids = parse_review_ids(&selector, &review_ids);
-        // Concatenate any review IDs associated with the selected CliIDs.
         unique_review_ids.extend(resolve_cli_ids_to_review_ids(
             ctx, &selector, &lanes, &id_map,
         ));
@@ -1303,6 +1372,25 @@ mod tests {
             "a worktree review is selectable by number"
         );
         assert_eq!(select("B,W")?, [2, 3], "stack and worktree branches mix");
+        Ok(())
+    }
+
+    #[test]
+    fn pr_created_tag_follows_the_invoking_worktree_head() -> anyhow::Result<()> {
+        let (_ctx, tmp) =
+            crate::legacy::workspace::tests::context_with_worktree_on_reviewed_stack()?;
+        let published = [forge_review("W")];
+
+        assert_eq!(
+            pr_created_tag_for(&tmp.path().join("worktrees").join("W"), &published).as_deref(),
+            Some("<pr-created>https://example.com/review/1</pr-created>"),
+            "the linked worktree has W checked out, so its new PR gets the tag"
+        );
+        assert_eq!(
+            pr_created_tag_for(tmp.path(), &published),
+            None,
+            "the main worktree has another branch checked out"
+        );
         Ok(())
     }
 
@@ -1506,24 +1594,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_pr_message_empty_string_fails() {
-        let result = parse_review_message("");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty PR title"));
+    fn parse_pr_message_empty_string_has_no_title() {
+        assert!(parse_review_message("").is_none());
     }
 
     #[test]
-    fn parse_pr_message_whitespace_only_fails() {
-        let result = parse_review_message("   \n\n   ");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty PR title"));
+    fn parse_pr_message_whitespace_only_has_no_title() {
+        assert!(parse_review_message("   \n\n   ").is_none());
     }
 
     #[test]
-    fn parse_pr_message_blank_first_line_fails() {
-        let result = parse_review_message("\nActual title on second line");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty PR title"));
+    fn parse_pr_message_blank_first_line_has_no_title() {
+        assert!(parse_review_message("\nActual title on second line").is_none());
     }
 
     #[test]

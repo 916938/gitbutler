@@ -1,5 +1,3 @@
-//! Enumeration of linked worktrees and their archived state.
-//!
 //! This is the single home of linked-worktree state: every reader - listings, and
 //! graph building when it seeds extra traversal heads - must go through
 //! [`worktrees_with_state()`] so archived worktrees are excluded consistently, and
@@ -12,12 +10,10 @@ use gix::bstr::{BStr, BString};
 
 use crate::DbHandle;
 
-/// Whether `ref_name` is a workspace ref, kept in sync with
-/// `but_core::is_workspace_ref_name()` by hand: depending on but-core here would
-/// pull libgit2 into every crate that reaches but-db, for two string comparisons.
+/// Kept in sync with `but_core::is_workspace_ref_name()` by hand: depending on but-core here would
+/// pull libgit2 into every crate that reaches but-db, for one string comparison.
 fn is_workspace_ref(ref_name: &gix::refs::FullName) -> bool {
-    let name = ref_name.as_bstr();
-    name == "refs/heads/gitbutler/workspace" || name == "refs/heads/gitbutler/integration"
+    ref_name.as_bstr() == "refs/heads/gitbutler/workspace"
 }
 
 /// A linked worktree whose checkout exists on disk, with its archived state.
@@ -28,7 +24,6 @@ fn is_workspace_ref(ref_name: &gix::refs::FullName) -> bool {
 pub struct WorktreeEntry {
     /// Whether the worktree is hidden from listings and graph traversal.
     pub archived: bool,
-    /// The worktree checkout directory.
     pub path: PathBuf,
     /// The stable worktree name, i.e. the directory name under `$GIT_COMMON_DIR/worktrees/`,
     /// which survives `git worktree move`.
@@ -91,8 +86,6 @@ pub fn worktree_head(repo: &gix::Repository, name: &BStr) -> Result<Option<Workt
     }
 }
 
-/// List all usable linked worktrees of `repo` with their archived state.
-///
 /// The first-ever read *adopts*: every worktree already on disk (whether usable or
 /// not) is archived, assuming it predates GitButler's worktree support, and an
 /// explicit marker records that adoption ran even when no worktree exists yet. A
@@ -196,7 +189,7 @@ fn reconcile_archived(db: &mut DbHandle, names: &[BString]) -> Result<BTreeSet<B
         // An immediate transaction avoids the un-retried `SQLITE_BUSY_SNAPSHOT` a
         // deferred read-then-write would fail with when racing another writer, and
         // the marker is re-checked under the write lock as several processes may
-        // adopt concurrently right after the feature flag is enabled.
+        // adopt concurrently on their first read.
         let mut trans = db.immediate_transaction()?;
         if !trans.worktree_meta().adoption_ran()? {
             trans.worktree_meta_mut().mark_adopted()?;

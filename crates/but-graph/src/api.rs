@@ -9,7 +9,7 @@ use petgraph::{
     Direction,
     prelude::EdgeRef,
     stable_graph::EdgeReference,
-    visit::{IntoEdgeReferences, NodeIndexable, Visitable},
+    visit::{IntoEdgeReferences, NodeIndexable},
 };
 
 use crate::{
@@ -22,10 +22,7 @@ use crate::{
 
 boolean_enums::gen_boolean_enum!(pub FirstParent);
 
-/// Mutation
 impl Graph {
-    /// Insert `segment` to the graph so that it's not connected to any other segment, and return its index.
-    ///
     /// Note that as a side effect, the [entrypoint](Self::entrypoint()) will also be set if it's not
     /// set yet.
     pub fn insert_segment_set_entrypoint(&mut self, segment: Segment) -> SegmentIndex {
@@ -41,7 +38,6 @@ impl Graph {
         index
     }
 
-    /// Insert `segment` to the graph so that it's not connected to any other segment, and return its index.
     pub fn insert_segment(&mut self, segment: Segment) -> SegmentIndex {
         let index = self.inner.add_node(segment);
         self.inner[index].id = index;
@@ -62,8 +58,6 @@ impl Graph {
     /// `parent_order` is the 0-based position of `dst_commit_id` among the source commit's
     /// parents. For a merge commit with parents `[A, B]`, the edge to `A` must use `0`,
     /// and the edge to `B` must use `1`, even if traversal discovers `B` before `A`.
-    ///
-    /// Return the newly added segment.
     pub fn connect_new_segment(
         &mut self,
         src: SegmentIndex,
@@ -88,10 +82,7 @@ impl Graph {
     }
 }
 
-/// Merge-base computation
 impl Graph {
-    /// Determine the ancestry relationship of `a` relative to `b`.
-    ///
     /// `Ancestor` means `a` is reachable from `b` when walking towards history,
     /// `Descendant` means the inverse, and `Diverged` means they share history
     /// but neither is ancestor of the other.
@@ -108,7 +99,6 @@ impl Graph {
         }
     }
 
-    /// Like [`Self::relation_between()`], but takes object ids of commits.
     pub fn relation_between_by_commit_id(
         &self,
         commit_a: gix::ObjectId,
@@ -142,8 +132,6 @@ impl Graph {
         result.first().copied()
     }
 
-    /// Like [`Self::find_merge_base()`], but takes object ids of commits,
-    /// returning the id of the commit that is the merge-base.
     pub fn find_merge_base_by_commit_id(
         &self,
         commit_a: gix::ObjectId,
@@ -308,8 +296,6 @@ impl Graph {
         *sequence += 1;
     }
 
-    /// Return the parent segments that should be traversed from `segment_id`.
-    ///
     /// In all-parent mode this returns every outgoing segment edge. In first-parent mode it
     /// returns only edges whose destination is the source commit's first parent.
     fn parent_segments_for_reachable_difference(
@@ -396,8 +382,6 @@ impl Graph {
         segments.try_fold(first, |base, segment| self.find_merge_base(base, segment))
     }
 
-    /// Like [`Self::find_merge_base_octopus()`], but works with object ids of `commits`,
-    /// returning the id of the commit that is the merge-base.
     pub fn find_merge_base_octopus_by_commit_id(
         &self,
         commits: impl IntoIterator<Item = gix::ObjectId>,
@@ -504,12 +488,10 @@ impl Graph {
         // (i.e. closer to tips) to be processed first.
         let mut queue: BinaryHeap<(Reverse<usize>, SegmentIndex)> = BinaryHeap::new();
 
-        // Initialize first segment
         let first_flags = flags.get_mut(first);
         *first_flags |= SegmentFlags::SEGMENT1;
         queue.push((Reverse(self[first].generation), first));
 
-        // Initialize second segment
         let second_flags = flags.get_mut(second);
         *second_flags |= SegmentFlags::SEGMENT2;
         queue.push((Reverse(self[second].generation), second));
@@ -569,7 +551,6 @@ impl Graph {
             return Vec::new();
         }
 
-        // Clear flags for the redundancy check
         flags.clear();
 
         let sorted_segments = {
@@ -584,7 +565,6 @@ impl Graph {
 
         let mut walk_start: Vec<(SegmentIndex, usize)> = Vec::with_capacity(segments.len());
 
-        // Mark all input segments with RESULT and collect their parents for walking
         for (sidx, _) in segments {
             flags.get_mut(*sidx).insert(SegmentFlags::RESULT);
 
@@ -628,7 +608,6 @@ impl Graph {
                         break;
                     }
 
-                    // Update min_gen if we just removed the minimum
                     if current_id == sorted_segments[min_gen_pos].0 {
                         while min_gen_pos < segments.len() - 1
                             && flags
@@ -641,7 +620,6 @@ impl Graph {
                     }
                 }
 
-                // Skip if generation is below minimum
                 if current_gen > min_gen {
                     stack.pop();
                     continue;
@@ -666,7 +644,6 @@ impl Graph {
             }
         }
 
-        // Return segments that are not marked as STALE
         segments
             .iter()
             .filter_map(|(sidx, _)| {
@@ -676,7 +653,6 @@ impl Graph {
     }
 }
 
-/// # Points of interest
 impl Graph {
     /// Return the entry-point commit of this graph if it is a
     /// [managed](is_managed_workspace_by_message) workspace commit.
@@ -697,9 +673,6 @@ impl Graph {
         Ok(is_managed_workspace_by_message(message).then_some(ec))
     }
 
-    /// Return the entry-point of the graph as configured during traversal.
-    /// It's useful for when one wants to know which commit was used to discover the entire graph.
-    ///
     /// Note that this method only fails if the entrypoint wasn't set correctly due to a bug.
     pub fn entrypoint(&self) -> anyhow::Result<EntryPoint<'_>> {
         let (segment_index, commit) = self
@@ -735,7 +708,6 @@ impl Graph {
     }
 }
 
-/// Query
 /// ‼️Useful only if one knows the graph traversal was started where one expects, or else the graph may be partial.
 impl Graph {
     /// Return the `(segment, commit)` that is either named `name`,
@@ -766,8 +738,6 @@ impl Graph {
         })
     }
 
-    /// Return the segment that is named `name`,
-    ///
     /// Note that tags may or may not be included in the graph, depending on how it was created.
     ///
     /// ### Performance
@@ -860,20 +830,6 @@ impl Graph {
         self.hard_limit_hit = true;
     }
 
-    /// Lookup the segment of `sidx` and then find its sibling segment, if it has one.
-    pub fn lookup_sibling_segment(&self, sidx: SegmentIndex) -> Option<&Segment> {
-        self.inner.node_weight(sidx)?.sibling_segment(self)
-    }
-
-    /// Lookup the segment of `sidx` and then find its remote tracking branch segment, if it has one.
-    pub fn lookup_remote_tracking_branch_segment(&self, sidx: SegmentIndex) -> Option<&Segment> {
-        self.inner.node_weight(
-            self.inner
-                .node_weight(sidx)?
-                .remote_tracking_branch_segment_id?,
-        )
-    }
-
     /// Return all segments which have no other segments *above* them, making them tips.
     ///
     /// Typically, there is only one, but there *can* be multiple technically.
@@ -924,8 +880,6 @@ impl Graph {
             })
     }
 
-    /// Return the condition under which traversal stopped at `sidx`,
-    /// or `None` if the traversal didn't stop.
     pub fn stop_condition(&self, sidx: SegmentIndex) -> Option<StopCondition> {
         if self
             .inner
@@ -949,17 +903,14 @@ impl Graph {
         (!condition.is_empty()).then_some(condition)
     }
 
-    /// Return the number of segments stored within the graph.
     pub fn num_segments(&self) -> usize {
         self.inner.node_count()
     }
 
-    /// Return the number of edges that are connecting segments.
     pub fn num_connections(&self) -> usize {
         self.inner.edge_count()
     }
 
-    /// Return the number of commits in all segments.
     pub fn num_commits(&self) -> usize {
         self.inner
             .node_indices()
@@ -967,7 +918,6 @@ impl Graph {
             .sum::<usize>()
     }
 
-    /// Return an iterator over all indices of segments in the graph.
     pub fn segments(&self) -> impl Iterator<Item = SegmentIndex> {
         self.inner.node_indices()
     }
@@ -999,18 +949,6 @@ impl Graph {
     }
 }
 
-/// Query
-///
-/// The query relies on the segmentation of the graph being as advertised, something we assure as part
-/// of the initial creation.
-impl Graph {
-    /// Return a utility to perform topological walks on the graph.
-    pub fn topo_walk(&self) -> petgraph::visit::Topo<SegmentIndex, <PetGraph as Visitable>::Map> {
-        petgraph::visit::Topo::new(&self.inner)
-    }
-}
-
-/// Validation
 impl Graph {
     /// Validate the graph for consistency and fail loudly when an issue was found.
     /// Use this before using the graph for anything serious, but particularly in testing.
@@ -1035,9 +973,6 @@ impl Graph {
                     segment,
                     outgoing,
                 )?;
-            }
-            for tip in &self.traversal_tips {
-                self.check_traversal_tip_points_to_first_commit(tip)?;
             }
         }
         for edge in self.inner.edge_references() {
@@ -1089,11 +1024,6 @@ impl Graph {
                     .flat_map(Result::err),
                 );
             }
-            out.extend(
-                self.traversal_tips
-                    .iter()
-                    .filter_map(|tip| self.check_traversal_tip_points_to_first_commit(tip).err()),
-            );
         }
         out.extend(
             self.inner
@@ -1232,62 +1162,6 @@ impl Graph {
         Ok(())
     }
 
-    /// A retained traversal tip must resolve to its first commit.
-    ///
-    /// If the segment named by the tip is empty, following its single outgoing
-    /// edge chain must reach a non-empty segment whose first commit is the tip
-    /// id. This validates the final-graph form of the initial tip-segment
-    /// invariant.
-    fn check_traversal_tip_points_to_first_commit(
-        &self,
-        tip: &crate::init::Tip,
-    ) -> anyhow::Result<()> {
-        if let Ok(segment_owning_tip_id) = self.segment_by_commit_id(tip.id) {
-            ensure!(
-                segment_owning_tip_id.commit_index_of(tip.id) == Some(0),
-                "{tip:?}: tip segment {segment_id:?} must contain the tip id as its first commit",
-                segment_id = segment_owning_tip_id.id
-            );
-            return Ok(());
-        }
-
-        let Some(ref_name) = tip.ref_name.as_ref() else {
-            bail!(
-                "{tip:?}: tip id is not owned by any segment, but it must as no segment was found by commit-id"
-            );
-        };
-        let segment = self
-            .segment_by_ref_name(ref_name.as_ref())
-            .with_context(|| format!("{tip:?}: tip ref {ref_name} is not owned by any segment"))?;
-        ensure!(
-            segment.commits.is_empty(),
-            "{tip:?}: named tip segment {segment_id:?} must be empty if it does not own the tip id",
-            segment_id = segment.id
-        );
-        let (commit, owner_segment_index) = self
-            .resolve_to_unambiguously_pointed_to_commit(segment.id)
-            .with_context(|| {
-                format!(
-                    "{tip:?}: empty tip segment {segment_id:?} must resolve through one outgoing path to a commit",
-                    segment_id = segment.id
-                )
-            })?;
-        ensure!(
-            commit.id == tip.id,
-            "{tip:?}: empty tip segment {segment_id:?} resolves to {actual}, not {expected}",
-            segment_id = segment.id,
-            actual = commit.id,
-            expected = tip.id
-        );
-        // Extra-check - this invariant is also enforced by `resolve_to_unambiguously_pointed_to_commit()`.
-        ensure!(
-            self[owner_segment_index].commit_index_of(tip.id) == Some(0),
-            "{tip:?}: resolved tip owner {owner_segment_index:?} must contain the tip id as its first commit"
-        );
-        Ok(())
-    }
-
-    /// Fail with an error if the `edge` isn't consistent.
     pub(crate) fn check_edge(
         graph: &PetGraph,
         edge: EdgeReference<'_, Edge>,

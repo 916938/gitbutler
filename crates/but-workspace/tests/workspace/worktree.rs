@@ -13,7 +13,9 @@ use crate::ref_info::with_workspace_commit::utils::{
 
 fn project_meta(repo: &gix::Repository) -> Result<ProjectMeta> {
     Ok(ProjectMeta {
-        target_ref: Some("refs/remotes/origin/A".try_into()?),
+        target_ref: Some(but_core::ref_metadata::LocalRefName::new(
+            "refs/heads/A".try_into()?,
+        )?),
         target_commit_id: Some(repo.rev_parse_single("main")?.detach()),
         push_remote: None,
     })
@@ -296,7 +298,7 @@ fn make_index_conflict(repo: &gix::Repository) -> Result<()> {
 fn upstream_conflict_fixture() -> Result<(
     but_testsupport::gix_testtools::tempfile::TempDir,
     gix::Repository,
-    but_meta::VirtualBranchesTomlMetadata,
+    but_meta::VirtualBranchesMetadata,
     String,
     but_db::DbHandle,
 )> {
@@ -309,11 +311,12 @@ fn upstream_conflict_fixture() -> Result<(
 
 fn workspace_for_stack(
     repo: &gix::Repository,
-    meta: &but_meta::VirtualBranchesTomlMetadata,
+    meta: &but_meta::VirtualBranchesMetadata,
     db: &mut but_db::DbHandle,
 ) -> Result<but_graph::Workspace> {
-    let ws = but_graph::Graph::from_head(repo, meta, project_meta(repo)?, db, Options::limited())?
-        .into_workspace()?;
+    let ws =
+        but_testsupport::graph_from_head(repo, meta, project_meta(repo)?, db, Options::limited())?
+            .into_workspace()?;
     Ok(ws)
 }
 

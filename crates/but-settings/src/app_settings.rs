@@ -14,13 +14,30 @@ pub struct TelemetrySettings {
     pub migrated_from_legacy: bool,
 }
 
-/// Access utilities
 impl TelemetrySettings {
-    /// Return the distinct ID if reporting is enabled, and if it is set.
     pub fn distinct_id_if_enabled(&self) -> Option<String> {
         self.app_metrics_enabled
             .then(|| self.app_distinct_id.clone())
             .flatten()
+    }
+
+    /// The ID metrics are sent under: the stored one, or else one derived from the machine,
+    /// which every app on it that hasn't stored one shares.
+    pub fn distinct_id(&self) -> String {
+        self.app_distinct_id
+            .clone()
+            .unwrap_or_else(machine_distinct_id)
+    }
+}
+
+fn machine_distinct_id() -> String {
+    if let Ok(id) = machine_uid::get() {
+        format!(
+            "machine_{:x}",
+            <sha2::Sha256 as sha2::Digest>::digest(format!("{}{}", id, "gitbutler").as_bytes())
+        )
+    } else {
+        "anonymous".to_string()
     }
 }
 but_schemars::register_sdk_type!(TelemetrySettings);
@@ -46,8 +63,16 @@ pub struct FeatureFlags {
     pub write_commit_evolution: bool,
     /// Show the experimental file browser in the TUI.
     pub tui_file_browser: bool,
-    /// Enable experimental worktree manipulation support.
-    pub worktree_manipulation: bool,
+    /// Open the experimental native client (GPUI) instead of the web app when GitButler
+    /// starts, on macOS builds that include it.
+    pub gpui: bool,
+    /// In the native client (GPUI), the single file diff: show only the selected file of a
+    /// diff, filling the pane, rather than every file one after another.
+    pub gpui_single_file_diff: bool,
+    /// In the native client (GPUI), show the brief about a branch on a tab of its page. Every few
+    /// minutes, open projects tell GitButler's server their addresses and their newest branches'
+    /// names and commits' ids.
+    pub gpui_briefs: bool,
 }
 but_schemars::register_sdk_type!(FeatureFlags);
 
@@ -68,24 +93,6 @@ pub struct Fetch {
     pub auto_fetch_interval_minutes: isize,
 }
 but_schemars::register_sdk_type!(Fetch);
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct Claude {
-    /// Path to the Claude Code executable. Defaults to "claude" if not set.
-    pub executable: String,
-    /// Whether to show notifications when Claude Code finishes.
-    pub notify_on_completion: bool,
-    /// Whether to show notifications when Claude Code needs permission.
-    pub notify_on_permission_request: bool,
-    /// Whether to dangerously allow all permissions without prompting.
-    pub dangerously_allow_all_permissions: bool,
-    /// Whether to automatically commit changes and rename branches after completion.
-    pub auto_commit_after_completion: bool,
-    /// Whether to use the configured model in .claude/settings.json instead of passing --model.
-    pub use_configured_model: bool,
-}
-but_schemars::register_sdk_type!(Claude);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]

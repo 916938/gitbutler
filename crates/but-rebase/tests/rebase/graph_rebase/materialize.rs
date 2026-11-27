@@ -18,15 +18,11 @@ fn worktree_fixture(
 ) -> Result<(
     gix::Repository,
     tempfile::TempDir,
-    std::mem::ManuallyDrop<but_meta::VirtualBranchesTomlMetadata>,
+    std::mem::ManuallyDrop<but_meta::VirtualBranchesMetadata>,
     but_db::DbHandle,
 )> {
     let (repo, tmp) = but_testsupport::writable_scenario_slow(name);
-    let meta = but_meta::VirtualBranchesTomlMetadata::from_path(
-        repo.path()
-            .join(".git")
-            .join("should-never-be-written.toml"),
-    )?;
+    let meta = but_meta::VirtualBranchesMetadata::from_path(repo.path().join(".git"))?;
     // Adoption already ran, so the fixture's worktrees count as active.
     let mut db = but_testsupport::project_db(&repo)?;
     db.worktree_meta_mut().mark_adopted()?;
@@ -43,7 +39,7 @@ fn graph_with_worktrees(
         worktrees: true,
         ..standard_options()
     };
-    Graph::from_head(repo, meta, Default::default(), db, options)
+    but_testsupport::graph_from_head(repo, meta, Default::default(), db, options)
 }
 
 fn linked_repo(repo: &gix::Repository, name: &str) -> Result<gix::Repository> {
@@ -84,7 +80,7 @@ fn materialize_removes_dropped_commit_changes_from_worktree() -> Result<()> {
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -106,7 +102,7 @@ fn materialize_removes_dropped_commit_changes_from_worktree() -> Result<()> {
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
     └── 🏁·35b8235 (⌂)
@@ -158,7 +154,7 @@ fn materialize_checkout_allows_current_head_to_be_replaced_with_none() -> Result
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -182,7 +178,7 @@ fn materialize_checkout_allows_current_head_to_be_replaced_with_none() -> Result
         &overlayed,
         snapbox::str![[r#"
 
-└── ►:0[0]:anon:
+└── ►[0]:anon:
     ├── 👉·a96434e (⌂)
     ├── ·d591dfe (⌂)
     └── 🏁·35b8235 (⌂)
@@ -234,7 +230,7 @@ fn materialize_without_checkout_preserves_dropped_commit_changes_in_worktree() -
 "#]]
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -256,7 +252,7 @@ fn materialize_without_checkout_preserves_dropped_commit_changes_in_worktree() -
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
     └── 🏁·35b8235 (⌂)
@@ -300,7 +296,7 @@ fn both_methods_update_references_identically() -> Result<()> {
     let (ref_after_materialize, overlayed_materialize) = {
         let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
 
-        let graph = Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &*meta,
             Default::default(),
@@ -327,7 +323,7 @@ fn both_methods_update_references_identically() -> Result<()> {
     let (ref_after_materialize_without_checkout, overlayed_without_checkout) = {
         let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
 
-        let graph = Graph::from_head(
+        let graph = but_testsupport::graph_from_head(
             &repo,
             &*meta,
             Default::default(),
@@ -354,7 +350,7 @@ fn both_methods_update_references_identically() -> Result<()> {
         &overlayed_materialize,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
     └── 🏁·35b8235 (⌂)
@@ -383,7 +379,7 @@ fn materialize_repoints_head_when_checkout_reference_is_replaced() -> Result<()>
     let replacement_ref = gix::refs::FullName::try_from("refs/heads/replacement")?;
     let head_before = repo.rev_parse_single("HEAD")?.detach();
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -405,7 +401,7 @@ fn materialize_repoints_head_when_checkout_reference_is_replaced() -> Result<()>
         &overlayed,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:replacement[🌳]
+└── 👉►[0]:replacement[🌳]
     ├── ·120e3a9 (⌂)
     ├── ·a96434e (⌂)
     ├── ·d591dfe (⌂)
@@ -445,7 +441,7 @@ fn materialize_without_checkout_does_not_repoint_head_when_checkout_reference_is
     let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
     let replacement_ref = gix::refs::FullName::try_from("refs/heads/replacement")?;
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -506,7 +502,7 @@ fn materialize_keeps_immutable_refs_unchanged_while_updating_local_refs() -> Res
         .raw()
     );
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -555,7 +551,7 @@ fn materialize_does_not_delete_immutable_refs_removed_from_graph() -> Result<()>
     let main_ref = gix::refs::FullName::try_from("refs/heads/main")?;
     let main_before = repo.rev_parse_single("main")?.detach();
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         target_meta(&repo),
@@ -669,7 +665,7 @@ fn visible_attached_and_detached_worktrees_follow_a_rewritten_commit() -> Result
 }
 
 #[test]
-fn references_checked_out_in_linked_worktrees_are_not_deleted() -> Result<()> {
+fn a_branch_checked_out_in_a_worktree_the_edit_does_not_move_is_not_deleted() -> Result<()> {
     let (repo, _tmpdir, mut meta, mut db) = worktree_fixture("worktree-checkout-heads")?;
     let middle = repo.rev_parse_single("middle")?.detach();
     repo.reference(
@@ -679,7 +675,7 @@ fn references_checked_out_in_linked_worktrees_are_not_deleted() -> Result<()> {
         "test setup",
     )?;
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -693,15 +689,22 @@ fn references_checked_out_in_linked_worktrees_are_not_deleted() -> Result<()> {
         let selector = editor.select_reference(refname.try_into()?)?;
         editor.replace_with_none(selector)?;
     }
-    editor.rebase()?.materialize(Default::default())?;
+    let err = editor
+        .rebase()?
+        .materialize(Default::default())
+        .expect_err("the worktree on middle isn't visible, so its HEAD can't move off it");
 
     assert!(
-        repo.try_find_reference("middle")?.is_some(),
-        "a checked-out branch must not be deleted, even when the worktree is not visible"
+        err.to_string().contains("checked out"),
+        "unexpected error: {err}"
     );
     assert!(
-        repo.try_find_reference("doomed")?.is_none(),
-        "an otherwise-identical unchecked-out branch is deleted"
+        repo.try_find_reference("middle")?.is_some(),
+        "the checked-out branch stays"
+    );
+    assert!(
+        repo.try_find_reference("doomed")?.is_some(),
+        "a refused edit deletes nothing"
     );
     Ok(())
 }
@@ -782,6 +785,30 @@ fn a_worktree_checks_out_what_its_checkout_is_set_to() -> Result<()> {
             "the branch the worktree left stays where it was"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn a_worktree_head_follows_its_checkout() -> Result<()> {
+    let (repo, _tmpdir, mut meta, mut db) = worktree_fixture("worktree-checkout-heads")?;
+    let base = repo.rev_parse_single("middle~1")?.detach();
+    let graph = graph_with_worktrees(&repo, &*meta, &mut db)?.validated()?;
+    let mut ws = graph.into_workspace()?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
+    let wt = gix::bstr::BStr::new("wt");
+
+    editor.set_worktree_checkout(wt, base)?;
+
+    assert_eq!(
+        editor.worktree_head(wt),
+        Some(editor.select_commit(base)?),
+        "the worktree's head is what its checkout was set to"
+    );
+    assert_eq!(
+        editor.worktree_head(gix::bstr::BStr::new("nope")),
+        None,
+        "an unknown worktree has no head"
+    );
     Ok(())
 }
 
@@ -1033,6 +1060,62 @@ fn a_detached_worktree_follows_a_commit_inserted_above_its_head() -> Result<()> 
 }
 
 #[test]
+fn worktrees_on_a_conflicted_commit_check_out_its_padding_commit() -> Result<()> {
+    let (repo, _tmpdir, mut meta, mut db) = worktree_fixture("worktree-checkout-heads")?;
+    let graph = graph_with_worktrees(&repo, &*meta, &mut db)?.validated()?;
+    let mut ws = graph.into_workspace()?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
+
+    // A base that already has a different `a` makes the commit adding `a` conflict.
+    let mut replacement = but_core::Commit::from_id(repo.rev_parse_single("middle~1")?)?;
+    let mut tree = repo.edit_tree(replacement.tree)?;
+    tree.upsert(
+        "a",
+        gix::objs::tree::EntryKind::Blob,
+        repo.write_blob("other\n")?,
+    )?;
+    replacement.tree = tree.write()?.detach();
+    let replacement = repo.write_object(replacement.inner)?.detach();
+    let base = editor.select_commit(repo.rev_parse_single("middle~1")?.detach())?;
+    editor.amend_pick(base, replacement)?;
+    editor.rebase()?.materialize(Default::default())?;
+
+    // middle moves to a padding commit on the conflicted a, while b rests on a itself, not on the padding commit.
+    snapbox::assert_data_eq!(
+        visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* f17f1b1 (HEAD -> main) b
+| * 5fe3053 (middle) GitButler Padding Commit
+|/  
+* 57337f7 [conflict] a
+* c06f553 base
+
+"#]]
+        .raw()
+    );
+
+    let attached = linked_repo(&repo, "wt")?;
+    assert_eq!(
+        std::fs::read_to_string(attached.git_dir().join("HEAD"))?,
+        "ref: refs/heads/middle\n",
+        "the branch-backed worktree stays attached"
+    );
+    // The attached worktree is exactly the padding commit.
+    snapbox::assert_data_eq!(git_status(&attached)?, snapbox::str![""]);
+
+    let detached = linked_repo(&repo, "wt-detached")?;
+    assert_eq!(detached.head_name()?, None, "the worktree stays detached");
+    assert_eq!(
+        detached.head_id()?,
+        repo.rev_parse_single("middle")?,
+        "on the same padding commit the attached worktree's branch points at"
+    );
+    // The detached worktree is exactly the padding commit.
+    snapbox::assert_data_eq!(git_status(&detached)?, snapbox::str![""]);
+    Ok(())
+}
+
+#[test]
 fn an_attached_worktree_follows_its_branch_being_replaced_by_another() -> Result<()> {
     let (repo, _tmpdir, mut meta, mut db) = worktree_fixture("worktree-checkout-heads")?;
     let middle = repo.rev_parse_single("middle")?.detach();
@@ -1062,7 +1145,7 @@ fn an_attached_worktree_follows_its_branch_being_replaced_by_another() -> Result
 
 fn replace_reference_in_worktree_fixture(
     repo: &gix::Repository,
-    meta: &mut but_meta::VirtualBranchesTomlMetadata,
+    meta: &mut but_meta::VirtualBranchesMetadata,
     db: &mut but_db::DbHandle,
     from: &str,
     to: &str,
@@ -1121,7 +1204,7 @@ fn materialize_checks_out_what_head_checkout_is_set_to() -> Result<()> {
     let other = gix::refs::FullName::try_from("refs/heads/other")?;
     let parent = repo.rev_parse_single("HEAD~")?.detach();
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -1144,6 +1227,52 @@ fn materialize_checks_out_what_head_checkout_is_set_to() -> Result<()> {
 }
 
 #[test]
+fn materialize_refuses_a_switch_that_overwrites_uncommitted_changes() -> Result<()> {
+    let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
+    let other = gix::refs::FullName::try_from("refs/heads/other")?;
+    let head_name = repo.head_name()?;
+    let parent = repo.rev_parse_single("HEAD~")?.detach();
+    std::fs::write(
+        repo.workdir()
+            .context("the fixture has a worktree")?
+            .join("c"),
+        "changed\n",
+    )?;
+
+    let graph = but_testsupport::graph_from_head(
+        &repo,
+        &*meta,
+        Default::default(),
+        &mut db,
+        standard_options(),
+    )?
+    .validated()?;
+    let mut ws = graph.into_workspace()?;
+    let mut editor = Editor::create(&mut ws, &mut *meta, &repo, &mut db)?;
+
+    let reference = editor.add_step(Step::new_reference(other.clone()))?;
+    editor.add_edge(reference, parent, 0)?;
+    editor.switch_head(reference)?;
+
+    let err = editor
+        .rebase()?
+        .materialize(Default::default())
+        .err()
+        .context("the parent has no `c` to keep the change in")?;
+    snapbox::assert_data_eq!(
+        err.to_string(),
+        snapbox::str![[r#"Uncommitted files would be overwritten by checkout: "c""#]]
+    );
+    assert_eq!(repo.head_name()?, head_name, "HEAD stays where it was");
+    assert!(
+        repo.try_find_reference(other.as_ref())?.is_none(),
+        "nothing is written once the checkout is refused"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn materialize_checks_out_another_branch_on_the_same_commit() -> Result<()> {
     let (repo, _tmpdir, mut meta, mut db) = fixture_writable("four-commits")?;
     let other = gix::refs::FullName::try_from("refs/heads/other")?;
@@ -1155,7 +1284,7 @@ fn materialize_checks_out_another_branch_on_the_same_commit() -> Result<()> {
         "other branch on HEAD",
     )?;
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),
@@ -1186,7 +1315,7 @@ fn materialize_moves_a_detached_head_along_with_its_rewritten_commit() -> Result
         "detach at b",
     )?;
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         Default::default(),

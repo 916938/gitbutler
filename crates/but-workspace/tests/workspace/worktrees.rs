@@ -3,17 +3,16 @@ use std::collections::HashMap;
 use anyhow::Result;
 use bstr::{BStr, ByteSlice};
 use but_core::RefMetadata as _;
-use but_graph::Graph;
 use but_workspace::branch::create_reference::{Anchor, Position::*};
 use but_workspace::ref_info::LocalCommitRelation;
 use but_workspace::ui::PushStatus;
-use but_workspace::worktrees::WorktreeBase;
+use but_workspace::worktrees::{WorktreeBase, WorktreeBranch};
 
 use crate::ref_info::with_workspace_commit::utils::{StackState, add_stack, add_workspace};
 use crate::utils::writable_scenario_slow;
 
 /// Build a graph seeded with every active linked worktree of `repo`, the way `but-ctx`
-/// does when the `worktreeManipulation` flag is on, and project the result.
+/// does, and project the result.
 fn ref_info_with_worktree_tips(
     repo: &gix::Repository,
     meta: &impl but_core::RefMetadata,
@@ -33,14 +32,16 @@ fn workspace_with_worktree_tips(
     meta: &impl but_core::RefMetadata,
 ) -> Result<but_graph::Workspace> {
     let project_meta = but_core::ref_metadata::ProjectMeta {
-        target_ref: Some("refs/remotes/origin/main".try_into()?),
+        target_ref: Some(but_core::ref_metadata::LocalRefName::new(
+            "refs/heads/main".try_into()?,
+        )?),
         target_commit_id: Some(repo.rev_parse_single("main")?.detach()),
         push_remote: None,
     };
     let mut db = but_testsupport::in_memory_db();
     // Adoption already ran, so the fixture worktrees count as active.
     db.worktree_meta_mut().mark_adopted()?;
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         repo,
         meta,
         project_meta,
@@ -55,11 +56,42 @@ fn workspace_with_worktree_tips(
 }
 
 #[test]
+fn worktree_orders_skip_deleted_branches() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
+    but_testsupport::invoke_bash_at_dir(
+        "git branch wt-lower A~1",
+        repo.workdir().expect("fixture has a working directory"),
+    );
+    let mut meta = but_meta::BranchOrderMetadata::from_path(repo.path())?;
+    let r = |name: &str| crate::utils::r(name).to_owned();
+    meta.set_branch_stack_order(&[
+        r("refs/heads/wt-inside"),
+        r("refs/heads/deleted"),
+        r("refs/heads/wt-lower"),
+    ])?;
+
+    let ws = workspace_with_worktree_tips(&repo, &meta)?;
+    let lane: Vec<_> = ws
+        .worktrees
+        .iter()
+        .find(|worktree| worktree.name == "wt-inside")
+        .expect("wt-inside has a lane")
+        .segments
+        .iter()
+        .filter_map(|segment| Some(segment.ref_name()?.shorten().to_string()))
+        .collect();
+    assert_eq!(
+        lane,
+        ["wt-inside", "wt-lower"],
+        "a deleted branch drops out of the order without cutting off the branches below it"
+    );
+    Ok(())
+}
+
+#[test]
 fn worktrees_are_projected_onto_the_workspace() -> Result<()> {
     let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
-    let mut meta = but_meta::VirtualBranchesTomlMetadata::from_path(
-        repo.path().join("should-never-be-written.toml"),
-    )?;
+    let mut meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
     add_workspace(&mut meta);
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
     add_stack(&mut meta, 2, "B", StackState::InWorkspace);
@@ -221,10 +253,10 @@ fn worktrees_are_projected_onto_the_workspace() -> Result<()> {
         ]
     );
 
-    info.apply_forge_review_associations(
-        &repo,
-        &HashMap::from([("wt-pushed".to_string(), (42, true, None))]),
-    );
+    info.apply_forge_review_associations(&HashMap::from([(
+        "origin/wt-pushed".to_string(),
+        (42, true, None),
+    )]));
     let pushed = info
         .worktrees
         .iter()
@@ -242,11 +274,50 @@ fn worktrees_are_projected_onto_the_workspace() -> Result<()> {
 }
 
 #[test]
+fn a_worktree_branch_the_target_moved_past_keeps_the_review_merged_at_its_tip() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
+    let mut meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
+    add_workspace(&mut meta);
+    add_stack(&mut meta, 1, "A", StackState::InWorkspace);
+    add_stack(&mut meta, 2, "B", StackState::InWorkspace);
+    // `wt-pushed` merged into the target, which the workspace was updated to, while its
+    // worktree still has the merged branch checked out.
+    but_testsupport::invoke_bash(
+        r#"git update-ref refs/heads/main "$(git commit-tree -p main -p wt-pushed -m Merge 'wt-pushed^{tree}')""#,
+        &repo,
+    );
+
+    let mut info = ref_info_with_worktree_tips(&repo, &meta)?;
+    let merged_head = repo.rev_parse_single("wt-pushed")?.to_string();
+    info.apply_forge_review_associations(&HashMap::from([(
+        "origin/wt-pushed".to_string(),
+        (42, false, Some(merged_head)),
+    )]));
+    let pushed = &info
+        .worktrees
+        .iter()
+        .find(|wt| wt.name == "wt-pushed")
+        .expect("the pushed worktree is projected")
+        .segments[0];
+    assert!(
+        pushed.commits.is_empty(),
+        "its commits are below the target now"
+    );
+    assert_eq!(
+        pushed
+            .metadata
+            .as_ref()
+            .and_then(|meta| meta.review.pull_request),
+        Some(42),
+        "the branch still points at the head its review merged at"
+    );
+    Ok(())
+}
+
+#[test]
 fn lane_chains_follow_what_worktrees_rest_on() -> Result<()> {
     let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
-    let mut meta = but_meta::VirtualBranchesTomlMetadata::from_path(
-        repo.path().join("should-never-be-written.toml"),
-    )?;
+    let mut meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
     add_workspace(&mut meta);
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
     add_stack(&mut meta, 2, "B", StackState::InWorkspace);
@@ -311,13 +382,49 @@ fn lane_chains_follow_what_worktrees_rest_on() -> Result<()> {
 }
 
 #[test]
+fn a_worktree_on_a_padding_commit_rests_on_the_lane_owning_it() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
+    but_testsupport::invoke_bash_at_dir(
+        &format!(
+            "git -C wt-inside commit -q --allow-empty -m '{}' && \
+             git worktree add -q -b on-padding wt-on-padding wt-inside && \
+             git -C wt-on-padding commit -q --allow-empty -m on-padding",
+            but_core::commit::padding::TITLE
+        ),
+        repo.workdir().expect("fixture has a working directory"),
+    );
+    let mut meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
+    add_workspace(&mut meta);
+    add_stack(&mut meta, 1, "A", StackState::InWorkspace);
+    let info = ref_info_with_worktree_tips(&repo, &meta)?;
+
+    let chain: Vec<_> = info
+        .lane_chain("refs/heads/on-padding".try_into()?)
+        .into_iter()
+        .map(|(lane, index)| {
+            lane.segments_from(index)[0]
+                .ref_name()
+                .map(|name| name.shorten().to_string())
+        })
+        .collect();
+    assert_eq!(
+        chain,
+        [
+            Some("on-padding".to_string()),
+            Some("wt-inside".to_string()),
+            Some("A".to_string())
+        ],
+        "the padding commit is hidden from `wt-inside`, so resting on it means resting on the commit it pads"
+    );
+    Ok(())
+}
+
+#[test]
 fn worktrees_are_empty_without_seeded_tips() -> Result<()> {
     let mut db = but_testsupport::in_memory_db();
     let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
-    let meta = but_meta::VirtualBranchesTomlMetadata::from_path(
-        repo.path().join("should-never-be-written.toml"),
-    )?;
-    let graph = Graph::from_head(
+    let meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &meta,
         Default::default(),
@@ -336,9 +443,7 @@ fn worktrees_are_empty_without_seeded_tips() -> Result<()> {
 #[test]
 fn deep_disjoint_history_is_never_mistaken_for_being_below_the_target() -> Result<()> {
     let (repo, _tmp) = writable_scenario_slow("worktree-disjoint-deep");
-    let mut meta = but_meta::VirtualBranchesTomlMetadata::from_path(
-        repo.path().join("should-never-be-written.toml"),
-    )?;
+    let mut meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
     add_workspace(&mut meta);
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
 
@@ -473,7 +578,14 @@ fn remove_finishes_when_a_bounded_writer_adds_files_during_deletion() -> Result<
     let (repo, _tmp) = writable_scenario_slow("worktree-listing");
     let path = repo.common_dir().join("concurrent-removal");
     let branch = "refs/heads/concurrent-removal".try_into()?;
-    let name = but_workspace::worktrees::add(&repo, &path, branch, repo.head_id()?.detach())?;
+    let name = but_workspace::worktrees::add(
+        &repo,
+        &path,
+        WorktreeBranch::New {
+            name: branch,
+            base: repo.head_id()?.detach(),
+        },
+    )?;
     let git_dir = repo
         .worktree_proxy_by_id(name.as_bstr())?
         .expect("registered worktree")
@@ -537,24 +649,77 @@ fn add_runs_post_checkout_and_retains_the_worktree_if_the_hook_fails() -> Result
     std::fs::write(
         &hook,
         br#"#!/bin/sh
+printf '%s\n' "$@" > checkout-args
 exit 1
 "#,
     )?;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     let path = repo.common_dir().join("hook-worktree");
     let base = repo.head_id()?.detach();
-    let err =
-        but_workspace::worktrees::add(&repo, &path, "refs/heads/hook-worktree".try_into()?, base)
-            .expect_err("hook failure is reported after checkout");
+    let err = but_workspace::worktrees::add(
+        &repo,
+        &path,
+        WorktreeBranch::New {
+            name: "refs/heads/hook-worktree".try_into()?,
+            base,
+        },
+    )
+    .expect_err("hook failure is reported after checkout");
     assert!(
-        err.to_string()
-            .contains("Worktree post-checkout hook failed (exit status: 1)"),
+        format!("{err:#}").contains("Post-checkout hook failed (exit status: 1)"),
         "the exit status explains failure even when the hook writes nothing to stderr: {err}"
     );
     assert!(
         path.join(".git").is_file(),
         "hook failure retains the completed worktree"
     );
+    assert_eq!(
+        std::fs::read_to_string(path.join("checkout-args"))?,
+        format!("{}\n{base}\n1\n", repo.object_hash().null()),
+        "worktree hooks run in the new checkout with a null previous HEAD"
+    );
+    Ok(())
+}
+
+#[test]
+fn add_checks_out_an_existing_branch_without_moving_it() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-listing");
+    let tip = repo.rev_parse_single("HEAD~1")?.detach();
+    let branch: &gix::refs::FullNameRef = "refs/heads/loose".try_into()?;
+    repo.reference(
+        branch,
+        tip,
+        gix::refs::transaction::PreviousValue::MustNotExist,
+        "test",
+    )?;
+
+    let path = repo.common_dir().join("loose");
+    let name = but_workspace::worktrees::add(&repo, &path, WorktreeBranch::Existing(branch))?;
+    let wt_repo = but_workspace::worktrees::open_worktree_repo(&repo, name.as_bstr())?;
+    assert_eq!(
+        wt_repo.head_name()?.as_ref().map(|name| name.as_ref()),
+        Some(branch),
+        "the worktree has the existing branch checked out"
+    );
+    assert_eq!(
+        repo.find_reference(branch)?.peel_to_id()?.detach(),
+        tip,
+        "the existing branch stays where it was"
+    );
+
+    let other_path = repo.common_dir().join("loose-again");
+    assert!(
+        but_workspace::worktrees::add(&repo, &other_path, WorktreeBranch::Existing(branch))
+            .is_err(),
+        "a branch checked out in a worktree cannot be checked out again"
+    );
+    let missing = "refs/heads/missing".try_into()?;
+    assert!(
+        but_workspace::worktrees::add(&repo, &other_path, WorktreeBranch::Existing(missing))
+            .is_err(),
+        "a missing branch is not created"
+    );
+    assert!(!other_path.exists(), "refusals leave no checkout");
     Ok(())
 }
 
@@ -564,14 +729,30 @@ fn add_rejects_existing_branches_and_paths_before_changing_them() -> Result<()> 
     let path = repo.common_dir().join("rejected-worktree");
     let existing = "refs/heads/main".try_into()?;
     assert!(
-        but_workspace::worktrees::add(&repo, &path, existing, repo.head_id()?.detach()).is_err(),
+        but_workspace::worktrees::add(
+            &repo,
+            &path,
+            WorktreeBranch::New {
+                name: existing,
+                base: repo.head_id()?.detach()
+            }
+        )
+        .is_err(),
         "an existing branch cannot be reset"
     );
     assert!(!path.exists(), "branch refusal leaves no checkout");
     std::fs::create_dir(&path)?;
     let new_branch = "refs/heads/rejected-worktree".try_into()?;
     assert!(
-        but_workspace::worktrees::add(&repo, &path, new_branch, repo.head_id()?.detach()).is_err(),
+        but_workspace::worktrees::add(
+            &repo,
+            &path,
+            WorktreeBranch::New {
+                name: new_branch,
+                base: repo.head_id()?.detach()
+            }
+        )
+        .is_err(),
         "existing destination is rejected"
     );
     assert!(
@@ -588,7 +769,8 @@ fn add_checks_out_a_new_branch_at_the_base_and_names_the_worktree_after_the_path
     let path = repo.common_dir().join("gb-wts").join("wt-new");
     let branch: &gix::refs::FullNameRef = "refs/heads/wt-new".try_into()?;
 
-    let name = but_workspace::worktrees::add(&repo, &path, branch, base)?;
+    let name =
+        but_workspace::worktrees::add(&repo, &path, WorktreeBranch::New { name: branch, base })?;
     assert_eq!(
         name, "wt-new",
         "the worktree name comes from the last path component"
@@ -605,17 +787,365 @@ fn add_checks_out_a_new_branch_at_the_base_and_names_the_worktree_after_the_path
         "the new branch starts where it was told to"
     );
 
-    let err = but_workspace::worktrees::add(&repo, &path, branch, base).unwrap_err();
+    let err =
+        but_workspace::worktrees::add(&repo, &path, WorktreeBranch::New { name: branch, base })
+            .unwrap_err();
     assert!(err.to_string().contains("already exists"), "{err}");
+    assert!(
+        err.is::<but_workspace::worktrees::DestinationExists>(),
+        "occupied destinations are safe to retry at a different path"
+    );
+
+    let other_path = path.with_file_name("other");
+    let err = but_workspace::worktrees::add(
+        &repo,
+        &other_path,
+        WorktreeBranch::New { name: branch, base },
+    )
+    .unwrap_err();
+    assert!(
+        !err.is::<but_workspace::worktrees::DestinationExists>(),
+        "an existing branch is not a retryable destination collision"
+    );
+    assert!(
+        !other_path.exists(),
+        "branch refusal leaves no checkout behind"
+    );
     Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn add_restores_new_directory_permissions_after_copying() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _tmp) = writable_scenario_slow("worktree-listing");
+    let source = repo.workdir().expect("fixture has a working directory");
+    but_testsupport::invoke_bash_at_dir(
+        r#"
+        set -eu
+        mkdir existing
+        printf 'tracked\n' > existing/tracked
+        printf '/included/\n/existing/artifact\n' > .gitignore
+        git add .gitignore existing/tracked
+        git commit -qm 'Track existing directory and ignore artifacts'
+        mkdir -p included/nested
+        printf 'nested artifact\n' > included/nested/artifact
+        printf 'existing artifact\n' > existing/artifact
+        printf 'included/\nexisting/\n' > .worktreeinclude
+        "#,
+        source,
+    );
+    for (path, mode) in [
+        ("included", 0o700),
+        ("included/nested", 0o500),
+        ("existing", 0o500),
+    ] {
+        std::fs::set_permissions(source.join(path), std::fs::Permissions::from_mode(mode))?;
+    }
+    let destination = repo.common_dir().join("gb-wts/wt-directory-permissions");
+    let branch: &gix::refs::FullNameRef = "refs/heads/wt-directory-permissions".try_into()?;
+    let result = but_workspace::worktrees::add(
+        &repo,
+        &destination,
+        WorktreeBranch::New {
+            name: branch,
+            base: repo.head_id()?.detach(),
+        },
+    );
+    let modes: Vec<_> = ["included", "included/nested", "existing"]
+        .map(|path| {
+            std::fs::metadata(destination.join(path)).map(|meta| meta.permissions().mode() & 0o777)
+        })
+        .into_iter()
+        .collect();
+
+    // Restore write access before assertions so temporary directories can be cleaned up on failure.
+    for root in [source, destination.as_path()] {
+        for path in ["included", "included/nested", "existing"] {
+            let path = root.join(path);
+            if path.is_dir() {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+    }
+    result?;
+    let modes = modes.into_iter().collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(
+        modes[0], 0o700,
+        "intermediate new directories retain source permissions"
+    );
+    assert_eq!(
+        modes[1], 0o500,
+        "read-only permissions are restored after populating directory"
+    );
+    assert_ne!(
+        modes[2] & 0o200,
+        0,
+        "existing checkout directory must not inherit source's read-only mode"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("included/nested/artifact"))?,
+        "nested artifact\n"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("existing/artifact"))?,
+        "existing artifact\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn add_does_not_copy_nested_destination_into_itself() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-listing");
+    let source = repo.workdir().expect("fixture has a working directory");
+    but_testsupport::invoke_bash_at_dir(
+        r#"
+        set -eu
+        printf 'tracked contents\n' > tracked
+        printf '/included/\n' > .gitignore
+        git add tracked .gitignore
+        git commit -qm 'Track file and ignore nested worktree location'
+        mkdir included
+        printf 'source artifact\n' > included/artifact
+        printf 'included/new/tracked\nincluded/artifact\n' > .worktreeinclude
+        "#,
+        source,
+    );
+    let destination = source.join("included/new");
+    let branch: &gix::refs::FullNameRef = "refs/heads/wt-nested-destination".try_into()?;
+
+    // Nested destinations remain usable; only the destination subtree is excluded from copying.
+    but_workspace::worktrees::add(
+        &repo,
+        &destination,
+        WorktreeBranch::New {
+            name: branch,
+            base: repo.head_id()?.detach(),
+        },
+    )?;
+
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("tracked"))?,
+        "tracked contents\n"
+    );
+    // Select only a leaf from the nested checkout to expose self-copying without allowing
+    // an unfixed traversal to recurse indefinitely into its own output.
+    assert!(
+        !destination.join("included/new").exists(),
+        "source traversal must not copy files from the new checkout back into itself"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("included/artifact"))?,
+        "source artifact\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn add_copies_only_ignored_directory_selected_by_untracked_worktreeinclude() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-listing");
+    let source = repo.workdir().expect("fixture has a working directory");
+    but_testsupport::invoke_bash_at_dir(
+        r#"
+        printf '/included/\n/control/\n' > .gitignore
+        git add .gitignore
+        git commit -qm 'Ignore local artifact directories'
+        mkdir -p included/nested control
+        printf 'included artifact\n' > included/nested/artifact
+        printf 'control artifact\n' > control/artifact
+        printf '/included/\n' > .worktreeinclude
+        git check-ignore -q included/nested/artifact
+        git check-ignore -q control/artifact
+        "#,
+        source,
+    );
+    assert!(
+        repo.index()?
+            .entry_by_path(".worktreeinclude".into())
+            .is_none(),
+        "include configuration exists only in the source working directory, not its index"
+    );
+    let base = repo.head_id()?.detach();
+    assert!(
+        repo.find_commit(base)?
+            .tree()?
+            .lookup_entry_by_path(".worktreeinclude")?
+            .is_none(),
+        "include configuration is not part of the destination commit"
+    );
+    let destination = repo
+        .common_dir()
+        .join("gb-wts")
+        .join("wt-included-artifacts");
+    let branch: &gix::refs::FullNameRef = "refs/heads/wt-included-artifacts".try_into()?;
+
+    but_workspace::worktrees::add(
+        &repo,
+        &destination,
+        WorktreeBranch::New { name: branch, base },
+    )?;
+
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join(".gitignore"))?,
+        "/included/\n/control/\n"
+    );
+    but_testsupport::invoke_bash_at_dir(
+        "git check-ignore -q included/nested/artifact; git check-ignore -q control/artifact",
+        &destination,
+    );
+    assert!(
+        !destination.join(".worktreeinclude").exists(),
+        "untracked source configuration need not exist in the destination"
+    );
+    assert!(
+        !destination.join("control").exists(),
+        "being gitignored is insufficient: the control directory is not included"
+    );
+    assert!(
+        destination.join("included/nested/artifact").is_file(),
+        "source .worktreeinclude must copy selected ignored directory contents into the new worktree"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("included/nested/artifact"))?,
+        "included artifact\n"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(source.join("included/nested/artifact"))?,
+        "included artifact\n"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(source.join("control/artifact"))?,
+        "control artifact\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn add_worktreeinclude_copies_only_destination_ignored_files_untracked_in_both_indexes() {
+    let (repo, _tmp) = writable_scenario_slow("worktree-listing");
+    let source = repo.workdir().expect("fixture has a working directory");
+    but_testsupport::invoke_bash_at_dir(
+        r#"
+        set -eu
+        mkdir included
+        printf '/included/ignored-untracked\n/included/source-tracked\n/included/destination-tracked\n' > .gitignore
+        printf 'destination committed contents\n' > included/destination-tracked
+        git add .gitignore
+        git add -f included/destination-tracked
+        git commit -qm 'Destination tracks one ignored file'
+        "#,
+        source,
+    );
+    let destination_base = repo.head_id().unwrap().detach();
+    but_testsupport::invoke_bash_at_dir(
+        r#"
+        set -eu
+        git rm --cached included/destination-tracked
+        printf 'source tracked contents\n' > included/source-tracked
+        git add -f included/source-tracked
+        git commit -qm 'Source tracks a different ignored file'
+        printf 'source contents must not overwrite destination\n' > included/destination-tracked
+        printf 'copy this artifact\n' > included/ignored-untracked
+        printf 'ordinary untracked contents\n' > included/not-ignored
+        printf '/included/\n' > .worktreeinclude
+        git check-ignore -q included/ignored-untracked
+        if git check-ignore -q included/not-ignored; then
+            echo 'included/not-ignored must not be ignored in source' >&2
+            exit 1
+        fi
+        git check-ignore --no-index -q included/source-tracked
+        git check-ignore --no-index -q included/destination-tracked
+        "#,
+        source,
+    );
+    let source_index = repo.index().unwrap();
+    for (path, tracked) in [
+        ("included/ignored-untracked", false),
+        ("included/not-ignored", false),
+        ("included/source-tracked", true),
+        ("included/destination-tracked", false),
+        (".worktreeinclude", false),
+    ] {
+        assert_eq!(
+            source_index.entry_by_path(path.into()).is_some(),
+            tracked,
+            "source tracking state for {path}"
+        );
+    }
+    let destination_tree = repo
+        .find_commit(destination_base)
+        .unwrap()
+        .tree_id()
+        .unwrap();
+    let destination_index = repo.index_from_tree(&destination_tree).unwrap();
+    for (path, tracked) in [
+        ("included/ignored-untracked", false),
+        ("included/not-ignored", false),
+        ("included/source-tracked", false),
+        ("included/destination-tracked", true),
+    ] {
+        assert_eq!(
+            destination_index.entry_by_path(path.into()).is_some(),
+            tracked,
+            "destination tracking state for {path}"
+        );
+    }
+    let destination = repo
+        .common_dir()
+        .join("gb-wts")
+        .join("wt-filtered-artifacts");
+    let branch: &gix::refs::FullNameRef = "refs/heads/wt-filtered-artifacts".try_into().unwrap();
+
+    but_workspace::worktrees::add(
+        &repo,
+        &destination,
+        WorktreeBranch::New {
+            name: branch,
+            base: destination_base,
+        },
+    )
+    .unwrap();
+
+    but_testsupport::invoke_bash_at_dir(
+        r#"
+        set -eu
+        git check-ignore --no-index -q included/ignored-untracked
+        if git check-ignore --no-index -q included/not-ignored; then
+            echo 'included/not-ignored must not be ignored in destination' >&2
+            exit 1
+        fi
+        git check-ignore --no-index -q included/source-tracked
+        git check-ignore --no-index -q included/destination-tracked
+        "#,
+        &destination,
+    );
+    assert!(
+        !destination.join("included/not-ignored").exists(),
+        "inclusion alone must not copy an ordinary untracked file"
+    );
+    assert!(
+        !destination.join("included/source-tracked").exists(),
+        "files tracked only in source must not be copied"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("included/destination-tracked")).unwrap(),
+        "destination committed contents\n"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(destination.join("included/ignored-untracked")).unwrap(),
+        "copy this artifact\n"
+    );
+    snapbox::assert_data_eq!(
+        std::fs::read_to_string(source.join("included/destination-tracked")).unwrap(),
+        "source contents must not overwrite destination\n"
+    );
 }
 
 #[test]
 fn references_can_be_created_at_commits_of_worktree_lanes() -> Result<()> {
     let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
-    let mut meta = but_meta::VirtualBranchesTomlMetadata::from_path(
-        repo.path().join("virtual-branches.toml"),
-    )?;
+    let mut meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
     add_workspace(&mut meta);
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
     add_stack(&mut meta, 2, "B", StackState::InWorkspace);
@@ -623,12 +1153,12 @@ fn references_can_be_created_at_commits_of_worktree_lanes() -> Result<()> {
     snapbox::assert_data_eq!(
         but_testsupport::graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on cad9051
-├── ≡📙:A on cad9051 {1}
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on cad9051
+├── ≡📙:A on cad9051 {[..]}
 │   └── 📙:A
 │       ├── ·19f4fc0 (🏘️)
 │       └── ·0a62dfe (🏘️)
-├── ≡📙:B on cad9051 {2}
+├── ≡📙:B on cad9051 {[..]}
 │   └── 📙:B
 │       └── ·5881e28 (🏘️)
 ├── 📁wt-at on 19f4fc0 (🏘️)
@@ -683,12 +1213,12 @@ fn references_can_be_created_at_commits_of_worktree_lanes() -> Result<()> {
     snapbox::assert_data_eq!(
         but_testsupport::graph_workspace(&ws).to_string(),
         snapbox::str![[r#"
-📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/remotes/origin/main on cad9051
-├── ≡📙:A on cad9051 {1}
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on cad9051
+├── ≡📙:A on cad9051 {[..]}
 │   └── 📙:A
 │       ├── ·19f4fc0 (🏘️)
 │       └── ·0a62dfe (🏘️)
-├── ≡📙:B on cad9051 {2}
+├── ≡📙:B on cad9051 {[..]}
 │   └── 📙:B
 │       └── ·5881e28 (🏘️)
 ├── 📁wt-at on 19f4fc0 (🏘️)
@@ -733,44 +1263,228 @@ fn references_can_be_created_at_commits_of_worktree_lanes() -> Result<()> {
             ),
         "worktree lanes have no applied stack to record the new branch in"
     );
+    Ok(())
+}
 
-    for (anchor, what) in [
-        (
-            Anchor::AtCommit {
-                commit_id: repo.rev_parse_single("mid")?.detach(),
-                position: Above,
-            },
-            "the tip of a branch",
-        ),
-        (
-            Anchor::at_segment(crate::utils::r("refs/heads/below-pushed"), Above),
-            "above a branch",
-        ),
-        (
-            Anchor::at_segment(crate::utils::r("refs/heads/mid"), Below),
-            "below a branch, onto a detached HEAD",
-        ),
-    ] {
-        let mut ws = ws.clone();
-        let err = crate::utils::create_reference(
+#[test]
+fn branches_can_be_ordered_in_worktree_lanes() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
+    let mut meta = but_meta::BranchOrderMetadata::from_path(repo.path())?;
+    let mut db = but_testsupport::in_memory_db();
+    db.worktree_meta_mut().mark_adopted()?;
+    let r = crate::utils::r;
+    let mut create = |new_ref: &str, anchor: Anchor<'_>, worktree: &str| -> Result<String> {
+        let mut ws = workspace_with_worktree_tips(&repo, &meta)?;
+        let preview = crate::utils::create_reference(
             &repo,
             &mut ws,
             &mut meta,
             &mut db,
-            crate::utils::r("refs/heads/refused"),
+            r(new_ref),
             anchor,
             None,
-        )
-        .expect_err(what);
-        assert!(
-            err.to_string()
-                .contains("branches can't be ordered in worktrees yet"),
-            "{what}: {err}"
+        )?;
+        let lane = worktree_lane(&workspace_with_worktree_tips(&repo, &meta)?, worktree);
+        assert_eq!(
+            worktree_lane(&preview, worktree),
+            lane,
+            "the editor previews the lane that is read back"
         );
-    }
-    assert!(
-        repo.try_find_reference("refs/heads/refused")?.is_none(),
-        "refusals leave no reference behind"
+        let head = std::fs::read_to_string(
+            repo.common_dir()
+                .join("worktrees")
+                .join(worktree)
+                .join("HEAD"),
+        )?;
+        let head = head.trim().trim_start_matches("ref: ");
+        let order = meta
+            .branch_stack_order(r(head))?
+            .unwrap_or_default()
+            .iter()
+            .map(|name| name.shorten().to_string())
+            .collect::<Vec<_>>()
+            .join(" > ");
+        Ok(format!("{head}: {order}\n{lane}"))
+    };
+
+    // Above the checked-out branch, the new branch becomes the worktree's checkout.
+    snapbox::assert_data_eq!(
+        create(
+            "refs/heads/above-wt",
+            Anchor::at_segment(r("refs/heads/wt-below"), Above),
+            "wt-below"
+        )?,
+        snapbox::str![[r#"
+refs/heads/above-wt: above-wt > wt-below
+├── 📁wt-below on d4d66e2
+│   ├── :above-wt[📁wt-below]
+│   └── :wt-below
+│       └── ·53aafe9
+
+"#]]
+    );
+    // Below the checked-out branch, at the same commit.
+    snapbox::assert_data_eq!(
+        create(
+            "refs/heads/below-wt",
+            Anchor::at_reference(r("refs/heads/wt-outside"), Below),
+            "wt-outside"
+        )?,
+        snapbox::str![[r#"
+refs/heads/wt-outside: wt-outside > below-wt
+├── 📁wt-outside on cad9051
+│   ├── :wt-outside[📁]
+│   └── :below-wt
+│       └── ·4fcfc93
+
+"#]]
+    );
+    // Below a branch owning commits, onto the commit a detached worktree has checked out.
+    snapbox::assert_data_eq!(
+        create(
+            "refs/heads/onto-detached",
+            Anchor::at_segment(r("refs/heads/mid"), Below),
+            "wt-top"
+        )?,
+        snapbox::str![[r#"
+refs/heads/top: top > mid > onto-detached
+└── 📁wt-top on 0bc05bf (🏘️)
+    ├── :top[📁wt-top]
+    │   └── ·d175c00
+    ├── :mid
+    │   └── ·b743926
+    └── :onto-detached
+
+"#]]
+    );
+    // Below a branch that isn't checked out, at the same commit.
+    snapbox::assert_data_eq!(
+        create(
+            "refs/heads/below-mid",
+            Anchor::at_reference(r("refs/heads/mid"), Below),
+            "wt-top"
+        )?,
+        snapbox::str![[r#"
+refs/heads/top: top > mid > below-mid > onto-detached
+└── 📁wt-top on 0bc05bf (🏘️)
+    ├── :top[📁wt-top]
+    │   └── ·d175c00
+    ├── :mid
+    ├── :below-mid
+    │   └── ·b743926
+    └── :onto-detached
+
+"#]]
+    );
+    // Below the worktree's commits, onto a workspace commit that stays in its stack.
+    snapbox::assert_data_eq!(
+        create(
+            "refs/heads/below-inside",
+            Anchor::at_segment(r("refs/heads/wt-inside"), Below),
+            "wt-inside"
+        )?,
+        snapbox::str![[r#"
+refs/heads/wt-inside: wt-inside > below-inside
+├── 📁wt-inside on 0a62dfe (🏘️)
+│   ├── :wt-inside[📁]
+│   │   └── ·6a13321
+│   └── :below-inside
+
+"#]]
+    );
+    // Ordering branches in worktree lanes leaves the workspace stacks as they were.
+    snapbox::assert_data_eq!(
+        stacks(&workspace_with_worktree_tips(&repo, &meta)?),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on cad9051
+├── ≡📙:B on cad9051 {[..]}
+│   └── 📙:B
+│       └── ·5881e28 (🏘️)
+├── ≡📙:A on cad9051 {[..]}
+│   └── 📙:A
+│       ├── ·19f4fc0 (🏘️)
+│       └── ·0a62dfe (🏘️)
+
+"#]]
     );
     Ok(())
+}
+
+#[test]
+fn worktree_orders_leave_branches_claimed_elsewhere_alone() -> Result<()> {
+    let (repo, _tmp) = writable_scenario_slow("worktree-workspace");
+    but_testsupport::invoke_bash_at_dir(
+        "git worktree add -q -b on-a wt-on-a A && git -C wt-on-a commit -q --allow-empty -m on-A",
+        repo.workdir().expect("fixture has a working directory"),
+    );
+    let mut stacks_meta = but_meta::VirtualBranchesMetadata::from_path(repo.path())?;
+    add_stack(&mut stacks_meta, 1, "A", StackState::InWorkspace);
+    add_stack(&mut stacks_meta, 2, "B", StackState::InWorkspace);
+    stacks_meta.write_unreconciled()?;
+    let mut meta = but_meta::BranchOrderMetadata::from_path(repo.path())?;
+    let r = |name: &str| crate::utils::r(name).to_owned();
+    // Stale orders reaching into the stack `A` and into the branch `wt-inside` has checked out.
+    meta.set_branch_stack_order(&[r("refs/heads/on-a"), r("refs/heads/A")])?;
+    meta.set_branch_stack_order(&[r("refs/heads/wt-stacked"), r("refs/heads/wt-inside")])?;
+    let ws = workspace_with_worktree_tips(&repo, &meta)?;
+
+    // `A` stays the workspace stack it is listed as.
+    snapbox::assert_data_eq!(
+        stacks(&ws),
+        snapbox::str![[r#"
+📕🏘️:gitbutler/workspace[🌳@repo] <> ✓refs/heads/main on cad9051
+├── ≡📙:A on cad9051 {1}
+│   └── 📙:A
+│       ├── ·19f4fc0 (🏘️)
+│       └── ·0a62dfe (🏘️)
+├── ≡📙:B on cad9051 {2}
+│   └── 📙:B
+│       └── ·5881e28 (🏘️)
+
+"#]]
+    );
+    // Each worktree lane holds only its own branch.
+    snapbox::assert_data_eq!(
+        worktree_lane(&ws, "wt-on-a")
+            + &worktree_lane(&ws, "wt-stacked")
+            + &worktree_lane(&ws, "wt-inside"),
+        snapbox::str![[r#"
+├── 📁wt-on-a on 19f4fc0 (🏘️)
+│   └── :on-a[📁wt-on-a]
+│       └── ·d9ed4f1
+├── 📁wt-stacked on 6a13321 (🏘️)
+│   └── :wt-stacked[📁]
+│       └── ·fc6f8f5
+├── 📁wt-inside on 0a62dfe (🏘️)
+│   └── :wt-inside[📁]
+│       └── ·6a13321
+
+"#]]
+    );
+    Ok(())
+}
+
+fn worktree_lane(ws: &but_graph::Workspace, worktree: &str) -> String {
+    let graph = but_testsupport::graph_workspace(ws).to_string();
+    let is_lane_header = |line: &str| line.starts_with("├── 📁") || line.starts_with("└── 📁");
+    let header = |line: &str| {
+        line.split_once("📁")
+            .is_some_and(|(_, rest)| rest.split(' ').next() == Some(worktree))
+    };
+    graph
+        .lines()
+        .skip_while(|line| !(is_lane_header(line) && header(line)))
+        .enumerate()
+        .take_while(|(idx, line)| *idx == 0 || !is_lane_header(line))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect()
+}
+
+fn stacks(ws: &but_graph::Workspace) -> String {
+    let graph = but_testsupport::graph_workspace(ws).to_string();
+    graph
+        .lines()
+        .take_while(|line| !line.starts_with("├── 📁") && !line.starts_with("└── 📁"))
+        .map(|line| format!("{line}\n"))
+        .collect()
 }

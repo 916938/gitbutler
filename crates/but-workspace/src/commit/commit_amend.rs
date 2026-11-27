@@ -1,7 +1,5 @@
-//! An action to amend an existing commit with selected changes.
-
 use anyhow::{Result, bail};
-use but_core::{DiffSpec, RefMetadata};
+use but_core::{DiffSpec, RefMetadata, tree::create_tree::RejectionReason};
 use but_rebase::graph_rebase::{
     Editor, LookupStep as _, Selector, Step, SuccessfulRebase, ToCommitSelector,
 };
@@ -10,7 +8,16 @@ use crate::commit_engine::{Destination, create_commit};
 
 use super::{ChangeSource, cancel_consumed_changes};
 
-/// The result of amending a commit in the graph rebase editor.
+/// What an amend does with a change that doesn't merge into the commit it goes into, as one
+/// rewriting lines a later commit wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conflicts {
+    /// Leave the change out, rejected.
+    Reject,
+    /// Take it, leaving the commit conflicted.
+    Keep,
+}
+
 #[derive(Debug)]
 pub struct CommitAmendOutcome<'ws, 'meta, M: RefMetadata> {
     /// A successful rebase result for continuing operations. This will be
@@ -25,7 +32,7 @@ pub struct CommitAmendOutcome<'ws, 'meta, M: RefMetadata> {
     pub commit_selector: Option<Selector>,
     /// Rejected diff specs from commit creation. See [`create_commit`] for
     /// more details.
-    pub rejected_specs: Vec<(but_core::tree::create_tree::RejectionReason, DiffSpec)>,
+    pub rejected_specs: Vec<(RejectionReason, DiffSpec)>,
 }
 
 /// Amend a commit specified by `commit` selector.
@@ -43,22 +50,67 @@ pub struct CommitAmendOutcome<'ws, 'meta, M: RefMetadata> {
 /// changes is keyed to the source checkout, so this must be the first operation
 /// on a fresh editor: that checkout must still describe the pre-amend state.
 ///
-/// When the source worktree has no checkout recorded in the editor, this fails
-/// without mutating the editor graph. Note that the amended commit may already
-/// have been written to the shared object database at that point; it is
-/// unreachable and gets garbage-collected eventually.
+/// When the source worktree has no checkout recorded in the editor, this fails.
+/// The amended commit may already have been written to the shared object database
+/// at that point; it is unreachable and gets garbage-collected eventually.
 ///
 /// `context_lines` define how many diff context lines are being used for
 /// this particular function call. The provided `context_lines` MUST align
 /// with the `context_lines` value used to generate the `DiffSpec`s passed
 /// in the `changes` parameter.
+///
+/// `conflicts` says what happens to changes that don't merge into `commit`.
 pub fn commit_amend<'ws, 'meta, M: RefMetadata>(
     mut editor: Editor<'ws, 'meta, M>,
     commit: impl ToCommitSelector,
     changes: Vec<DiffSpec>,
     context_lines: u32,
     source: ChangeSource<'_>,
+    conflicts: Conflicts,
 ) -> Result<CommitAmendOutcome<'ws, 'meta, M>> {
+    let AmendInEditorOutcome {
+        commit_selector,
+        consumed,
+        rejected_specs,
+    } = amend_in_editor(
+        &mut editor,
+        commit,
+        changes,
+        context_lines,
+        &source,
+        conflicts,
+    )?;
+    cancel_consumed_changes(&mut editor, &source, consumed, context_lines)?;
+
+    Ok(CommitAmendOutcome {
+        rebase: editor.rebase()?,
+        commit_selector,
+        rejected_specs,
+    })
+}
+
+/// The result of [amend_in_editor()].
+#[derive(Debug)]
+pub struct AmendInEditorOutcome {
+    /// Selector pointing to the amended commit, if any change was accepted.
+    pub commit_selector: Option<Selector>,
+    /// The changes that went into the amended commit.
+    pub consumed: Vec<DiffSpec>,
+    /// Rejected diff specs from commit creation. See [create_commit] for
+    /// more details.
+    pub rejected_specs: Vec<(RejectionReason, DiffSpec)>,
+}
+
+/// Like [commit_amend()], but amends `commit` in `editor` without rebasing, and leaves it to the
+/// caller to pass [AmendInEditorOutcome::consumed] to [super::cancel_consumed_changes].
+pub fn amend_in_editor<M: RefMetadata>(
+    editor: &mut Editor<'_, '_, M>,
+    commit: impl ToCommitSelector,
+    changes: Vec<DiffSpec>,
+    context_lines: u32,
+    source: &ChangeSource<'_>,
+    conflicts: Conflicts,
+) -> Result<AmendInEditorOutcome> {
     let (target_selector, target) = editor.find_selectable_commit(commit)?;
 
     let target_id = target.id;
@@ -78,41 +130,31 @@ pub fn commit_amend<'ws, 'meta, M: RefMetadata>(
         );
     }
 
-    // Clone before `create_commit` consumes the vec — needed afterwards
-    // to determine which changes were consumed (not rejected).
-    let all_changes = changes.clone();
-    let create_out = create_commit(
-        source.repo(&editor),
-        Destination::AmendCommit {
-            commit_id: target_id,
-            new_message: None,
-        },
+    let destination = Destination::AmendCommit {
+        commit_id: target_id,
+        new_message: None,
+    };
+    let created = create_commit(
+        source.repo(editor),
+        destination,
         changes,
         context_lines,
+        conflicts,
     )?;
+    let (new_commit, rejected_specs) = (created.new_commit, created.rejected_specs);
 
-    let Some(new_commit_id) = create_out.new_commit else {
-        return Ok(CommitAmendOutcome {
-            rebase: editor.rebase()?,
+    let Some(new_commit_id) = new_commit else {
+        return Ok(AmendInEditorOutcome {
             commit_selector: None,
-            rejected_specs: create_out.rejected_specs,
+            consumed: Vec::new(),
+            rejected_specs,
         });
     };
-
-    // Runs before `replace` so an unknown worktree fails with zero graph mutation.
-    cancel_consumed_changes(
-        &mut editor,
-        &source,
-        all_changes,
-        &create_out.rejected_specs,
-        context_lines,
-    )?;
-
     editor.amend_pick(target_selector, new_commit_id)?;
 
-    Ok(CommitAmendOutcome {
-        rebase: editor.rebase()?,
+    Ok(AmendInEditorOutcome {
         commit_selector: Some(target_selector),
-        rejected_specs: create_out.rejected_specs,
+        consumed: created.consumed_specs,
+        rejected_specs,
     })
 }

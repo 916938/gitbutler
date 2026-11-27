@@ -116,6 +116,8 @@ exceptions = [
     # Each entry is the crate and version constraint, and its specific allow
     # list
     #{ allow = ["Zlib"], crate = "adler32" },
+    # The GPUI client's SVG drawing; BSD-2-Clause asks less than the BSD-3-Clause allowed above.
+    { allow = ["BSD-2-Clause"], crate = "arrayref" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
@@ -135,6 +137,13 @@ exceptions = [
 # Each entry is a crate relative path, and the (opaque) hash of its contents
 #{ path = "LICENSE", hash = 0xbd0eed23 }
 #]
+
+# The GPUI client's diff annotation. Its repository is MIT, but its crate's manifest has no
+# license field and its crate directory has no license file.
+[[licenses.clarify]]
+crate = "deltoids"
+expression = "MIT"
+license-files = []
 
 [licenses.private]
 # If true, ignores workspace crates that aren't published, or are only
@@ -183,6 +192,21 @@ deny = [
     # Wrapper crates can optionally be specified to allow the crate when it
     # is a direct dependency of the otherwise banned crate
     #{ crate = "ansi_term@0.11.0", wrappers = ["this-crate-directly-depends-on-ansi_term"] },
+
+    # The `gitbutler-*` crates are legacy. Only the crates in each `wrappers`
+    # list may depend on one, so new code can't start using them. Remove a
+    # crate from a list when it stops depending on that legacy crate.
+    { crate = "gitbutler-branch-actions", wrappers = ["but", "but-api"] },
+    { crate = "gitbutler-edit-mode", wrappers = ["but", "but-api"] },
+    { crate = "gitbutler-filemonitor", wrappers = ["but-gpui", "gitbutler-watcher"] },
+    { crate = "gitbutler-git", wrappers = ["but", "but-api", "but-workspace"] },
+    { crate = "gitbutler-operating-modes", wrappers = ["but", "but-api", "but-gpui", "gitbutler-branch-actions", "gitbutler-edit-mode", "gitbutler-watcher"] },
+    { crate = "gitbutler-oplog", wrappers = ["but", "but-api", "but-oplog", "gitbutler-branch-actions", "gitbutler-edit-mode"] },
+    { crate = "gitbutler-project", wrappers = ["but", "but-api", "but-ctx", "but-gpui", "gitbutler-branch-actions", "gitbutler-repo", "gitbutler-tauri"] },
+    { crate = "gitbutler-reference", wrappers = ["but-api", "but-branches", "but-graph", "but-meta", "but-rebase", "but-workspace", "gitbutler-branch-actions", "gitbutler-repo"] },
+    { crate = "gitbutler-repo", wrappers = ["but", "but-api", "but-gpui", "but-workspace", "gitbutler-branch-actions", "gitbutler-oplog"] },
+    { crate = "gitbutler-user", wrappers = ["but-api"] },
+    { crate = "gitbutler-watcher", wrappers = ["but", "but-server", "gitbutler-tauri"] },
 ]
 
 # List of features to allow/deny

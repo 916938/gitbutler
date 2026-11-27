@@ -13,7 +13,6 @@ pub(crate) mod state {
         use gitbutler_watcher::Change;
         use tauri::Emitter;
 
-        /// A change we want to inform the frontend about.
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct ChangeForFrontend {
             name: String,
@@ -47,10 +46,6 @@ pub(crate) mod state {
                     Change::WorkspaceActivity { project_id } => ChangeForFrontend {
                         name: format!("project://{project_id}/workspace-activity"),
                         payload: serde_json::json!({}),
-                    },
-                    Change::ExternalInvalidation { project_id, tags } => ChangeForFrontend {
-                        name: format!("project://{project_id}/external-invalidation"),
-                        payload: serde_json::json!({ "tags": tags }),
                     },
                     Change::WorktreeChanges {
                         project_id,
@@ -116,7 +111,6 @@ pub(crate) mod state {
     type WindowLabel = String;
     pub(super) type WindowLabelRef = str;
 
-    /// State associated to windows
     /// Note that this type is managed in Tauri and thus needs to be `Send` and `Sync`.
     #[derive(Clone)]
     pub struct WindowState {
@@ -135,9 +129,7 @@ pub(crate) mod state {
 
     #[derive(Debug)]
     pub enum ProjectAccessMode {
-        // This is the first window to look at a project.
         First,
-        // This is not the first Window to look at the project.
         Shared,
     }
 
@@ -217,15 +209,6 @@ pub(crate) mod state {
         pub fn remove(&self, window: &WindowLabelRef) {
             let mut state_by_label = self.state.lock();
             state_by_label.remove(window);
-        }
-
-        /// Return the list of project ids that are currently open.
-        pub fn open_projects(&self) -> Vec<ProjectHandleOrLegacyProjectId> {
-            let state_by_label = self.state.lock();
-            state_by_label
-                .values()
-                .map(|state| state.project_id.clone())
-                .collect()
         }
     }
 }

@@ -10,18 +10,14 @@ pub use normalize::normalize_short_name;
 
 mod generate;
 pub use generate::{
-    canned_refname, find_unique_refname, find_unique_refname_excluding, unique_canned_refname,
+    canned_refname, find_unique_refname, find_unique_refname_excluding, refuse_colliding_refname,
+    unique_canned_refname,
 };
 
 /// Resolve the remote-tracking ref that corresponds to a local branch ref.
 ///
-/// `ref_name` is the full name of the local branch whose effective tracking ref
-/// should be discovered.
-///
 /// `repo` provides branch configuration and ref lookup access used to resolve
 /// the configured tracking branch or a unique fallback under `refs/remotes/*`.
-///
-/// Returns the resolved remote-tracking ref name as a borrowed or owned value.
 pub fn resolve_tracking_branch_ref_name<'a>(
     ref_name: &'a gix::refs::FullNameRef,
     repo: &'a gix::Repository,
@@ -63,6 +59,25 @@ pub fn resolve_tracking_branch_ref_name<'a>(
     }
 
     bail!("Branch '{ref_name}' has no tracking branch")
+}
+
+/// Return `true` if `identity` is a GitButler-internal branch name that must not
+/// be shown or treated as a user branch.
+pub fn is_technical_branch_name(identity: &bstr::BStr) -> bool {
+    const TECHNICAL_IDENTITIES: &[&[u8]] = &[
+        b"HEAD",
+        b"gitbutler/edit",
+        b"gitbutler/oplog",
+        b"gitbutler/target",
+        b"gitbutler/workspace",
+    ];
+    debug_assert!(
+        TECHNICAL_IDENTITIES.is_sorted(),
+        "binary search requires sorted technical identities"
+    );
+    let identity: &[u8] = identity;
+    TECHNICAL_IDENTITIES.binary_search(&identity).is_ok()
+        || identity.starts_with(b"gitbutler/rename-backup/")
 }
 
 /// A way to safely delete branches, which is only the case it's checked out nowhere.

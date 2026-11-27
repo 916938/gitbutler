@@ -41,6 +41,8 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 
 	private acceptsChangeDropData(data: unknown): data is ChangeDropData {
 		if (!(data instanceof FileChangeDropData || data instanceof FolderChangeDropData)) return false;
+		// A new stack takes the main checkout's changes only.
+		if (data.selectionId.worktree !== undefined) return false;
 		if (data.selectionId.type === "commit" && data.stackId === undefined) return false;
 		if (data.selectionId.type === "branch") return false;
 		return true;
@@ -55,6 +57,8 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 
 	private acceptsBranchDropData(data: unknown): data is BranchDropData {
 		if (!(data instanceof BranchDropData)) return false;
+		// Only a stack's branch tears off into a new stack.
+		if (data.stackId === undefined) return false;
 		if (data.hasConflicts) return false;
 		if (data.numberOfBranchesInStack <= 1) return false; // Can't tear off the last branch of a stack
 		if (data.numberOfCommits === 0) return false; // TODO: Allow to rip empty branches
@@ -79,7 +83,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 	async ondropChangeData(data: ChangeDropData) {
 		switch (data.selectionId.type) {
 			case "commit": {
-				const { stack, outcome, branchName } = await this.macros.createNewStackAndCommit();
+				const { stackId, outcome, branchName } = await this.macros.createNewStackAndCommit();
 
 				if (!outcome.newCommit) {
 					throw new Error("Failed to create a new commit");
@@ -90,7 +94,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 				if (sourceStackId) {
 					const diffSpec = changesToDiffSpec(await data.treeChanges());
 					await this.macros.moveChangesToNewCommit(
-						stack.id,
+						stackId,
 						outcome.newCommit,
 						sourceStackId,
 						sourceCommitId,
@@ -104,10 +108,18 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 				break;
 			}
 			case "worktree": {
-				const stack = await this.stackService.newStackMutation({
+				const created = await this.stackService.branchCreateMutation({
 					projectId: this.projectId,
-					branch: { name: undefined },
+					newRef: null,
+					placement: { type: "independent", subject: { order: null } },
 				});
+
+				const stackId = created.workspace.headInfo.stacks.find((stack) =>
+					stack.segments.some(
+						(segment) => segment.refName?.displayName === created.newRef.displayName,
+					),
+				)?.id;
+				if (!stackId) throw new Error("Created branch has no workspace stack");
 
 				const changes = await data.treeChanges();
 				const assignments = changes
@@ -117,7 +129,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 					.map((h) => ({
 						hunkHeader: h.hunkHeader,
 						pathBytes: h.pathBytes,
-						target: this.stackTarget(stack.id),
+						target: this.stackTarget(stackId),
 					}));
 				await this.diffService.assignHunk({
 					projectId: this.projectId,
@@ -134,7 +146,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 					throw new Error("Hunk drop data must specify the source stackId and commitId");
 				}
 
-				const { stack, outcome, branchName } = await this.macros.createNewStackAndCommit();
+				const { stackId, outcome, branchName } = await this.macros.createNewStackAndCommit();
 
 				if (!outcome.newCommit) {
 					throw new Error("Failed to create a new commit");
@@ -146,7 +158,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 						: null;
 
 				await this.macros.moveChangesToNewCommit(
-					stack.id,
+					stackId,
 					outcome.newCommit,
 					data.stackId,
 					data.commitId,
@@ -169,10 +181,18 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 				break;
 			}
 			case "worktree": {
-				const stack = await this.stackService.newStackMutation({
+				const created = await this.stackService.branchCreateMutation({
 					projectId: this.projectId,
-					branch: { name: undefined },
+					newRef: null,
+					placement: { type: "independent", subject: { order: null } },
 				});
+
+				const stackId = created.workspace.headInfo.stacks.find((stack) =>
+					stack.segments.some(
+						(segment) => segment.refName?.displayName === created.newRef.displayName,
+					),
+				)?.id;
+				if (!stackId) throw new Error("Created branch has no workspace stack");
 
 				const assignmentReactive = this.uncommittedService.getAssignmentByHeader(
 					data.stackId,
@@ -190,7 +210,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 						{
 							hunkHeader: assignment.hunkHeader,
 							pathBytes: assignment.pathBytes,
-							target: this.stackTarget(stack.id),
+							target: this.stackTarget(stackId),
 						},
 					],
 				});
@@ -209,15 +229,17 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 			this.uiState.lane(data.stackId).selection.set(undefined);
 		}
 
-		const stack = await this.stackService.newStackMutation({
+		const created = await this.stackService.branchCreateMutation({
 			projectId: this.projectId,
-			branch: { name: undefined },
+			newRef: null,
+			placement: { type: "independent", subject: { order: null } },
 		});
 
-		const stackId = stack.id;
-		// Freshly-created stacks always have at least one head per the
-		// StackEntryNoOpt invariant ("list is never empty").
-		const branchName = stack.heads[0]!.name;
+		const branchName = created.newRef.displayName;
+		const stackId = created.workspace.headInfo.stacks.find((stack) =>
+			stack.segments.some((segment) => segment.refName?.displayName === branchName),
+		)?.id;
+		if (!stackId) throw new Error("Created branch has no workspace stack");
 
 		const { relativeTo, side } = toCommitMovePlacement({
 			targetBranchName: branchName,
@@ -253,6 +275,7 @@ export class OutsideLaneDzHandler implements DropzoneHandler {
 	}
 
 	async ondropBranchData(data: BranchDropData): Promise<DropResult | void> {
+		if (data.stackId === undefined) return;
 		const beforeAppliedStackCount = (await this.stackService.fetchStacks(this.projectId)).length;
 		const result = await this.stackService.tearOffBranch({
 			projectId: this.projectId,

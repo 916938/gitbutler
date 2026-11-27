@@ -12,7 +12,7 @@ use but_rebase::graph_rebase::mutate::{InsertSide, RelativeTo};
 use but_transaction::Transaction;
 use but_workspace::RefInfo;
 use gitbutler_oplog::entry::{OperationKind, SnapshotDetails};
-use gix::ObjectId;
+use gix::{ObjectId, refs::FullNameRef};
 use itertools::Itertools as _;
 use serde::Serialize;
 
@@ -24,14 +24,14 @@ use crate::{
     },
     bad_input,
     command::legacy::commit::{
-        BranchNameTarget, CommitOperation, CommitOperationTargetIsh, RouteCommitOperationError,
-        route_commit_operation,
+        BranchNameTarget, CommitOperation, CommitOperationTargetIsh, CommitToNewBranchOperation,
+        RouteCommitOperationError, refuse_switch_with_detached_head, route_commit_operation,
     },
     id::CommitId,
     theme::{self, Theme},
     utils::{
         CliOutput, CliOutputHuman, IntermediateChannel, WriteWithUtils, change_source::InvokedFrom,
-        merged_upstream::MergedUpstream, single_branch_mode::SingleBranchMode,
+        merged_upstream::MergedUpstream,
     },
 };
 
@@ -138,7 +138,7 @@ pub fn pick(
 ) -> CliResult<(PickOutcome, WorkspaceState)> {
     let mut guard = ctx.exclusive_worktree_access();
     let mut meta = ctx.meta()?;
-    let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
+    let id_map = IdMap::new_from_context(ctx, guard.read_permission(), Some(invoked_from))?;
     let head_info = but_api::legacy::workspace::head_info(ctx)?;
 
     let pick_op = resolve(
@@ -170,9 +170,15 @@ fn resolve(
         sources,
         allow_merged,
         switch,
+        json: _,
     } = args;
 
-    let merged = MergedUpstream::new(&*ctx.repo.get()?, head_info, allow_merged);
+    let merged = MergedUpstream::new(
+        &*ctx.repo.get()?,
+        &ctx.project_meta()?,
+        head_info,
+        allow_merged,
+    );
 
     let sources = {
         let repo = ctx.repo.get()?;
@@ -235,6 +241,7 @@ fn resolve(
                     .hint("You can specify where to pick to with `--branch [<BRANCH>]`")
                     .into()
             }
+            RouteCommitOperationError::BranchlessWorktree(err) => err.into(),
             RouteCommitOperationError::Other(cli_error) => cli_error,
         })?
     };
@@ -261,42 +268,27 @@ pub fn run(
 ) -> anyhow::Result<(PickOutcome, WorkspaceState)> {
     let PickOperation {
         sources,
-        commit_op,
+        mut commit_op,
         order_commits_by_parentage,
     } = pick_op;
 
-    let sbm = (commit_op.will_create_reference() || commit_op.switch())
-        .then(|| SingleBranchMode::new(ctx, perm.read_permission(), commit_op.switch()))
-        .transpose()?;
+    let new_branch = commit_op.name_new_branch(&*ctx.repo.get()?)?;
+    // Named so undo deletes the new branch again.
+    let snapshot_refs: Vec<&FullNameRef> = new_branch.iter().map(AsRef::as_ref).collect();
+    if commit_op.switch() {
+        refuse_switch_with_detached_head(&*ctx.repo.get()?)?;
+    }
     let snapshot_details =
         SnapshotDetails::new(OperationKind::CherryPick).with_count(sources.len());
-    let ((new_commits, branch_name_target), ws) = if let Some(sbm) = sbm {
-        sbm.transaction_with_workspace_setup(
-            ctx,
-            meta,
-            snapshot_details,
-            perm,
-            commit_op.will_create_unstacked_reference(),
-            |tx| {
-                pick_with_transaction(
-                    tx,
-                    commit_op,
-                    &sources,
-                    order_commits_by_parentage,
-                    Some(&sbm),
-                )
-            },
-        )
-    } else {
-        but_transaction::with_transaction_with_perm(
-            ctx,
-            meta,
-            perm,
-            snapshot_details,
-            DryRun::No,
-            |tx| pick_with_transaction(tx, commit_op, &sources, order_commits_by_parentage, None),
-        )
-    }?;
+    let ((new_commits, branch_name_target), ws) = but_transaction::with_transaction_with_perm(
+        ctx,
+        meta,
+        perm,
+        snapshot_details,
+        &snapshot_refs,
+        DryRun::No,
+        |tx| pick_with_transaction(tx, commit_op, &sources, order_commits_by_parentage),
+    )?;
 
     let new_commits = new_commits.into_iter().map(Into::into).collect();
 
@@ -315,18 +307,20 @@ fn pick_with_transaction(
     commit_op: CommitOperation,
     sources: &[ObjectId],
     order_commits_by_parentage: bool,
-    sbm: Option<&SingleBranchMode>,
 ) -> anyhow::Result<but_transaction::Commit<(Vec<CommitIdentifiers>, Option<BranchNameTarget>)>> {
     let (relative_to, side, branch_name_target) = match commit_op {
-        CommitOperation::CommitToNewBranch(op) => {
-            let branch_name = op.create_reference(&mut tx, sbm)?;
+        CommitOperation::CommitToNewBranch(CommitToNewBranchOperation {
+            branch_name,
+            switch,
+        }) => {
+            let branch_name = tx.create_unstacked_reference(branch_name, switch)?;
             (
                 RelativeTo::Reference(branch_name.clone()),
                 InsertSide::Below,
                 Some(BranchNameTarget::New(branch_name)),
             )
         }
-        CommitOperation::CommitAt(op) => op.create_target(&mut tx, sbm)?,
+        CommitOperation::CommitAt(op) => op.create_target(&mut tx)?,
     };
     let new_commits = tx.cherry_pick_commits(
         sources.iter().copied(),

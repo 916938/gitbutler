@@ -45,20 +45,6 @@ pub async fn list_recently_closed(
         .context("Failed to list recently closed pull requests")
 }
 
-pub async fn list_all_for_target(
-    preferred_account: Option<&crate::BitbucketAccountIdentifier>,
-    workspace: &str,
-    repo_slug: &str,
-    target_branch: &str,
-    storage: &but_forge_storage::Controller,
-) -> Result<Vec<crate::client::BitbucketPullRequest>> {
-    BitbucketClient::from_storage(storage, preferred_account)?
-        .list_prs_for_target(workspace, repo_slug, target_branch)
-        .await
-        .map_err(classify_forge_error)
-        .context("Failed to list pull requests for target branch")
-}
-
 pub async fn get(
     preferred_account: Option<&crate::BitbucketAccountIdentifier>,
     workspace: &str,
@@ -189,16 +175,12 @@ mod tests {
 
     #[test]
     fn connection_failures_carry_the_network_error_code() {
-        // Binding an ephemeral port and dropping the listener leaves a port
-        // that was just proven closed; connecting to it produces the same
-        // `reqwest::Error` shape as an unreachable Bitbucket host.
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        // Nothing listens on loopback port 1, and binding port 0 never returns
+        // it, so a server in another test process can't take it. The refused
+        // connection has the same `reqwest::Error` shape as an unreachable
+        // Bitbucket host.
         let reqwest_err = reqwest::blocking::Client::new()
-            .get(format!("http://127.0.0.1:{port}"))
+            .get("http://127.0.0.1:1")
             .send()
             .unwrap_err();
         let err = classify_forge_error(anyhow::Error::from(reqwest_err));

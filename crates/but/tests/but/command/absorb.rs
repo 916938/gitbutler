@@ -73,7 +73,7 @@ fn uncommitted_file() {
     env.setup_metadata_at_target(&["A", "B"], "origin/main");
     commit_file_with_worktree_changes_as_two_hunks(&env, "A", "a.txt");
 
-    env.but("--json status -f")
+    env.but("status --json -f")
         .allow_json()
         .assert()
         .success()
@@ -127,7 +127,7 @@ lasta
     );
 
     // Status is clean
-    env.but("--json status -f")
+    env.but("status --json -f")
         .allow_json()
         .assert()
         .success()
@@ -214,7 +214,7 @@ last
     );
 
     // Status is not clean
-    env.but("--json status -f")
+    env.but("status --json -f")
         .allow_json()
         .assert()
         .success()
@@ -531,7 +531,7 @@ fn dry_run_shows_plan_without_changes() {
 
     // Get initial status
     let initial_status = env
-        .but("--json status -f")
+        .but("status --json -f")
         .allow_json()
         .output()
         .unwrap()
@@ -556,7 +556,7 @@ Dry run complete. No changes were made.
 
     // Verify that no changes were actually made - status should be unchanged
     let post_dry_run_status = env
-        .but("--json status -f")
+        .but("status --json -f")
         .allow_json()
         .output()
         .unwrap()
@@ -600,7 +600,7 @@ last
     );
 
     // Verify there are still uncommitted changes
-    env.but("--json status -f")
+    env.but("status --json -f")
         .allow_json()
         .assert()
         .success()
@@ -717,7 +717,7 @@ fn absorb_json_reports_skipped_merged_upstream_commits_on_stderr() {
     env.setup_metadata_at_target(&["A", "B"], "refs/heads/base");
     env.file("file-a.txt", "change-A-modified\n");
 
-    env.but("--json absorb")
+    env.but("absorb --json")
         .allow_json()
         .env("NO_BG_TASKS", "1")
         .assert()
@@ -747,7 +747,7 @@ fn absorb_json_reports_partially_skipped_merged_upstream_commits() {
     env.file("file-a.txt", "change-A-modified\n");
     env.file("file-b.txt", "change-B-modified\n");
 
-    env.but("--json absorb")
+    env.but("absorb --json")
         .allow_json()
         .env("NO_BG_TASKS", "1")
         .assert()
@@ -833,7 +833,6 @@ c
 fn absorbing_a_linked_worktrees_changes_is_refused() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    util::enable_worktree_manipulation(&env);
     env.but("status").assert().success();
     let wt_dir = util::add_dirty_worktree(&env, "wt-feature", "A");
     env.file("main.txt", "dirty in main\n");
@@ -890,7 +889,7 @@ Hint: run `but diff` to see uncommitted changes and `but commit -b <branch> -m "
 fn bare_absorb_in_an_unmanaged_worktree_is_refused() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("two-stacks");
     env.setup_metadata(&["A", "B"]);
-    let wt_dir = util::add_dirty_worktree(&env, "wt-feature", "A");
+    let wt_dir = util::add_unmanaged_worktree(&env, "wt-feature");
     env.file("main.txt", "dirty in main\n");
 
     env.but("absorb")

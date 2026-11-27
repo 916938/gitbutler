@@ -1,5 +1,3 @@
-//! Schemars utilities for JSON schema generation.
-//!
 //! Each helper in this crate is meant to be used from
 //! `#[schemars(schema_with = "...")]` on the field whose runtime type should be
 //! exported as a simpler JSON shape.
@@ -359,8 +357,6 @@ pub fn serde_error_opt(generate: &mut schemars::SchemaGenerator) -> schemars::Sc
     generate.subschema_for::<Option<SerdeErrorSchema>>()
 }
 
-/// A Schema registered from around the codebase
-///
 /// This is used internally for the but-ts schema registration. You probably
 /// never need to use this struct directly or indirectly.
 ///
@@ -368,49 +364,13 @@ pub fn serde_error_opt(generate: &mut schemars::SchemaGenerator) -> schemars::Sc
 /// macro.
 #[derive(Debug)]
 pub struct SchemarEntry {
-    /// The name of the schema getting registered
     pub name: fn() -> Cow<'static, str>,
-    /// The qualified type that was registered
     pub type_name: &'static str,
-    /// The location of the register call
     pub registration_location: &'static str,
-    /// The actual schema of the type getting registered
     pub schema: fn() -> schemars::Schema,
 }
 
 inventory::collect!(SchemarEntry);
-
-/// One `#[but_api(napi)]` function's JS-visible name and the names of its
-/// parameters, in call order.
-///
-/// napi-rs declares those parameters positionally, so a caller holding a
-/// payload object has no way to know which field feeds which argument. This
-/// carries the only piece it is missing — the names — from the Rust
-/// signature that owns them; the types keep coming from napi-rs's own
-/// declarations.
-pub struct ApiFnEntry {
-    /// The name napi-rs exposes to JavaScript, e.g. `branchDiff`.
-    pub js_name: &'static str,
-    /// Parameter names in call order, camelCased to match the declaration.
-    pub params: &'static [&'static str],
-    /// Repository-relative path to the Rust function carrying `#[but_api]`.
-    pub source_file: &'static str,
-    /// Line of the Rust function carrying `#[but_api]`.
-    pub source_line: u32,
-    /// The cache tags this read's result is made of, declared with
-    /// `#[but_api(provides = [Reviews, ..])]`.
-    ///
-    /// `None` is unclassified and `Some(&[])` is "no tag — nothing refreshes
-    /// this" — a consumer driving cache invalidation from this has to tell
-    /// them apart, since only the second is an answer.
-    pub provides: Option<&'static [&'static str]>,
-    /// The cache tags this mutation makes stale, declared with
-    /// `#[but_api(invalidates = [Reviews, ..])]`. Mutually exclusive with
-    /// `provides`.
-    pub invalidates: Option<&'static [&'static str]>,
-}
-
-inventory::collect!(ApiFnEntry);
 
 use std::borrow::Cow;
 

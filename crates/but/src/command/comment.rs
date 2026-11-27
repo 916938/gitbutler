@@ -1,5 +1,3 @@
-//! Implementation of the `but _comment` command.
-
 use but_api::comments::{self, store};
 use but_comments::{DiffComment, DiffSide, NewComment, StoredComment};
 use but_core::sync::RepoShared;
@@ -281,7 +279,7 @@ fn resolve(ctx: &Context, args: Platform, perm: &RepoShared) -> CliResult<Commen
             let commit_id = commit
                 .map(|commit| -> CliResult<gix::ObjectId> {
                     let repo = ctx.repo.get()?;
-                    let id_map = IdMap::new_from_context(ctx, perm)?;
+                    let id_map = IdMap::new_from_context(ctx, perm, None)?;
                     let value = commit.to_string();
                     match commit.resolve_in_workspace(&repo, &id_map, Purpose::Target, None)? {
                         ResolvedCliIdArg::Commit(commit) => Ok(commit.commit_id),

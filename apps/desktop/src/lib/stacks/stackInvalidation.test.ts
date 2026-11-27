@@ -31,7 +31,7 @@ const headInfo = {
 	],
 } as RefInfo;
 const integrationResult = {
-	workspaceState: { headInfo, replacedCommits: {}, checkoutConflictOccurred: false },
+	workspaceState: { headInfo, replacedCommits: {}, conflictedCheckouts: [] },
 	worktreeConflicts: [],
 	targetCommits: null,
 } satisfies WorkspaceIntegrateUpstreamOutcome;
@@ -106,6 +106,7 @@ test("integration refetches every surviving branch without refetching the remove
 			projectId,
 			branch: removed,
 			noFf: false,
+			ffOnly: false,
 			wholeStack: false,
 		}),
 	);

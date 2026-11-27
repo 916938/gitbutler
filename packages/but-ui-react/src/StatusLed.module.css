@@ -1,0 +1,20 @@
+/* Inline-block, so it keeps its size outside a flex row too, as on its own. */
+.led {
+	display: inline-block;
+	flex-shrink: 0;
+	width: 8px;
+	height: 8px;
+	border-radius: var(--but-radius-full);
+}
+
+.safe {
+	background-color: var(--but-success-mark);
+}
+
+.warning {
+	background-color: var(--but-warning-mark);
+}
+
+.gray {
+	background-color: var(--but-border);
+}

@@ -12,17 +12,12 @@ doctest = false
 
 [features]
 export-schema = ["dep:schemars", "dep:but-schemars"]
-## Make legacy functionality available.
-legacy = []
 
 [dependencies]
 but-error.workspace = true
 but-project-handle.workspace = true
 but-serde.workspace = true
 
-# for safe-checkout
-git2.workspace = true
-but-oxidize.workspace = true
 
 nonempty.workspace = true
 serde.workspace = true
@@ -37,16 +32,20 @@ gix = { workspace = true, features = [
     "serde",
     "status",
     "merge",
+    "worktree-mutation",
 ] }
+gix-encoding = { version = "0.1.0", default-features = false }
 smallvec.workspace = true
 # for V1 conflict commits
 toml.workspace = true
-chardetng = "0.1.17"
 
 # for `id`
 uuid.workspace = true
 
 boolean-enums.workspace = true
+
+# for staging checkout files before moving them into the worktree
+tempfile.workspace = true
 
 # for parallel changeset-similarity computation
 flume = "0.11.1"

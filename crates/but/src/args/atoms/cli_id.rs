@@ -1,6 +1,5 @@
-use bstr::BString;
+use bstr::{BString, ByteSlice as _};
 use but_core::ref_metadata::StackId;
-use itertools::Itertools as _;
 use nonempty::NonEmpty;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
         LaneId, UncommittedHunkOrFile,
     },
     theme,
-    utils::change_source::ChangeSourceId,
+    utils::change_source::{ChangeSourceId, conflicted_worktree_paths},
 };
 
 /// An argument atom for cli ids that can match multiple things like branches, commits, files, etc.
@@ -41,6 +40,26 @@ impl CliIdArg {
     pub const CHANGE_MISSING_HINT: &str =
         "Run `but diff` for the current change IDs; a hunk ID is `<file>:<hunk>`.";
 
+    /// Hint for an argument that resolved to several things.
+    pub(crate) const AMBIGUOUS_HINT: &str = "Use a longer ID to disambiguate. A path starting with `./` or `../` is read only from the current directory.";
+
+    /// The hint for an argument that resolved to nothing: `fallback`, unless it names a file with
+    /// unresolved conflicts, which has no ID. `repo` is the main worktree's, which is also where
+    /// `but resolve` acts.
+    pub fn missing_hint(&self, fallback: &str, repo: &gix::Repository, id_map: &IdMap) -> String {
+        let conflicted = conflicted_worktree_paths(repo).unwrap_or_default();
+        match id_map
+            .main_worktree_paths(&self.0)
+            .into_iter()
+            .find(|path| conflicted.contains(path))
+        {
+            Some(path) => format!(
+                "'{path}' has unresolved conflicts: edit it to the wanted contents (or delete it), then run `but resolve {path}` to mark it resolved."
+            ),
+            None => fallback.to_owned(),
+        }
+    }
+
     /// Parse this argument into all matching CLI IDs in the workspace.
     pub fn parse(&self, repo: &gix::Repository, id_map: &IdMap) -> CliResult<Vec<CliId>> {
         Ok(id_map.parse_using_repo(&self.0, repo)?)
@@ -61,7 +80,7 @@ impl CliIdArg {
             Ok(id)
         } else {
             Err(bad_input(format!("Could not find {purpose}: '{self}'"))
-                .hint(Self::TARGET_MISSING_HINT)
+                .hint(self.missing_hint(Self::TARGET_MISSING_HINT, repo, id_map))
                 .into())
         }
     }
@@ -98,9 +117,9 @@ impl CliIdArg {
             CliId::UncommittedHunkOrFile(uncommitted) => {
                 ResolvedCliIdArg::UncommittedHunkOrFile(Box::new(uncommitted))
             }
-            // The source is dropped because a path prefix is always the main
-            // worktree's, see `IdMap::parse_uncommitted_path_prefix`.
-            CliId::PathPrefix { id, hunks, .. } => ResolvedCliIdArg::PathPrefix { id, hunks },
+            CliId::PathPrefix { id, hunks, source } => {
+                ResolvedCliIdArg::PathPrefix { id, hunks, source }
+            }
             CliId::CommittedFile { committed_file, .. } => {
                 ResolvedCliIdArg::CommittedFile(committed_file)
             }
@@ -110,41 +129,41 @@ impl CliIdArg {
         }))
     }
 
-    /// Resolve the argument to a commit that exists in the workspace.
-    pub fn resolve_commit_in_workspace(
+    /// Resolve the argument to a commit anywhere in the repository.
+    ///
+    /// A commit or branch in the workspace resolves by CLI ID or name first, a branch to its tip.
+    /// Anything else is read as a Git revision, like a SHA, `HEAD`, `origin/main`, or a branch
+    /// outside the workspace.
+    pub fn resolve_commit(
         &self,
         repo: &gix::Repository,
         id_map: &IdMap,
     ) -> CliResult<gix::ObjectId> {
-        if let Some(commit) = self.try_resolve_commit(repo, id_map)? {
-            Ok(commit)
-        } else {
-            Err(bad_input(format!("Could not find commit: '{self}'"))
-                .hint(Self::TARGET_MISSING_HINT)
-                .into())
-        }
-    }
-
-    /// Try and resolve the argument a commit that might exist in the workspace.
-    ///
-    /// Returns `Ok(None)` if it doesn't exist in the workspace.
-    pub fn try_resolve_commit(
-        &self,
-        repo: &gix::Repository,
-        id_map: &IdMap,
-    ) -> CliResult<Option<gix::ObjectId>> {
-        let Some(id) =
-            try_resolve_cli_id(self, repo, id_map, Purpose::Commit, Some(Priority::Commit))?
-        else {
-            return Ok(None);
-        };
-        match id {
-            CliId::Commit {
+        let rev: BString = match try_resolve_cli_id(
+            self,
+            repo,
+            id_map,
+            Purpose::Commit,
+            Some(Priority::Commit),
+        )? {
+            Some(CliId::Commit {
                 commit: CommitId { commit_id, .. },
                 ..
-            } => Ok(Some(commit_id)),
-            _ => Ok(None),
-        }
+            }) => return Ok(commit_id),
+            Some(CliId::Branch(branch)) => BranchArg(branch.name)
+                .resolve_existing_local_branch(repo)?
+                .into_inner(),
+            _ => self.0.as_str().into(),
+        };
+        let commit = match repo.rev_parse_single(rev.as_bstr()) {
+            Ok(id) => id.object()?.peel_to_commit().ok(),
+            Err(_) => None,
+        };
+        commit.map(|commit| commit.id).ok_or_else(|| {
+            bad_input(format!("Could not find commit: '{self}'"))
+                .hint(Self::TARGET_MISSING_HINT)
+                .into()
+        })
     }
 
     /// Resolve the argument to a branch that exists in the workspace.
@@ -312,7 +331,9 @@ impl CliIdArg {
                 .filter(|id| {
                     matches!(
                         id,
-                        CliId::UncommittedHunkOrFile(_) | CliId::UncommittedArea { .. }
+                        CliId::UncommittedHunkOrFile(_)
+                            | CliId::PathPrefix { .. }
+                            | CliId::UncommittedArea { .. }
                     )
                 })
                 .collect::<Vec<_>>();
@@ -320,41 +341,10 @@ impl CliIdArg {
                 0 => return Ok(None),
                 1 => uncommitted.pop().expect("exactly one item"),
                 _ => {
-                    // When the matches are one path dirty in several checkouts,
-                    // lengthening the ID cannot fix it - name the checkouts instead.
-                    // Prefix matches on distinct paths do not qualify: their scoped
-                    // forms would not resolve, as scoping matches by filename.
-                    let files: Vec<_> = uncommitted
-                        .iter()
-                        .filter_map(|id| id.as_uncommitted_hunk_or_file())
-                        .collect();
-                    let sources: Vec<String> = files
-                        .iter()
-                        .map(|uncommitted| uncommitted.source.selector().to_string())
-                        .unique()
-                        .collect();
-                    let same_path_once_per_checkout = files.len() == uncommitted.len()
-                        && sources.len() == uncommitted.len()
-                        && files
-                            .iter()
-                            .map(|uncommitted| &uncommitted.hunks.first().hunk.path)
-                            .all_equal();
-                    let hint = if same_path_once_per_checkout {
-                        let path = &files[0].hunks.first().hunk.path;
-                        format!(
-                            "'{self}' is uncommitted in several worktrees; scope it as {}",
-                            sources
-                                .iter()
-                                .map(|source| format!("`{source}:{path}`"))
-                                .join(" or ")
-                        )
-                    } else {
-                        "Use a longer ID to disambiguate".to_string()
-                    };
                     return Err(bad_input(format!(
                         "Ambiguous uncommitted change '{self}', matches multiple items"
                     ))
-                    .hint(hint)
+                    .hint(Self::AMBIGUOUS_HINT)
                     .into());
                 }
             }
@@ -373,7 +363,7 @@ impl CliIdArg {
         } else {
             Err(
                 bad_input(format!("Could not find uncommitted change: '{self}'"))
-                    .hint(Self::CHANGE_MISSING_HINT)
+                    .hint(self.missing_hint(Self::CHANGE_MISSING_HINT, repo, id_map))
                     .into(),
             )
         }
@@ -420,7 +410,13 @@ fn try_resolve_cli_id(
     purpose: Purpose,
     priority: Option<Priority>,
 ) -> CliResult<Option<CliId>> {
-    let mut target_ids = arg.parse(repo, id_map)?.into_iter().peekable();
+    // A priority means the caller wants a branch or commit. It may fall back on the word being
+    // something else entirely, like a Git revision, so a directory of the same name can't stop it.
+    let mut target_ids = arg
+        .parse(repo, id_map)?
+        .into_iter()
+        .filter(|id| priority.is_none() || !matches!(id, CliId::PathPrefix { .. }))
+        .peekable();
     let Some(target) = target_ids.next() else {
         return Ok(None);
     };
@@ -478,7 +474,7 @@ fn try_resolve_cli_id(
     Err(bad_input(format!(
         "Ambiguous {purpose} '{arg}', matches multiple items"
     ))
-    .hint("Use a longer ID to disambiguate")
+    .hint(CliIdArg::AMBIGUOUS_HINT)
     .into())
 }
 
@@ -530,6 +526,7 @@ pub enum ResolvedCliIdArg {
     PathPrefix {
         id: String,
         hunks: NonEmpty<IdAndHunk>,
+        source: ChangeSourceId,
     },
     Stack {
         id: String,
@@ -603,8 +600,8 @@ impl ResolvedCliIdArg {
             ResolvedCliIdArg::CommittedHunk(committed_hunk) => {
                 ResolvedCliIdArgRef::CommittedHunk(committed_hunk)
             }
-            ResolvedCliIdArg::PathPrefix { id, hunks } => {
-                ResolvedCliIdArgRef::PathPrefix { id, hunks }
+            ResolvedCliIdArg::PathPrefix { id, hunks, source } => {
+                ResolvedCliIdArgRef::PathPrefix { id, hunks, source }
             }
             ResolvedCliIdArg::Uncommitted(source) => ResolvedCliIdArgRef::Uncommitted(source),
             ResolvedCliIdArg::Stack { id, stack_id } => ResolvedCliIdArgRef::Stack {
@@ -660,14 +657,15 @@ impl PartialEq<CliId> for ResolvedCliIdArg {
             ResolvedCliIdArg::PathPrefix {
                 id: lhs_id,
                 hunks: lhs_hunks,
+                source: lhs_source,
             } => {
                 if let CliId::PathPrefix {
                     id: rhs_id,
                     hunks: rhs_hunks,
-                    source: _,
+                    source: rhs_source,
                 } = other
                 {
-                    return lhs_id == rhs_id && lhs_hunks == rhs_hunks;
+                    return lhs_id == rhs_id && lhs_hunks == rhs_hunks && lhs_source == rhs_source;
                 }
             }
             ResolvedCliIdArg::Stack {
@@ -723,6 +721,7 @@ pub enum ResolvedCliIdArgRef<'a> {
     PathPrefix {
         id: &'a str,
         hunks: &'a NonEmpty<IdAndHunk>,
+        source: &'a ChangeSourceId,
     },
     Uncommitted(&'a ChangeSourceId),
     Stack {

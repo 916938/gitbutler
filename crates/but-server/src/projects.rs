@@ -26,7 +26,6 @@ struct ProjectHandles {
 }
 
 pub struct ActiveProjects {
-    /// The .git directory of the project we know as active.
     projects: HashMap<ProjectHandleOrLegacyProjectId, ProjectHandles>,
 }
 
@@ -47,7 +46,6 @@ impl ActiveProjects {
             return Ok(());
         }
 
-        // Set up file watcher for worktree changes
         let handler = gitbutler_watcher::Handler::new({
             let broadcaster = broadcaster.clone();
             move |value| {
@@ -76,10 +74,6 @@ impl ActiveProjects {
                     Change::WorkspaceActivity { project_id } => FrontendEvent {
                         name: format!("project://{project_id}/workspace-activity"),
                         payload: serde_json::json!({}),
-                    },
-                    Change::ExternalInvalidation { project_id, tags } => FrontendEvent {
-                        name: format!("project://{project_id}/external-invalidation"),
-                        payload: serde_json::json!({ "tags": tags }),
                     },
                     Change::WorktreeChanges {
                         project_id,
@@ -116,7 +110,7 @@ impl ActiveProjects {
             handler,
             ctx.workdir_or_fail()?,
             ctx.legacy_project.id.clone(),
-            app_settings_sync.clone(),
+            app_settings_sync,
             watch_mode,
         )?;
 
@@ -141,12 +135,8 @@ pub struct ProjectInfo {
     headsup: Option<String>,
 }
 
-pub async fn list_projects(extra: &Extra) -> anyhow::Result<serde_json::Value> {
-    let active_projects = extra.active_projects.lock().await;
-    let project_ids: Vec<ProjectHandleOrLegacyProjectId> =
-        active_projects.projects.keys().cloned().collect();
-    let projects_for_frontend = but_api::legacy::projects::list_projects(project_ids)?;
-    Ok(json!(projects_for_frontend))
+pub fn list_projects() -> anyhow::Result<serde_json::Value> {
+    Ok(json!(but_api::legacy::projects::list_projects()?))
 }
 
 pub async fn set_project_active(

@@ -13,14 +13,15 @@ use but_rebase::{
     },
 };
 use but_workspace::commit_engine;
-use gitbutler_commit::commit_ext::CommitExt;
 use gitbutler_oplog::{
     OplogExt, SnapshotExt,
     entry::{OperationKind, SnapshotDetails},
 };
 use tracing::instrument;
 
-#[but_api(napi, try_from = but_workspace::ui::RefInfo, provides = [Workspace])]
+use crate::commit::json::ChangesSource;
+
+#[but_api(try_from = but_workspace::ui::RefInfo)]
 #[instrument(err(Debug))]
 pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
     let repo = ctx.clone_repo_for_merging_non_persisting()?;
@@ -29,17 +30,17 @@ pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
     // borrows the database again below.
     let ws = {
         let mut db = ctx.db.get_cache_mut()?;
-        but_graph::Graph::from_head(
+        but_workspace::ref_info::workspace(
             &repo,
             &meta,
-            ctx.project_meta()?,
             &mut db,
-            but_graph::init::Options {
-                worktrees: ctx.settings.feature_flags.worktree_manipulation,
+            ctx.project_meta()?,
+            &but_graph::init::Options {
+                worktrees: true,
                 ..but_graph::init::Options::limited()
             },
+            None,
         )?
-        .into_workspace()?
     };
     let gerrit_mode_enabled = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
     let db = gerrit_mode_enabled
@@ -63,10 +64,9 @@ pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
     // Enrich active associations from the forge cache while keeping durable
     // stored identity for integrated branches.
     let forge_db = ctx.db.get_cache()?;
-    info.apply_forge_review_associations(
-        &repo,
-        &but_forge::review_associations_by_head(&forge_db)?,
-    );
+    info.apply_forge_review_associations(&but_forge::review_associations_by_head(
+        &forge_db, &repo,
+    )?);
 
     Ok(info)
 }
@@ -75,14 +75,11 @@ pub fn head_info(ctx: &but_ctx::Context) -> Result<but_workspace::RefInfo> {
 #[but_api]
 #[instrument(err(Debug))]
 pub fn show_graph_svg(ctx: &Context) -> Result<()> {
-    let mut options = but_graph::init::Options::limited();
-    options.collect_tags = true;
-    options.worktrees = ctx.settings.feature_flags.worktree_manipulation;
-    let repo = ctx.open_isolated_repo()?;
     let meta = ctx.meta()?;
-    let mut db = ctx.db.get_cache_mut()?;
-    let graph = but_graph::Graph::from_head(&repo, &meta, ctx.project_meta()?, &mut db, options)?;
-    graph.open_as_svg();
+    let (_guard, repo, ws, _db) = ctx.workspace_and_db()?;
+    // This is the graph the rebase editor is built from, which is walked from the entrypoint as well.
+    let heads = Vec::from_iter(ws.graph.entrypoint()?.commit().map(|commit| commit.id));
+    but_graph::nosegment::workspace_segment_graph(&ws, &repo, &meta, heads)?.open_as_svg();
     Ok(())
 }
 
@@ -127,9 +124,9 @@ fn handle_gerrit(
     for commit in branch.commits.iter_mut() {
         let change_id = repo
             .find_commit(commit.id)
-            .map_err(anyhow::Error::from)
-            .and_then(|c| c.change_id().ok_or(anyhow::anyhow!("no change-id")));
-        if let Ok(change_id) = change_id
+            .ok()
+            .and_then(|c| but_core::Commit::try_from(c).ok()?.headers()?.change_id);
+        if let Some(change_id) = change_id
             && let Some(meta) = db.get(&change_id.to_string())?
         {
             commit.gerrit_review_url = Some(meta.review_url.clone());
@@ -149,7 +146,7 @@ fn handle_gerrit(
     Ok(())
 }
 
-#[but_api(napi, provides = [Branches])]
+#[but_api]
 #[instrument(err(Debug))]
 pub fn branch_details(
     ctx: &but_ctx::Context,
@@ -211,28 +208,36 @@ pub fn branch_details(
     Ok(details)
 }
 
-/// Discard all worktree changes that match the specs in `worktree_changes`.
+/// Discard the specified worktree changes, returning any specs that could not be applied.
+/// Pass no hunks in a spec to discard the whole file.
 ///
-/// If whole files should be discarded, be sure to not pass any hunks
-///
-/// Returns the `worktree_changes` that couldn't be applied,
-#[but_api(napi)]
+/// `changes_source` selects the main checkout or an active linked worktree. Linked worktree
+/// discards are not snapshotted, as the oplog cannot restore their files.
+#[but_api]
 #[instrument(err(Debug))]
 pub fn discard_worktree_changes(
-    ctx: &mut but_ctx::Context,
+    ctx: &mut Context,
+    changes_source: ChangesSource,
     worktree_changes: Vec<but_core::DiffSpec>,
 ) -> Result<Vec<but_core::DiffSpec>> {
     let mut guard = ctx.exclusive_worktree_access();
-
-    let _ = ctx.create_snapshot(
-        SnapshotDetails::new(OperationKind::DiscardChanges),
-        guard.write_permission(),
-    );
-    let refused = but_workspace::discard_workspace_changes(
-        &*ctx.repo.get()?,
-        worktree_changes,
-        ctx.settings.context_lines,
-    )?;
+    let context_lines = ctx.settings.context_lines;
+    let refused = match crate::worktrees::open_changes_source(ctx, &changes_source)? {
+        Some((_name, repo)) => {
+            but_workspace::discard_workspace_changes(&repo, worktree_changes, context_lines)?
+        }
+        None => {
+            let _ = ctx.create_snapshot(
+                SnapshotDetails::new(OperationKind::DiscardChanges),
+                guard.write_permission(),
+            );
+            but_workspace::discard_workspace_changes(
+                &*ctx.repo.get()?,
+                worktree_changes,
+                context_lines,
+            )?
+        }
+    };
     if !refused.is_empty() {
         tracing::warn!(?refused, "Failed to discard at least one hunk");
     }
@@ -243,6 +248,7 @@ pub fn discard_worktree_changes(
 /// Unlike the regular stash, the user specifies a new branch where those changes will be 'saved'/committed.
 /// Immediately after the changes are committed, the branch is unapplied from the workspace, and the "stash" branch can be re-applied at a later time
 /// In theory it should be possible to specify an existing "dumping" branch for this, but currently this endpoint expects a new branch.
+/// Currently only supports the managed workspace.
 #[but_api(commit_engine::ui::CreateCommitOutcome)]
 #[instrument(err(Debug))]
 pub fn stash_into_branch(
@@ -253,6 +259,13 @@ pub fn stash_into_branch(
     let mut guard = ctx.exclusive_worktree_access();
     let perm = guard.write_permission();
 
+    // TODO: Support stashing from a regular branch without changing HEAD, with rollback on failure.
+    // Independent branch creation previously rejected this mode before changing the checkout.
+    // It now supports single-branch mode and can change the checkout, letting this operation reach
+    // its workspace-specific steps and fail after mutating the repository. Keep this guard until
+    // the whole stash operation is safe outside the managed workspace.
+    // Try removing the guard to see a test fail, to indicate the setup.
+    gitbutler_operating_modes::ensure_open_workspace_mode(ctx, perm.read_permission())?;
     let _ = ctx.snapshot_stash_into_branch(branch_name.clone(), perm);
 
     let full_ref_name = gix::refs::Category::LocalBranch
@@ -289,6 +302,7 @@ pub fn stash_into_branch(
             "Mo-Stashed changes",
             context_lines,
             but_workspace::commit::ChangeSource::Head,
+            but_workspace::commit::Conflicts::Reject,
         )?;
 
         let new_commit = commit_selector
@@ -299,7 +313,7 @@ pub fn stash_into_branch(
             let commit_mapping: Vec<_> = materialized
                 .history
                 .commit_mappings()
-                .into_iter()
+                .iter()
                 .map(|(old, new)| (None, old, new))
                 .collect();
             (!commit_mapping.is_empty()).then_some(RebaseOutput {
@@ -314,7 +328,7 @@ pub fn stash_into_branch(
         Ok(commit_engine::CreateCommitOutcome {
             rejected_specs,
             new_commit,
-            changed_tree_pre_cherry_pick: None,
+            consumed_specs: Vec::new(),
             references: Vec::new(),
             rebase_output,
             index: None,
@@ -332,7 +346,7 @@ pub fn stash_into_branch(
 }
 
 /// Push a branch and any parent references that lie within the current workspace projection.
-#[but_api(napi, json::PushResult, invalidates = [Workspace, Reviews, MergeStatus, Checks, ReviewTimeline])]
+#[but_api(json::PushResult, refreshes)]
 #[instrument(err(Debug))]
 pub async fn workspace_branch_and_ancestors_push(
     ctx: ThreadSafeContext,
@@ -344,21 +358,13 @@ pub async fn workspace_branch_and_ancestors_push(
 ) -> Result<WorkspaceBranchAndAncestorsPushOutcome> {
     let branch: gix::refs::FullName = branch.try_into()?;
     let sync_ctx = ctx.clone();
-    let (trunk, review_targets) = {
+    let review_targets = {
         let ctx = ctx.clone().into_thread_local();
-        let trunk =
-            crate::legacy::forge::target_short_name(&ctx.project_meta()?, &*ctx.repo.get()?)?;
-        (
-            trunk,
-            crate::legacy::forge::review_target_updates_for_branch(&ctx, branch.as_ref())?,
-        )
+        crate::legacy::forge::review_target_updates_for_branch(&ctx, branch.as_ref())?
     };
-    let flattened_review_targets = crate::legacy::forge::flatten_review_targets_before_push(
-        sync_ctx.clone(),
-        trunk,
-        &review_targets,
-    )
-    .await?;
+    let flattened_review_targets =
+        crate::legacy::forge::flatten_review_targets_before_push(sync_ctx.clone(), &review_targets)
+            .await?;
     let push_branch = branch.clone();
     // This API also awaits forge synchronization, but the Git push remains synchronous and may
     // perform network I/O, hooks, and credential handling. Keep it off Tokio's async worker pool.
@@ -435,17 +441,17 @@ pub fn workspace_branch_and_ancestors_push_only(
     let repo = ctx.clone_repo_for_merging_non_persisting()?;
     let meta = ctx.meta()?;
     let mut db = ctx.db.get_cache_mut()?;
-    let ws = but_graph::Graph::from_head(
+    let ws = but_workspace::ref_info::workspace(
         &repo,
         &meta,
-        ctx.project_meta()?,
         &mut db,
-        but_graph::init::Options {
-            worktrees: ctx.settings.feature_flags.worktree_manipulation,
+        ctx.project_meta()?,
+        &but_graph::init::Options {
+            worktrees: true,
             ..but_graph::init::Options::limited()
         },
-    )?
-    .into_workspace()?;
+        None,
+    )?;
     let gerrit_mode_enabled = repo.git_settings()?.gitbutler_gerrit_mode.unwrap_or(false);
     let gerrit_mode = if gerrit_mode_enabled {
         but_workspace::ref_info::GerritMode::Enabled(db.gerrit_metadata())

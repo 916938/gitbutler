@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use anyhow::Result;
 use but_core::{
     RefMetadata, WORKSPACE_REF_NAME,
-    branch::resolve_tracking_branch_ref_name,
     ref_metadata::{
         StackId, StackKind, Workspace, WorkspaceCommitRelation, WorkspaceStack,
         WorkspaceStackBranch,
@@ -18,7 +17,7 @@ use gix::{
 use petgraph::{Direction, visit::EdgeRef as _};
 
 use crate::graph_rebase::{
-    Checkout, Pick, Step, StepGraph, StepGraphIndex, SuccessfulRebase,
+    Checkout, Pick, Step, StepGraph, StepGraphIndex, SuccessfulRebase, traverse,
     workspace::is_workspace_commit,
 };
 
@@ -28,13 +27,13 @@ use crate::graph_rebase::{
 /// earlier stack already owns, so no branch is in more than one of them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BranchStacks {
-    /// One stack per parent of the workspace commit, in parent order, or `None` if
-    /// `HEAD` isn't on the workspace reference with a workspace commit beneath it.
+    /// One stack per parent of the workspace commit, in parent order, or the stack `HEAD`
+    /// is on if the workspace reference has no workspace commit beneath it. `None` if `HEAD`
+    /// isn't on the workspace reference.
     pub workspace: Option<Vec<Vec<FullName>>>,
-    /// The stack `HEAD` is on if there is no workspace commit, followed by one
+    /// The stack `HEAD` is on if it isn't on the workspace reference, followed by one
     /// stack per linked worktree.
     pub ad_hoc: Vec<Vec<FullName>>,
-    /// Removed references
     pub removed_references: Vec<FullName>,
 }
 
@@ -135,17 +134,40 @@ fn find_reference(graph: &StepGraph, name: &gix::refs::FullNameRef) -> Option<St
 }
 
 impl<M: RefMetadata> SuccessfulRebase<'_, '_, M> {
-    /// The stacks of local branches this rewrite results in.
     pub fn branch_stacks(&self) -> Result<BranchStacks> {
         let graph = &self.graph;
         let project_meta = &self.workspace.graph.project_meta;
-        let base = project_meta
-            .target_commit_id
-            .and_then(|id| find_pick(graph, id))
-            .or_else(|| {
-                let target_ref = project_meta.target_ref.as_ref()?;
-                first_commit(graph, find_reference(graph, target_ref.as_ref())?)
-            });
+        let base = match project_meta.target_commit_id {
+            Some(id) => {
+                let rewritten = self.history.commit_mappings().current(id)?;
+                // An excluded boundary has no step. Do not replace it with another cutoff.
+                find_pick(graph, rewritten)
+            }
+            None => {
+                let target = project_meta.remote_target_ref(&self.repo)?.or_else(|| {
+                    project_meta
+                        .target_ref
+                        .as_ref()
+                        .map(|name| name.as_local_full_name_ref().to_owned())
+                });
+                // Prefer the rewritten ref position so pending ref-only moves are visible.
+                // A traversal may omit the ref node but still include its tip commit.
+                match target {
+                    Some(name) => match find_reference(graph, name.as_ref()) {
+                        Some(reference) => first_commit(graph, reference),
+                        None => self
+                            .repo
+                            .try_find_reference(name.as_ref())?
+                            .map(|mut reference| reference.peel_to_commit().map(|commit| commit.id))
+                            .transpose()?
+                            .map(|id| self.history.commit_mappings().current(id))
+                            .transpose()?
+                            .and_then(|rewritten| find_pick(graph, rewritten)),
+                    },
+                    None => None,
+                }
+            }
+        };
 
         let mut head = None;
         let mut worktrees = Vec::new();
@@ -160,20 +182,29 @@ impl<M: RefMetadata> SuccessfulRebase<'_, '_, M> {
             }
         }
         let head = head.or_else(|| find_pick(graph, self.repo.head_id().ok()?.detach()));
-        let workspace_commit = head
-            .filter(|head| {
-                matches!(
-                    &graph[*head],
-                    Step::Reference { refname, .. } if refname.as_bstr() == WORKSPACE_REF_NAME
-                )
-            })
-            .and_then(|head| {
-                first_parents(graph, head)
-                    .take_while(|ix| Some(*ix) != base)
-                    .find(|ix| is_workspace_commit(graph, &self.repo, *ix))
-            });
+        let workspace_reference = head.filter(|head| {
+            matches!(
+                &graph[*head],
+                Step::Reference { refname, .. } if refname.as_bstr() == WORKSPACE_REF_NAME
+            )
+        });
+        let workspace_commit = workspace_reference.and_then(|head| {
+            first_parents(graph, head)
+                .take_while(|ix| Some(*ix) != base)
+                .find(|ix| is_workspace_commit(graph, &self.repo, *ix))
+        });
 
         let checked_out_in_worktrees: HashSet<_> = worktrees.iter().copied().collect();
+        let workspace_ref: FullName = WORKSPACE_REF_NAME.try_into()?;
+        let workspace_metadata = self.meta.workspace(workspace_ref.as_ref())?;
+        let upstream: HashSet<_> = project_meta
+            .remote_target_ref(&self.repo)?
+            .as_ref()
+            .and_then(|target_ref| find_reference(graph, target_ref.as_ref()))
+            .and_then(|target_ref| first_commit(graph, target_ref))
+            .or(base)
+            .map(|tip| traverse::reachable_from(graph, tip).collect())
+            .unwrap_or_default();
         let mut owned = HashSet::new();
         let mut stack_from = |start: StepGraphIndex, own_checkout: Option<StepGraphIndex>| {
             let mut stack = Vec::new();
@@ -184,17 +215,23 @@ impl<M: RefMetadata> SuccessfulRebase<'_, '_, M> {
                 if !owned.insert(ix) {
                     break;
                 }
-                stack.extend(self.stacked_branch(ix, base));
+                stack.extend(self.stacked_branch(ix, &upstream, &workspace_metadata));
             }
             stack
         };
 
-        let workspace = workspace_commit.map(|commit| {
-            let mut parents: Vec<_> = graph.edges_directed(commit, Direction::Outgoing).collect();
-            parents.sort_by_key(|edge| edge.weight().order);
-            parents
-                .into_iter()
-                .map(|edge| stack_from(edge.target(), None))
+        let workspace = workspace_reference.map(|workspace_reference| {
+            let tips: Vec<_> = match workspace_commit {
+                Some(commit) => {
+                    let mut parents: Vec<_> =
+                        graph.edges_directed(commit, Direction::Outgoing).collect();
+                    parents.sort_by_key(|edge| edge.weight().order);
+                    parents.into_iter().map(|edge| edge.target()).collect()
+                }
+                None => vec![workspace_reference],
+            };
+            tips.into_iter()
+                .map(|tip| stack_from(tip, None))
                 .filter(|stack| !stack.is_empty())
                 .collect()
         });
@@ -231,23 +268,31 @@ impl<M: RefMetadata> SuccessfulRebase<'_, '_, M> {
         })
     }
 
-    fn stacked_branch(&self, ix: StepGraphIndex, base: Option<StepGraphIndex>) -> Option<FullName> {
+    fn stacked_branch(
+        &self,
+        ix: StepGraphIndex,
+        upstream: &HashSet<StepGraphIndex>,
+        workspace: &Workspace,
+    ) -> Option<FullName> {
         let Step::Reference { refname, .. } = &self.graph[ix] else {
             return None;
         };
         let is_user_branch = refname.category() == Some(Category::LocalBranch)
             && !refname.as_bstr().starts_with_str("refs/heads/gitbutler/");
-        let is_the_target_branch = base.is_some()
-            && first_commit(&self.graph, ix) == base
-            && self.tracks_target(refname.as_ref());
-        (is_user_branch && !is_the_target_branch).then(|| refname.clone())
+        // The target is not part of a stack while it is upstream, unless explicitly applied.
+        let is_upstream_target_branch = first_commit(&self.graph, ix)
+            .is_some_and(|commit| upstream.contains(&commit))
+            && self.is_target(refname.as_ref())
+            && workspace
+                .find_owner_indexes_by_name(refname.as_ref(), StackKind::Applied)
+                .is_none();
+        (is_user_branch && !is_upstream_target_branch).then(|| refname.clone())
     }
 
-    fn tracks_target(&self, name: &gix::refs::FullNameRef) -> bool {
+    fn is_target(&self, name: &gix::refs::FullNameRef) -> bool {
         let Some(target_ref) = self.workspace.graph.project_meta.target_ref.as_ref() else {
             return false;
         };
-        resolve_tracking_branch_ref_name(name, &self.repo)
-            .is_ok_and(|tracking| tracking.as_ref() == target_ref.as_ref())
+        name == target_ref.as_local_full_name_ref()
     }
 }

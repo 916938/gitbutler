@@ -7,23 +7,25 @@ use anyhow::{Context as _, Result};
 use nonempty::NonEmpty;
 
 use crate::{
+    CliResult,
     args::agent,
     command::{
         CommandOutcome,
         skill::{self, SkillLayout},
     },
-    theme::{self, Paint},
-    utils::{InputOutputChannel, OutputChannel, PromptLine, detect_agent},
+    theme::{self, Paint, Theme},
+    utils::{
+        CliOutput, CliOutputHuman, InputOutputChannel, OutputChannel, PromptLine, WriteWithUtils,
+        detect_agent,
+    },
 };
 
-mod cleanup;
 mod files;
 mod plan;
 mod policy;
 #[cfg(test)]
 mod tests;
-
-pub(crate) use cleanup::retired_policy_syntax_notice;
+mod uninstall;
 
 use files::upsert_managed_block_file;
 use plan::{AgentTarget, Plan};
@@ -32,7 +34,6 @@ use policy::{WizardAnswers, WorkflowOption, render_managed_policy_block};
 const MANAGED_BLOCK_START: &str = "<!-- gitbutler-agent-setup:start -->";
 const MANAGED_BLOCK_END: &str = "<!-- gitbutler-agent-setup:end -->";
 
-/// Error type for user-initiated cancellation.
 #[derive(Debug, Clone, Copy)]
 struct UserCancelled;
 
@@ -48,17 +49,31 @@ pub fn handle(
     current_dir: &Path,
     out: &mut OutputChannel,
     cmd: Option<agent::Subcommands>,
-) -> Result<CommandOutcome> {
+) -> CliResult<Option<CommandOutcome>> {
     match cmd {
         // Bare `but agent` runs the setup wizard, same as `but agent setup`.
-        None => setup(current_dir, out, false, SkillLayout::Full),
-        Some(agent::Subcommands::Setup { print, stub }) => {
+        None => Ok(Some(setup(current_dir, out, SkillLayout::Full)?)),
+        Some(agent::Subcommands::Setup { print: true, .. }) => {
+            let default_policy = render_managed_policy_block(&WizardAnswers::default());
+            out.print_cli_output(PolicyOutcome(default_policy))?;
+            Ok(Some(CommandOutcome::AgentSetupPrintOnly))
+        }
+        Some(agent::Subcommands::Setup {
+            print: false,
+            stub,
+            json: _,
+        }) => {
             let layout = if stub {
                 SkillLayout::Stub
             } else {
                 SkillLayout::Full
             };
-            setup(current_dir, out, print, layout)
+            Ok(Some(setup(current_dir, out, layout)?))
+        }
+        Some(agent::Subcommands::Uninstall { json: _ }) => {
+            let outcome = uninstall::uninstall(current_dir, out)?;
+            out.print_cli_output(outcome)?;
+            Ok(None)
         }
     }
 }
@@ -66,15 +81,8 @@ pub fn handle(
 fn setup(
     current_dir: &Path,
     out: &mut OutputChannel,
-    print_only: bool,
     skill_layout: SkillLayout,
 ) -> Result<CommandOutcome> {
-    if print_only {
-        let default_policy = render_managed_policy_block(&WizardAnswers::default());
-        print_policy(out, &default_policy)?;
-        return Ok(CommandOutcome::AgentSetupPrintOnly);
-    }
-
     let repo = discover_repo(current_dir);
 
     if !out.can_prompt() {
@@ -91,7 +99,7 @@ fn setup(
     drop(input);
 
     match plan {
-        Some(plan) => apply_plan(out, current_dir, &plan, skill_layout),
+        Some(plan) => apply_plan(out, &plan, skill_layout),
         None => {
             print_cancelled(out)?;
             Ok(CommandOutcome::AgentSetupCancelled)
@@ -149,16 +157,26 @@ fn print_cancelled(out: &mut OutputChannel) -> Result<()> {
     Ok(())
 }
 
-fn print_policy(out: &mut OutputChannel, policy: &str) -> Result<()> {
-    if let Some(json_out) = out.for_json() {
-        json_out.write_value(serde_json::json!({ "policy": policy }))?;
-        return Ok(());
+/// The default instructions that `but agent setup --print` prints.
+#[must_use]
+struct PolicyOutcome(String);
+
+impl CliOutputHuman for PolicyOutcome {
+    fn on_human(
+        self,
+        out: &mut dyn WriteWithUtils,
+        _agent: bool,
+        _theme: &'static Theme,
+    ) -> Result<()> {
+        writeln!(out, "{}", self.0)?;
+        Ok(())
     }
-    let writer = out
-        .for_human_or_shell()
-        .context("Text output is required for `but agent setup --print`.")?;
-    writeln!(writer, "{policy}")?;
-    Ok(())
+}
+
+impl CliOutput for PolicyOutcome {
+    fn on_json(self) -> impl serde::Serialize {
+        serde_json::json!({ "policy": self.0 })
+    }
 }
 
 /// Width used for the banner rule and right-aligned step counter. Clamped so the
@@ -255,31 +273,12 @@ fn write_intro(writer: &mut impl fmt::Write, repo: Option<&RepoInfo>) -> fmt::Re
 #[derive(Debug, Clone)]
 struct RepoInfo {
     root: PathBuf,
-    needs_setup: bool,
 }
 
 fn discover_repo(current_dir: &Path) -> Option<RepoInfo> {
     let repo = but_ctx::discover_main_repo(current_dir).ok()?;
     let root = repo.workdir()?.to_path_buf();
-    let needs_setup = repo_needs_setup(&root);
-    Some(RepoInfo { root, needs_setup })
-}
-
-#[cfg(feature = "legacy")]
-fn repo_needs_setup(workdir: &Path) -> bool {
-    let Ok(project) = but_ctx::LegacyProject::find_by_worktree_dir(workdir) else {
-        return true;
-    };
-    let Ok(ctx) = but_ctx::Context::new_from_legacy_project(project) else {
-        return true;
-    };
-    let guard = ctx.shared_worktree_access();
-    crate::command::legacy::setup::check_project_setup(&ctx, guard.read_permission()).is_err()
-}
-
-#[cfg(not(feature = "legacy"))]
-fn repo_needs_setup(_workdir: &Path) -> bool {
-    false
+    Some(RepoInfo { root })
 }
 
 /// Where the user wants this setup to apply. A single choice that drives both
@@ -675,16 +674,6 @@ fn write_review(writer: &mut impl fmt::Write, plan: &Plan) -> fmt::Result {
         }
     }
 
-    if plan.setup_needed {
-        writeln!(writer)?;
-        writeln!(writer, "{}", t.important.paint("Prepare this repository"))?;
-        writeln!(
-            writer,
-            "  {check} Run {}",
-            t.command_suggestion.paint("but setup")
-        )?;
-    }
-
     writeln!(writer)?;
     writeln!(writer, "{}", t.important.paint("The exact text"))?;
     write_policy_preview(writer, &plan.policy)?;
@@ -730,19 +719,9 @@ fn write_policy_preview(writer: &mut impl fmt::Write, policy: &str) -> fmt::Resu
 
 fn apply_plan(
     out: &mut OutputChannel,
-    current_dir: &Path,
     plan: &Plan,
     skill_layout: SkillLayout,
 ) -> Result<CommandOutcome> {
-    // Run `but setup` first: it is the step most likely to fail (it needs a
-    // discoverable repo + project registration) and aborts before any file is
-    // written, keeping the intro's "nothing is written until you confirm"
-    // promise on the realistic abort path. The remaining skill→instruction
-    // writes are idempotent upserts, so a partial run is re-runnable.
-    if plan.setup_needed {
-        run_but_setup(current_dir, out)?;
-    }
-
     for install in &plan.skill_installs {
         skill::write_skill_files(&install.path, skill_layout)
             .with_context(|| format!("Failed to install skill at {}", install.path.display()))?;
@@ -791,19 +770,5 @@ fn print_setup_complete(out: &mut OutputChannel) -> Result<()> {
                 .paint("More things to try: https://docs.gitbutler.com/ai-agents/useful-requests")
         )?;
     }
-    Ok(())
-}
-
-#[cfg(feature = "legacy")]
-fn run_but_setup(current_dir: &Path, out: &mut OutputChannel) -> Result<()> {
-    let repo = gix::discover(current_dir).context("No git repository found for `but setup`.")?;
-    let mut ctx = but_ctx::Context::from_repo_with_settings(repo, crate::app_settings()?.clone())?;
-    let mut guard = ctx.exclusive_worktree_access();
-    crate::command::legacy::setup::repo(&mut ctx, current_dir, out, guard.write_permission())
-        .context("Failed to set up GitButler project.")
-}
-
-#[cfg(not(feature = "legacy"))]
-fn run_but_setup(_current_dir: &Path, _out: &mut OutputChannel) -> Result<()> {
     Ok(())
 }

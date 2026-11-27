@@ -2,7 +2,6 @@ use gix::url::Scheme;
 
 use crate::ForgeName;
 
-/// Parsed parts of a remote URL needed to identify a forge repository.
 pub(crate) struct RemoteUrl {
     pub(crate) protocol: String,
     pub(crate) host: String,
@@ -43,7 +42,7 @@ impl RemoteUrl {
 
     pub(crate) fn repository_parts(&self, forge: &ForgeName) -> Option<(String, String)> {
         match forge {
-            ForgeName::GitHub | ForgeName::Bitbucket => {
+            ForgeName::GitHub | ForgeName::Bitbucket | ForgeName::GitButler => {
                 let (owner, repo) = self.path.split_once('/')?;
                 (!owner.is_empty() && !repo.is_empty() && !repo.contains('/'))
                     .then(|| (owner.to_string(), repo.to_string()))

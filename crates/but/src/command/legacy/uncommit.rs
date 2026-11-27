@@ -29,7 +29,7 @@ pub fn uncommit(
 ) -> CliResult<(squash::SquashOutcome, Option<WorkspaceState>)> {
     let mut guard = ctx.exclusive_worktree_access();
     let mut meta = ctx.meta()?;
-    let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
+    let id_map = IdMap::new_from_context(ctx, guard.read_permission(), None)?;
 
     let merged = MergedUpstream::from_ctx(ctx, args.allow_merged)?;
 
@@ -38,7 +38,7 @@ pub fn uncommit(
     drop(repo);
     drop(ws);
 
-    Ok(squash::run(ctx, &mut meta, guard.write_permission(), op)?)
+    squash::run(ctx, &mut meta, guard.write_permission(), op)
 }
 
 fn resolve(
@@ -51,6 +51,7 @@ fn resolve(
     let Platform {
         sources,
         allow_merged: _,
+        json: _,
     } = args;
 
     let sources = sources

@@ -4,34 +4,26 @@
 //! that includes every relevant branch tip. All commit counts are answered from graph
 //! memory; no tree or blob diffs are computed here. Expensive per-branch data belongs
 //! to the selected-branch APIs, like `but_workspace::ui::diff::changes_in_branch()`.
-#![deny(missing_docs)]
 
 mod walk;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bstr::{BStr, BString, ByteSlice};
-use but_core::{RefMetadata, WORKSPACE_REF_NAME};
+use bstr::{BString, ByteSlice};
+use but_core::{RefMetadata, WORKSPACE_REF_NAME, ref_metadata::LocalRefName};
 use but_graph::{Graph, SegmentIndex, Workspace};
 use gix::{
     prelude::ObjectIdExt,
-    refs::{Category, FullName},
+    refs::{Category, FullName, FullNameRef},
 };
 use walk::OwnedHistory;
 
-/// Options for [`list()`].
 #[derive(Debug, Default, Clone)]
 pub struct Options {
     /// The project metadata carrying the target ref and last-seen target commit.
     pub project_meta: but_core::ref_metadata::ProjectMeta,
-    /// Stop the traversal after roughly this many commits, for very large repositories.
-    ///
-    /// A hit limit sets [`BranchListing::incomplete`], and branches whose fork point
-    /// lies beyond it report `None` counts instead of wrong ones.
-    pub hard_limit: Option<usize>,
 }
 
-/// All branches of the repository, grouped into stacks for display.
 #[derive(Debug, Clone)]
 pub struct BranchListing {
     /// The stacks of branches, most recently updated first, tie-broken by the tip
@@ -40,17 +32,12 @@ pub struct BranchListing {
     /// Presentation order beyond recency is the caller's: group by
     /// [`status`](ListedStack::status) to lead with workspace-related stacks.
     pub stacks: Vec<ListedStack>,
-    /// The full name of the configured target branch, if set, e.g. `refs/remotes/origin/main`.
-    pub target_ref: Option<FullName>,
-    /// If `true`, the traversal hit its hard limit: at least one branch reports
-    /// `None` counts, and stacks whose relation lies beyond the limit are not inferred.
-    pub incomplete: bool,
+    /// The configured local project target, if set, e.g. `refs/heads/main`.
+    pub target_ref: Option<LocalRefName>,
 }
 
-/// How a stack of branches relates to the GitButler workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListedStackStatus {
-    /// The branches are applied to the workspace as a stack.
     Applied,
     /// The branches form a stack known to workspace metadata, but it is not applied.
     Unapplied,
@@ -66,7 +53,6 @@ pub enum ListedStackStatus {
 /// [`ref_name`](ListedBranch::ref_name) uniquely identifies the stack.
 #[derive(Debug, Clone)]
 pub struct ListedStack {
-    /// How the stack relates to the workspace.
     pub status: ListedStackStatus,
     /// The branches of the stack, from the tip (newest) to the base (oldest).
     ///
@@ -87,8 +73,6 @@ pub struct ListedBranch {
     pub display_name: BString,
     /// The commit at the tip of the primary ref.
     pub tip: gix::ObjectId,
-    /// Whether a local branch of this name exists.
-    ///
     /// Every listed branch is backed by at least one ref: when this is `false`,
     /// [`remote_refs`](Self::remote_refs) is never empty.
     pub has_local: bool,
@@ -99,20 +83,18 @@ pub struct ListedBranch {
     /// fork. Contrast [`commits_ahead_of_target`](Self::commits_ahead_of_target),
     /// which for a stacked branch also counts the commits of the branches below.
     ///
-    /// `None` when the commit graph ends before the fork point was found — because
-    /// a traversal hard limit cut it short (see [`BranchListing::incomplete`]) or
+    /// `None` when the commit graph ends before the fork point was found because
     /// the repository is a shallow clone; an exact-looking number would be wrong.
     pub commit_count: Option<usize>,
-    /// The number of commits reachable from the branch but not from the target branch.
+    /// The number of commits reachable from the branch but not from the configured local target branch.
     ///
     /// For a branch stacked on top of others this includes the commits of those
     /// lower branches, so it is the branch's distance from the target rather than
     /// its own contribution (see [`commit_count`](Self::commit_count)).
     ///
     /// `None` when no target is configured ([`BranchListing::target_ref`] is `None`),
-    /// or when the connection to the target lies beyond the end of the traversed
-    /// graph, due to a traversal hard limit or a shallow clone. With a target and a
-    /// fully traversed graph this is always `Some`.
+    /// or when the connection to the target lies beyond the end of a shallow clone.
+    /// With a target and a complete history this is always `Some`.
     pub commits_ahead_of_target: Option<usize>,
     /// The author of the tip commit, identifying who worked on the branch.
     ///
@@ -124,9 +106,6 @@ pub struct ListedBranch {
     pub updated_at_ms: Option<i64>,
 }
 
-/// List all local and remote branches of `repo`, grouped into stacks where known,
-/// using `meta` for workspace metadata and `options` for target and traversal control.
-///
 /// Branches that are applied to the workspace are returned as [`ListedStackStatus::Applied`]
 /// stacks rather than being dropped, so callers can decide how to present them.
 /// A local branch and remote-tracking branches of the same name become one
@@ -134,7 +113,6 @@ pub struct ListedBranch {
 pub fn list(
     repo: &gix::Repository,
     meta: &impl RefMetadata,
-    db: &mut but_db::DbHandle,
     options: Options,
 ) -> anyhow::Result<BranchListing> {
     let remote_names = repo.remote_names();
@@ -154,7 +132,6 @@ pub fn list(
                 return Ok(BranchListing {
                     stacks: Vec::new(),
                     target_ref: options.project_meta.target_ref,
-                    incomplete: false,
                 });
             }
         },
@@ -172,23 +149,22 @@ pub fn list(
         // Remote-tracking refs of local branches are discovered while traversing the
         // local branch and must not be seeded again.
         let is_tracking_a_local = r.remote.is_some() && local_identities.contains(&r.identity);
-        let is_target = Some(&r.ref_name) == options.project_meta.target_ref.as_ref();
+        let is_target = options
+            .project_meta
+            .target_ref
+            .as_ref()
+            .is_some_and(|target| target.as_local_full_name_ref() == r.ref_name.as_ref());
         (!is_covered_by_workspace && !is_tracking_a_local && !is_target)
             .then(|| (r.tip, r.ref_name.clone()))
     });
 
-    // The hard limit bounds the traversal for very large repositories.
-    let (ws, incomplete) = walk::build_workspace(
-        head_id,
+    let ws = walk::build_workspace(
+        repo,
+        head_id.detach(),
         head_ref,
         extra_tips,
         meta,
         options.project_meta.clone(),
-        db,
-        but_graph::init::Options {
-            hard_limit: options.hard_limit,
-            ..Default::default()
-        },
     )?;
 
     let mut tips: BTreeSet<gix::ObjectId> =
@@ -206,7 +182,7 @@ pub fn list(
         remote_names,
         refs_by_identity,
         tip_infos,
-        walk::target_of(&ws),
+        walk::local_target_of(&ws),
     );
 
     let mut consumed = BTreeSet::<BString>::new();
@@ -227,12 +203,7 @@ pub fn list(
 
     Ok(BranchListing {
         stacks,
-        target_ref: ws
-            .target_ref
-            .as_ref()
-            .map(|target| target.ref_name.clone())
-            .or(options.project_meta.target_ref),
-        incomplete,
+        target_ref: options.project_meta.target_ref,
     })
 }
 
@@ -271,10 +242,15 @@ struct ListingContext<'a> {
     /// the segment's first commit, or for empty segments the peeled id recorded on the
     /// ref itself. Refs found on non-first commits map to the owning segment.
     segment_by_ref: BTreeMap<FullName, (SegmentIndex, Option<gix::ObjectId>)>,
-    /// All segments whose commits the target branch has integrated.
-    target_reachable: BTreeSet<SegmentIndex>,
-    /// The commit at the tip of the target branch, if there is a target.
-    target_tip: Option<gix::ObjectId>,
+    /// The segment each commit starts, for the refs the graph leaves out: it seeds one ref
+    /// per commit, so of two branches on the same tip, as a remote branch pushed under two
+    /// names, only one has a segment.
+    segment_by_tip: BTreeMap<gix::ObjectId, SegmentIndex>,
+    local_target_reachable: BTreeSet<SegmentIndex>,
+    /// The configured local target's tip, used only for ahead counts.
+    local_target_tip: Option<gix::ObjectId>,
+    /// The selected workspace cutoff, used for owned-history boundaries.
+    cutoff_id: Option<gix::ObjectId>,
 }
 
 impl<'a> ListingContext<'a> {
@@ -283,27 +259,31 @@ impl<'a> ListingContext<'a> {
         remote_names: gix::remote::Names,
         refs_by_identity: BTreeMap<BString, Vec<BranchRef>>,
         tip_infos: BTreeMap<gix::ObjectId, (gix::actor::Signature, i64)>,
-        target: Option<(gix::ObjectId, SegmentIndex)>,
+        local_target: Option<(gix::ObjectId, SegmentIndex)>,
     ) -> Self {
         ListingContext {
             segment_by_ref: walk::ref_index(&ws.graph),
-            target_reachable: target
+            segment_by_tip: (ws.graph.segments())
+                .filter_map(|sidx| Some((ws.graph[sidx].commits.first()?.id, sidx)))
+                .collect(),
+            local_target_reachable: local_target
                 .map(|(_, start)| walk::reachable_from(&ws.graph, start))
                 .unwrap_or_default(),
             ws,
             remote_names,
             refs_by_identity,
             tip_infos,
-            target_tip: target.map(|(tip, _)| tip),
+            local_target_tip: local_target.map(|(tip, _)| tip),
+            cutoff_id: ws.target_commit.as_ref().map(|target| target.commit_id),
         }
     }
 
-    /// Count the commits reachable from `start` that the target has not integrated,
+    /// Count the commits reachable from `start` but not from the configured local target,
     /// or `None` if there is no target to compare against or a traversal limit
     /// makes the count unknowable.
     fn commits_ahead_of_target(&self, start: SegmentIndex) -> Option<usize> {
-        self.target_tip?;
-        walk::count_outside(self.graph(), &self.target_reachable, start)
+        self.local_target_tip?;
+        walk::count_outside(self.graph(), &self.local_target_reachable, start)
     }
 
     fn owned_history(&self, start: SegmentIndex, identity: &BString) -> OwnedHistory {
@@ -312,13 +292,15 @@ impl<'a> ListingContext<'a> {
             start,
             identity,
             &self.remote_names,
-            self.target_tip,
+            self.cutoff_id,
+            self.ws.kind.has_managed_ref(),
         )
     }
 
     /// How `name` relates to the graph, given the `tip` it was enumerated at.
     fn anchor_of(&self, name: &FullName, tip: gix::ObjectId) -> Option<walk::Anchor> {
-        let (segment, commit) = self.segment_by_ref.get(name).copied()?;
+        let (segment, commit) = (self.segment_by_ref.get(name).copied())
+            .or_else(|| Some((*self.segment_by_tip.get(&tip)?, Some(tip))))?;
         Some(walk::Anchor::classify(segment, commit, tip))
     }
 
@@ -341,7 +323,12 @@ impl<'a> ListingContext<'a> {
             let Some(tip) = walk::segment_tip(segment) else {
                 continue;
             };
-            let display_name = display_identity(&ref_name, &self.remote_names);
+            let display_name = display_identity(ref_name.as_ref(), &self.remote_names);
+            // An ad-hoc workspace has the workspace ref itself as a stack segment,
+            // which isn't a user branch.
+            if but_core::branch::is_technical_branch_name(display_name.as_ref()) {
+                continue;
+            }
             consumed.insert(display_name.clone());
             let (last_author, updated_at_ms) = self.tip_info(tip);
             // All enumerated remotes of the same name, like standalone branches
@@ -428,9 +415,11 @@ impl<'a> ListingContext<'a> {
 
         let target_stack = self
             .ws
+            .graph
+            .project_meta
             .target_ref
             .as_ref()
-            .map(|target| display_identity(&target.ref_name, &self.remote_names))
+            .map(|target| display_identity(target.as_local_full_name_ref(), &self.remote_names))
             .and_then(|identity| by_identity.remove(&identity));
 
         let mut stacks = Vec::new();
@@ -468,10 +457,13 @@ impl<'a> ListingContext<'a> {
                 _ => None,
             })
             .collect();
-        let identity_by_segment: BTreeMap<SegmentIndex, &BString> = anchors
-            .iter()
-            .map(|&(identity, segment)| (segment, identity))
-            .collect();
+        // A tip two branches share stacks under neither, so it maps to none.
+        let mut identity_by_segment = BTreeMap::<SegmentIndex, Option<&BString>>::new();
+        for &(identity, segment) in &anchors {
+            (identity_by_segment.entry(segment))
+                .and_modify(|shared| *shared = None)
+                .or_insert(Some(identity));
+        }
 
         // `A -> B` when `B` is the first named segment below `A`.
         let mut below = BTreeMap::<&BString, &BString>::new();
@@ -480,7 +472,7 @@ impl<'a> ListingContext<'a> {
             let Some(child) = self
                 .owned_history(segment, identity)
                 .boundary
-                .and_then(|boundary| identity_by_segment.get(&boundary).copied())
+                .and_then(|boundary| identity_by_segment.get(&boundary).copied().flatten())
             else {
                 continue;
             };
@@ -569,7 +561,6 @@ impl<'a> ListingContext<'a> {
         })
     }
 
-    /// The author and committer time of the tip commit, if it could be read.
     fn tip_info(&self, tip: gix::ObjectId) -> (Option<gix::actor::Signature>, Option<i64>) {
         match self.tip_infos.get(&tip) {
             Some((author, time_ms)) => (Some(author.clone()), Some(*time_ms)),
@@ -591,27 +582,6 @@ fn listed_stack(status: ListedStackStatus, branches: Vec<ListedBranch>) -> Liste
     }
 }
 
-/// Return `true` if `identity` is a GitButler-internal branch name that must not
-/// be shown or treated as a user branch.
-pub fn is_technical_branch_name(identity: &BStr) -> bool {
-    const TECHNICAL_IDENTITIES: &[&[u8]] = &[
-        b"HEAD",
-        b"gitbutler/edit",
-        b"gitbutler/integration",
-        b"gitbutler/oplog",
-        b"gitbutler/target",
-        b"gitbutler/workspace",
-    ];
-    debug_assert!(
-        TECHNICAL_IDENTITIES.is_sorted(),
-        "binary search requires sorted technical identities"
-    );
-    TECHNICAL_IDENTITIES
-        .binary_search(&identity.as_bytes())
-        .is_ok()
-        || identity.starts_with(b"gitbutler/rename-backup/")
-}
-
 /// Enumerate all local and remote branch refs once, peeled to their tips and
 /// grouped by branch name, preserving enumeration order within each name.
 fn enumerate_branch_refs(
@@ -620,7 +590,7 @@ fn enumerate_branch_refs(
 ) -> anyhow::Result<BTreeMap<BString, Vec<BranchRef>>> {
     let platform = repo.references()?;
     let mut out = BTreeMap::<BString, Vec<BranchRef>>::new();
-    for reference in platform.all()?.filter_map(Result::ok) {
+    for mut reference in platform.all()?.filter_map(Result::ok) {
         let ref_name = reference.name().to_owned();
         let (remote, identity) = match ref_name.category() {
             Some(Category::LocalBranch) => (None, ref_name.shorten().to_owned()),
@@ -634,18 +604,18 @@ fn enumerate_branch_refs(
             }
             _ => continue,
         };
-        if is_technical_branch_name(identity.as_bstr()) {
+        if but_core::branch::is_technical_branch_name(identity.as_bstr()) {
             continue;
         }
-        let Ok(tip) = reference.into_fully_peeled_id() else {
-            // Broken or unborn refs can't participate in a commit graph.
+        let Ok(tip) = reference.peel_to_commit() else {
+            // Broken or unborn refs, and refs to trees or blobs, can't participate in a commit graph.
             continue;
         };
         out.entry(identity.clone()).or_default().push(BranchRef {
             ref_name,
             remote,
             identity,
-            tip: tip.detach(),
+            tip: tip.id,
         });
     }
     Ok(out)
@@ -720,8 +690,11 @@ fn tip_commit_infos(
 }
 
 /// The branch name used for identity and display: the short name without a remote prefix.
-pub(crate) fn display_identity(ref_name: &FullName, remote_names: &gix::remote::Names) -> BString {
-    but_core::extract_remote_name_and_short_name(ref_name.as_ref(), remote_names)
+pub(crate) fn display_identity(
+    ref_name: &FullNameRef,
+    remote_names: &gix::remote::Names,
+) -> BString {
+    but_core::extract_remote_name_and_short_name(ref_name, remote_names)
         .map(|(_, short)| short)
         .unwrap_or_else(|| ref_name.shorten().to_owned())
 }

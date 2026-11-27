@@ -101,66 +101,39 @@ pub(crate) fn grouped_subcommands(cmd: &clap::Command) -> IndexMap<Group, Vec<&c
             // The order of the groups themselves is likewise determined by order of the variants
             // in `enum Group`.
             let group = match subcommand_variant {
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Status => Group::Inspection,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Diff => Group::Inspection,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Show => Group::Inspection,
                 SubcommandDiscriminant::_Comment => Group::Inspection,
 
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Commit => Group::BranchingAndCommitting,
                 SubcommandDiscriminant::Branch => Group::BranchingAndCommitting,
                 SubcommandDiscriminant::Worktree => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Discard => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Unapply => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Apply => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
-                SubcommandDiscriminant::Open => Group::Inspection,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Clean => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Pick => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Switch => Group::BranchingAndCommitting,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Resolve => Group::BranchingAndCommitting,
 
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Push => Group::ServerInteractions,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Pull => Group::ServerInteractions,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Merge => Group::ServerInteractions,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Pr => Group::ServerInteractions,
 
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Absorb => Group::EditingCommits,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Reword | SubcommandDiscriminant::_Reword2 => {
                     Group::EditingCommits
                 }
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Uncommit => Group::EditingCommits,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Amend => Group::EditingCommits,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Squash => Group::EditingCommits,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Move => Group::EditingCommits,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Split => Group::EditingCommits,
 
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Oplog => Group::OperationHistory,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Undo => Group::OperationHistory,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Redo => Group::OperationHistory,
 
                 SubcommandDiscriminant::Init => Group::OtherCommands,
@@ -174,11 +147,7 @@ pub(crate) fn grouped_subcommands(cmd: &clap::Command) -> IndexMap<Group, Vec<&c
                 SubcommandDiscriminant::Help => Group::OtherCommands,
                 SubcommandDiscriminant::Completions => Group::OtherCommands,
 
-                #[cfg(feature = "legacy")]
-                SubcommandDiscriminant::Setup => Group::OtherCommands,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Teardown => Group::OtherCommands,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Tui => Group::OtherCommands,
 
                 SubcommandDiscriminant::Edit => continue,
@@ -186,17 +155,15 @@ pub(crate) fn grouped_subcommands(cmd: &clap::Command) -> IndexMap<Group, Vec<&c
                 SubcommandDiscriminant::_Open => continue,
                 #[cfg(feature = "nightly")]
                 SubcommandDiscriminant::_Expand => continue,
+                #[cfg(feature = "nightly")]
+                SubcommandDiscriminant::_Ui => continue,
                 SubcommandDiscriminant::Metrics => continue,
                 SubcommandDiscriminant::Onboarding => continue,
                 SubcommandDiscriminant::External => continue,
 
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::RefreshRemoteData => continue,
-                #[cfg(feature = "legacy")]
-                SubcommandDiscriminant::Actions => continue,
-                #[cfg(feature = "legacy")]
                 SubcommandDiscriminant::Fetch => continue,
-                SubcommandDiscriminant::AgentLog => continue,
+                SubcommandDiscriminant::AgentLog | SubcommandDiscriminant::Setup => continue,
             };
             groups.entry(group).or_default().push(*clap_subcommand);
         } else {
@@ -225,7 +192,6 @@ fn print_grouped_with_truncation(
     let clap_subcommands: Vec<_> = cmd.get_subcommands().collect();
     let groups = grouped_subcommands(&cmd);
 
-    // Define command groupings and their order (excluding MISC)
     let t = theme::get();
 
     writeln!(
@@ -258,7 +224,6 @@ fn print_grouped_with_truncation(
     const LONGEST_COMMAND_LEN: usize = 13;
     const LONGEST_COMMAND_LEN_AND_ELLIPSIS: usize = LONGEST_COMMAND_LEN + 3;
 
-    // Print grouped commands
     for (group, clap_subcommands) in &groups {
         if clap_subcommands.is_empty() {
             continue;
@@ -267,7 +232,6 @@ fn print_grouped_with_truncation(
         writeln!(out, "{}:", t.important.paint(group.to_string()))?;
         for clap_subcommand in clap_subcommands {
             let about = clap_subcommand.get_about().unwrap_or_default().to_string();
-            // Calculate available width: terminal_width - indent (2) - command column (10) - buffer (1)
             let available_width = terminal_width.saturating_sub(LONGEST_COMMAND_LEN_AND_ELLIPSIS);
             let truncated_about = truncate_text(&about, available_width);
             writeln!(
@@ -276,7 +240,6 @@ fn print_grouped_with_truncation(
                 t.success.paint(clap_subcommand.get_name()),
                 truncated_about,
             )?;
-            // printed_commands.insert(cmd_name.to_string());
         }
         writeln!(out)?;
     }
@@ -308,7 +271,6 @@ fn print_grouped_with_truncation(
         writeln!(out)?;
     }
 
-    // Add command completion instructions
     writeln!(
         out,
         "To add command completion, add this to your shell rc: (for example ~/.zshrc)"
@@ -327,15 +289,10 @@ fn print_grouped_with_truncation(
     writeln!(out)?;
 
     writeln!(out, "{}:", t.important.paint("Options"))?;
-    // Truncate long option descriptions if needed
     let option_descriptions = [
         (
             "  -C, --current-dir <PATH>",
             "Run as if but was started in PATH instead of the current working directory [default: .]",
-        ),
-        (
-            "      --json",
-            "              Output detailed information as JSON for tool consumption",
         ),
         ("  -h, --help", "              Print help"),
     ];
@@ -363,7 +320,6 @@ mod tests {
     use crate::tui::text::strip_ansi_codes;
 
     #[test]
-    #[cfg(feature = "legacy")]
     fn test_print_grouped() {
         let mut buf = String::new();
         super::print_grouped_with_truncation(&mut buf, true).unwrap();
@@ -386,15 +342,14 @@ Inspection:
   status       Show an overview of the workspace state
   diff         Show the diff of changes in the repo
   show         Show details of a commit or branch
-  open         Open the project in GitButler
 
 Branching and Committing:
   commit       Create a commit
   branch       Commands for managing branches
-  worktree     Manage worktrees (experimental, requires the worktreeManipulati…
+  worktree     Manage worktrees
   discard      Discard branches, commits, or changes
   resolve      Resolve conflicts in a commit or in uncommitted files
-  unapply      Remove a branch from the workspace, keeping it to apply again l…
+  unapply      Remove a branch and the rest of its stack from the workspace, k…
   apply        Apply a branch
   clean        Remove empty branches from the workspace
   pick         Cherry-pick commits into an applied branch
@@ -421,7 +376,6 @@ Server Interactions:
 
 Other Commands:
   init         Create an empty Git repository in the current directory
-  setup        Set up a GitButler project from the git repository in the curre…
   teardown     Exit GitButler mode and return to normal Git workflow
   gui          Open the GitButler GUI for the current project
   tui          Open a live terminal workspace for branches, commits, changes, …
@@ -429,7 +383,7 @@ Other Commands:
   alias        Manage command aliases
   config       View and manage GitButler configuration
   skill        Manage AI agent skills for GitButler
-  agent        Set up GitButler for AI coding agents
+  agent        Set up or remove GitButler for AI coding agents
   completions  Generate but shell completions
 
 Help Topics (view with but help <topic>):
@@ -443,7 +397,6 @@ To use the GitButler CLI with coding agents (Claude Code hooks, Cursor hooks, MC
 
 Options:
   -C, --current-dir <PATH>  Run as if but was started in PATH instead of the cu…
-      --json                Output detailed information as JSON for tool consum…
   -h, --help                Print help
 
 Environment variables:
@@ -456,7 +409,6 @@ Environment variables:
     }
 
     #[test]
-    #[cfg(feature = "legacy")]
     fn print_grouped_keeps_full_descriptions_when_truncation_is_disabled() {
         let mut buf = String::new();
         super::print_grouped_with_truncation(&mut buf, false).unwrap();
@@ -470,66 +422,9 @@ Environment variables:
         );
         assert!(
             output.contains(
-                "BUT_OUTPUT_FORMAT  Sets the output format when --json is not passed. Options: human, json."
+                "BUT_OUTPUT_FORMAT  Sets the output format when --json is not passed. Options: human, json. Only commands that take --json print JSON."
             ),
             "agent help should document the output-format environment variable"
-        );
-    }
-
-    #[test]
-    #[cfg(not(feature = "legacy"))]
-    fn test_print_grouped() {
-        let mut buf = String::new();
-        super::print_grouped_with_truncation(&mut buf, true).unwrap();
-
-        snapbox::assert_data_eq!(
-            // test without color because it doesn't work consistently on ci
-            &*strip_ansi_codes(&buf),
-            snapbox::str![[r#"
-The GitButler CLI change control system
-
-Usage: but [OPTIONS] [COMMAND]
-
-The GitButler CLI can be used to do nearly anything the desktop client can do (and more).
-It is a drop in replacement for most of the Git workflows you would normally use, but Git
-commands (blame, log, etc) can also be used, as GitButler is fully Git compatible.
-
-Checkout the full docs here: https://docs.gitbutler.com/cli-overview
-
-Branching and Committing:
-  branch       Commands for managing branches
-  worktree     Manage worktrees (experimental, requires the worktreeManipulati…
-
-Other Commands:
-  init         Create an empty Git repository in the current directory
-  gui          Open the GitButler GUI for the current project
-  update       Manage GitButler CLI and app updates
-  alias        Manage command aliases
-  config       View and manage GitButler configuration
-  skill        Manage AI agent skills for GitButler
-  agent        Set up GitButler for AI coding agents
-  completions  Generate but shell completions
-
-Help Topics (view with but help <topic>):
-  cli-ids      Smart IDs to reference commits, branches and more in but
-
-To add command completion, add this to your shell rc: (for example ~/.zshrc)
-  eval "$(but completions zsh)"
-
-To use the GitButler CLI with coding agents (Claude Code hooks, Cursor hooks, MCP), see:
-  https://docs.gitbutler.com/features/ai-integration/ai-overview
-
-Options:
-  -C, --current-dir <PATH>  Run as if but was started in PATH instead of the cu…
-      --json                Output detailed information as JSON for tool consum…
-  -h, --help                Print help
-
-Environment variables:
-  BUT_OUTPUT_FORMAT  Sets the output format when --json is not passed. Options:…
-  BUT_PAGER  Sets the pager for large outputs. [default: less]
-...
-
-"#]]
         );
     }
 }

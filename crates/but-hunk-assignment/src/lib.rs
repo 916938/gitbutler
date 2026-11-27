@@ -1,14 +1,3 @@
-//!
-//!
-//! Hunk - File, range
-//!
-//! HunkAssignment - None or Some(Stack in workspace)
-//!
-//! reconcile_assignments - takes worktree changes (`Vec<TreeChange>`) + current assignments (`Vec<HunkAssignment>`)
-//! returns updated assignments (`Vec<HunkAssignment>`)
-//!
-//! set_assignments
-
 mod reconcile;
 mod state;
 
@@ -19,7 +8,6 @@ use bstr::{BString, ByteSlice};
 use but_core::{DiffSpec, HunkHeader, TreeChange, UnifiedPatch, ref_metadata::StackId};
 use but_db::{HunkAssignmentsHandle, HunkAssignmentsHandleMut};
 use but_hunk_dependency::ui::HunkDependencies;
-use gix::ObjectId;
 use reconcile::MultipleOverlapping;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
@@ -168,7 +156,7 @@ impl From<HunkAssignment> for but_core::DiffSpec {
         };
         but_core::DiffSpec {
             previous_path: None, // TODO
-            path: value.path_bytes.clone(),
+            path: value.path_bytes,
             hunk_headers,
         }
     }
@@ -248,14 +236,12 @@ pub struct CommitAbsorption {
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(CommitAbsorption);
 
-/// JSON output structure for a file being absorbed
 #[derive(Debug, Serialize)]
 pub struct JsonFileAbsorption {
     pub path: String,
     pub hunks: Vec<String>,
 }
 
-/// JSON output structure for a commit absorption
 #[derive(Debug, Serialize)]
 pub struct JsonCommitAbsorption {
     pub commit_id: String,
@@ -265,7 +251,6 @@ pub struct JsonCommitAbsorption {
     pub files: Vec<JsonFileAbsorption>,
 }
 
-/// JSON output structure for the entire absorb operation
 #[derive(Debug, Serialize)]
 pub struct JsonAbsorbOutput {
     pub total_files: usize,
@@ -366,12 +351,6 @@ impl From<but_core::WorktreeChanges> for WorktreeChanges {
     }
 }
 
-impl HunkAssignmentRequest {
-    pub fn matches_assignment(&self, assignment: &HunkAssignment) -> bool {
-        self.path_bytes == assignment.path_bytes && self.hunk_header == assignment.hunk_header
-    }
-}
-
 impl PartialEq for HunkAssignment {
     fn eq(&self, other: &Self) -> bool {
         self.hunk_header == other.hunk_header && self.path_bytes == other.path_bytes
@@ -379,7 +358,6 @@ impl PartialEq for HunkAssignment {
 }
 
 impl HunkAssignment {
-    /// Whether there is overlap between the two hunks.
     fn intersects(&self, other: HunkAssignment) -> bool {
         if self == &other {
             return true;
@@ -507,16 +485,24 @@ fn reconcile_worktree_changes_with_worktree(
     if worktree_changes.is_empty() {
         return Ok(vec![]);
     }
-    let worktree_assignments: Vec<_> =
-        but_core::hunks_from_changes(repo, worktree_changes, context_lines)
-            .into_iter()
-            .map(HunkAssignment::from_hunk)
-            .collect();
+    let worktree_assignments = unassigned(repo, worktree_changes, context_lines);
     let mut reconciled = reconcile_with_worktree(db.to_ref(), workspace, &worktree_assignments)?;
 
     derive_stack_ids(&mut reconciled, workspace);
     state::set_assignments(db, reconciled.clone())?;
     Ok(reconciled)
+}
+
+/// Returns one unassigned, unpersisted assignment per hunk of `worktree_changes` in `repo`.
+pub fn unassigned(
+    repo: &gix::Repository,
+    worktree_changes: impl IntoIterator<Item = impl Into<but_core::TreeChange>>,
+    context_lines: u32,
+) -> Vec<HunkAssignment> {
+    but_core::hunks_from_changes(repo, worktree_changes, context_lines)
+        .into_iter()
+        .map(HunkAssignment::from_hunk)
+        .collect()
 }
 
 /// Returns the current hunk assignments for the workspace.
@@ -651,29 +637,6 @@ fn requests_to_assignments(
     Ok(assignments)
 }
 
-pub fn assignments_to_requests(assignments: Vec<HunkAssignment>) -> Vec<HunkAssignmentRequest> {
-    assignments
-        .into_iter()
-        .map(|assignment| {
-            let target = assignment
-                .branch_ref_bytes
-                .map(|branch_ref_bytes| HunkAssignmentTarget::Branch {
-                    branch_ref_bytes: BString::from(branch_ref_bytes.as_bstr()),
-                })
-                .or_else(|| {
-                    assignment
-                        .stack_id
-                        .map(|stack_id| HunkAssignmentTarget::Stack { stack_id })
-                });
-            HunkAssignmentRequest {
-                hunk_header: assignment.hunk_header,
-                path_bytes: assignment.path_bytes,
-                target,
-            }
-        })
-        .collect()
-}
-
 /// Convert hunks to DiffSpecs, one per file path.
 pub fn convert_hunks_to_diff_specs(
     hunks: &[but_core::SingleHunk],
@@ -695,28 +658,6 @@ pub fn convert_hunks_to_diff_specs(
             hunk_headers,
         })
         .collect())
-}
-
-/// Tracks mappings between old and new commit IDs during rebase operations
-#[derive(Debug, Clone, Default)]
-pub struct CommitMap {
-    map: HashMap<ObjectId, ObjectId>,
-}
-
-impl CommitMap {
-    /// Find the final mapped commit ID by following the chain of mappings
-    pub fn find_mapped_id(&self, commit_id: ObjectId) -> ObjectId {
-        let mut current_id = commit_id;
-        while let Some(mapped_id) = self.map.get(&current_id) {
-            current_id = *mapped_id;
-        }
-        current_id
-    }
-
-    /// Add a mapping from old commit ID to new commit ID
-    pub fn add_mapping(&mut self, old_commit_id: ObjectId, new_commit_id: ObjectId) {
-        self.map.insert(old_commit_id, new_commit_id);
-    }
 }
 
 /// A hunk to absorb, along with the routing information the absorb planner needs.
@@ -754,7 +695,6 @@ impl From<but_core::SingleHunk> for AbsorbCandidate {
     }
 }
 
-/// Type alias for grouped changes by commit
 pub type GroupedChanges = BTreeMap<
     (but_core::ref_metadata::StackId, gix::ObjectId),
     (Vec<AbsorbCandidate>, AbsorptionReason),
@@ -1316,7 +1256,7 @@ mod tests {
         };
 
         assert!(
-            binary1.clone().intersects(binary2.clone()),
+            binary1.intersects(binary2.clone()),
             "Binary files with same path should intersect"
         );
         assert!(
@@ -1343,7 +1283,7 @@ mod tests {
         };
 
         assert!(
-            text_with_hunk.clone().intersects(whole_file.clone()),
+            text_with_hunk.intersects(whole_file.clone()),
             "Text file with hunk should intersect with whole-file assignment"
         );
         assert!(

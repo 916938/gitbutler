@@ -12,8 +12,8 @@
 
 use anyhow::Result;
 use but_core::ref_metadata::ProjectMeta;
-use but_graph::{Graph, init::Options};
-use but_meta::VirtualBranchesTomlMetadata;
+use but_graph::init::Options;
+use but_meta::VirtualBranchesMetadata;
 use but_testsupport::{gix_testtools::tempfile::TempDir, visualize_commit_graph_all};
 use but_workspace::workspace::{
     DetailedGraphWorkspace, GraphRowData, Stack, detailed_graph_workspace,
@@ -34,13 +34,11 @@ fn detailed(
     target: Option<&str>,
 ) -> Result<(gix::Repository, DetailedGraphWorkspace)> {
     let repo = crate::utils::read_only_in_memory_scenario(fixture)?;
-    let mut meta = VirtualBranchesTomlMetadata::from_path(
-        repo.path()
-            .join(".git")
-            .join("should-never-be-written.toml"),
-    )?;
+    let mut meta = VirtualBranchesMetadata::from_path(repo.path().join(".git"))?;
     let project_meta = ProjectMeta {
-        target_ref: target.map(gix::refs::FullName::try_from).transpose()?,
+        target_ref: target
+            .map(|name| but_core::ref_metadata::LocalRefName::new(name.try_into()?))
+            .transpose()?,
         // Bound the graph at the target commit too, so the projection is
         // actually trimmed (matching how a real workspace target behaves).
         target_commit_id: target
@@ -50,7 +48,8 @@ fn detailed(
     };
     // The fixture is shared and read-only, so the database stands alone.
     let mut db = but_testsupport::in_memory_db();
-    let graph = Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
+    let graph =
+        but_testsupport::graph_from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
     let mut ws = graph.into_workspace()?;
     let detailed = detailed_graph_workspace(&mut ws, &mut meta, &repo, &mut db)?;
     Ok((repo, detailed))
@@ -60,21 +59,24 @@ fn detailed(
 /// fixtures after applying stack metadata.
 fn detailed_writable(
     fixture: &str,
-    target_remote: &str,
+
     target_branch: &str,
     target_rev: &str,
-    mut configure_stacks: impl FnMut(&mut VirtualBranchesTomlMetadata),
+    mut configure_stacks: impl FnMut(&mut VirtualBranchesMetadata),
 ) -> Result<(TempDir, DetailedGraphWorkspace)> {
     let (tmp, repo, mut meta, _desc, mut db) = named_writable_scenario_with_description(fixture)?;
     let target_sha = repo.rev_parse_single(target_rev)?.detach();
     configure_stacks(&mut meta);
 
     let project_meta = ProjectMeta {
-        target_ref: Some(format!("refs/remotes/{target_remote}/{target_branch}").try_into()?),
+        target_ref: Some(but_core::ref_metadata::LocalRefName::new(
+            format!("refs/heads/{target_branch}").try_into()?,
+        )?),
         target_commit_id: Some(target_sha),
         push_remote: None,
     };
-    let graph = Graph::from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
+    let graph =
+        but_testsupport::graph_from_head(&repo, &meta, project_meta, &mut db, Options::limited())?;
     let mut ws = graph.into_workspace()?;
     let detailed = detailed_graph_workspace(&mut ws, &mut meta, &repo, &mut db)?;
     Ok((tmp, detailed))
@@ -88,7 +90,7 @@ const GLYPHS: [&str; 13] = [
     "  ", "──", "│ ", "╷ ", "╯ ", "╰─", "┴─", "╮ ", "╭─", "┬─", "┤ ", "├─", "┼─",
 ];
 
-#[allow(dead_code, clippy::missing_docs_in_private_items)]
+#[allow(dead_code)]
 mod glyph {
     pub const SPACE: usize = 0;
     pub const HORIZONTAL: usize = 1;
@@ -864,16 +866,10 @@ refs/heads/main push=NothingToPush                  combined=NothingToPush      
 /// is `CompletelyUnpushed`.
 #[test]
 fn integration_status_marks_fully_integrated_branch() -> Result<()> {
-    let (_tmp, detailed) = detailed_writable(
-        "fully-integrated-branch",
-        "origin",
-        "main",
-        "main",
-        |meta| {
-            add_stack(meta, 1, "A", StackState::InWorkspace);
-            add_stack(meta, 2, "B", StackState::InWorkspace);
-        },
-    )?;
+    let (_tmp, detailed) = detailed_writable("fully-integrated-branch", "main", "main", |meta| {
+        add_stack(meta, 1, "A", StackState::InWorkspace);
+        add_stack(meta, 2, "B", StackState::InWorkspace);
+    })?;
     snapbox::assert_data_eq!(
         render_push_status(&detailed),
         snapbox::str![[r#"
@@ -905,7 +901,6 @@ b38b04b add B1   state=local
 fn commit_state_marks_content_integrated_commits() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "diamond-partially-content-integrated",
-        "origin",
         "master",
         "o1",
         |meta| {
@@ -932,7 +927,6 @@ f5b02d3 A        state=integrated
 fn commit_state_marks_historically_integrated_commits() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "diamond-partially-historically-integrated",
-        "origin",
         "master",
         "o1",
         |meta| {
@@ -960,7 +954,6 @@ d6a7004 D        state=local
 fn integration_status_marks_partially_integrated_multi_branch_stack() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "partially-integrated-multi-branch-stack",
-        "origin",
         "main",
         "main",
         |meta| {
@@ -992,7 +985,6 @@ b38b04b add B1   state=local
 fn integration_status_marks_fully_integrated_multi_branch_stack() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "fully-integrated-multi-branch-stack",
-        "origin",
         "main",
         "main",
         |meta| {
@@ -1022,16 +1014,11 @@ b38b04b add B1   state=local
 /// commits on the target.
 #[test]
 fn integration_status_marks_fully_integrated_two_stacks() -> Result<()> {
-    let (_tmp, detailed) = detailed_writable(
-        "fully-integrated-two-stacks",
-        "origin",
-        "main",
-        "main~2",
-        |meta| {
+    let (_tmp, detailed) =
+        detailed_writable("fully-integrated-two-stacks", "main", "main~2", |meta| {
             add_stack(meta, 1, "A", StackState::InWorkspace);
             add_stack(meta, 2, "B", StackState::InWorkspace);
-        },
-    )?;
+        })?;
     snapbox::assert_data_eq!(
         render_statuses(&detailed),
         snapbox::str![[r#"
@@ -1055,7 +1042,6 @@ b38b04b add B1   state=integrated
 fn empty_branch_remote_tip_marks_reference_integrated() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "empty-branch-remote-tip-integrated",
-        "origin",
         "main",
         "main^",
         |meta| {
@@ -1081,7 +1067,6 @@ refs/heads/topic push=Integrated                     combined=Integrated        
 fn non_empty_branch_remote_tip_keeps_local_work_unintegrated() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "non-empty-branch-remote-tip-integrated",
-        "origin",
         "main",
         "main^",
         |meta| {
@@ -1109,7 +1094,6 @@ f1a3cba add local state=local
 fn commit_state_marks_pushed_unintegrated_commit_local_and_remote() -> Result<()> {
     let (_tmp, detailed) = detailed_writable(
         "remote-advanced-with-empty-top-branch",
-        "origin",
         "main",
         "main",
         |meta| {
@@ -1138,7 +1122,7 @@ fn commit_state_uses_similarity_for_local_and_remote() -> Result<()> {
     let (repo, mut meta, mut db) = read_only_in_memory_scenario("target-ahead-remote-rewritten")?;
     add_stack(&mut meta, 1, "A", StackState::InWorkspace);
 
-    let graph = Graph::from_head(
+    let graph = but_testsupport::graph_from_head(
         &repo,
         &*meta,
         project_meta(&repo)?,

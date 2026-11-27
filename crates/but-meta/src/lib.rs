@@ -1,11 +1,10 @@
 //! Implementations for `but-core` metadata traits, associating data with Git entities.
 #![forbid(unsafe_code)]
-#![deny(missing_docs)]
 
 #[cfg(feature = "legacy")]
 mod legacy;
 #[cfg(feature = "legacy")]
-pub use legacy::{BranchOrderMetadata, VirtualBranchesTomlMetadata, storage as legacy_storage};
+pub use legacy::{BranchOrderMetadata, VirtualBranchesMetadata, storage as legacy_storage};
 
 #[cfg(feature = "legacy")]
 pub mod virtual_branches_legacy_types;

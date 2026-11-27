@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap, path::Path};
 
 use anyhow::Context as _;
 use bstr::ByteSlice as _;
@@ -12,11 +12,15 @@ use but_graph::Workspace;
 use but_transaction::{IntermediateCommitCreateResult, Transaction};
 use but_workspace::{
     RefInfo,
-    commit::{ChangeSource, squash_commits::MessageCombinationStrategy},
+    commit::{
+        ChangeSource,
+        squash_commits::{MessageCombinationStrategy, SquashConflicts},
+    },
 };
 use gitbutler_oplog::entry::{OperationKind, SnapshotDetails};
 use gix::{
     ObjectId,
+    prelude::ObjectIdExt as _,
     refs::{FullName, FullNameRef},
 };
 use itertools::{Either, Itertools};
@@ -27,7 +31,10 @@ use crate::{
     CliError, CliResult, CliResultExt, IdMap,
     args::{
         OutputFormat,
-        atoms::{BranchArg, CliIdArg, Priority, Purpose, ResolvedCliIdArg, ResolvedCliIdArgRef},
+        atoms::{
+            BranchArg, CliIdArg, MessageFileArg, Priority, Purpose, ResolvedCliIdArg,
+            ResolvedCliIdArgRef,
+        },
         squash::Platform,
     },
     bad_input,
@@ -39,7 +46,7 @@ use crate::{
         change_source::{self, ChangeSourceId, ChangeSourceRepo, InvokedFrom},
         diff_specs::DiffSpecBuilder,
         merged_upstream::MergedUpstream,
-        rejection,
+        rejection, shorten_object_id,
     },
 };
 
@@ -158,15 +165,29 @@ pub fn squash(
     out: IntermediateChannel<'_>,
     args: Platform,
     invoked_from: &InvokedFrom,
+    current_dir: &Path,
 ) -> CliResult<(SquashOutcome, Option<WorkspaceState>)> {
     let mut guard = ctx.exclusive_worktree_access();
     let mut meta = ctx.meta()?;
-    let id_map = IdMap::new_from_context(ctx, guard.read_permission())?;
+    let id_map = IdMap::new_from_context(ctx, guard.read_permission(), Some(invoked_from))?;
     let head_info = but_api::legacy::workspace::head_info(ctx)?;
-    let merged = MergedUpstream::new(&*ctx.repo.get()?, &head_info, args.allow_merged);
+    let merged = MergedUpstream::new(
+        &*ctx.repo.get()?,
+        &ctx.project_meta()?,
+        &head_info,
+        args.allow_merged,
+    );
 
     let (repo, ws, _) = ctx.workspace_and_db_with_perm(guard.read_permission())?;
-    let resolved_args = resolve_args(&repo, args, &id_map, &head_info, out.format(), invoked_from)?;
+    let resolved_args = resolve_args(
+        &repo,
+        args,
+        &id_map,
+        &head_info,
+        out.format(),
+        invoked_from,
+        current_dir,
+    )?;
     let resolved_args = resolved_args.as_ref();
 
     let squash_op = resolve(resolved_args, &ws, &repo, &merged)?;
@@ -174,7 +195,7 @@ pub fn squash(
     drop(repo);
     drop(ws);
 
-    Ok(run(ctx, &mut meta, guard.write_permission(), squash_op)?)
+    run(ctx, &mut meta, guard.write_permission(), squash_op)
 }
 
 fn resolve_args(
@@ -184,21 +205,26 @@ fn resolve_args(
     head_info: &RefInfo,
     format: OutputFormat,
     invoked_from: &InvokedFrom,
+    current_dir: &Path,
 ) -> CliResult<ResolvedSquashArgs> {
     let Platform {
         target,
         sources,
         message,
         no_message,
+        file,
         use_target_message,
         use_source_message,
         // Consumed by the caller when building the `MergedUpstream` guard.
         allow_merged: _,
+        json: _,
     } = args;
 
     let reword = resolve_reword(
         message,
         no_message,
+        file.as_ref(),
+        current_dir,
         use_target_message,
         use_source_message,
         format,
@@ -255,7 +281,7 @@ fn resolve_args(
                         bad_input("--no-message cannot be used when uncommitting").into()
                     }
                     ResolveTargetError::MessageUnavailable => {
-                        bad_input("--message cannot be used when uncommitting").into()
+                        bad_input("--message and --file cannot be used when uncommitting").into()
                     }
                     ResolveTargetError::AnonymousSegment(id) => {
                         crate::args::atoms::anonymous_segment_error(&id)
@@ -513,11 +539,18 @@ pub fn resolve<'a>(
             SquashTarget::Commit {
                 commit: target,
                 reword,
-            } => SquashOperation::Commits(SquashCommitsOperation {
-                sources,
-                target,
-                reword,
-            }),
+            } => {
+                if sources.contains(&target) {
+                    return Err(bad_input("Cannot squash a commit into itself")
+                        .hint("Use a --target that is not also a source")
+                        .into());
+                }
+                SquashOperation::Commits(SquashCommitsOperation {
+                    sources,
+                    target,
+                    reword,
+                })
+            }
             SquashTarget::Uncommitted => {
                 SquashOperation::Uncommit(UncommitOperation::Commits { sources })
             }
@@ -651,6 +684,187 @@ fn cannot_uncommit_uncommitted_changes_error() -> CliError {
         .into()
 }
 
+/// Refuse an uncommit if its `dry_run` leaves commits conflicted that are not conflicted now.
+///
+/// These commits depend on the changes being uncommitted, so the hint names them as the ones to
+/// uncommit first. Uncommitting them can leave further commits conflicted, so it names those too,
+/// which means that the hinted command passes this check.
+fn ensure_uncommit_causes_no_conflicts(
+    ctx: &mut Context,
+    meta: &mut impl RefMetadata,
+    perm: &mut RepoExclusive,
+    what: &str,
+    dry_run: &WorkspaceState,
+) -> CliResult<()> {
+    let mut dependents = newly_conflicted_commits(ctx, dry_run)?;
+    if dependents.is_empty() {
+        return Ok(());
+    }
+    loop {
+        let dry_run = dry_run_uncommit(ctx, meta, perm, dependents.clone())?;
+        let further = newly_conflicted_commits(ctx, &dry_run)?;
+        if further.is_empty() {
+            break;
+        }
+        dependents.extend(further);
+    }
+
+    let dependents = short_commit_ids(ctx, perm, dependents)?.join(" ");
+    Err(bad_input(format!(
+        "Cannot uncommit {what} that would result in merge conflicts"
+    ))
+    .hint(format!(
+        "Later commits depend on these changes. Run `but uncommit {dependents}` first, then retry"
+    ))
+    .into())
+}
+
+/// The IDs that `but status` shows for `commits`, to name them in a hint.
+fn short_commit_ids(
+    ctx: &Context,
+    perm: &RepoExclusive,
+    commits: impl IntoIterator<Item = ObjectId>,
+) -> anyhow::Result<Vec<String>> {
+    let id_map = IdMap::new_from_context(ctx, perm.read_permission(), None)?;
+    let repo = ctx.repo.get()?;
+    Ok(commits
+        .into_iter()
+        .map(|id| match id_map.change_id_ref(id) {
+            Some(change_id) => change_id.padded_short_id(),
+            None => shorten_object_id(&repo, id),
+        })
+        .collect())
+}
+
+/// Refuse a squash that would conflict, and name the earlier commits to squash along.
+fn squash_conflicts_error(
+    ctx: &mut Context,
+    meta: &mut impl RefMetadata,
+    perm: &mut RepoExclusive,
+    op: &SquashCommitsOperation,
+) -> CliError {
+    let err = bad_input("Cannot squash commits that would result in merge conflicts");
+    match squash_along_hint(ctx, meta, perm, op) {
+        Ok(Some(hint)) => err.hint(hint),
+        Ok(None) => err,
+        Err(hint_err) => {
+            // Explaining the refusal must never mask it.
+            tracing::warn!(?hint_err, "Failed to find the commits to squash along");
+            err
+        }
+    }
+    .into()
+}
+
+/// A hint with the command that squashes `op.sources` into `op.target` together with the commits
+/// the sources depend on, or `None` if taking all of them along conflicts too. These are ancestors
+/// of the sources that the target doesn't have, which on one stack are the commits in between.
+///
+/// Dry runs choose the commits, so the hinted command works: they start with all of these commits
+/// and leave out each one that the squash works without.
+fn squash_along_hint(
+    ctx: &mut Context,
+    meta: &mut impl RefMetadata,
+    perm: &mut RepoExclusive,
+    op: &SquashCommitsOperation,
+) -> anyhow::Result<Option<String>> {
+    let target = op.target.commit_id;
+    let sources: Vec<_> = op.sources.iter().map(|source| source.commit_id).collect();
+    let mut along = Vec::new();
+    for info in ctx
+        .repo
+        .get()?
+        .rev_walk(sources.clone())
+        .with_hidden([target])
+        .all()?
+    {
+        let id = info?.id;
+        if !sources.contains(&id) {
+            along.push(id);
+        }
+    }
+    if !squash_works(ctx, meta, perm, &sources, &along, target)? {
+        return Ok(None);
+    }
+    for id in along.clone() {
+        let without: Vec<_> = along.iter().copied().filter(|other| *other != id).collect();
+        if squash_works(ctx, meta, perm, &sources, &without, target)? {
+            along = without;
+        }
+    }
+
+    let mut ids = short_commit_ids(ctx, perm, sources.into_iter().chain(along).chain([target]))?;
+    let target = ids.pop().context("BUG: the target is the last ID")?;
+    Ok(Some(format!(
+        "Earlier commits change the same lines. To squash them along, run `but squash {} -t {target}`",
+        ids.join(" ")
+    )))
+}
+
+/// Whether squashing `sources` and `along` into `target` works, tried in a dry run.
+fn squash_works(
+    ctx: &mut Context,
+    meta: &mut impl RefMetadata,
+    perm: &mut RepoExclusive,
+    sources: &[ObjectId],
+    along: &[ObjectId],
+    target: ObjectId,
+) -> anyhow::Result<bool> {
+    let outcome =
+        but_transaction::with_transaction_with_perm_only(ctx, meta, perm, DryRun::Yes, |mut tx| {
+            tx.squash_commits(
+                sources.iter().chain(along).copied(),
+                target,
+                MessageCombinationStrategy::KeepTarget,
+            )?;
+            Ok(tx.rollback(()))
+        });
+    match outcome {
+        Ok(_) => Ok(true),
+        Err(err) if err.is::<SquashConflicts>() => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// The commits that `dry_run` leaves conflicted and that are not conflicted now, by their current
+/// IDs.
+fn newly_conflicted_commits(
+    ctx: &Context,
+    dry_run: &WorkspaceState,
+) -> anyhow::Result<Vec<ObjectId>> {
+    let repo = ctx.repo.get()?;
+    let originals: HashMap<_, _> = dry_run
+        .replaced_commits
+        .iter()
+        .map(|(original, rewritten)| (*rewritten, *original))
+        .collect();
+    let mut commits = Vec::new();
+    for (rewritten, _) in &dry_run.conflicted_commits {
+        if let Some(&original) = originals.get(rewritten)
+            && !but_core::Commit::from_id(original.attach(&repo))?.is_conflicted()
+        {
+            commits.push(original);
+        }
+    }
+    Ok(commits)
+}
+
+fn dry_run_uncommit(
+    ctx: &mut Context,
+    meta: &mut impl RefMetadata,
+    perm: &mut RepoExclusive,
+    commits: Vec<ObjectId>,
+) -> anyhow::Result<WorkspaceState> {
+    let (_, workspace) = but_transaction::with_transaction_with_perm_only(
+        ctx,
+        meta,
+        perm,
+        DryRun::Yes,
+        |mut tx| tx.uncommit_commits(commits),
+    )?;
+    Ok(workspace)
+}
+
 /// Changes how the operation rewords the target to avoid unnecessarily opening the editor.
 ///
 /// For example if none of the sources have a message then we should always pick the target
@@ -757,11 +971,8 @@ pub enum ResolvedSquash<'a> {
     Branches {
         target: BranchSquashTarget,
         source_commits: Vec<CommitId>,
-        /// The branches that we're squashing.
-        ///
         /// This is just used to generate the output.
         source_branches: NonEmpty<FullName>,
-        /// The branches that should be removed after squashing the commits.
         branches_to_remove: Vec<FullName>,
     },
     UncommittedHunk(AmendUncommittedHunks<'a>),
@@ -805,8 +1016,7 @@ impl<'a> AmendUncommittedHunks<'a> {
     ) -> CliResult<Self> {
         let source = change_source::single_source(sources.iter().map(|source| match source {
             UncommittedSquashSource::HunkOrFile(source) => source.source.clone(),
-            // A path prefix only ever covers the main worktree.
-            UncommittedSquashSource::PathPrefix(_) => ChangeSourceId::Head,
+            UncommittedSquashSource::PathPrefix { source, .. } => source.clone(),
         }))?;
         Ok(Self {
             target,
@@ -831,7 +1041,10 @@ impl AmendUncommittedHunks<'_> {
 #[derive(Clone, Debug)]
 pub enum UncommittedSquashSource<'a> {
     HunkOrFile(Cow<'a, UncommittedHunkOrFile>),
-    PathPrefix(Cow<'a, NonEmpty<IdAndHunk>>),
+    PathPrefix {
+        hunks: Cow<'a, NonEmpty<IdAndHunk>>,
+        source: ChangeSourceId,
+    },
 }
 
 impl UncommittedSquashSource<'_> {
@@ -840,8 +1053,11 @@ impl UncommittedSquashSource<'_> {
             UncommittedSquashSource::HunkOrFile(source) => {
                 UncommittedSquashSource::HunkOrFile(Cow::Owned(source.into_owned()))
             }
-            UncommittedSquashSource::PathPrefix(source) => {
-                UncommittedSquashSource::PathPrefix(Cow::Owned(source.into_owned()))
+            UncommittedSquashSource::PathPrefix { hunks, source } => {
+                UncommittedSquashSource::PathPrefix {
+                    hunks: Cow::Owned(hunks.into_owned()),
+                    source,
+                }
             }
         }
     }
@@ -890,35 +1106,21 @@ pub fn resolve_target(
             reword,
         }),
         ResolvedCliIdArgRef::Branch(branch_name) => {
-            let branch_name = BranchArg(branch_name.to_owned())
-                .resolve_local_branch_name()
-                .map_err(ResolveTargetError::Other)?;
-
-            for stack in &head_info.stacks {
-                for segment in &stack.segments {
-                    let Some(ref_info) = &segment.ref_info else {
-                        continue;
-                    };
-                    if ref_info.ref_name == branch_name {
-                        let commit = segment
-                            .commits
-                            .first()
-                            .map(|commit| commit.id)
-                            .or(ref_info.commit_id);
-                        return if let Some(commit) = commit {
-                            Ok(SquashTarget::Commit {
-                                commit: CommitId::try_from_commit_id(commit, repo)
-                                    .map_err(ResolveTargetError::Other)?,
-                                reword,
-                            })
-                        } else {
-                            Err(ResolveTargetError::CannotBeEmptyBranch)
-                        };
-                    }
-                }
-            }
-
-            Err(ResolveTargetError::NotFound)
+            let segment = BranchArg(branch_name.to_owned())
+                .try_resolve_segment(head_info)
+                .into_internal_error()
+                .map_err(ResolveTargetError::Other)?
+                .ok_or(ResolveTargetError::NotFound)?;
+            // The commit an empty branch points at isn't its own, so amending it would rewrite
+            // another segment or the target.
+            let commit = segment
+                .tip()
+                .ok_or(ResolveTargetError::CannotBeEmptyBranch)?;
+            Ok(SquashTarget::Commit {
+                commit: CommitId::try_from_commit_id(commit, repo)
+                    .map_err(ResolveTargetError::Other)?,
+                reword,
+            })
         }
         ResolvedCliIdArgRef::Uncommitted(source) => {
             resolve_uncommit_target(source.clone(), sources, reword, head_info)
@@ -1059,6 +1261,8 @@ pub fn resolve_squash_branch(
 fn resolve_reword(
     message: Option<Vec<String>>,
     no_message: bool,
+    file: Option<&MessageFileArg>,
+    current_dir: &Path,
     use_target_message: bool,
     use_source_message: bool,
     format: OutputFormat,
@@ -1069,7 +1273,11 @@ fn resolve_reword(
         Ok(HowToRewordTarget::UseSourceMessage)
     } else {
         Ok(HowToRewordTarget::Reword(CommitMessageSource::from_args(
-            no_message, message, format,
+            no_message,
+            message,
+            file,
+            current_dir,
+            format,
         )?))
     }
 }
@@ -1193,9 +1401,16 @@ impl<'a> Squashable<'a> {
             ResolvedCliIdArgRef::CommittedHunk(committed_hunk) => {
                 return Ok(Self::CommittedHunk(committed_hunk.clone()));
             }
-            ResolvedCliIdArgRef::PathPrefix { id: _, hunks } => {
+            ResolvedCliIdArgRef::PathPrefix {
+                id: _,
+                hunks,
+                source,
+            } => {
                 return Ok(Self::UncommittedChange(
-                    UncommittedSquashSource::PathPrefix(Cow::Borrowed(hunks)),
+                    UncommittedSquashSource::PathPrefix {
+                        hunks: Cow::Borrowed(hunks),
+                        source: source.clone(),
+                    },
                 ));
             }
             ResolvedCliIdArgRef::Stack { .. } => "a stack",
@@ -1268,7 +1483,7 @@ pub fn run(
     meta: &mut impl RefMetadata,
     perm: &mut RepoExclusive,
     squash_op: SquashOperation,
-) -> anyhow::Result<(SquashOutcome, Option<WorkspaceState>)> {
+) -> CliResult<(SquashOutcome, Option<WorkspaceState>)> {
     // Owned for the whole operation: the `ChangeSource` handed to the transaction
     // below borrows from it. Opened before any workspace handle is taken.
     let source_repo = ChangeSourceRepo::open(ctx, &squash_op.change_source())?;
@@ -1327,8 +1542,8 @@ pub fn run(
                     UncommittedSquashSource::HunkOrFile(source) => {
                         builder.push_changes_from_uncommitted(source)?;
                     }
-                    UncommittedSquashSource::PathPrefix(source) => {
-                        builder.push_changes_from_path_prefix(source)?;
+                    UncommittedSquashSource::PathPrefix { hunks, source: _ } => {
+                        builder.push_changes_from_path_prefix(hunks)?;
                     }
                 }
             }
@@ -1376,7 +1591,6 @@ pub fn run(
             let context_lines = ctx.settings.context_lines;
             let repo = ctx.repo.get()?;
             let mut builder = DiffSpecBuilder::new(&repo, context_lines);
-            let mut tree_changes = None;
             for change in sources {
                 match change {
                     CommittedChange::File(committed_file) => builder
@@ -1385,25 +1599,7 @@ pub fn run(
                             committed_file.path.as_ref(),
                         )?,
                     CommittedChange::Hunk(hunk) => {
-                        if tree_changes.is_none() {
-                            let commit = repo.find_commit(source.commit_id)?;
-                            tree_changes = Some(
-                                but_core::diff::tree_changes(
-                                    &repo,
-                                    commit.parent_ids().next().map(|id| id.detach()),
-                                    source.commit_id,
-                                )?
-                                .into_iter()
-                                .map(Into::into)
-                                .collect::<Vec<but_core::ui::TreeChange>>(),
-                            );
-                        }
-                        builder.push_hunks_with_changes(
-                            [hunk.hunk],
-                            tree_changes
-                                .as_ref()
-                                .expect("tree changes are initialized for committed hunks"),
-                        )
+                        builder.push_changes_from_committed_hunk(&hunk)?
                     }
                 }
             }
@@ -1446,7 +1642,6 @@ pub fn run(
             let context_lines = ctx.settings.context_lines;
             let repo = ctx.repo.get()?;
             let mut builder = DiffSpecBuilder::new(&repo, context_lines);
-            let mut tree_changes = None;
             for change in sources {
                 match change {
                     CommittedChange::File(committed_file) => builder
@@ -1455,25 +1650,7 @@ pub fn run(
                             committed_file.path.as_ref(),
                         )?,
                     CommittedChange::Hunk(hunk) => {
-                        if tree_changes.is_none() {
-                            let commit = repo.find_commit(source.commit_id)?;
-                            tree_changes = Some(
-                                but_core::diff::tree_changes(
-                                    &repo,
-                                    commit.parent_ids().next().map(|id| id.detach()),
-                                    source.commit_id,
-                                )?
-                                .into_iter()
-                                .map(Into::into)
-                                .collect::<Vec<but_core::ui::TreeChange>>(),
-                            );
-                        }
-                        builder.push_hunks_with_changes(
-                            [hunk.hunk],
-                            tree_changes
-                                .as_ref()
-                                .expect("tree changes are initialized for committed hunks"),
-                        )
+                        builder.push_changes_from_committed_hunk(&hunk)?
                     }
                 }
             }
@@ -1491,6 +1668,7 @@ pub fn run(
                 meta,
                 perm,
                 snapshot_details,
+                &[],
                 DryRun::No,
                 |mut tx| {
                     let new_commit = match op.clone() {
@@ -1507,17 +1685,19 @@ pub fn run(
                     Ok(but_transaction::Commit(new_commit))
                 },
             )
-            .map_err(|err| {
-                // Only the amend path can reject changes; other errors pass
-                // through `explain_after_rollback` untouched.
-                let TransactionCompatibleOperation::UncommittedHunks(
-                    AmendUncommittedDiffSpecsOperation { target, .. },
-                ) = &op
-                else {
-                    return err;
-                };
-                let target = rejection::Target::Commit(target.clone());
-                rejection::explain_after_rollback(ctx, perm, "amend", target, err)
+            .map_err(|err| -> CliError {
+                match &op {
+                    TransactionCompatibleOperation::UncommittedHunks(
+                        AmendUncommittedDiffSpecsOperation { target, .. },
+                    ) => {
+                        let target = rejection::Target::Commit(target.clone());
+                        rejection::explain_after_rollback(ctx, perm, "amend", target, err).into()
+                    }
+                    TransactionCompatibleOperation::Commits(op) if err.is::<SquashConflicts>() => {
+                        squash_conflicts_error(ctx, meta, perm, op)
+                    }
+                    _ => err.into(),
+                }
             })?;
 
             let outcome = match op.clone() {
@@ -1548,27 +1728,8 @@ pub fn run(
         }
         ExecutableSquashOperation::Uncommit(op) => {
             if op.has_commit_sources() {
-                let but_api::commit::types::UncommitResult {
-                    workspace,
-                    uncommitted_ids: _,
-                } = but_api::commit::uncommit::commit_uncommit_only_with_perm(
-                    ctx,
-                    op.commit_sources().collect(),
-                    None,
-                    DryRun::Yes,
-                    perm,
-                )?;
-                // The implementation of `commit_uncommit_only_with_perm` requires a write lock on
-                // the workspace even in dry run mode. Ideally, we should change that function
-                // (or better, remove this whole `if` block and instead check for conflicts another
-                // way). For now, invalidate the workspace cache to enable future code to once
-                // again take locks.
-                ctx.invalidate_workspace_cache()?;
-
-                anyhow::ensure!(
-                    !workspace.is_conflicted(),
-                    "Cannot uncommit commits that would result in merge conflicts"
-                );
+                let workspace = dry_run_uncommit(ctx, meta, perm, op.commit_sources().collect())?;
+                ensure_uncommit_causes_no_conflicts(ctx, meta, perm, "commits", &workspace)?;
             }
 
             let snapshot_details = SnapshotDetails::new(OperationKind::UndoCommit);
@@ -1577,6 +1738,7 @@ pub fn run(
                 meta,
                 perm,
                 snapshot_details,
+                &[],
                 DryRun::No,
                 |mut tx| {
                     match &op {
@@ -1618,28 +1780,17 @@ pub fn run(
             Ok((outcome, Some(ws)))
         }
         ExecutableSquashOperation::UncommitHunks { source, changes } => {
-            {
-                let but_api::commit::types::MoveChangesResult { workspace } =
-                    but_api::commit::uncommit::commit_uncommit_changes_only_with_perm(
-                        ctx,
-                        source.commit_id,
-                        changes.clone(),
-                        None,
-                        DryRun::Yes,
-                        perm,
-                    )?;
-                // The implementation of `commit_uncommit_changes_only_with_perm` requires a write lock on
-                // the workspace even in dry run mode. Ideally, we should change that function
-                // (or better, remove this whole `if` block and instead check for conflicts another
-                // way). For now, invalidate the workspace cache to enable future code to once
-                // again take locks.
-                ctx.invalidate_workspace_cache()?;
-
-                anyhow::ensure!(
-                    !workspace.is_conflicted(),
-                    "Cannot uncommit hunks that would result in merge conflicts"
-                );
-            }
+            let (_, workspace) = but_transaction::with_transaction_with_perm_only(
+                ctx,
+                meta,
+                perm,
+                DryRun::Yes,
+                |mut tx| {
+                    tx.uncommit_changes_from_commit(source.commit_id, changes.clone())?;
+                    Ok(())
+                },
+            )?;
+            ensure_uncommit_causes_no_conflicts(ctx, meta, perm, "hunks", &workspace)?;
 
             let but_api::commit::types::MoveChangesResult { workspace: _ } =
                 but_api::commit::uncommit::commit_uncommit_changes_with_perm(
@@ -1829,7 +1980,12 @@ impl AmendUncommittedDiffSpecsOperation {
         let IntermediateCommitCreateResult {
             new_commit,
             rejected_specs,
-        } = tx.amend_commit(target.commit_id, changes, source)?;
+        } = tx.amend_commit(
+            target.commit_id,
+            changes,
+            source,
+            but_workspace::commit::Conflicts::Reject,
+        )?;
 
         if !rejected_specs.is_empty() {
             return Err(rejection::RejectedChanges(rejected_specs).into());

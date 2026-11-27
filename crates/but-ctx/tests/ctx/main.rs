@@ -1,16 +1,72 @@
 use std::{
-    fs,
     sync::{Arc, Barrier},
     thread,
 };
 
-use but_core::ref_metadata::ProjectMeta;
-use but_ctx::{Context, ProjectHandle};
+use but_core::ref_metadata::{LocalRefName, ProjectMeta};
+use but_ctx::{Context, ProjectHandle, RepoOpenMode};
 use but_path::AppChannel;
 use but_testsupport::{
     CommandExt as _, git, git_at_dir, gix_testtools::tempfile::TempDir, graph_tree, open_repo,
     writable_scenario_slow,
 };
+
+#[test]
+fn repository_opens_enable_directory_renames_for_conflict_reduction() -> anyhow::Result<()> {
+    use gix::merge::plumbing::tree::{DirectoryRenames, Options};
+
+    but_testsupport::isolated_app_data_dir(|| {
+        let (_tmp, repo, _) = run_fixture("project-meta-base")?;
+        git(&repo).args(["config", "merge.renames", "true"]).run();
+        git(&repo)
+            .args(["config", "merge.directoryRenames", "false"])
+            .run();
+        let workdir = repo.workdir().expect("fixture has a worktree");
+        let linked_dir = workdir.join("linked");
+        git(&repo)
+            .args(["worktree", "add", "--detach"])
+            .arg(&linked_dir)
+            .run();
+
+        let standard = Context::open(workdir)?;
+        let isolated = Context::open_with_repo_open_mode(workdir, RepoOpenMode::Isolated)?;
+        let mut reloaded = standard.repo.get()?.clone();
+        reloaded.reload()?;
+        let linked = standard
+            .repo
+            .get()?
+            .worktrees()?
+            .pop()
+            .expect("fixture has one linked worktree")
+            .into_repo()?;
+        for (source, opened) in [
+            ("standard context", standard.repo.get()?.clone()),
+            ("isolated context", isolated.repo.get()?.clone()),
+            ("isolated open", standard.open_isolated_repo()?),
+            (
+                "discovery from a linked worktree",
+                but_ctx::discover_main_repo(&linked_dir)?,
+            ),
+            ("linked worktree", linked),
+            ("reload", reloaded),
+        ] {
+            let options: Options = opened.tree_merge_options()?.into();
+            assert_eq!(
+                options.directory_renames,
+                DirectoryRenames::Enabled,
+                "{source} enables directory renames"
+            );
+        }
+        assert_eq!(
+            open_repo(workdir)?
+                .config_snapshot()
+                .boolean(gix::config::tree::Merge::DIRECTORY_RENAMES),
+            Some(false),
+            "opening repositories leaves the on-disk setting alone"
+        );
+        Ok(())
+    })
+}
 
 #[test]
 fn new_from_project_handle_uses_repo_gitdir() -> anyhow::Result<()> {
@@ -197,7 +253,7 @@ fn discover_with_app_channel_uses_requested_project_data_dir() -> anyhow::Result
 fn set_project_meta_persists_git_config() -> anyhow::Result<()> {
     let (_tmp, repo, target_commit_id) = run_fixture("project-meta-base")?;
     let ctx = Context::from_repo_for_testing(repo)?;
-    let project_meta = project_meta(target_commit_id, "refs/remotes/origin/main", "fork")?;
+    let project_meta = project_meta(target_commit_id, "refs/heads/main", "fork")?;
 
     assert_eq!(ctx.project_meta()?, ProjectMeta::default());
 
@@ -214,24 +270,20 @@ fn set_project_meta_persists_git_config() -> anyhow::Result<()> {
 }
 
 #[test]
-fn set_project_meta_fills_missing_target_commit_id_from_target_ref() -> anyhow::Result<()> {
+fn set_project_meta_preserves_unset_target_commit_id() -> anyhow::Result<()> {
     let (_tmp, repo, _target_commit_id) = run_fixture("project-meta-base")?;
-    let expected_target_id = {
-        let mut target_ref = repo.find_reference("refs/remotes/origin/main")?;
-        target_ref.peel_to_commit()?.id
-    };
     let ctx = Context::from_repo_for_testing(repo)?;
 
     ctx.set_project_meta(ProjectMeta {
-        target_ref: Some("refs/remotes/origin/main".try_into()?),
+        target_ref: Some(LocalRefName::new("refs/heads/main".try_into()?)?),
         target_commit_id: None,
         push_remote: Some("fork".into()),
     })?;
 
     assert_eq!(
         ctx.project_meta()?.target_commit_id,
-        Some(expected_target_id),
-        "migration should fill a missing target commit from the target ref tip"
+        None,
+        "persisting metadata must preserve an unset cutoff rather than pinning the target tip"
     );
     Ok(())
 }
@@ -247,7 +299,7 @@ fn set_project_meta_preserves_existing_target_commit_id() -> anyhow::Result<()> 
     let ctx = Context::from_repo_for_testing(repo)?;
 
     ctx.set_project_meta(ProjectMeta {
-        target_ref: Some("refs/remotes/origin/main".try_into()?),
+        target_ref: Some(LocalRefName::new("refs/heads/main".try_into()?)?),
         target_commit_id: Some(stable_target),
         push_remote: None,
     })?;
@@ -266,7 +318,7 @@ fn set_project_meta_clears_missing_target_ref() -> anyhow::Result<()> {
     let ctx = Context::from_repo_for_testing(repo)?;
 
     ctx.set_project_meta(ProjectMeta {
-        target_ref: Some("refs/remotes/origin/missing".try_into()?),
+        target_ref: Some(LocalRefName::new("refs/heads/missing".try_into()?)?),
         target_commit_id: None,
         push_remote: Some("fork".into()),
     })?;
@@ -296,40 +348,22 @@ fn project_meta_observes_changes_made_through_other_repository_handles() -> anyh
 
     // Write through an independent handle, like another process would.
     let other_ctx = Context::from_repo_for_testing(open_repo(&ctx.gitdir)?)?;
-    other_ctx.set_project_meta(project_meta(
-        target_commit_id,
-        "refs/remotes/origin/main",
-        "fork",
-    )?)?;
+    other_ctx.set_project_meta(project_meta(target_commit_id, "refs/heads/main", "fork")?)?;
 
     assert_eq!(
         ctx.project_meta()?.target_ref.map(|name| name.to_string()),
-        Some("refs/remotes/origin/main".to_string()),
+        Some("refs/heads/main".to_string()),
         "a long-lived context observes target changes made elsewhere"
     );
     Ok(())
 }
 
 #[test]
-fn context_creation_ports_legacy_toml_before_cleanup() -> anyhow::Result<()> {
-    let (_tmp, repo, target_commit_id) = run_fixture("project-meta-toml")?;
-    let ctx = Context::from_repo_for_testing(repo)?;
-    let expected = project_meta(target_commit_id, "refs/remotes/origin/main", "fork")?;
-
-    assert_eq!(ctx.project_meta()?, expected);
-
-    fs::write(
-        ctx.project_data_dir().join("virtual_branches.toml"),
-        "[branches]\n",
-    )?;
-    let reopened = Context::from_repo_for_testing(open_repo(&ctx.gitdir)?)?;
-    assert_eq!(reopened.project_meta()?, expected);
-    Ok(())
-}
-
-#[test]
-fn concurrent_context_creation_ports_legacy_toml() -> anyhow::Result<()> {
-    let (_tmp, repo, target_commit_id) = run_fixture("project-meta-toml")?;
+fn concurrent_context_creation_ports_project_meta() -> anyhow::Result<()> {
+    let (_tmp, repo, target_commit_id) = run_fixture("project-meta-ported")?;
+    but_core::git_config::edit_repo_config(&repo, gix::config::Source::Local, |config| {
+        but_core::git_config::remove_config_value(config, "gitbutler.project.portedMeta")
+    })?;
     let gitdir = repo.git_dir().to_owned();
     let barrier = Arc::new(Barrier::new(9));
     let repos = (0..8)
@@ -352,10 +386,14 @@ fn concurrent_context_creation_ports_legacy_toml() -> anyhow::Result<()> {
     for thread in threads {
         thread.join().expect("context creation does not panic")?;
     }
+    assert!(
+        ProjectMeta::is_ported_repo(&repo)?,
+        "concurrent contexts port the project metadata"
+    );
     assert_eq!(
         ProjectMeta::resolve(&repo)?,
-        project_meta(target_commit_id, "refs/remotes/origin/main", "fork")?,
-        "legacy project metadata is ported"
+        project_meta(target_commit_id, "refs/heads/trunk", "origin")?,
+        "porting keeps the configured target"
     );
     Ok(())
 }
@@ -366,32 +404,24 @@ fn context_creation_preserves_unmarked_project_config() -> anyhow::Result<()> {
     but_core::git_config::edit_repo_config(&repo, gix::config::Source::Local, |config| {
         but_core::git_config::remove_config_value(config, "gitbutler.project.portedMeta")
     })?;
-    fs::write(
-        repo.git_dir().join("gitbutler/virtual_branches.toml"),
-        "invalid legacy metadata",
-    )?;
 
     let ctx = Context::from_repo_for_testing(repo)?;
     snapbox::assert_data_eq!(
         project_meta_summary(ctx.project_meta()?),
-        snapbox::str![
-            "target_ref=refs/remotes/upstream/trunk; target_commit_id=[OID]; push_remote=origin"
-        ]
+        snapbox::str!["target_ref=refs/heads/trunk; target_commit_id=[OID]; push_remote=origin"]
     );
     Ok(())
 }
 
 #[test]
-fn project_meta_reads_git_config_and_ignores_stale_toml() -> anyhow::Result<()> {
+fn project_meta_reads_git_config() -> anyhow::Result<()> {
     let (_tmp, repo, _target_commit_id) = run_fixture("project-meta-ported")?;
     let ctx = Context::from_repo_for_testing(repo)?;
 
     let actual = ctx.project_meta()?;
     snapbox::assert_data_eq!(
         project_meta_summary(actual),
-        snapbox::str![
-            "target_ref=refs/remotes/upstream/trunk; target_commit_id=[OID]; push_remote=origin"
-        ]
+        snapbox::str!["target_ref=refs/heads/trunk; target_commit_id=[OID]; push_remote=origin"]
     );
     Ok(())
 }
@@ -408,7 +438,7 @@ fn project_meta(
     push_remote: &str,
 ) -> anyhow::Result<ProjectMeta> {
     Ok(ProjectMeta {
-        target_ref: Some(target_ref.try_into()?),
+        target_ref: Some(LocalRefName::new(target_ref.try_into()?)?),
         target_commit_id: Some(target_commit_id),
         push_remote: Some(push_remote.to_owned()),
     })
@@ -437,8 +467,7 @@ fn worktree_adoption_archives_preexisting_worktrees() -> anyhow::Result<()> {
          git worktree add -b feat-b ../wt-b",
         &repo,
     );
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
 
     assert_eq!(
         active_names(&ctx)?,
@@ -547,8 +576,7 @@ fn setting_archived_state_before_the_first_read_survives_adoption() -> anyhow::R
          git worktree add -b feat-a ../wt-a",
         &repo,
     );
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
 
     // Un-archiving is the very first worktree operation this project ever sees, so
     // adoption still has to run. If it ran afterwards it would archive everything
@@ -564,7 +592,7 @@ fn setting_archived_state_before_the_first_read_survives_adoption() -> anyhow::R
 }
 
 #[test]
-fn worktree_manipulation_flag_gates_worktree_state() -> anyhow::Result<()> {
+fn first_read_adopts_pre_existing_worktrees() -> anyhow::Result<()> {
     let root = TempDir::new()?;
     gix::init(root.path().join("main"))?;
     let repo = open_repo(&root.path().join("main"))?;
@@ -574,25 +602,7 @@ fn worktree_manipulation_flag_gates_worktree_state() -> anyhow::Result<()> {
         &repo,
     );
 
-    // Flag off: nothing is returned and no adoption side-effects happen.
-    let ctx = Context::from_repo_for_testing(repo.clone())?;
-    assert_eq!(active_names(&ctx)?, Vec::<String>::new());
-    {
-        let db = ctx.db.get_cache_mut()?;
-        assert!(
-            !db.worktree_meta().adoption_ran()?,
-            "flag off must not adopt"
-        );
-        assert_eq!(
-            db.worktree_meta().list()?.len(),
-            0,
-            "flag off must not touch the worktree_meta table"
-        );
-    }
-
-    // Flag on: the first read adopts (archives) the pre-existing worktree.
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
     assert_eq!(
         active_names(&ctx)?,
         Vec::<String>::new(),
@@ -614,8 +624,7 @@ fn worktree_adoption_with_zero_worktrees_is_persisted() -> anyhow::Result<()> {
     gix::init(root.path().join("main"))?;
     let repo = open_repo(&root.path().join("main"))?;
     but_testsupport::invoke_bash("git commit --allow-empty -m M", &repo);
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
 
     assert_eq!(active_names(&ctx)?, Vec::<String>::new());
 
@@ -660,8 +669,7 @@ fn pruned_or_inaccessible_worktrees_are_adopted_but_not_returned() -> anyhow::Re
     )?;
     std::fs::remove_file(root.path().join("wt-broken/.git"))?;
 
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
     assert_eq!(
         active_names(&ctx)?,
         Vec::<String>::new(),
@@ -693,8 +701,7 @@ fn pruned_or_inaccessible_worktrees_are_adopted_but_not_returned() -> anyhow::Re
 fn rows_of_worktrees_git_forgot_are_pruned_on_read() -> anyhow::Result<()> {
     let (repo, _tmp) = writable_scenario_slow("worktree-seeding");
     let workdir = repo.workdir().expect("fixture is non-bare").to_owned();
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
     assert_eq!(active_names(&ctx)?, Vec::<String>::new());
     snapbox::assert_data_eq!(
         db_state(&ctx)?,
@@ -737,8 +744,7 @@ fn unborn_head_worktrees_enumerate_but_resolve_no_head() -> anyhow::Result<()> {
         &repo,
     );
 
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
     assert_eq!(
         active_names(&ctx)?,
         Vec::<String>::new(),
@@ -775,8 +781,7 @@ fn workspace_ref_worktrees_enumerate_but_never_resolve_or_seed() -> anyhow::Resu
         &repo,
     );
 
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
     assert_eq!(active_names(&ctx)?, Vec::<String>::new());
     {
         let mut db = ctx.db.get_cache_mut()?;
@@ -823,17 +828,7 @@ fn worktree_state_is_unreachable_from_linked_worktree_contexts() -> anyhow::Resu
     // A context opened inside a linked worktree stores its database in the
     // worktree's private git dir - adoption and archived state written there
     // would silently diverge from the main worktree's database.
-    let mut ctx = Context::from_repo_for_testing(open_repo(&root.path().join("wt-a"))?)?;
-    assert_eq!(
-        active_names(&ctx)?,
-        Vec::<String>::new(),
-        "with the flag off even a linked-worktree context returns nothing, without erroring"
-    );
-    assert!(
-        ctx.workspace_and_db().is_ok(),
-        "with the flag off, workspace building in a linked worktree is unaffected"
-    );
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(open_repo(&root.path().join("wt-a"))?)?;
     assert!(
         ctx.worktrees_with_state()
             .unwrap_err()
@@ -841,10 +836,7 @@ fn worktree_state_is_unreachable_from_linked_worktree_contexts() -> anyhow::Resu
             .contains("main worktree"),
         "linked-worktree contexts must be refused, not given their own state"
     );
-    // A fresh context bypasses the workspace cached by the flag-off call above.
     // Workspace building inherits the refusal - seeding must not read diverging state.
-    let mut ctx = Context::from_repo_for_testing(open_repo(&root.path().join("wt-a"))?)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
     snapbox::assert_data_eq!(
         ctx.workspace_and_db()
             .err()
@@ -862,8 +854,7 @@ fn worktree_state_is_unreachable_from_linked_worktree_contexts() -> anyhow::Resu
          git -C bare.git worktree add -b feat-bare ../wt-bare",
         root.path(),
     );
-    let mut ctx = Context::from_repo_for_testing(open_repo(&root.path().join("wt-bare"))?)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(open_repo(&root.path().join("wt-bare"))?)?;
     assert!(
         ctx.worktrees_with_state()
             .unwrap_err()
@@ -882,28 +873,14 @@ fn workspace_from_head_seeds_active_worktree_tips() -> anyhow::Result<()> {
         Ok(graph_tree(&ws.graph).to_string())
     };
 
-    // Flag off: no tips are seeded and the database is untouched.
+    // The first workspace build adopts, archiving the pre-existing
+    // worktrees - archived worktrees are not seeded.
     let ctx = Context::from_repo_for_testing(repo.clone())?;
     snapbox::assert_data_eq!(
         workspace_graph(&ctx)?,
         snapbox::str![[r#"
 
-└── 👉►:0[0]:main[🌳]
-    └── 🏁·85efbe4 (⌂)
-
-"#]]
-    );
-    snapbox::assert_data_eq!(db_state(&ctx)?, snapbox::str!["adopted: false, rows: []"]);
-
-    // Flag on: the first workspace build adopts, archiving the pre-existing
-    // worktrees - archived worktrees are not seeded.
-    let mut ctx = Context::from_repo_for_testing(repo.clone())?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
-    snapbox::assert_data_eq!(
-        workspace_graph(&ctx)?,
-        snapbox::str![[r#"
-
-└── 👉►:0[0]:main[🌳]
+└── 👉►[0]:main[🌳]
     └── 🏁·85efbe4 (⌂)
 
 "#]]
@@ -923,8 +900,7 @@ fn workspace_from_head_seeds_active_worktree_tips() -> anyhow::Result<()> {
             archived: false,
         })?;
     }
-    let mut ctx = Context::from_repo_for_testing(repo)?;
-    ctx.settings.feature_flags.worktree_manipulation = true;
+    let ctx = Context::from_repo_for_testing(repo)?;
     {
         let (_guard, _repo, ws, _db) = ctx.workspace_and_db()?;
         assert_eq!(
@@ -937,19 +913,19 @@ fn workspace_from_head_seeds_active_worktree_tips() -> anyhow::Result<()> {
             "the graph preserves the stable name of each active worktree"
         );
     }
-    // The worktree branch never owns its commit: it is an empty segment
-    // forking onto the anonymous commit-owning segment below.
+    // The worktree branch owns its commit, as nothing else reaches it. Only
+    // if another lane reached that commit would the branch be an empty
+    // segment forking onto it, leaving the commit to that lane.
     snapbox::assert_data_eq!(
         workspace_graph(&ctx)?,
         snapbox::str![[r#"
 
-├── 👉►:0[0]:main[🌳@repo]
-│   └── ►:3[2]:anon:
-│       └── 🏁·85efbe4 (⌂)
-└── ►:2[0]:feat-b[📁wt-b]
-    └── ►:1[1]:anon:
-        └── ·7d7d38f (⌂)
-            └── →:3:
+├── ►[0]:feat-b[📁wt-b]
+│   └── ·7d7d38f (⌂)
+│       └── ►[1]:anon:
+│           └── 🏁·85efbe4 (⌂)
+└── 👉►[0]:main[🌳@repo]
+    └── → segment ·85efbe4
 
 "#]]
     );

@@ -13,8 +13,7 @@ use crate::{
             Mode, NormalMode, PickChangesMode, SelectAfterReload,
             app::{
                 CommitSource, SquashMode,
-                mark::{MarkableRef, Marks, hunk_is_child_of},
-                prefix_match,
+                mark::{CommittedMark, MarkableRef, Marks, hunk_is_child_of},
             },
             mode::ModeRef,
             render::{
@@ -196,7 +195,6 @@ impl Cursor {
         Some(Self(idx))
     }
 
-    /// Selects what should be focused after discarding the currently selected commit.
     pub fn select_after_discarded_commit(
         self,
         lines: &[StatusOutputLine],
@@ -215,7 +213,6 @@ impl Cursor {
         }
     }
 
-    /// Selects what should be focused after discarding marked items.
     pub fn select_after_discarded_marks(
         self,
         lines: &[StatusOutputLine],
@@ -284,7 +281,6 @@ impl Cursor {
         None
     }
 
-    /// Selects what should be focused after discarding marked commits.
     pub fn select_after_discarded_commits(
         self,
         lines: &[StatusOutputLine],
@@ -346,7 +342,6 @@ impl Cursor {
         None
     }
 
-    /// Selects what should be focused after discarding the currently selected branch.
     pub fn select_after_discarded_branch(
         self,
         lines: &[StatusOutputLine],
@@ -398,6 +393,23 @@ impl Cursor {
         Some(Self(idx))
     }
 
+    pub fn select_committed_file(
+        object_id: gix::ObjectId,
+        path: &BStr,
+        lines: &[StatusOutputLine],
+    ) -> Option<Self> {
+        let idx = lines.iter().position(|line| {
+            matches!(
+                line.data.cli_id().map(|id| &**id),
+                Some(CliId::CommittedFile {
+                    committed_file: CommittedFileId { commit_id, path: file_path, .. },
+                    id: _,
+                }) if *commit_id == object_id && file_path == path
+            )
+        })?;
+        Some(Self(idx))
+    }
+
     /// Select the first line that points to the given branch name.
     pub fn select_branch(branch_name: &str, lines: &[StatusOutputLine]) -> Option<Self> {
         let idx = lines.iter().position(|line| {
@@ -429,21 +441,6 @@ impl Cursor {
         Some(Self(idx))
     }
 
-    /// Select the first uncommitted file line that points to the given path in the given stack.
-    pub fn select_uncommitted_file(path: &BStr, lines: &[StatusOutputLine]) -> Option<Self> {
-        let idx = lines.iter().position(|line| {
-            if let Some(CliId::UncommittedHunkOrFile(uncommitted)) =
-                line.data.cli_id().map(|id| &**id)
-            {
-                let hunk = uncommitted.hunks.first();
-                hunk.hunk.path == path
-            } else {
-                false
-            }
-        })?;
-        Some(Self(idx))
-    }
-
     /// Select the first line that points to the uncommitted section.
     pub fn select_uncommitted(lines: &[StatusOutputLine]) -> Option<Self> {
         let idx = lines.iter().position(|line| {
@@ -458,7 +455,6 @@ impl Cursor {
         Some(Self(idx))
     }
 
-    /// Select the merge-base line.
     pub fn select_merge_base(lines: &[StatusOutputLine]) -> Option<Self> {
         let idx = lines
             .iter()
@@ -516,6 +512,26 @@ impl Cursor {
         }
 
         selected_line.data.cli_id()
+    }
+
+    /// The selected line of `lines` found again in `new_lines` after a reload, or `None` if it's
+    /// gone.
+    pub fn restore_after_reload(
+        self,
+        lines: &[StatusOutputLine],
+        new_lines: &[StatusOutputLine],
+        show_files: FilesStatusFlag,
+    ) -> Option<Self> {
+        // The merge base has no CLI ID to find it by.
+        if self
+            .selected_line(lines)
+            .is_some_and(|line| matches!(line.data, StatusOutputLineData::MergeBase))
+        {
+            return Cursor::select_merge_base(new_lines);
+        }
+
+        self.selection_cli_id_for_reload(lines, show_files)
+            .and_then(|cli_id| Cursor::restore(cli_id, new_lines))
     }
 
     fn parent_cli_id_of_selected_file(self, lines: &[StatusOutputLine]) -> Option<&Arc<CliId>> {
@@ -682,7 +698,8 @@ impl Cursor {
             ),
             MarkableRef::Uncommitted(..)
             | MarkableRef::Commit(..)
-            | MarkableRef::CommittedFile(..) => (
+            | MarkableRef::CommittedFile(..)
+            | MarkableRef::CommittedHunk(..) => (
                 self.move_down_within_section(lines, mode, show_files),
                 self.move_up_within_section(lines, mode, show_files),
             ),
@@ -856,7 +873,6 @@ impl Cursor {
     }
 }
 
-/// Finds the start index of the nearest section at or before `idx`.
 fn find_section_start_at_or_before(
     lines: &[StatusOutputLine],
     mode: &Mode,
@@ -871,7 +887,6 @@ fn find_section_start_at_or_before(
         .map(|(idx, _)| idx)
 }
 
-/// Finds the next section start after `idx`.
 fn find_next_section_start(lines: &[StatusOutputLine], mode: &Mode, idx: usize) -> Option<usize> {
     lines
         .iter()
@@ -881,7 +896,6 @@ fn find_next_section_start(lines: &[StatusOutputLine], mode: &Mode, idx: usize) 
         .map(|(idx, _)| idx)
 }
 
-/// Finds the previous section start before `search_end`.
 fn find_previous_section_start(
     lines: &[StatusOutputLine],
     mode: &Mode,
@@ -896,7 +910,6 @@ fn find_previous_section_start(
         .map(|(idx, _)| idx)
 }
 
-/// Finds the first selectable line in the section starting at `section_start`.
 fn first_selectable_in_section(
     lines: &[StatusOutputLine],
     mode: &Mode,
@@ -1085,7 +1098,6 @@ fn is_discard_commit_boundary(line: &StatusOutputLine) -> bool {
     }
 }
 
-/// Returns true if a line is a section header row.
 fn is_section_header(line: &StatusOutputLine, mode: &Mode) -> bool {
     match mode {
         Mode::Normal(..)
@@ -1236,23 +1248,39 @@ pub fn is_selectable_in_mode(
                     return false;
                 }
             }
-            Marks::CommittedFiles(files) => {
-                if !matches!(&line.data, StatusOutputLineData::File { .. }) {
-                    return false;
-                }
-                if let FilesStatusFlag::All = show_files_flag {
-                    let Some(id) = line.data.cli_id() else {
+            Marks::Committed(marks) => {
+                let marked_commit_id = marks.head.committed_file().commit_id;
+                let has_hunks = marks
+                    .iter()
+                    .any(|mark| matches!(mark, CommittedMark::Hunk(..)));
+                // Hunks are marked in the detail view of their commit, so that commit stays
+                // selectable.
+                let is_commit_of_marked_hunks = has_hunks
+                    && matches!(
+                        line.data.cli_id().map(|id| &**id),
+                        Some(CliId::Commit {
+                            commit: CommitId { commit_id, .. },
+                            id: _,
+                        }) if *commit_id == marked_commit_id
+                    );
+                if !is_commit_of_marked_hunks {
+                    if !matches!(&line.data, StatusOutputLineData::File { .. }) {
                         return false;
-                    };
-                    let CliId::CommittedFile {
-                        committed_file: CommittedFileId { commit_id, .. },
-                        id: _,
-                    } = &**id
-                    else {
-                        return false;
-                    };
-                    if *commit_id != files.head.commit_id {
-                        return false;
+                    }
+                    if let FilesStatusFlag::All = show_files_flag {
+                        let Some(id) = line.data.cli_id() else {
+                            return false;
+                        };
+                        let CliId::CommittedFile {
+                            committed_file: CommittedFileId { commit_id, .. },
+                            id: _,
+                        } = &**id
+                        else {
+                            return false;
+                        };
+                        if *commit_id != marked_commit_id {
+                            return false;
+                        }
                     }
                 }
             }
@@ -1356,11 +1384,6 @@ pub fn is_selectable_in_mode(
             is_selectable_in_mode(line, command_mode.return_mode.as_ref(), show_files_flag)
         }
         ModeRef::InlineReword(..) => true,
-        ModeRef::Jump(jump_mode) => prefix_match(
-            jump_mode.query(),
-            line,
-            &jump_mode.return_mode,
-            show_files_flag,
-        ),
+        ModeRef::Jump(jump_mode) => jump_mode.match_line(line, show_files_flag).is_some(),
     }
 }

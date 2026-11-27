@@ -81,7 +81,7 @@ impl MockServer {
 }
 
 /// Read one request's headers and return its target (path and query).
-fn request_target(stream: &mut std::net::TcpStream) -> String {
+fn request_target(stream: &mut impl std::io::Read) -> String {
     let mut request = Vec::new();
     let mut chunk = [0; 1024];
     while !request.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -166,6 +166,229 @@ fn assert_no_credentials(storage: &but_forge_storage::Controller) {
 }
 
 #[test]
+fn self_hosted_pat_uses_local_ca_and_keeps_certificate_validation() {
+    const CASE_ENV: &str = "BUT_GITLAB_TEST_TLS_CASE";
+    const FIXTURE_ENV: &str = "BUT_GITLAB_TEST_TLS_DIR";
+    let Ok(case) = std::env::var(CASE_ENV) else {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+            KeyPair, KeyUsagePurpose,
+        };
+        use time::{Duration, OffsetDateTime};
+
+        let fixtures = tempfile::tempdir().expect("TLS fixture directory should be created");
+        let now = OffsetDateTime::now_utc();
+        let mut ca_params = CertificateParams::default();
+        ca_params.not_before = now - Duration::days(1);
+        ca_params.not_after = now + Duration::days(2);
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca_params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyCertSign,
+        ];
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "GitButler TLS test CA");
+        let ca_key = KeyPair::generate().expect("CA key should be generated");
+        let ca_certificate = ca_params
+            .self_signed(&ca_key)
+            .expect("CA certificate should be generated");
+        let unrelated_ca = ca_params
+            .self_signed(&KeyPair::generate().expect("unrelated CA key should be generated"))
+            .expect("unrelated CA certificate should be generated");
+        let mut server_params = CertificateParams::new(vec!["localhost".into()])
+            .expect("localhost certificate parameters should be valid");
+        server_params.not_before = ca_params.not_before;
+        server_params.not_after = ca_params.not_after;
+        server_params
+            .distinguished_name
+            .push(DnType::CommonName, "localhost");
+        server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        server_params.use_authority_key_identifier_extension = true;
+        let server_key = KeyPair::generate().expect("server key should be generated");
+        let server_certificate = server_params
+            .signed_by(&server_key, &Issuer::new(ca_params, ca_key))
+            .expect("server certificate should be signed by the CA");
+        for (name, pem) in [
+            ("ca.pem", ca_certificate.pem()),
+            ("unrelated-ca.pem", unrelated_ca.pem()),
+            ("server.pem", server_certificate.pem()),
+            ("server-key.pem", server_key.serialize_pem()),
+        ] {
+            std::fs::write(fixtures.path().join(name), pem)
+                .expect("generated TLS fixture should be written");
+        }
+        // Separate processes keep trust-store environment changes out of parallel tests.
+        let empty = tempfile::tempdir().expect("empty trust directory should be created");
+        let empty_bundle = empty.path().join("empty.pem");
+        std::fs::write(&empty_bundle, b"").expect("empty trust bundle should be created");
+        let ca = fixtures.path().join("ca.pem");
+        let unrelated_ca = fixtures.path().join("unrelated-ca.pem");
+        let ca_dir = tempfile::tempdir().expect("local CA directory should be created");
+        std::fs::copy(&ca, ca_dir.path().join("ca.pem"))
+            .expect("local CA directory should contain the certificate");
+        // Trust directories can also contain PEM entries that are not X.509 certificates.
+        std::fs::write(
+            ca_dir.path().join("malformed.pem"),
+            b"-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n",
+        )
+        .expect("local CA directory should contain a malformed certificate");
+        for case in ["trusted", "trusted-dir", "untrusted", "wrong-host"] {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("test executable should be available"),
+            )
+            .args([
+                "--exact",
+                "self_hosted_pat_uses_local_ca_and_keeps_certificate_validation",
+                "--nocapture",
+            ])
+            .env(CASE_ENV, case)
+            .env(FIXTURE_ENV, fixtures.path())
+            .env(
+                "SSL_CERT_FILE",
+                if case == "untrusted" {
+                    &unrelated_ca
+                } else if case == "trusted-dir" {
+                    &empty_bundle
+                } else {
+                    &ca
+                },
+            )
+            .env(
+                "SSL_CERT_DIR",
+                if case == "trusted-dir" {
+                    ca_dir.path()
+                } else {
+                    empty.path()
+                },
+            )
+            .env("NO_PROXY", "*")
+            .output()
+            .expect("isolated TLS test should start");
+            assert!(
+                output.status.success(),
+                "{case} TLS case should pass:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let fixtures = std::path::PathBuf::from(
+        std::env::var_os(FIXTURE_ENV).expect("isolated TLS case should have generated fixtures"),
+    );
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("server protocol versions should be supported")
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![
+            CertificateDer::from_pem_file(fixtures.join("server.pem"))
+                .expect("server certificate should parse"),
+        ],
+        PrivateKeyDer::from_pem_file(fixtures.join("server-key.pem"))
+            .expect("server key should parse"),
+    )
+    .expect("TLS server should be configured");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("TLS mock should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("TLS mock should be nonblocking");
+    let port = listener
+        .local_addr()
+        .expect("TLS mock should have a port")
+        .port();
+    let trusted = matches!(case.as_str(), "trusted" | "trusted-dir");
+    let server = MockServer(std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(err) => panic!("expected a TLS connection: {err}"),
+            }
+        };
+        socket
+            .set_nonblocking(false)
+            .expect("accepted TLS socket should be blocking");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("TLS read should be bounded");
+        socket
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("TLS write should be bounded");
+        let connection = rustls::ServerConnection::new(Arc::new(config))
+            .expect("TLS connection should be created");
+        let mut stream = rustls::StreamOwned::new(connection, socket);
+        let handshake = stream.conn.complete_io(&mut stream.sock);
+        if !trusted {
+            assert!(
+                handshake.is_err(),
+                "invalid server certificate should fail the TLS handshake"
+            );
+            return;
+        }
+        handshake.expect("trusted local CA should allow the TLS handshake");
+        assert_eq!(
+            request_target(&mut stream),
+            "/api/v4/user",
+            "PAT validation should fetch the user over TLS"
+        );
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ALICE}", ALICE.len())
+            .expect("TLS response should be writable");
+        stream.flush().expect("TLS response should be flushed");
+    }));
+    let hostname = if case == "wrong-host" {
+        "127.0.0.1"
+    } else {
+        "localhost"
+    };
+    let host = format!("https://{hostname}:{port}");
+    memory_keyring::install();
+    run(async {
+        let dir = tempfile::tempdir().expect("temporary storage should be created");
+        let storage = but_forge_storage::Controller::from_path(dir.path());
+        let result =
+            store_selfhosted_pat(&host, &Sensitive("local-ca-token".into()), &storage).await;
+        if trusted {
+            let response = result.unwrap_or_else(|err| {
+                panic!("locally trusted GitLab should authenticate: {err:#}")
+            });
+            server.finish();
+            assert_eq!(
+                response.username, "alice",
+                "authenticated user should be returned"
+            );
+            assert_eq!(
+                list_known_gitlab_accounts(&storage).unwrap().len(),
+                1,
+                "successful TLS authentication should store credentials"
+            );
+        } else {
+            server.finish();
+            assert!(
+                result.is_err(),
+                "untrusted certificates and wrong hostnames must fail authentication"
+            );
+            assert_no_credentials(&storage);
+        }
+    });
+}
+
+#[test]
 fn self_hosted_pat_validation_distinguishes_auth_transport_and_success() {
     memory_keyring::install();
 
@@ -201,24 +424,28 @@ fn self_hosted_pat_validation_distinguishes_auth_transport_and_success() {
         );
         assert_no_credentials(&storage);
 
-        let (host, server) = mock_gitlab(vec![(200, ALICE)]);
-        let dir = tempfile::tempdir().expect("temporary storage should be created");
-        let storage = but_forge_storage::Controller::from_path(dir.path());
-        let response = store_selfhosted_pat(&host, &Sensitive("good-token".into()), &storage)
-            .await
-            .expect("valid PAT should be stored");
-        server.finish();
-        assert_eq!(
-            response.username, "alice",
-            "authenticated user should be returned"
-        );
-        assert_eq!(
-            list_known_gitlab_accounts(&storage)
-                .expect("stored accounts should be readable")
-                .len(),
-            1,
-            "successful validation should store credentials"
-        );
+        // Users enter either the instance URL or its API URL, with or without a trailing slash.
+        for suffix in ["", "/", "/api/v4", "/api/v4/"] {
+            let (host, server) = mock_gitlab(vec![(200, ALICE)]);
+            let host = format!("{host}{suffix}");
+            let dir = tempfile::tempdir().expect("temporary storage should be created");
+            let storage = but_forge_storage::Controller::from_path(dir.path());
+            let response = store_selfhosted_pat(&host, &Sensitive("good-token".into()), &storage)
+                .await
+                .unwrap_or_else(|err| panic!("valid PAT for '{host}' should be stored: {err:#}"));
+            server.finish();
+            assert_eq!(
+                response.username, "alice",
+                "authenticated user should be returned"
+            );
+            assert_eq!(
+                list_known_gitlab_accounts(&storage)
+                    .expect("stored accounts should be readable")
+                    .len(),
+                1,
+                "successful validation should store credentials"
+            );
+        }
     });
 }
 
@@ -442,7 +669,6 @@ async fn stored_account(replies: Vec<Reply>) -> StoredAccount {
 #[derive(Debug, Clone, Copy)]
 enum Read {
     OpenList,
-    TargetList,
     CommitList,
     RecentlyClosed,
     Get,
@@ -460,9 +686,6 @@ async fn perform(
     let project = GitLabProjectId::new("group", "repo");
     Ok(match read {
         Read::OpenList => but_gitlab::mr::list(account, project, storage).await?.len(),
-        Read::TargetList => but_gitlab::mr::list_all_for_target(account, project, "main", storage)
-            .await?
-            .len(),
         Read::CommitList => {
             but_gitlab::mr::list_for_commit(account, project, "0123456789abcdef", storage)
                 .await?
@@ -498,7 +721,6 @@ fn rejected_token_on_read_paths_carries_the_unauthorized_code_on_every_seam() {
                 Read::OpenList,
                 vec![page(format!("[{}]", mr(1)), "2"), reply(401, REJECTED)],
             ),
-            (Read::TargetList, vec![reply(401, REJECTED)]),
             (Read::CommitList, vec![reply(401, REJECTED)]),
             (Read::RecentlyClosed, vec![reply(401, REJECTED)]),
             (
@@ -545,7 +767,6 @@ fn forbidden_review_listing_carries_the_access_refusal_code() {
                 Read::OpenList,
                 vec![page(format!("[{}]", mr(1)), "2"), reply(403, REJECTED)],
             ),
-            (Read::TargetList, vec![reply(403, REJECTED)]),
             (Read::CommitList, vec![reply(403, REJECTED)]),
             (Read::RecentlyClosed, vec![reply(403, REJECTED)]),
             (
@@ -641,7 +862,6 @@ fn read_failures_other_than_a_rejected_token_stay_unclassified() {
 
     run(async {
         let cases: Vec<(Read, Vec<Reply>, &str)> = vec![
-            (Read::TargetList, vec![reply(404, REJECTED)], "404"),
             (Read::CommitList, vec![reply(404, REJECTED)], "404"),
             (Read::RecentlyClosed, vec![reply(404, REJECTED)], "404"),
             (Read::Get, vec![reply(404, REJECTED)], "404"),

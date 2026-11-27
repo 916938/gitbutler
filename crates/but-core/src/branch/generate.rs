@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::Context;
 use bstr::{BString, ByteSlice, ByteVec};
+use but_error::bail_precondition;
 use gix::refs;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -55,7 +56,6 @@ pub fn find_unique_refname_excluding(
         })
         .collect();
 
-    // Check if the original name is available
     let short_name = template.shorten();
     if !rtb_lut.contains(short_name)
         && !is_taken(template)
@@ -64,7 +64,6 @@ pub fn find_unique_refname_excluding(
         return Ok(template.to_owned());
     }
 
-    // Extract base name and number if it already has a numerical suffix
     let trailing_number = short_name
         .rfind("-")
         .map(|pos| (&short_name[pos + 1..], pos))
@@ -74,7 +73,6 @@ pub fn find_unique_refname_excluding(
         });
     let (base, start_num) = trailing_number.unwrap_or((short_name, 1));
 
-    // Try incrementing numbers until we find one that doesn't exist
     let category = template
         .category()
         .with_context(|| format!("Input branch {template} could not be categorized"))?;
@@ -106,16 +104,57 @@ pub fn unique_canned_refname(repo: &gix::Repository) -> anyhow::Result<gix::refs
     find_unique_refname(repo, name.as_ref())
 }
 
+/// Refuse `name` when another reference in `repo` keeps it from being created, as Git can't
+/// hold both `a` and `a/b`: one named like a directory `name` would be in, or one in the
+/// directory `name` would replace. `renamed`, the reference becoming `name`, is no obstacle.
+///
+/// A ref edit only notices a loose one, and with a packed one would write both.
+pub fn refuse_colliding_refname(
+    repo: &gix::Repository,
+    name: &gix::refs::FullNameRef,
+    renamed: Option<&gix::refs::FullNameRef>,
+) -> anyhow::Result<()> {
+    if let Some(colliding) = colliding_refname(repo, name, renamed)? {
+        bail_precondition!(
+            "Branch name '{}' collides with existing branch '{}'",
+            name.shorten(),
+            colliding.shorten()
+        );
+    }
+    Ok(())
+}
+
+fn colliding_refname(
+    repo: &gix::Repository,
+    name: &gix::refs::FullNameRef,
+    renamed: Option<&gix::refs::FullNameRef>,
+) -> anyhow::Result<Option<gix::refs::FullName>> {
+    let full_name = name.as_bstr();
+    let other = |name: &gix::refs::FullNameRef| renamed != Some(name);
+    // Past `refs/` and its category, as `refs/heads/`.
+    for at in full_name.find_iter("/").skip(2) {
+        let outer = gix::refs::FullName::try_from(full_name[..at].as_bstr())?;
+        if other(outer.as_ref()) && repo.try_find_reference(outer.as_ref())?.is_some() {
+            return Ok(Some(outer));
+        }
+    }
+    let mut prefix = BString::from(full_name);
+    prefix.push_byte(b'/');
+    let inner = (repo.references()?)
+        .prefixed(&prefix)?
+        .filter_map(Result::ok)
+        .map(|inner| inner.name().to_owned())
+        .find(|inner| other(inner.as_ref()));
+    Ok(inner)
+}
+
 fn generate_short_name_from_signature(author: &gix::actor::Signature) -> anyhow::Result<BString> {
     let name = author.name.to_str_lossy();
-    // Split by whitespace to get words
     let words: Vec<&str> = name.split_whitespace().collect();
 
-    // Try to extract initials from words
     let prefix: Vec<&str> = words
         .iter()
         .filter_map(|word| {
-            // Find the first usable character from the word
             for grapheme in word.graphemes(true) {
                 let Some(c) = grapheme.chars().next() else {
                     continue;
@@ -168,7 +207,6 @@ fn generate_short_name_from_signature(author: &gix::actor::Signature) -> anyhow:
     normalize_short_name(&*branch_name)
 }
 
-/// Check if a character belongs to a right-to-left script
 fn is_rtl_script(c: char) -> bool {
     matches!(c,
         '\u{0600}'..='\u{06FF}' | // Arabic

@@ -20,9 +20,10 @@ fn parses_sources_followed_by_long_target() {
         target,
         sources,
         allow_merged: _,
+        json: _,
     } = parse_amend(&["amend", "a1", "b2", "c3", "--target", "d4"]);
 
-    assert_eq!(target.0, "d4");
+    assert_eq!(target.expect("a target").0, "d4");
     assert_eq!(
         sources
             .into_iter()
@@ -38,9 +39,10 @@ fn parses_sources_followed_by_short_target() {
         target,
         sources,
         allow_merged: _,
+        json: _,
     } = parse_amend(&["amend", "a1", "b2", "-t", "d4"]);
 
-    assert_eq!(target.0, "d4");
+    assert_eq!(target.expect("a target").0, "d4");
     assert_eq!(
         sources
             .into_iter()
@@ -56,18 +58,19 @@ fn allows_omitted_sources() {
         target,
         sources,
         allow_merged: _,
+        json: _,
     } = parse_amend(&["amend", "--target", "d4"]);
 
-    assert_eq!(target.0, "d4");
+    assert_eq!(target.expect("a target").0, "d4");
     assert!(sources.is_empty(), "omitted sources should parse as empty");
 }
 
 #[test]
-fn requires_target() {
-    let error = Args::try_parse_from(["but", "amend", "a1"]).expect_err("amend requires a target");
+fn allows_omitted_target() {
+    let Platform {
+        target, sources, ..
+    } = parse_amend(&["amend", "a1"]);
 
-    assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
-    );
+    assert!(target.is_none(), "omitted target should parse as none");
+    assert_eq!(sources[0].0, "a1");
 }

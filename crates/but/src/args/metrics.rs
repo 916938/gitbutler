@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub enum CommandName {
     Init,
+    Setup,
     Absorb,
     Discard,
     Status,
     Tui,
-    Stf,
     Uncommit,
     Amend,
     Squash,
@@ -18,7 +18,6 @@ pub enum CommandName {
     Edit,
     Show,
     Commit,
-    CommitEmpty,
     Push,
     Reword,
     OplogList,
@@ -28,8 +27,6 @@ pub enum CommandName {
     Redo,
     Gui,
     Open,
-    BaseFetch,
-    BaseCheck,
     Pull,
     BranchNew,
     BranchDelete,
@@ -39,12 +36,12 @@ pub enum CommandName {
     BranchApply,
     BranchUpdate,
     BranchMove,
-    BranchTearOff,
     WorktreeList,
     WorktreeArchive,
     WorktreeUnarchive,
     WorktreeRemove,
     WorktreeNew,
+    WorktreeRecycle,
     Switch,
     Config,
     ForgeAuth,
@@ -66,32 +63,44 @@ pub enum CommandName {
     UpdateSuppress,
     UpdateInstall,
     Land,
-    Setup,
     Teardown,
     #[cfg(feature = "nightly")]
     Expand,
     Comment,
+    #[cfg(feature = "nightly")]
+    Ui,
     Completions,
     Mcp,
     Metrics,
     Help,
     Onboarding,
     AgentLog,
-    Actions,
     Skill,
     SkillInstall,
     SkillCheck,
     AgentSetup,
+    AgentUninstall,
     Pick,
     Clean,
     External,
 }
 
 impl CommandName {
+    /// Whether this command reports through the shared CLI event.
+    ///
+    /// Comments are still experimental, completions are shell-startup noise, and MCP and the
+    /// transport child own their own events.
+    pub fn emits_cli_event(&self) -> bool {
+        !matches!(
+            self,
+            Self::Comment | Self::Completions | Self::Mcp | Self::Metrics
+        )
+    }
+
     /// Sampling rate for successful events, in (0, 1].
     ///
-    /// Failures bypass this policy and are emitted with a rate of 1. In PostHog,
-    /// estimate successful command totals with
+    /// Most failures bypass this policy and are emitted with a rate of 1; `sample_props` names
+    /// the exception. In PostHog, estimate command totals, failures included, with
     /// `sum(1 / coalesce(samplingRate, 1))`.
     pub fn sample_rate(&self) -> f32 {
         match self {

@@ -14,7 +14,6 @@
 //! Comments are stored in a plain JSON file in the project data directory (see
 //! [`CommentStore`]), not the project database — deliberately the lightest possible storage
 //! while the feature proves itself.
-#![deny(missing_docs)]
 
 mod anchor;
 mod store;
@@ -325,7 +324,6 @@ pub fn list_comments(
     })
 }
 
-/// The result of [`list_comments`].
 pub struct Listing {
     /// The re-anchored, unarchived comments.
     pub comments: Vec<DiffComment>,
@@ -333,26 +331,6 @@ pub struct Listing {
     /// purged old archived rows). Callers that bridge processes can use this to notify other
     /// consumers of the store.
     pub persisted_changes: bool,
-}
-
-/// Replace the payload of the unarchived comment with the given `id`.
-pub fn update_payload(
-    store: &CommentStore,
-    id: &str,
-    payload: String,
-    now_ms: i64,
-) -> anyhow::Result<()> {
-    store.update(|comments| {
-        let Some(comment) = comments.iter_mut().find(|c| c.id == id) else {
-            bail!("No comment with id {id}");
-        };
-        if comment.archived_at_ms.is_some() {
-            bail!("Comment {id} is archived and cannot be updated");
-        }
-        comment.payload = payload;
-        comment.updated_at_ms = now_ms;
-        Ok(())
-    })
 }
 
 /// Archive the comment with the given `id`, hiding it from all future listings.
@@ -383,7 +361,6 @@ fn anchor_scope_display(commit_change_id: &Option<String>, path: &str) -> String
 
 /// The anchorable diff lines of one path within a scope, or why they could not be produced.
 enum FileAnchor {
-    /// The file has a diff with anchorable lines.
     Lines(FileDiffLines),
     /// The file has no diff in this scope: anchors in it are genuinely gone.
     Gone,
@@ -469,7 +446,6 @@ impl<'a> ScopeDiffs<'a> {
     }
 }
 
-/// Compute the anchorable diff lines of `path` from a scope's `changes`.
 fn file_diff_lines(
     repo: &gix::Repository,
     changes: &[but_core::TreeChange],

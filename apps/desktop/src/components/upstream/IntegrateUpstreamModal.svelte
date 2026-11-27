@@ -54,11 +54,13 @@
 	let statusRequest = 0;
 	let operationRequest = 0;
 
-	const baseLoaded = $derived(!!base);
+	const upstreamAvailable = $derived(
+		!!base?.remoteName && base.currentSha !== null && base.currentSha !== undefined,
+	);
 	const isBaseDiverged = $derived(!!base?.targetShaAheadOfRef);
 	const canIntegrate = $derived(
 		operationState === "idle" &&
-			baseLoaded &&
+			upstreamAvailable &&
 			!isBaseDiverged &&
 			!!integrationStatuses &&
 			!statusesLoading &&
@@ -89,7 +91,7 @@
 	async function loadStatuses(request: number) {
 		try {
 			const nextStatuses = await upstreamIntegrationService.upstreamStatuses(projectId);
-			if (request !== statusRequest || isBaseDiverged || !baseLoaded) return;
+			if (request !== statusRequest || isBaseDiverged || !upstreamAvailable) return;
 
 			const statusesTmp = [...nextStatuses.subject];
 			statusesTmp.sort(sortUpstreamIntegrationStatus);
@@ -119,7 +121,7 @@
 			return;
 		}
 
-		if (!base) {
+		if (!base || !upstreamAvailable) {
 			clearStatuses();
 			return;
 		}
@@ -226,7 +228,17 @@
 	onSubmit={() => integrate()}
 >
 	<ScrollableContainer maxHeight="70vh">
-		{#if base}
+		{#if base && !upstreamAvailable}
+			<div class="integration-error">
+				<InfoMessage>
+					{#snippet content()}
+						The target upstream is unavailable. Fetch or configure an upstream to update the
+						workspace.
+					{/snippet}
+				</InfoMessage>
+			</div>
+		{/if}
+		{#if base && upstreamAvailable && base.upstreamCommits.length > 0}
 			<div class="section">
 				<h3 class="text-14 text-semibold section-title">
 					<span>Incoming {base.upstreamCommits.length === 1 ? "change" : "changes"}</span><Badge
@@ -275,6 +287,23 @@
 					<ScrollableContainer maxHeight="15rem">
 						{#each statuses as status}
 							{@render stackStatus(status)}
+						{/each}
+					</ScrollableContainer>
+				</div>
+			</div>
+		{/if}
+		{#if base && base.worktreesBehind.length > 0}
+			<div class="section" data-testid={TestId.IntegrateUpstreamWorktrees}>
+				<h3 class="text-14 text-semibold section-title">
+					<span>Worktrees to be updated</span><Badge>{base.worktreesBehind.length}</Badge>
+				</h3>
+				<p class="text-12 text-body worktrees-description">
+					These linked worktrees will be rebased onto {base.branchName}.
+				</p>
+				<div class="scroll-wrap">
+					<ScrollableContainer maxHeight="10rem">
+						{#each base.worktreesBehind as name}
+							<div class="text-13 worktree-row">{name}</div>
 						{/each}
 					</ScrollableContainer>
 				</div>
@@ -401,6 +430,19 @@
 			border: 1px solid var(--border-2);
 			border-radius: var(--radius-m);
 			background-color: var(--bg-1);
+		}
+	}
+
+	.worktrees-description {
+		color: var(--text-2);
+	}
+
+	.worktree-row {
+		padding: 10px 14px;
+		border-bottom: 1px solid var(--border-2);
+
+		&:last-child {
+			border-bottom: none;
 		}
 	}
 

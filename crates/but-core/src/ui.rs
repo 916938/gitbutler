@@ -1,4 +1,3 @@
-#![allow(missing_docs)]
 use std::collections::BTreeMap;
 
 use bstr::BString;
@@ -89,16 +88,6 @@ pub struct WorktreeChanges {
     pub modification_times: BTreeMap<String, u64>,
 }
 
-impl WorktreeChanges {
-    pub fn try_to_unidiff(
-        &self,
-        repo: &gix::Repository,
-        context_lines: u32,
-    ) -> anyhow::Result<BString> {
-        changes_to_unidiff(self.changes.clone(), repo, context_lines)
-    }
-}
-
 impl From<crate::WorktreeChanges> for WorktreeChanges {
     fn from(
         crate::WorktreeChanges {
@@ -128,33 +117,6 @@ pub struct TreeChanges {
 }
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(TreeChanges);
-
-impl TreeChanges {
-    pub fn try_to_unidiff(
-        &self,
-        repo: &gix::Repository,
-        context_lines: u32,
-    ) -> anyhow::Result<BString> {
-        changes_to_unidiff(self.changes.clone(), repo, context_lines)
-    }
-}
-
-/// Notably skip changes that
-fn changes_to_unidiff(
-    changes: Vec<TreeChange>,
-    repo: &gix::Repository,
-    context_lines: u32,
-) -> anyhow::Result<BString> {
-    let mut out = BString::default();
-    for change in changes {
-        let Some(diff) = crate::TreeChange::from(change).unified_diff(repo, context_lines)? else {
-            continue;
-        };
-        out.extend_from_slice(&diff);
-        out.push(b'\n');
-    }
-    Ok(out)
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
@@ -339,7 +301,6 @@ but_schemars::register_sdk_type!(ChangeState);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
-#[expect(missing_docs)]
 pub enum ModeFlags {
     ExecutableBitAdded,
     ExecutableBitRemoved,

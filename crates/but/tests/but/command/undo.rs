@@ -8,18 +8,19 @@ mod undo_redo;
 mod undo_squash;
 mod undo_uncommit;
 
-/// Run an undo test tests a roundtrip `mutate` -> `but undo`, and asserts that the status output is
-/// the same before and after the roundtrip.
+/// Run `mutate` -> `but undo`, asserting that undo restores the original status.
 #[track_caller]
-fn run_mutate_undo_roundtrip_test<F>(env: &Sandbox, mutate: F)
+pub fn run_mutate_undo_roundtrip_test<F>(env: &Sandbox, mutate: F)
 where
     F: FnOnce(&Sandbox),
 {
     run_mutate_undo_roundtrip_test_with_options(env, Options::default(), mutate)
 }
 
+/// Check undo and optionally redo. With redo enabled, leaves the repository in the
+/// post-mutation state; otherwise leaves it in the undone state.
 #[track_caller]
-fn run_mutate_undo_roundtrip_test_with_options<F>(env: &Sandbox, options: Options, mutate: F)
+pub fn run_mutate_undo_roundtrip_test_with_options<F>(env: &Sandbox, options: Options, mutate: F)
 where
     F: FnOnce(&Sandbox),
 {
@@ -84,16 +85,40 @@ Undid [..] (2000-01-02 00:00:00): [..]
         .success()
         .stdout_eq(status_output_before.stdout)
         .stderr_eq(status_output_before.stderr);
+
+    if !options.redo {
+        return;
+    }
+
+    env.but("redo")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Redid [..] (2000-01-02 00:00:00): [..]
+
+"#]]);
+
+    env.but("status")
+        .args(["--verbose", "--files"])
+        .assert()
+        .success()
+        .stdout_eq(status_output_after_mutate.stdout)
+        .stderr_eq(status_output_after_mutate.stderr);
 }
 
-struct Options {
-    require_status_changing_after_mutation: bool,
+#[derive(Clone, Copy)]
+pub struct Options {
+    /// Require the mutation to visibly change the status output.
+    pub require_status_changing_after_mutation: bool,
+    /// Also check that redo restores the post-mutation status.
+    pub redo: bool,
 }
 
 impl Default for Options {
-    fn default() -> Self {
-        Self {
+    fn default() -> Options {
+        Options {
             require_status_changing_after_mutation: true,
+            redo: false,
         }
     }
 }
@@ -343,7 +368,7 @@ fn can_undo_but_branch_in_stack() {
 
     run_mutate_undo_roundtrip_test(&env, |env| {
         env.but("branch")
-            .args(["new", "bar", "-a", "foo"])
+            .args(["new", "bar", "-A", "foo"])
             .assert()
             .success();
     });
@@ -386,6 +411,26 @@ Redid [..] (2000-01-02 00:00:00): [..]
         .success()
         .stdout_eq(after.stdout)
         .stderr_eq(after.stderr);
+}
+
+#[test]
+fn undoing_but_branch_new_in_single_branch_mode_deletes_the_branch() {
+    let env = Sandbox::open_with_default_settings("single-branch-mode");
+    let listed = |name: &str| env.invoke_git(&format!("branch --list {name}"));
+
+    // With the target checked out, it starts at the target and is checked out.
+    env.but("branch new first").assert().success();
+    env.but("undo").assert().success();
+    assert_eq!(listed("first"), "", "undo deletes the branch it made");
+    assert_eq!(env.invoke_git("symbolic-ref --short HEAD"), "main");
+
+    // Beside another branch checked out on its own, the workspace is set up for both.
+    env.but("branch new first").assert().success();
+    env.but("branch new second").assert().success();
+    env.but("undo").assert().success();
+    assert_eq!(listed("second"), "", "undo deletes the branch it made");
+    assert_ne!(listed("first"), "", "and leaves the one before it");
+    assert_eq!(env.invoke_git("symbolic-ref --short HEAD"), "first");
 }
 
 #[test]
@@ -440,7 +485,7 @@ fn can_undo_but_branch_delete_in_stack() {
 
     env.but("branch").args(["new", "foo"]).assert().success();
     env.but("branch")
-        .args(["new", "bar", "-a", "foo"])
+        .args(["new", "bar", "-A", "foo"])
         .assert()
         .success();
 
@@ -483,10 +528,10 @@ fn can_undo_but_squash_with_two_commits() {
         .stdout_eq(snapbox::str![[r#"
 Operations History
 ──────────────────────────────────────────────────
-e940ce1 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (f45a6ee)
-f45a6ee 2000-01-02 00:00:00 [SQUASH] Squashed commit
-ed549de 2000-01-02 00:00:00 [COMMIT] Created commit
-f858e61 2000-01-02 00:00:00 [COMMIT] Created commit
+03164ab 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (cab95b3)
+cab95b3 2000-01-02 00:00:00 [SQUASH] Squashed commit
+6880743 2000-01-02 00:00:00 [COMMIT] Created commit
+e17143f 2000-01-02 00:00:00 [COMMIT] Created commit
 
 "#]]);
 }
@@ -516,11 +561,11 @@ fn can_undo_but_squash_with_three_commits() {
         .stdout_eq(snapbox::str![[r#"
 Operations History
 ──────────────────────────────────────────────────
-1127adf 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (0a9b32d)
-0a9b32d 2000-01-02 00:00:00 [SQUASH] Squashed commit
-7c74cf0 2000-01-02 00:00:00 [COMMIT] Created commit
-ed549de 2000-01-02 00:00:00 [COMMIT] Created commit
-f858e61 2000-01-02 00:00:00 [COMMIT] Created commit
+7ee7a5d 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (27edee8)
+27edee8 2000-01-02 00:00:00 [SQUASH] Squashed commit
+b685fa3 2000-01-02 00:00:00 [COMMIT] Created commit
+6880743 2000-01-02 00:00:00 [COMMIT] Created commit
+e17143f 2000-01-02 00:00:00 [COMMIT] Created commit
 
 "#]]);
 }
@@ -549,10 +594,10 @@ fn can_undo_but_squash_with_two_commits_with_message() {
         .stdout_eq(snapbox::str![[r#"
 Operations History
 ──────────────────────────────────────────────────
-7ffe829 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (f45a6ee)
-f45a6ee 2000-01-02 00:00:00 [SQUASH] Squashed commit
-ed549de 2000-01-02 00:00:00 [COMMIT] Created commit
-f858e61 2000-01-02 00:00:00 [COMMIT] Created commit
+3a72c3e 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (cab95b3)
+cab95b3 2000-01-02 00:00:00 [SQUASH] Squashed commit
+6880743 2000-01-02 00:00:00 [COMMIT] Created commit
+e17143f 2000-01-02 00:00:00 [COMMIT] Created commit
 
 "#]]);
 }
@@ -577,10 +622,10 @@ fn can_undo_but_squash_with_branch() {
         .stdout_eq(snapbox::str![[r#"
 Operations History
 ──────────────────────────────────────────────────
-090591a 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (f45a6ee)
-f45a6ee 2000-01-02 00:00:00 [SQUASH] Squashed commit
-ed549de 2000-01-02 00:00:00 [COMMIT] Created commit
-f858e61 2000-01-02 00:00:00 [COMMIT] Created commit
+1e5d3c0 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (cab95b3)
+cab95b3 2000-01-02 00:00:00 [SQUASH] Squashed commit
+6880743 2000-01-02 00:00:00 [COMMIT] Created commit
+e17143f 2000-01-02 00:00:00 [COMMIT] Created commit
 
 "#]]);
 }
@@ -605,10 +650,10 @@ fn can_undo_but_squash_with_branch_and_drop_message() {
         .stdout_eq(snapbox::str![[r#"
 Operations History
 ──────────────────────────────────────────────────
-e539a24 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (f45a6ee)
-f45a6ee 2000-01-02 00:00:00 [SQUASH] Squashed commit
-ed549de 2000-01-02 00:00:00 [COMMIT] Created commit
-f858e61 2000-01-02 00:00:00 [COMMIT] Created commit
+784a57e 2000-01-02 00:00:00 [UNDO] Restored from snapshot: Squashed commit (cab95b3)
+cab95b3 2000-01-02 00:00:00 [SQUASH] Squashed commit
+6880743 2000-01-02 00:00:00 [COMMIT] Created commit
+e17143f 2000-01-02 00:00:00 [COMMIT] Created commit
 
 "#]]);
 }
@@ -811,6 +856,7 @@ Hint: run `but help` for all commands
         &env,
         Options {
             require_status_changing_after_mutation: false,
+            ..Default::default()
         },
         |env| {
             env.but("switch --workspace").assert().success();
@@ -871,7 +917,7 @@ fn can_undo_single_branch_mode_but_branch_new_creating_workspace() {
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* b1540e5 (HEAD -> one, origin/main, origin/HEAD, two, main, gitbutler/target) M
+* b1540e5 (HEAD -> one, origin/main, origin/HEAD, main, gitbutler/target) M
 * e31e6ca add init
 
 "#]]
@@ -893,8 +939,9 @@ fn can_undo_single_branch_mode_but_branch_new_switching_to_existing_workspace() 
     snapbox::assert_data_eq!(
         env.git_log(),
         snapbox::str![[r#"
-* cb1c5e1 (gitbutler/workspace) GitButler Workspace Commit
-* b1540e5 (HEAD -> two, origin/main, origin/HEAD, three, one, main, gitbutler/target) M
+* db30b92 (gitbutler/workspace) GitButler Workspace Commit
+|/
+* b1540e5 (HEAD -> two, origin/main, origin/HEAD, one, main, gitbutler/target) M
 * e31e6ca add init
 
 "#]]
@@ -915,7 +962,7 @@ fn can_undo_single_branch_mode_but_branch_new_switching_to_single_branch_from_wo
         snapbox::str![[r#"
 * edd3eb7 (HEAD -> gitbutler/workspace) GitButler Workspace Commit
 * 9477ae7 (A) add A
-* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target, a-branch-1) add M
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
 "#]]
     );
@@ -937,7 +984,7 @@ fn can_undo_single_branch_mode_but_branch_new_switching_to_single_branch_from_br
         snapbox::str![[r#"
 * edd3eb7 (gitbutler/workspace) GitButler Workspace Commit
 * 9477ae7 (HEAD -> A) add A
-* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target, a-branch-1) add M
+* 0dc3733 (origin/main, origin/HEAD, main, gitbutler/target) add M
 
 "#]]
     );
@@ -972,9 +1019,10 @@ fn can_undo_switch_workspace_applying_multiple_branches() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks");
     env.setup_metadata(&[]);
 
-    env.but("commit -b one --no-message").assert().success();
-    env.but("commit -b two --no-message").assert().success();
-    env.but("commit -b three --no-message").assert().success();
+    // Distinct messages keep the three commits, and thus the branches, apart.
+    env.but("commit -b one -m one").assert().success();
+    env.but("commit -b two -m two").assert().success();
+    env.but("commit -b three -m three").assert().success();
 
     env.but("switch one").assert().success();
 

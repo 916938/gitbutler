@@ -6,15 +6,12 @@ use but_askpass as askpass;
 use but_core::DiffSpec;
 use but_ctx::Context;
 
-use crate::commit::json::ChangesSource;
 use gitbutler_repo::{
     FileInfo, RepoCommands,
     hooks::{self, HookResult, MessageHookResult},
-    read_worktree_file,
 };
 use tracing::instrument;
 
-/// JSON types.
 pub mod json {
     use serde::Serialize;
 
@@ -48,7 +45,7 @@ pub mod json {
     }
 }
 
-#[but_api(napi, provides = [SigningSettings])]
+#[but_api]
 #[instrument(err(Debug))]
 pub fn check_signing_settings(ctx: &Context) -> Result<bool> {
     ctx.check_signing_settings()
@@ -82,37 +79,9 @@ async fn handle_git_prompt_clone(prompt: String, url: String) -> Option<String> 
         .await
 }
 
-#[but_api]
-#[instrument(err(Debug))]
-pub fn get_commit_file(
-    ctx: &Context,
-    relative_path: PathBuf,
-    commit_id: gix::ObjectId,
-) -> Result<FileInfo> {
-    ctx.read_file_from_commit(commit_id, &relative_path)
-}
-
-#[but_api(napi, json::FileInfo, provides = [])]
+#[but_api(json::FileInfo)]
 #[instrument(err(Debug))]
 pub fn get_workspace_file(ctx: &Context, relative_path: String) -> Result<FileInfo> {
-    ctx.read_file_from_workspace(relative_path.as_ref())
-}
-
-/// Like [`get_workspace_file()`], reading from the checkout `changes_source` names, so a
-/// linked worktree's file comes from its own directory rather than the project's.
-///
-/// A linked worktree requires the `worktreeManipulation` feature flag and an active
-/// worktree, see `worktrees::open_changes_source()`.
-#[but_api(napi, json::FileInfo, provides = [])]
-#[instrument(err(Debug))]
-pub fn get_workspace_file_from_source(
-    ctx: &Context,
-    changes_source: ChangesSource,
-    relative_path: String,
-) -> Result<FileInfo> {
-    if let Some((_name, wt_repo)) = crate::worktrees::open_changes_source(ctx, &changes_source)? {
-        return read_worktree_file(&wt_repo, relative_path.as_ref());
-    }
     ctx.read_file_from_workspace(relative_path.as_ref())
 }
 
@@ -124,7 +93,7 @@ pub fn get_workspace_file_from_source(
 ///
 /// # Arguments
 /// * `blob_id` - Git blob object ID as a hexadecimal string
-#[but_api(napi, json::FileInfo, provides = [])]
+#[but_api(json::FileInfo)]
 #[instrument(err(Debug))]
 pub fn get_blob_file(
     ctx: &but_ctx::Context,
@@ -143,6 +112,10 @@ pub fn pre_commit_hook_diffspecs(
     ctx: &but_ctx::Context,
     changes: Vec<DiffSpec>,
 ) -> Result<HookResult> {
+    // Building the tree and swapping the index cost time, so do neither without a hook.
+    if !hooks::has_pre_commit(ctx)? {
+        return Ok(HookResult::NotConfigured);
+    }
     let repo = ctx.repo.get()?;
     let head = repo
         .head_tree_id_or_empty()
@@ -167,11 +140,4 @@ pub fn post_commit_hook(ctx: &but_ctx::Context) -> Result<HookResult> {
 #[instrument(err(Debug))]
 pub fn message_hook(ctx: &but_ctx::Context, message: String) -> Result<MessageHookResult> {
     gitbutler_repo::hooks::commit_msg(ctx, message)
-}
-
-#[but_api]
-#[instrument(err(Debug))]
-pub fn find_files(ctx: &Context, query: String, limit: Option<usize>) -> Result<Vec<String>> {
-    let limit = limit.unwrap_or(10);
-    ctx.find_files(&query, limit)
 }

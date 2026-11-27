@@ -12,7 +12,7 @@ pub(crate) mod with_workspace_commit;
 
 pub fn head_info(
     repo: &gix::Repository,
-    meta: &but_meta::VirtualBranchesTomlMetadata,
+    meta: &but_meta::VirtualBranchesMetadata,
     db: &mut but_db::DbHandle,
     mut opts: but_workspace::ref_info::Options,
 ) -> anyhow::Result<but_workspace::RefInfo> {
@@ -125,7 +125,6 @@ RefInfo {
             base: None,
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
                     ref_name: "►main[🌳]",
                     remote_tracking_ref_name: "None",
                     commits: [],
@@ -139,7 +138,8 @@ RefInfo {
     ],
     target_ref: None,
     target_commit: None,
-    is_target_current: false,
+    target_upstream: None,
+    can_fast_forward_local_target: false,
     lower_bound: None,
     ancestor_workspace_commit: None,
 }
@@ -169,7 +169,6 @@ RefInfo {
             base: None,
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
                     ref_name: "None",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -185,7 +184,8 @@ RefInfo {
     ],
     target_ref: None,
     target_commit: None,
-    is_target_current: false,
+    target_upstream: None,
+    can_fast_forward_local_target: false,
     lower_bound: None,
     ancestor_workspace_commit: None,
 }
@@ -215,7 +215,6 @@ RefInfo {
             base: None,
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
                     ref_name: "►main[🌳]",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -232,7 +231,8 @@ RefInfo {
     ],
     target_ref: None,
     target_commit: None,
-    is_target_current: false,
+    target_upstream: None,
+    can_fast_forward_local_target: false,
     lower_bound: None,
     ancestor_workspace_commit: None,
 }
@@ -267,7 +267,6 @@ RefInfo {
             base: None,
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
                     ref_name: "►main[🌳]",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -292,7 +291,77 @@ RefInfo {
     ],
     target_ref: None,
     target_commit: None,
-    is_target_current: false,
+    target_upstream: None,
+    can_fast_forward_local_target: false,
+    lower_bound: None,
+    ancestor_workspace_commit: None,
+}
+
+"#]]
+        .raw()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn single_branch_hides_the_padding_commit_on_its_conflicted_tip() -> anyhow::Result<()> {
+    let (_tmp, repo, meta, mut db) =
+        utils::named_writable_scenario_with_args("with-conflict-marked-message", None::<String>)?;
+    let conflicted = but_core::Commit::from_id(repo.rev_parse_single("conflicted")?)?;
+    let padding = but_core::commit::padding::create(&conflicted)?;
+    repo.reference(
+        "refs/heads/main",
+        padding,
+        gix::refs::transaction::PreviousValue::Any,
+        "pad the conflicted tip",
+    )?;
+
+    // `main` points at the padding commit on top of the conflicted commit.
+    snapbox::assert_data_eq!(
+        but_testsupport::visualize_commit_graph_all(&repo)?,
+        snapbox::str![[r#"
+* 555f404 (HEAD -> main) GitButler Padding Commit
+* 7c77c78 (tag: conflicted) [conflict] GitButler WIP Commit
+* a047f81 (tag: normal) init
+
+"#]]
+        .raw()
+    );
+
+    let info = head_info(&repo, &meta, &mut db, standard_options())?;
+    // The conflicted commit is the tip of `main`, as the padding commit only exists to check it out.
+    snapbox::assert_data_eq!(
+        info.to_debug(),
+        snapbox::str![[r#"
+RefInfo {
+    symbolic_remote_names: {},
+    stacks: [
+        Stack {
+            id: Some(
+                00000000-0000-0000-0000-000000000001,
+            ),
+            base: None,
+            segments: [
+                ref_info::ui::Segment {
+                    ref_name: "►main[🌳]",
+                    remote_tracking_ref_name: "None",
+                    commits: [
+                        LocalCommit(💥7c77c78, "GitButler WIP Commit", local),
+                        LocalCommit(a047f81, "init\n", local),
+                    ],
+                    commits_on_remote: [],
+                    metadata: "None",
+                    push_status: CompletelyUnpushed,
+                    base: "None",
+                },
+            ],
+        },
+    ],
+    target_ref: None,
+    target_commit: None,
+    target_upstream: None,
+    can_fast_forward_local_target: false,
     lower_bound: None,
     ancestor_workspace_commit: None,
 }
@@ -323,7 +392,6 @@ RefInfo {
             base: None,
             segments: [
                 ref_info::ui::Segment {
-                    id: NodeIndex(0),
                     ref_name: "►main[🌳]",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -335,7 +403,6 @@ RefInfo {
                     base: "344e320",
                 },
                 ref_info::ui::Segment {
-                    id: NodeIndex(1),
                     ref_name: "►nine",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -349,7 +416,6 @@ RefInfo {
                     base: "c4f2a35",
                 },
                 ref_info::ui::Segment {
-                    id: NodeIndex(2),
                     ref_name: "►six",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -363,7 +429,6 @@ RefInfo {
                     base: "281da94",
                 },
                 ref_info::ui::Segment {
-                    id: NodeIndex(3),
                     ref_name: "►three",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -376,7 +441,6 @@ RefInfo {
                     base: "3d57fc1",
                 },
                 ref_info::ui::Segment {
-                    id: NodeIndex(4),
                     ref_name: "►one",
                     remote_tracking_ref_name: "None",
                     commits: [
@@ -392,7 +456,8 @@ RefInfo {
     ],
     target_ref: None,
     target_commit: None,
-    is_target_current: false,
+    target_upstream: None,
+    can_fast_forward_local_target: false,
     lower_bound: None,
     ancestor_workspace_commit: None,
 }
@@ -407,7 +472,7 @@ RefInfo {
 }
 
 mod utils {
-    use but_meta::VirtualBranchesTomlMetadata;
+    use but_meta::VirtualBranchesMetadata;
     use but_testsupport::gix_testtools::tempfile;
     use but_workspace::ref_info;
 
@@ -415,7 +480,7 @@ mod utils {
         name: &str,
     ) -> anyhow::Result<(
         gix::Repository,
-        std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        std::mem::ManuallyDrop<VirtualBranchesMetadata>,
         but_db::DbHandle,
     )> {
         named_read_only_in_memory_scenario(name, "")
@@ -426,15 +491,11 @@ mod utils {
         name: &str,
     ) -> anyhow::Result<(
         gix::Repository,
-        std::mem::ManuallyDrop<VirtualBranchesTomlMetadata>,
+        std::mem::ManuallyDrop<VirtualBranchesMetadata>,
         but_db::DbHandle,
     )> {
         let repo = crate::utils::read_only_in_memory_scenario_named(script, name)?;
-        let meta = VirtualBranchesTomlMetadata::from_path(
-            repo.path()
-                .join(".git")
-                .join("should-never-be-written.toml"),
-        )?;
+        let meta = VirtualBranchesMetadata::from_path(repo.path().join(".git"))?;
         // The fixture is shared and read-only, so its database cannot live on disk.
         let db = but_testsupport::in_memory_db();
         Ok((repo, std::mem::ManuallyDrop::new(meta), db))
@@ -446,12 +507,11 @@ mod utils {
     ) -> anyhow::Result<(
         tempfile::TempDir,
         gix::Repository,
-        VirtualBranchesTomlMetadata,
+        VirtualBranchesMetadata,
         but_db::DbHandle,
     )> {
         let (repo, tmp) = crate::utils::writable_scenario_with_args(name, args);
-        let meta =
-            VirtualBranchesTomlMetadata::from_path(repo.path().join("virtual-branches.toml"))?;
+        let meta = VirtualBranchesMetadata::from_path(repo.path())?;
         let db = but_testsupport::project_db(&repo)?;
         Ok((tmp, repo, meta, db))
     }

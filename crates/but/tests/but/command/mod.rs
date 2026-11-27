@@ -3,76 +3,54 @@
 //! Ideally they *show* the initial state, and the *post* state, to validate the commands actually do what they claim.
 //! **Only** test the *happy path* of a typical user journey, while keeping details in unit tests with private module access.
 
-#[cfg(feature = "legacy")]
 mod absorb;
 mod agent;
 mod alias;
-#[cfg(feature = "legacy")]
 mod amend;
-#[cfg(feature = "legacy")]
 mod branch;
-#[cfg(feature = "legacy")]
 mod clean;
-#[cfg(feature = "legacy")]
 mod comment;
-#[cfg(feature = "legacy")]
 mod commit;
 mod config;
-#[cfg(feature = "legacy")]
 mod diff;
-#[cfg(feature = "legacy")]
 mod discard;
-#[cfg(feature = "legacy")]
 #[cfg(feature = "nightly")]
 mod expand;
 #[cfg(unix)]
 mod external;
+mod filters;
+#[cfg(feature = "nightly")]
+mod forge_move;
 mod format;
 mod gui;
 mod help;
 mod init;
-#[cfg(feature = "legacy")]
 mod merge;
-#[cfg(feature = "legacy")]
 mod r#move;
 mod onboarding;
-#[cfg(feature = "legacy")]
 #[cfg(feature = "nightly")]
 mod open;
-#[cfg(feature = "legacy")]
+mod path_spellings;
 mod pick;
-#[cfg(feature = "legacy")]
+mod pr;
 mod pull;
-#[cfg(feature = "legacy")]
 mod push;
-#[cfg(feature = "legacy")]
 mod resolve;
-#[cfg(feature = "legacy")]
 mod reword;
-#[cfg(feature = "legacy")]
 mod reword2;
-#[cfg(feature = "legacy")]
-mod setup;
-#[cfg(feature = "legacy")]
 mod sha256;
 mod skill;
-#[cfg(feature = "legacy")]
 mod split;
-#[cfg(feature = "legacy")]
 mod squash;
-#[cfg(feature = "legacy")]
 mod status;
-#[cfg(feature = "legacy")]
 mod switch;
-#[cfg(feature = "legacy")]
 mod teardown;
-#[cfg(feature = "legacy")]
+#[cfg(feature = "nightly")]
+#[cfg(unix)]
+mod ui;
 mod uncommit;
-#[cfg(feature = "legacy")]
 mod undo;
-#[cfg(feature = "legacy")]
 mod worktree;
-#[cfg(feature = "legacy")]
 mod util {
     use crate::utils::{CommandExt as _, Sandbox};
 
@@ -124,13 +102,13 @@ mod util {
 
     /// Return `but status` JSON output as a parsed value.
     pub fn status_json(env: &Sandbox) -> serde_json::Value {
-        let output = env.but("--json status").allow_json().output().unwrap();
+        let output = env.but("status --json").allow_json().output().unwrap();
         serde_json::from_slice(&output.stdout).expect("status output should be valid JSON")
     }
 
     /// Return `but status -f` JSON output as a parsed value.
     pub fn status_json_with_files(env: &Sandbox) -> serde_json::Value {
-        let output = env.but("--json status -f").allow_json().output().unwrap();
+        let output = env.but("status --json -f").allow_json().output().unwrap();
         serde_json::from_slice(&output.stdout).expect("status output should be valid JSON")
     }
 
@@ -253,22 +231,11 @@ mod util {
             .any(|change| change["filePath"].as_str().unwrap() == file_path)
     }
 
-    /// Turn on the experimental `worktreeManipulation` feature flag, which has no CLI toggle.
-    pub fn enable_worktree_manipulation(env: &Sandbox) {
-        let path = env.app_data_dir().join("gitbutler/settings.json");
-        let mut settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("settings were written"))
-                .expect("settings are valid JSON");
-        settings["featureFlags"]["worktreeManipulation"] = true.into();
-        std::fs::write(&path, settings.to_string()).expect("settings are writable");
-    }
-
     /// Add a dirty linked worktree named `name` on a new branch of the same name at
     /// `start_point`, with `note.txt` uncommitted in it, then return the worktree's directory.
     ///
-    /// The caller must have run a flag-on command first: the first read with the
-    /// flag on archives every worktree already on disk, so the ones under test
-    /// have to be created after it. Checked out into the per-test temp dir, as
+    /// The caller must have run a command first: the first read archives every
+    /// worktree already on disk, so the ones under test have to be created after it. Checked out into the per-test temp dir, as
     /// scenario directories are reused across runs.
     pub fn add_dirty_worktree(env: &Sandbox, name: &str, start_point: &str) -> std::path::PathBuf {
         let wt = env.app_data_dir().join("worktrees");
@@ -285,12 +252,53 @@ mod util {
         wt.join(name)
     }
 
+    /// Like [`add_dirty_worktree()`], but with a detached `HEAD` at `start_point`, the way
+    /// Codex and Cursor create worktrees.
+    pub fn add_dirty_detached_worktree(
+        env: &Sandbox,
+        name: &str,
+        start_point: &str,
+    ) -> std::path::PathBuf {
+        let wt = env.app_data_dir().join("worktrees");
+        but_testsupport::invoke_bash_at_dir(
+            &format!(
+                r#"
+        git worktree add -q --detach "{wt}/{name}" {start_point}
+        (cd "{wt}/{name}" && echo dirty >note.txt)
+        "#,
+                wt = wt.display()
+            ),
+            env.projects_root(),
+        );
+        wt.join(name)
+    }
+
+    /// Add a linked worktree named `name` on an unborn branch of the same name, with
+    /// `note.txt` in it, then return the worktree's directory.
+    ///
+    /// With no commit checked out, the worktree has no lane in the workspace, so GitButler
+    /// can't manage it, archived or not.
+    pub fn add_unmanaged_worktree(env: &Sandbox, name: &str) -> std::path::PathBuf {
+        let wt = env.app_data_dir().join("worktrees");
+        but_testsupport::invoke_bash_at_dir(
+            &format!(
+                r#"
+        git worktree add -q --orphan -b {name} "{wt}/{name}"
+        (cd "{wt}/{name}" && echo dirty >note.txt)
+        "#,
+                wt = wt.display()
+            ),
+            env.projects_root(),
+        );
+        wt.join(name)
+    }
+
     /// Add a linked worktree named `name` on a new branch of the same name at
     /// `start_point`, with a commit of its own adding `wt-file.txt` and a clean
     /// checkout, then return the worktree's directory.
     ///
     /// The same archiving caveat as [`add_dirty_worktree`] applies: create the
-    /// worktree only after a flag-on command has run.
+    /// worktree only after a command has run.
     pub fn add_worktree_with_commit(
         env: &Sandbox,
         name: &str,

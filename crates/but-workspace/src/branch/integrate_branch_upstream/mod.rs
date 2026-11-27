@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use but_core::{RefMetadata, commit::Headers};
 use but_error::bail_precondition;
 use but_rebase::graph_rebase::{
-    Editor, LookupStep, SuccessfulRebase, ToSelector,
+    Editor, LookupStep, Pick, Step, SuccessfulRebase, ToSelector,
     mutate::{SegmentDelimiter, SelectorSet},
 };
 
@@ -39,22 +39,13 @@ use plan::prepare_integration_steps_for_editor;
 #[derive(Debug)]
 pub enum InteractiveIntegrationStep {
     /// Pick a commit, keeping it in the branch.
-    Pick {
-        /// The SHA of the commit being picked.
-        commit_id: gix::ObjectId,
-    },
-    /// Squash the commits into one.
+    Pick { commit_id: gix::ObjectId },
     Squash {
-        /// The SHAs of the commits to squash.
         commits: Vec<gix::ObjectId>,
-        /// Optionally, the message to use for the squash commit.
         message: Option<String>,
     },
     /// Merge a commit into the previous one.
-    Merge {
-        /// The SHA of the commit to merge.
-        commit_id: gix::ObjectId,
-    },
+    Merge { commit_id: gix::ObjectId },
 }
 
 impl fmt::Display for InteractiveIntegrationStep {
@@ -76,10 +67,8 @@ impl fmt::Display for InteractiveIntegrationStep {
     }
 }
 
-/// The necessary information about the integration to be performed.
 #[derive(Debug)]
 pub struct InteractiveIntegration {
-    /// The list of steps to follow in order to integrate the upstream changes into the local.
     pub steps: Vec<InteractiveIntegrationStep>,
     /// Merge base between the upstream and the local reference.
     pub merge_base: gix::ObjectId,
@@ -167,13 +156,27 @@ pub fn integrate_branch_with_steps<'ws, 'meta, M: RefMetadata>(
         EdgeSelection::Children,
     )?;
     let integration_commit_ids = integration_step_commit_ids(&integration.steps);
-    let children_to_reconnect = children_to_reconnect
+    // Commits outside the workspace, like the side of a remote merge, can hang off the
+    // branch reference because their parent is the branch's old tip. They can't be
+    // rewritten, so they stay on that old tip instead of following the moved reference.
+    let old_tip = {
+        let mut parents = editor.direct_parents(delimiter_child)?;
+        parents.sort_by_key(|(_, order)| *order);
+        parents.first().map(|(selector, _)| *selector)
+    };
+    let (children_of_old_tip, children_to_reconnect): (Vec<_>, Vec<_>) = children_to_reconnect
         .into_iter()
         .filter(|(selector, _)| match editor.lookup_pick(*selector) {
             Ok(commit_id) => !integration_commit_ids.contains(&commit_id),
             Err(_) => true,
         })
-        .collect::<Vec<_>>();
+        .partition(|(selector, _)| {
+            old_tip.is_some()
+                && matches!(
+                    editor.lookup_step(*selector),
+                    Ok(Step::Pick(Pick { mutable: false, .. }))
+                )
+        });
     let parents_to_reconnect = selected_edges_from_set(
         &editor,
         segment_delimiter.parent,
@@ -210,6 +213,11 @@ pub fn integrate_branch_with_steps<'ws, 'meta, M: RefMetadata>(
         &children_to_reconnect,
         &parents_to_reconnect,
     )?;
+    if let Some(old_tip) = old_tip {
+        for (child, order) in children_of_old_tip {
+            editor.add_edge(child, old_tip, order)?;
+        }
+    }
 
     editor.rebase()
 }
@@ -234,16 +242,6 @@ fn integration_step_commit_ids(steps: &[InteractiveIntegrationStep]) -> HashSet<
 ///
 /// The returned steps are ordered for application from parent to child so they
 /// can be passed directly to integration without reordering by the caller.
-///
-/// `ref_name` - The full reference name of the local branch to get the integration steps for.
-///
-/// `repo` - The repository handle.
-///
-/// `workspace` - The current workspace graph projection used to construct the editor.
-///
-/// `meta` - Reference metadata used while constructing the editor.
-///
-/// Returns the initial integration script and current divergence display state.
 pub fn get_initial_integration_steps_for_branch<M: RefMetadata>(
     ref_name: &gix::refs::FullNameRef,
     strategy: BranchIntegrationStrategy,
@@ -256,9 +254,9 @@ pub fn get_initial_integration_steps_for_branch<M: RefMetadata>(
     // including the remote branch to integrate and the project's target ref.
     let upstream_ref_name = resolve_tracking_branch_ref_name(ref_name, repo)?;
     let target_ref_name = workspace
-        .target_ref
-        .as_ref()
-        .map(|target| target.ref_name.clone())
+        .graph
+        .project_meta
+        .remote_target_ref(repo)?
         .filter(|target_ref_name| *target_ref_name != *upstream_ref_name);
 
     let editor = Editor::create(workspace, meta, repo, db)?;

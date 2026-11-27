@@ -143,9 +143,9 @@ export default defineConfig(
 	},
 	{
 		ignores: [
-			"apps/lite/**",
-			// Lite's component library: linted by oxlint, as Lite is.
-			"packages/ui-react/**",
+			// Linted by oxlint, with their own config.
+			"packages/but-ui-react/**",
+			"apps/but-ui-pantry/**",
 			"**/.*", // dotfiles aren't ignored by default in FlatConfig
 			".*", // dotfiles aren't ignored by default in FlatConfig
 			"**/.DS_Store",

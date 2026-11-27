@@ -5,8 +5,9 @@ pub struct Command {
     /// stack with unpushed commits.
     #[clap(value_name = "BRANCH")]
     pub branch_id: Option<String>,
-    /// Force push even if it's not fast-forward
-    #[clap(long, short = 'f', default_value_t = true)]
+    /// Force push even if it's not fast-forward. Always on; the flag is kept for
+    /// compatibility.
+    #[clap(long, short = 'f', default_value_t = true, hide = true)]
     pub with_force: bool,
     /// Skip force push protection checks
     #[clap(long, short = 's')]
@@ -43,10 +44,14 @@ pub struct Command {
     /// Mark change as private (Gerrit)
     #[clap(long, short = 'p', hide = true)]
     pub private: bool,
-    /// Show what would be pushed without actually pushing
+    /// Show what would be pushed without pushing, and exit non-zero if the push would be refused
     #[clap(long, short = 'd')]
     pub dry_run: bool,
 
     #[clap(flatten)]
     pub allow_merged: crate::args::atoms::AllowMergedArg,
+
+    #[clap(flatten)]
+    #[allow(missing_docs)]
+    pub json: crate::args::atoms::JsonArg,
 }

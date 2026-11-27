@@ -38,8 +38,13 @@ pub struct Args {
     /// Run as if but was started in PATH instead of the current working directory.
     #[clap(short = 'C', long, default_value = ".", value_name = "PATH")]
     pub current_dir: PathBuf,
-    #[clap(flatten)]
-    pub format: OutputFormatArg,
+    /// `--json` before the subcommand, a retired position.
+    ///
+    /// Commands that print JSON take `--json` themselves. This still selects JSON for them, with a
+    /// note teaching the new position, and is an error for commands that don't print JSON. Bare
+    /// `but --json` has no other position, so it selects JSON for the default alias without a note.
+    #[clap(long = "json", hide = true)]
+    pub json_before_subcommand: bool,
     /// Append workspace status when supported by a mutation command.
     ///
     /// Use when the next step needs IDs or details from the resulting workspace.
@@ -51,13 +56,6 @@ pub struct Args {
     /// is executed with the remaining arguments (`but <COMMAND> [ARGS]`).
     #[clap(subcommand)]
     pub cmd: Option<Subcommands>,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct OutputFormatArg {
-    /// Output detailed information as JSON for tool consumption.
-    #[clap(long, global = true)]
-    pub json: bool,
 }
 
 /// How we should format anything written to [`std::io::stdout()`].
@@ -134,7 +132,8 @@ pub enum HelpTopic {
     /// * **Branch:**
     ///     - The entire branch name
     ///     - An exact short ID for the branch name, as shown by `but status`
-    /// * **Uncommitted file:** A path-derived ID that is typically 1-3 characters
+    /// * **Uncommitted file:** A path-derived ID that is typically 1-3 characters, or the path of
+    ///   the file or a directory above it, from the repository root or the current directory
     /// * **Uncommitted hunk:** `<uncommitted_file_cli_id>:<hunk_cli_id>`
     ///     - Run `but diff` to show all current uncommitted hunks and their IDs
     /// * **Uncommitted area:** Always `@`
@@ -206,7 +205,6 @@ pub enum Subcommands {
     /// but status -f
     /// ```
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Status {
         /// Also list the files changed by each commit.
@@ -228,9 +226,10 @@ pub enum Subcommands {
         // `but status --short`.
         #[clap(long = "short", default_value_t = false, hide = true)]
         short: bool,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Diff(diff::Platform),
 
@@ -268,7 +267,6 @@ pub enum Subcommands {
     /// but show my-feature-branch --verbose
     /// ```
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Show {
         /// The commit ID (short or full SHA), branch name, or CLI ID to show details for
@@ -277,25 +275,26 @@ pub enum Subcommands {
         /// Show full commit messages and files changed for each commit
         #[clap(short = 'v', long = "verbose")]
         verbose: bool,
+        /// Show how many lines each changed file added and removed. For a branch, this is the
+        /// same as `--verbose`.
+        #[clap(long)]
+        stat: bool,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Commit(commit::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Squash(squash::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Move(r#move::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Split(split::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     #[clap(hide = true, name = "_reword2")]
     _Reword2(reword2::Platform),
@@ -309,6 +308,8 @@ pub enum Subcommands {
     _Expand {
         /// CLI ID to parse.
         cli_id: CliIdArg,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     /// Commands for managing branches.
@@ -331,15 +332,18 @@ pub enum Subcommands {
     /// Merges the branch onto the configured target (for example `origin/master`) without going
     /// through a pull request — the "just push to the target" workflow. By default the target is
     /// fast-forwarded to the branch tip when possible (no merge commit); otherwise a merge commit
-    /// is created. For a local (`gb-local`) target the refs are moved locally; otherwise the result
-    /// is pushed to the remote. After merging, the remaining applied branches are reconciled onto
-    /// the moved target, just like `but pull`.
+    /// is created, or with `--ff-only` the merge is refused. When the target branch has no upstream
+    /// (for example in a repository without a remote), or for a local (`gb-local`) target, the
+    /// refs are moved locally; otherwise the result is pushed to the remote. After merging, the
+    /// remaining applied branches are reconciled onto the moved target, just like `but pull`.
     ///
     /// Requires the GitButler workspace or, in single-branch mode, a checked-out branch. In
     /// single-branch mode, merging the checked-out branch checks out the target branch afterwards,
     /// like `but pull` does once a branch is merged upstream, or a generated branch when the target
-    /// can't be reused; the output names the branch checked out. Updating the target is direct and
-    /// not easily reversible, so a confirmation is required (use `--yes` to skip it in scripts).
+    /// can't be reused; the output names the branch checked out. Updating a target that has an
+    /// upstream is direct and not easily reversible, so a confirmation is required (use `--yes` to
+    /// skip it in scripts). Merging into a target without an upstream publishes nothing, so it
+    /// needs no confirmation and `but undo` reverts it.
     ///
     /// When NOT to use this: if your project merges changes through pull requests / code review,
     /// use `but push` and open a PR (`but pr new`) instead — `but merge` deliberately bypasses that
@@ -362,30 +366,37 @@ pub enum Subcommands {
     /// but merge my-feature-branch --no-ff
     /// ```
     ///
+    /// Merge a branch only if the target can be fast-forwarded to it:
+    ///
+    /// ```text
+    /// but merge my-feature-branch --ff-only
+    /// ```
+    ///
     /// Merge an entire stack by naming its top segment:
     ///
     /// ```text
     /// but merge top-branch --whole-stack
     /// ```
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     #[clap(alias = "land")]
     Merge {
         /// Branch ID or name to merge onto the target branch.
-        branch: String,
+        branch: CliIdArg,
         /// Skip the confirmation prompt.
         #[clap(long)]
         yes: bool,
         /// Always create a merge commit, even when the branch can be fast-forwarded.
-        #[clap(long)]
+        #[clap(long, conflicts_with = "ff_only")]
         no_ff: bool,
+        /// Refuse to merge unless the target can be fast-forwarded to the branch tip.
+        #[clap(long)]
+        ff_only: bool,
         /// Merge the entire stack: BRANCH must be the top segment, and the segments below it are
         /// published to the target along with it.
         #[clap(long)]
         whole_stack: bool,
     },
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Discard(discard::Platform),
 
@@ -396,14 +407,33 @@ pub enum Subcommands {
     #[clap(hide = true, name = "_comment")]
     _Comment(comment::Platform),
 
+    #[cfg(feature = "nightly")]
+    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
+    #[clap(hide = true, name = "_ui")]
+    _Ui(ui::Platform),
+
     /// Resolve conflicts in a commit or in uncommitted files.
     ///
     /// When a commit is in a conflicted state (marked with conflicts during rebase),
-    /// use this command to enter resolution mode, resolve the conflicts, and finalize.
+    /// list its conflicts and resolve them without checking the commit out. This works with
+    /// `gitbutler/workspace` or a single branch checked out, and for a worktree's branch.
     /// Uncommitted files marked `{conflicted}` by `but status` are resolved with
     /// `but resolve <path>...` once they hold the desired content (or were deleted).
     ///
     /// ## Workflow
+    ///
+    /// 1. List the conflicts: `but resolve conflicts <commit-id>`
+    /// 2. Resolve each one with the `but resolve apply` command it prints
+    /// 3. Repeat until no conflicts remain
+    ///
+    /// Alternatively, resolve with AI in one step: `but resolve <commit-id> --ai`,
+    /// or `but resolve --ai` to resolve all conflicted commits in the workspace, oldest first.
+    ///
+    /// ## Resolution mode
+    ///
+    /// To run code against a resolution (build or test at that commit), or for a conflict
+    /// `apply` can't take (such as a deletion, a rename or a binary file), check the commit
+    /// out instead. This needs `gitbutler/workspace` and a branch applied to it.
     ///
     /// 1. Enter resolution mode: `but resolve <commit-id>`
     /// 2. Resolve conflicts in your editor (remove conflict markers)
@@ -411,12 +441,8 @@ pub enum Subcommands {
     /// 4. Finalize resolution: `but resolve finish`
     ///    Or cancel: `but resolve cancel`
     ///
-    /// Alternatively, resolve with AI in one step: `but resolve <commit-id> --ai`,
-    /// or `but resolve --ai` to resolve all conflicted commits, oldest first.
-    ///
     /// When in resolution mode, `but status` will also show that you're resolving conflicts.
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Resolve {
         /// Subcommand to run (defaults to entering resolution mode)
@@ -425,7 +451,9 @@ pub enum Subcommands {
         /// A commit to enter resolution mode for, or one or more conflicted uncommitted
         /// files (as listed by `but status`) to mark as resolved with their current
         /// worktree content. Resolution mode checks the commit out until `finish` or
-        /// `cancel`; the `conflicts` and `apply` subcommands resolve a commit without it.
+        /// `cancel`, and is refused while a single branch is checked out or for a commit on a
+        /// worktree's branch; the `conflicts` and `apply` subcommands resolve a commit without
+        /// it, in either case.
         targets: Vec<String>,
         /// Resolve the conflicts with the configured AI model and apply the result.
         ///
@@ -434,19 +462,15 @@ pub enum Subcommands {
         /// Undo the result with `but undo`.
         #[clap(long)]
         ai: bool,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Unapply(unapply::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Apply(apply::Platform),
-
-    #[cfg(feature = "legacy")]
-    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    Open(open::Platform),
 
     /// Push changes in a branch to remote.
     ///
@@ -461,7 +485,6 @@ pub enum Subcommands {
     /// - `but push bu` - push the branch with CLI ID "bu"
     /// - `but push feature-branch` - push the branch named "feature-branch"
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Push(push::Command),
 
@@ -469,6 +492,10 @@ pub enum Subcommands {
     ///
     /// This fetches the latest changes from the remote and rebases all applied branches
     /// and linked worktrees on top of the updated target branch.
+    ///
+    /// When the target branch has no upstream, for example in a repository without a remote,
+    /// there is nothing to fetch: this updates the branches onto the local target branch
+    /// instead, for example after merging branches into `main` with `git merge`.
     ///
     /// You should run this regularly to keep your branches up to date with the latest
     /// changes from the main development line.
@@ -479,7 +506,6 @@ pub enum Subcommands {
     /// Commits pushed to a branch's own remote counterpart are not integrated by pull;
     /// use `but branch update <branch>` for those.
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Pull {
         /// Only check whether the update would apply cleanly, without updating
@@ -493,6 +519,8 @@ pub enum Subcommands {
             default_value = "worktrees,workspace"
         )]
         update: Vec<PullUpdate>,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     /// Commands for creating and managing reviews on a forge, e.g. GitHub PRs or GitLab MRs.
@@ -504,7 +532,6 @@ pub enum Subcommands {
     /// Running `but pr` without a subcommand defaults to `but pr new`, which
     /// will prompt you to select a branch to create a PR for.
     ///
-    #[cfg(feature = "legacy")]
     #[clap(visible_alias = "mr")]
     Pr(forge::pr::Platform),
 
@@ -525,7 +552,6 @@ pub enum Subcommands {
     /// If `--dry-run` is specified, no changes will be made; instead, the absorption plan
     /// (what changes would be absorbed by which commits) will be shown.
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Absorb {
         /// An uncommitted file or hunk to absorb; if omitted, everything uncommitted in the
@@ -536,6 +562,8 @@ pub enum Subcommands {
         dry_run: bool,
         #[clap(flatten)]
         allow_merged: atoms::AllowMergedArg,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     /// Edit the commit message of the specified commit.
@@ -550,15 +578,17 @@ pub enum Subcommands {
     /// You can also use `but reword <branch-id>` to rename the branch, or
     /// `but reword <anonymous-branch-id>` to give an anonymous branch a name.
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Reword {
         /// Commit ID to edit, branch ID to rename, or anonymous branch ID to name
         target: CliIdArg,
-        /// The new commit message or branch name. Without it, a terminal opens the editor
+        /// The new commit message or branch name. Without it or `-F`, a terminal opens the editor
         /// and a non-interactive run fails.
         #[clap(short = 'm', long = "message", conflicts_with = "fix_formatting")]
         message: Option<String>,
+        /// Read the new commit message or branch name from `FILE`, or from stdin when `FILE` is `-`.
+        #[clap(short = 'F', long, value_name = "FILE", conflicts_with_all = ["message", "fix_formatting"])]
+        file: Option<atoms::MessageFileArg>,
         /// Format the existing commit message to 72-char line wrapping without opening an editor
         #[clap(
             id = "fix_formatting",
@@ -578,13 +608,13 @@ pub enum Subcommands {
         no_diff: bool,
         #[clap(flatten)]
         allow_merged: atoms::AllowMergedArg,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Uncommit(uncommit::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Amend(amend::Platform),
 
@@ -600,46 +630,20 @@ pub enum Subcommands {
     ///
     /// By default, shows the last 20 oplog entries (same as `but oplog list`).
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Oplog(oplog::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Undo(undo::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Redo(redo::Platform),
 
-    /// Set up a GitButler project from the git repository in the current directory.
-    ///
-    /// This command will:
-    /// - Add the repository to the global GitButler project registry
-    /// - Switch to the gitbutler/workspace branch (if not already on it)
-    /// - Set up a default target branch (the remote's HEAD)
-    /// - Add a gb-local remote if no push remote exists
-    ///
-    /// If you have an existing Git repository and want to start using GitButler
-    /// with it, you can run this command to set up the necessary configuration
-    /// and data structures.
-    ///
-    /// ## Examples
-    ///
-    /// Initialize a new git repository and set up GitButler:
-    ///
-    /// ```text
-    /// but setup --init
-    /// ```
-    ///
-    #[cfg(feature = "legacy")]
-    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
+    /// Explain that setup is no longer required.
+    #[clap(hide = true)]
     Setup {
-        /// Initialize a new git repository with an empty commit if one doesn't exist.
-        ///
-        /// Useful in non-interactive environments such as CI, where a repository may not exist yet.
+        /// Report an error with a hint to use `but init` instead.
         #[clap(long)]
-        #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
         init: bool,
     },
 
@@ -647,10 +651,11 @@ pub enum Subcommands {
     ///
     /// This command:
     /// - Creates an oplog snapshot of the current state
+    /// - Undoes any commits made directly on gitbutler/workspace, keeping their changes uncommitted
     /// - Finds the first active branch and checks it out
     ///     - Alternatively, use `--checkout-to <branch>` to override this default
-    /// - Cherry-picks any dangling commits from gitbutler/workspace
-    /// - Provides instructions on how to return to GitButler mode
+    ///
+    /// Other applied branches stay unapplied until you run `but apply <branch>`.
     ///
     /// This is useful when you want to temporarily or permanently leave GitButler
     /// management and work with standard Git commands.
@@ -667,22 +672,13 @@ pub enum Subcommands {
     /// but teardown --checkout-to my-feature-branch
     /// ```
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Teardown {
         /// Explicit override for which local branch to checkout to.
-        #[clap(
-            long,
-            short = 'c',
-            value_name = "LOCAL_BRANCH",
-            group = "teardown_mode"
-        )]
+        #[clap(long, short = 'c', value_name = "LOCAL_BRANCH")]
         checkout_to: Option<String>,
-        /// Remove legacy GitButler-managed hooks.
-        ///
-        /// These hooks are no longer required and can safely be removed.
-        #[clap(long, group = "teardown_mode")]
-        remove_hooks: bool,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     /// Open the GitButler GUI for the current project.
@@ -705,21 +701,30 @@ pub enum Subcommands {
         path: Option<PathBuf>,
     },
 
-    /// Open files in the workspace using any defined program.
+    /// Open files or hunks in an editor, or with `--gui`, what a CLI ID names in the GitButler GUI.
     #[cfg(feature = "nightly")]
-    #[clap(hide = true, name = "_open")]
+    #[clap(hide = true, name = "_open", after_long_help = gui_places_help())]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     _Open {
-        /// One or more files or hunks to open.
+        /// What to open, by CLI ID from `but status` or `but diff`: one or more files or hunks, or
+        /// with `--gui`, one ID, a link's parameters for a place with no ID, or an ID with more of
+        /// them. For more details about CLI IDs, see `but help cli-ids`.
         #[clap(num_args = 1..)]
         sources: Vec<CliIdArg>,
         /// The program to use for opening.
-        #[clap(long, short = 'p')]
+        #[clap(long, short = 'p', conflicts_with = "gui")]
         program_id: Option<String>,
+        /// Open it in the GitButler GUI instead.
+        #[clap(long)]
+        gui: bool,
+        /// With `--gui`, print the link that opens it without opening it.
+        #[clap(long = "dry-run", requires = "gui")]
+        dry_run: bool,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    #[cfg(feature = "legacy")]
     Tui(tui::Platform),
 
     /// Remove empty branches from the workspace.
@@ -757,7 +762,6 @@ pub enum Subcommands {
     /// but clean --include-upstream
     /// ```
     ///
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Clean {
         /// Preview which branches would be removed without actually deleting them.
@@ -769,6 +773,8 @@ pub enum Subcommands {
         /// Also remove branches that have upstream-only commits but no local commits or changes.
         #[clap(long)]
         include_upstream: bool,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     /// Manage GitButler CLI and app updates.
@@ -849,11 +855,9 @@ pub enum Subcommands {
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Config(config::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Pick(pick::Platform),
 
-    #[cfg(feature = "legacy")]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     #[clap(hide = true)]
     Switch(switch::Platform),
@@ -885,7 +889,7 @@ pub enum Subcommands {
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Skill(skill::Platform),
 
-    /// Set up GitButler for AI coding agents.
+    /// Set up or remove GitButler for AI coding agents.
     ///
     /// Runs a guided setup wizard for installing GitButler agent skills and
     /// writing workflow steering instructions into supported agent instruction
@@ -930,7 +934,6 @@ pub enum Subcommands {
     /// Trigger a refresh of remote data fetching from the remote, Pull Requests, and CI status.
     ///
     /// This is a hidden command primarily used for background sync operations.
-    #[cfg(feature = "legacy")]
     #[clap(hide = true)]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     RefreshRemoteData {
@@ -955,12 +958,6 @@ pub enum Subcommands {
     #[clap(hide = true)]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
     Mcp(mcp::Platform),
-
-    /// INTERNAL: GitButler Actions are automated tasks (like macros) that can be performed on a repository.
-    #[cfg(feature = "legacy")]
-    #[clap(hide = true)]
-    #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    Actions(actions::Platform),
 
     /// INTERNAL: If metrics are permitted, this subcommand handles posthog event creation.
     #[clap(hide = true)]
@@ -994,16 +991,20 @@ pub enum Subcommands {
     },
 
     /// Hidden command that redirects to `but pull --check`
-    #[cfg(feature = "legacy")]
     #[clap(hide = true)]
     #[cfg_attr(feature = "raw-clap-docs", clap(verbatim_doc_comment))]
-    Fetch,
+    Fetch {
+        #[clap(flatten)]
+        json: atoms::JsonArg,
+    },
 
     /// AI: capture agent logs into GitMeta.
     #[clap(name = "agentlog", hide = true)]
     AgentLog {
         #[clap(subcommand)]
         cmd: but_agentlog::Command,
+        #[clap(flatten)]
+        json: atoms::JsonArg,
     },
 
     /// Show help information.
@@ -1036,80 +1037,118 @@ pub enum Subcommands {
     External(Vec<OsString>),
 }
 
-pub mod agent;
-pub mod alias;
-#[cfg(feature = "legacy")]
-pub mod amend;
-#[cfg(feature = "legacy")]
-pub mod apply;
-pub mod comment;
-#[cfg(feature = "legacy")]
-pub mod commit;
-pub mod config;
-#[cfg(feature = "legacy")]
-pub mod diff;
-#[cfg(feature = "legacy")]
-pub mod discard;
-pub mod mcp;
-#[cfg(feature = "legacy")]
-pub mod r#move;
-#[cfg(feature = "legacy")]
-pub mod open;
-#[cfg(feature = "legacy")]
-pub mod pick;
-#[cfg(feature = "legacy")]
-pub mod redo;
-#[cfg(feature = "legacy")]
-pub mod reword2;
-pub mod skill;
-#[cfg(feature = "legacy")]
-pub mod split;
-#[cfg(feature = "legacy")]
-pub mod squash;
-#[cfg(feature = "legacy")]
-pub mod switch;
-#[cfg(feature = "legacy")]
-pub mod tui;
-#[cfg(feature = "legacy")]
-pub mod unapply;
-#[cfg(feature = "legacy")]
-pub mod uncommit;
-#[cfg(feature = "legacy")]
-pub mod undo;
-pub mod update;
-
-pub mod actions {
-    #[derive(Debug, clap::Parser)]
-    pub struct Platform {
-        #[clap(subcommand)]
-        pub cmd: Option<Subcommands>,
-    }
-    #[derive(Debug, clap::Subcommand)]
-    pub enum Subcommands {
-        /// Automatically handles the changes in the repository, creating a commit with the provided context.
-        HandleChanges {
-            /// A context describing the changes that are currently uncommitted
-            #[clap(long, short = 'd', alias = "desc", visible_alias = "description")]
-            description: String,
-            /// Which handler is to be used for the operation. Different handles would have different behavior.
-            #[clap(long, value_enum, default_value = "simple")]
-            handler: Handler,
-        },
-    }
-
-    #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-    pub enum Handler {
-        /// Handles changes in a simple way.
-        Simple,
+impl Subcommands {
+    /// The command's `--json` flag, or `None` if the command doesn't print JSON.
+    ///
+    /// For a subcommand, this is its own flag or that of the command above it, whichever has one.
+    pub fn json_arg(&self) -> Option<&atoms::JsonArg> {
+        match self {
+            Subcommands::Init(init::Platform { json, .. })
+            | Subcommands::Status { json, .. }
+            | Subcommands::Diff(diff::Platform { json, .. })
+            | Subcommands::Show { json, .. }
+            | Subcommands::Commit(commit::Platform { json, .. })
+            | Subcommands::Squash(squash::Platform { json, .. })
+            | Subcommands::Move(r#move::Platform { json, .. })
+            | Subcommands::Split(split::Platform { json, .. })
+            | Subcommands::_Reword2(reword2::Platform { json, .. })
+            | Subcommands::Branch(branch::Platform { json, .. })
+            | Subcommands::Worktree(worktree::Platform { json, .. })
+            | Subcommands::Discard(discard::Platform { json, .. })
+            | Subcommands::_Comment(comment::Platform { json, .. })
+            | Subcommands::Resolve { json, .. }
+            | Subcommands::Unapply(unapply::Platform { json, .. })
+            | Subcommands::Apply(apply::Platform { json, .. })
+            | Subcommands::Push(push::Command { json, .. })
+            | Subcommands::Pull { json, .. }
+            | Subcommands::Absorb { json, .. }
+            | Subcommands::Reword { json, .. }
+            | Subcommands::Uncommit(uncommit::Platform { json, .. })
+            | Subcommands::Amend(amend::Platform { json, .. })
+            | Subcommands::Oplog(oplog::Platform { json, .. })
+            | Subcommands::Undo(undo::Platform { json })
+            | Subcommands::Redo(redo::Platform { json })
+            | Subcommands::Teardown { json, .. }
+            | Subcommands::Clean { json, .. }
+            | Subcommands::Alias(alias::Platform { json, .. })
+            | Subcommands::Config(config::Platform { json, .. })
+            | Subcommands::Pick(pick::Platform { json, .. })
+            | Subcommands::Switch(switch::Platform { json, .. })
+            | Subcommands::Skill(skill::Platform { json, .. })
+            | Subcommands::Fetch { json }
+            | Subcommands::AgentLog { json, .. } => Some(json),
+            Subcommands::Pr(forge::pr::Platform { cmd, .. }) => match cmd {
+                Some(forge::pr::Subcommands::New { json, .. }) => Some(json),
+                Some(
+                    forge::pr::Subcommands::AutoMerge { .. }
+                    | forge::pr::Subcommands::SetDraft { .. }
+                    | forge::pr::Subcommands::SetReady { .. }
+                    | forge::pr::Subcommands::Template { .. },
+                )
+                | None => None,
+            },
+            Subcommands::Update(update::Platform { cmd }) => match cmd {
+                update::Subcommands::Check { json }
+                | update::Subcommands::Suppress { json, .. } => Some(json),
+                #[cfg(all(unix, not(feature = "packaged-but-distribution")))]
+                update::Subcommands::Install { .. } => None,
+            },
+            Subcommands::Agent(agent::Platform { cmd }) => match cmd {
+                Some(
+                    agent::Subcommands::Setup { json, .. } | agent::Subcommands::Uninstall { json },
+                ) => Some(json),
+                None => None,
+            },
+            Subcommands::Merge { .. }
+            | Subcommands::Setup { .. }
+            | Subcommands::Gui { .. }
+            | Subcommands::Tui(_)
+            | Subcommands::Edit { .. }
+            | Subcommands::RefreshRemoteData { .. }
+            | Subcommands::Mcp(_)
+            | Subcommands::Metrics { .. }
+            | Subcommands::Completions { .. }
+            | Subcommands::Help { .. }
+            | Subcommands::Onboarding
+            | Subcommands::External(_) => None,
+            #[cfg(feature = "nightly")]
+            Subcommands::_Expand { json, .. }
+            | Subcommands::_Ui(ui::Platform { json, .. })
+            | Subcommands::_Open { json, .. } => Some(json),
+        }
     }
 }
 
+pub mod agent;
+pub mod alias;
+pub mod amend;
+pub mod apply;
+pub mod comment;
+pub mod commit;
+pub mod config;
+pub mod diff;
+pub mod discard;
+pub mod mcp;
+pub mod r#move;
+pub mod pick;
+pub mod redo;
+pub mod reword2;
+pub mod skill;
+pub mod split;
+pub mod squash;
+pub mod switch;
+pub mod tui;
+#[cfg(feature = "nightly")]
+pub mod ui;
+pub mod unapply;
+pub mod uncommit;
+pub mod undo;
+pub mod update;
+
 pub mod forge;
 pub mod metrics;
-#[cfg(feature = "legacy")]
 pub mod oplog;
 pub mod push;
-#[cfg(feature = "legacy")]
 pub mod resolve;
 
 pub mod branch;
@@ -1120,7 +1159,8 @@ pub mod worktree;
 pub enum PullUpdate {
     /// The linked worktrees that are based on the target rather than on an applied branch.
     Worktrees,
-    /// The applied branches, along with the linked worktrees based on them.
+    /// The applied branches, along with the linked worktrees based on them, and the target
+    /// branch itself when it's checked out.
     Workspace,
 }
 
@@ -1148,24 +1188,42 @@ pub(crate) fn find_subcommand(args: &[std::ffi::OsString]) -> Option<(usize, &st
     None
 }
 
+/// Example invocations appended to a `but _open` parse error.
+#[cfg(feature = "nightly")]
+const OPEN_ERROR_EXAMPLES: &str = "\
+Examples:
+  but _open <file-or-hunk>...            # open in an editor
+  but _open <id> --gui                   # open in the GitButler GUI
+  but _open <id> --gui --dry-run         # print the link instead
+  but _open to=project tab=graph --gui   # a place with no CLI ID, by its link's parameters
+";
+
+/// What `but _open --help` ends with: every place a link opens, from `but-gpui`'s `LINKS.md`,
+/// which its tests write from the app's own lists.
+#[cfg(feature = "nightly")]
+fn gui_places_help() -> String {
+    const LINKS: &str = include_str!("../../../but-gpui/LINKS.md");
+    // Past the note on how it's written, which is for the app's developers.
+    let places = (LINKS.split_once("-->")).map_or(LINKS, |(_, places)| places.trim_start());
+    format!(
+        "With --gui, a place with no CLI ID is given as its link's parameters, each its own \
+         argument, as but _open to=project tab=graph --gui.\n\n{places}"
+    )
+}
+
 /// Example invocations appended to a subcommand's parse error, for the
 /// commands whose grammar most often trips people up.
 pub(crate) fn error_examples(subcommand: &str) -> Option<&'static str> {
-    #[cfg(feature = "legacy")]
-    {
-        Some(match subcommand {
-            "commit" => commit::ERROR_EXAMPLES,
-            "amend" => amend::ERROR_EXAMPLES,
-            "move" => r#move::ERROR_EXAMPLES,
-            "squash" => squash::ERROR_EXAMPLES,
-            _ => return None,
-        })
-    }
-    #[cfg(not(feature = "legacy"))]
-    {
-        let _ = subcommand;
-        None
-    }
+    Some(match subcommand {
+        "commit" => commit::ERROR_EXAMPLES,
+        "amend" => amend::ERROR_EXAMPLES,
+        "diff" => diff::ERROR_EXAMPLES,
+        "move" => r#move::ERROR_EXAMPLES,
+        "squash" => squash::ERROR_EXAMPLES,
+        #[cfg(feature = "nightly")]
+        "_open" => OPEN_ERROR_EXAMPLES,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

@@ -455,33 +455,10 @@ impl Stack {
         self.ref_name().map(|rn| rn.as_ref())
     }
 
-    /// The same as [`name()`](Self::ref_name()), but returns the owned name.
     pub fn ref_name(&self) -> Option<&gix::refs::FullName> {
         self.segments
             .first()
             .and_then(|name| name.ref_info.as_ref().map(|ri| &ri.ref_name))
-    }
-}
-
-/// What to do if the applied branch conflicts with the existing branches?
-#[derive(Default, Debug, Copy, Clone)]
-pub enum OnWorkspaceMergeConflict {
-    /// Provide additional information about the stack(s) that conflicted and the files involved in it,
-    /// and don't materialise the merge, but continue on best-effort basis to merge as many stacks as possible.
-    #[default]
-    AbortAndReportConflictingStacks,
-    /// Despite possible conflicts, materialise the result with the conflicting stacks un-merged and unreachable from the workspace commit.
-    /// Note that the metadata of these branches is still available.
-    MaterializeAndReportConflictingStacks,
-}
-
-impl OnWorkspaceMergeConflict {
-    /// Return `true` if we are supposed to abort on merge conflict.
-    pub fn should_abort(&self) -> bool {
-        matches!(
-            self,
-            OnWorkspaceMergeConflict::AbortAndReportConflictingStacks
-        )
     }
 }
 
@@ -552,6 +529,52 @@ pub(crate) fn try_find_validated_ref<'repo>(
         );
     }
     Ok(branch_ref)
+}
+
+/// Project `workspace` again from the nosegment graph of `repo` and `meta`, amended by
+/// `overlay`, with its project metadata, linked worktrees and options.
+///
+/// It's seen from the commit in `seen_from` if given, and the branch along with it if there is one,
+/// or else from the same branch as `workspace` if it still exists, or the same commit.
+pub(crate) fn reprojected(
+    workspace: &but_graph::Workspace,
+    repo: &gix::Repository,
+    meta: &impl but_core::RefMetadata,
+    overlay: but_graph::init::Overlay,
+    seen_from: Option<(Option<&gix::refs::FullNameRef>, gix::ObjectId)>,
+) -> anyhow::Result<but_graph::Workspace> {
+    let (seen_from_ref, seen_from_commit) = match seen_from {
+        Some((ref_name, commit_id)) => (ref_name.map(ToOwned::to_owned), Some(commit_id)),
+        None => {
+            let entrypoint = workspace.graph.entrypoint()?;
+            let entrypoint_commit_id = entrypoint
+                .commit()
+                .map(|commit| commit.id)
+                .or_else(|| entrypoint.segment.tip());
+            match entrypoint.segment.ref_name() {
+                Some(ref_name) => match repo.try_find_reference(ref_name)? {
+                    Some(mut reference) => (
+                        Some(ref_name.to_owned()),
+                        Some(reference.peel_to_id()?.detach()),
+                    ),
+                    None => (None, entrypoint_commit_id),
+                },
+                None => (None, entrypoint_commit_id),
+            }
+        }
+    };
+    but_graph::nosegment::workspace(
+        repo,
+        meta,
+        overlay,
+        workspace.graph.project_meta.clone(),
+        seen_from_ref.as_ref().map(|name| name.as_ref()),
+        seen_from_commit,
+        [],
+        workspace.graph.worktree_tips.clone(),
+        workspace.graph.options.collect_tags,
+        workspace.graph.options.commits_limit_hint,
+    )
 }
 
 /// Setup `local_tracking_ref` to track `remote_tracking_ref`, and prepare a locked configuration
@@ -639,27 +662,27 @@ pub fn local_tracking_branch(
     Ok(local_tracking_ref)
 }
 
-/// Functions and types related to adding a branch to the workspace.
 pub mod apply;
-pub use apply::apply;
+pub use apply::{apply, apply_stack};
 
-/// Functions and types related to removing a branch from the workspace.
 pub mod unapply;
-pub use unapply::function::unapply;
+pub use unapply::function::{dissolve_unnecessary_workspace, unapply, unapply_stack};
 
-/// related types for removing a workspace reference.
 pub mod remove_reference;
-pub use remove_reference::remove_reference;
+pub use remove_reference::drop_reference;
 
-/// related types for creating a workspace reference.
+pub mod rename_reference;
+pub use rename_reference::rename_reference;
+
 pub mod create_reference;
-pub use create_reference::function::create_reference;
+pub use create_reference::function::{create_reference, ensure_name_is_available};
 
-/// Functions and types related to moving branches across stacks.
+pub mod name_segment;
+pub use name_segment::name_segment;
+
 pub mod move_branch;
 pub use move_branch::function::{move_branch, tear_off_branch};
 
-/// Functions and types for integrating remote changes into local branches.
 pub mod integrate_branch_upstream;
 pub use integrate_branch_upstream::{
     BranchIntegrationStrategy, InitialBranchIntegration, IntegrationDivergenceCommit,
