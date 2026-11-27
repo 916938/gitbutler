@@ -20,7 +20,7 @@ pub trait OpenAIClientProvider {
 
 /// `err`, with the reason of an endpoint that answers errors as `{"error": "…"}`, as
 /// GitButler's proxy does, rather than in OpenAI's shape, which async-openai can't read.
-fn readable(err: OpenAIError) -> anyhow::Error {
+pub(crate) fn readable(err: OpenAIError) -> anyhow::Error {
     #[derive(serde::Deserialize)]
     struct Said {
         error: String,
